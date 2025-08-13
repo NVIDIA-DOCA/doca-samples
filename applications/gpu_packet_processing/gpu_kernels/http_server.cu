@@ -36,8 +36,9 @@
 
 DOCA_LOG_REGISTER(GPU_SANITY::KernelHttpServer);
 
-static
-__device__ void http_set_mac_addr(struct eth_ip_tcp_hdr *hdr, const uint16_t *src_bytes, const uint16_t *dst_bytes)
+static __device__ void http_set_mac_addr(struct eth_ip_tcp_hdr *hdr,
+					 const uint16_t *src_bytes,
+					 const uint16_t *dst_bytes)
 {
 	((uint16_t *)hdr->l2_hdr.s_addr_bytes)[0] = src_bytes[0];
 	((uint16_t *)hdr->l2_hdr.s_addr_bytes)[1] = src_bytes[1];
@@ -49,12 +50,21 @@ __device__ void http_set_mac_addr(struct eth_ip_tcp_hdr *hdr, const uint16_t *sr
 }
 
 __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
-					struct doca_gpu_eth_txq *txq0, struct doca_gpu_eth_txq *txq1, struct doca_gpu_eth_txq *txq2, struct doca_gpu_eth_txq *txq3,
+					struct doca_gpu_eth_txq *txq0,
+					struct doca_gpu_eth_txq *txq1,
+					struct doca_gpu_eth_txq *txq2,
+					struct doca_gpu_eth_txq *txq3,
 					int sem_num,
-					struct doca_gpu_semaphore_gpu *sem_http0, struct doca_gpu_semaphore_gpu *sem_http1, struct doca_gpu_semaphore_gpu *sem_http2, struct doca_gpu_semaphore_gpu *sem_http3,
-					struct doca_gpu_buf_arr *buf_arr_gpu_page_index, uint32_t nbytes_page_index,
-					struct doca_gpu_buf_arr *buf_arr_gpu_page_contacts, uint32_t nbytes_page_contacts,
-					struct doca_gpu_buf_arr *buf_arr_gpu_page_not_found, uint32_t nbytes_page_not_found)
+					struct doca_gpu_semaphore_gpu *sem_http0,
+					struct doca_gpu_semaphore_gpu *sem_http1,
+					struct doca_gpu_semaphore_gpu *sem_http2,
+					struct doca_gpu_semaphore_gpu *sem_http3,
+					struct doca_gpu_buf_arr *buf_arr_gpu_page_index,
+					uint32_t nbytes_page_index,
+					struct doca_gpu_buf_arr *buf_arr_gpu_page_contacts,
+					uint32_t nbytes_page_contacts,
+					struct doca_gpu_buf_arr *buf_arr_gpu_page_not_found,
+					uint32_t nbytes_page_not_found)
 {
 	doca_error_t ret;
 	struct doca_gpu_eth_txq *txq = NULL;
@@ -85,8 +95,7 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 	} else if (warp_id == 3) {
 		txq = txq3;
 		sem_http = sem_http3;
-	}
-	else
+	} else
 		return;
 
 	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
@@ -95,16 +104,24 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 			ret = doca_gpu_dev_semaphore_get_status(sem_http, sem_http_idx, &status);
 			if (ret != DOCA_SUCCESS) {
 				if (lane_id == 0) {
-					printf("HTTP server semaphore wait error %d Block %d error %d\n", ret, warp_id, ret);
+					printf("HTTP server semaphore wait error %d Block %d error %d\n",
+					       ret,
+					       warp_id,
+					       ret);
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 				}
 				break;
 			}
 
 			if (status == DOCA_GPU_SEMAPHORE_STATUS_READY) {
-				ret = doca_gpu_dev_semaphore_get_custom_info_addr(sem_http, sem_http_idx, (void **)&http_global);
+				ret = doca_gpu_dev_semaphore_get_custom_info_addr(sem_http,
+										  sem_http_idx,
+										  (void **)&http_global);
 				if (ret != DOCA_SUCCESS) {
-					printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n", ret, warp_id, lane_id);
+					printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n",
+					       ret,
+					       warp_id,
+					       lane_id);
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 					break;
 				}
@@ -123,32 +140,45 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 				doca_gpu_dev_buf_get_addr(buf, &buf_addr);
 
 				raw_to_tcp(buf_addr, &hdr, &payload);
-				http_set_mac_addr(hdr, (uint16_t *)http_global->eth_dst_addr_bytes, (uint16_t *)http_global->eth_src_addr_bytes);
+				http_set_mac_addr(hdr,
+						  (uint16_t *)http_global->eth_dst_addr_bytes,
+						  (uint16_t *)http_global->eth_src_addr_bytes);
 				hdr->l3_hdr.src_addr = http_global->ip_dst_addr;
 				hdr->l3_hdr.dst_addr = http_global->ip_src_addr;
 				hdr->l4_hdr.src_port = http_global->tcp_dst_port;
 				hdr->l4_hdr.dst_port = http_global->tcp_src_port;
 				hdr->l4_hdr.sent_seq = http_global->tcp_recv_ack;
-				uint32_t prev_pkt_sz = BYTE_SWAP16(http_global->ip_total_length) - sizeof(struct ipv4_hdr) - ((http_global->tcp_dt_off >> 4) * sizeof(uint32_t));
-				hdr->l4_hdr.recv_ack = BYTE_SWAP32(BYTE_SWAP32(http_global->tcp_sent_seq) + prev_pkt_sz);
+				uint32_t prev_pkt_sz = BYTE_SWAP16(http_global->ip_total_length) -
+						       sizeof(struct ipv4_hdr) -
+						       ((http_global->tcp_dt_off >> 4) * sizeof(uint32_t));
+				hdr->l4_hdr.recv_ack =
+					BYTE_SWAP32(BYTE_SWAP32(http_global->tcp_sent_seq) + prev_pkt_sz);
 				hdr->l4_hdr.cksum = 0;
 
 				ret = doca_gpu_dev_eth_txq_send_enqueue_strong(txq, buf, base_pkt_len + nbytes_page, 0);
 				if (ret != DOCA_SUCCESS) {
-					printf("Error %d doca_gpu_dev_eth_txq_send_enqueue_strong block %d thread %d\n", ret, warp_id, lane_id);
+					printf("Error %d doca_gpu_dev_eth_txq_send_enqueue_strong block %d thread %d\n",
+					       ret,
+					       warp_id,
+					       lane_id);
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 					break;
 				}
 
-				ret = doca_gpu_dev_semaphore_set_status(sem_http, sem_http_idx, DOCA_GPU_SEMAPHORE_STATUS_DONE);
+				ret = doca_gpu_dev_semaphore_set_status(sem_http,
+									sem_http_idx,
+									DOCA_GPU_SEMAPHORE_STATUS_DONE);
 				if (ret != DOCA_SUCCESS) {
-					printf("Error %d doca_gpu_dev_eth_txq_send_enqueue_strong block %d thread %d\n", ret, warp_id, lane_id);
+					printf("Error %d doca_gpu_dev_eth_txq_send_enqueue_strong block %d thread %d\n",
+					       ret,
+					       warp_id,
+					       lane_id);
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 					break;
 				}
 
-				sem_http_idx = (sem_http_idx+WARP_SIZE) % sem_num;
-				doca_gpu_buf_idx = (doca_gpu_buf_idx+WARP_SIZE) % TX_BUF_NUM;
+				sem_http_idx = (sem_http_idx + WARP_SIZE) % sem_num;
+				doca_gpu_buf_idx = (doca_gpu_buf_idx + WARP_SIZE) % TX_BUF_NUM;
 				send_pkts++;
 			}
 		}
@@ -170,7 +200,10 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 
 extern "C" {
 
-doca_error_t kernel_http_server(cudaStream_t stream, uint32_t *exit_cond, struct rxq_tcp_queues *tcp_queues, struct txq_http_queues *http_queues)
+doca_error_t kernel_http_server(cudaStream_t stream,
+				uint32_t *exit_cond,
+				struct rxq_tcp_queues *tcp_queues,
+				struct txq_http_queues *http_queues)
 {
 	cudaError_t result = cudaSuccess;
 
@@ -189,14 +222,23 @@ doca_error_t kernel_http_server(cudaStream_t stream, uint32_t *exit_cond, struct
 	/*
 	 * Assume no more than MAX_QUEUE (4) receive queues
 	 */
-	cuda_kernel_http_server<<<1, tcp_queues->numq * WARP_SIZE, 0, stream>>>(exit_cond,
-								http_queues->eth_txq_gpu[0], http_queues->eth_txq_gpu[1], http_queues->eth_txq_gpu[2], http_queues->eth_txq_gpu[3],
-								tcp_queues->nums,
-								tcp_queues->sem_http_gpu[0], tcp_queues->sem_http_gpu[1], tcp_queues->sem_http_gpu[2], tcp_queues->sem_http_gpu[3],
-								http_queues->buf_page_index.buf_arr_gpu, http_queues->buf_page_index.pkt_nbytes,
-								http_queues->buf_page_contacts.buf_arr_gpu, http_queues->buf_page_contacts.pkt_nbytes,
-								http_queues->buf_page_not_found.buf_arr_gpu, http_queues->buf_page_not_found.pkt_nbytes
-								);
+	cuda_kernel_http_server<<<1, tcp_queues->numq * WARP_SIZE, 0, stream>>>(
+		exit_cond,
+		http_queues->eth_txq_gpu[0],
+		http_queues->eth_txq_gpu[1],
+		http_queues->eth_txq_gpu[2],
+		http_queues->eth_txq_gpu[3],
+		tcp_queues->nums,
+		tcp_queues->sem_http_gpu[0],
+		tcp_queues->sem_http_gpu[1],
+		tcp_queues->sem_http_gpu[2],
+		tcp_queues->sem_http_gpu[3],
+		http_queues->buf_page_index.buf_arr_gpu,
+		http_queues->buf_page_index.pkt_nbytes,
+		http_queues->buf_page_contacts.buf_arr_gpu,
+		http_queues->buf_page_contacts.pkt_nbytes,
+		http_queues->buf_page_not_found.buf_arr_gpu,
+		http_queues->buf_page_not_found.pkt_nbytes);
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
 		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));

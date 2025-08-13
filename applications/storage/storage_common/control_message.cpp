@@ -58,7 +58,6 @@ uint32_t wire_size(storage::control::message const &msg)
 	} break;
 	case message_type::init_storage_request: {
 		size += sizeof(init_storage_payload::task_count);
-		size += sizeof(init_storage_payload::batch_size);
 		size += sizeof(init_storage_payload::core_count);
 
 		auto const *details = dynamic_cast<init_storage_payload const *>(msg.payload.get());
@@ -143,7 +142,6 @@ char *encode(char *buffer, storage::control::message const &msg)
 						     "[bug] Unable to encode invalid init_storage_request, no payload"};
 		}
 		buffer = storage::to_buffer(buffer, details->task_count);
-		buffer = storage::to_buffer(buffer, details->batch_size);
 		buffer = storage::to_buffer(buffer, details->core_count);
 		buffer = storage::to_buffer(buffer, details->mmap_export_blob);
 	} break;
@@ -204,7 +202,6 @@ char const *decode(char const *buffer, storage::control::message &msg)
 	case message_type::init_storage_request: {
 		auto details = std::make_unique<init_storage_payload>();
 		buffer = storage::from_buffer(buffer, details->task_count);
-		buffer = storage::from_buffer(buffer, details->batch_size);
 		buffer = storage::from_buffer(buffer, details->core_count);
 		buffer = storage::from_buffer(buffer, details->mmap_export_blob);
 		msg.payload = std::move(details);
@@ -327,8 +324,6 @@ std::string to_string(storage::control::message const &msg)
 		}
 		s += "task_count: ";
 		s += std::to_string(details->task_count);
-		s += ", batch_size: ";
-		s += std::to_string(details->batch_size);
 		s += ", core_count: ";
 		s += std::to_string(details->core_count);
 		s += ", mmap_export_blob: [";

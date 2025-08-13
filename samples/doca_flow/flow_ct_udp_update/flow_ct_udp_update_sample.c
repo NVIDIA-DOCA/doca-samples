@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,7 +32,8 @@
 #include <doca_flow_ct.h>
 
 #include "flow_ct_common.h"
-#include "flow_common.h"
+#include <flow_common.h>
+#include "flow_switch_common.h"
 
 #define PACKET_BURST 128
 
@@ -232,7 +233,7 @@ static doca_error_t create_vxlan_encap_pipe(struct doca_flow_port *port,
 	actions.encap_cfg.encap.outer.ip4.dst_ip = 0xffffffff;
 	actions.encap_cfg.encap.outer.ip4.ttl = 0xff;
 	actions.encap_cfg.encap.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-	actions.encap_cfg.encap.outer.udp.l4_port.dst_port = RTE_BE16(DOCA_FLOW_VXLAN_DEFAULT_PORT);
+	actions.encap_cfg.encap.outer.udp.l4_port.dst_port = DOCA_HTOBE16(DOCA_FLOW_VXLAN_DEFAULT_PORT);
 	actions.encap_cfg.encap.tun.type = DOCA_FLOW_TUN_VXLAN;
 	actions.encap_cfg.encap.tun.vxlan_tun_id = 0xffffffff;
 	actions.encap_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
@@ -389,8 +390,8 @@ static doca_error_t create_count_pipe(struct doca_flow_port *port,
 	memset(&match, 0, sizeof(match));
 	match.outer.ip4.dst_ip = BE_IPV4_ADDR(8, 8, 8, 8);
 	match.outer.ip4.src_ip = BE_IPV4_ADDR(1, 2, 3, 4);
-	match.outer.udp.l4_port.dst_port = rte_cpu_to_be_16(80);
-	match.outer.udp.l4_port.src_port = rte_cpu_to_be_16(1234);
+	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(80);
+	match.outer.udp.l4_port.src_port = DOCA_HTOBE16(1234);
 
 	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
@@ -499,8 +500,8 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 
 		if (!conn_found) {
 			flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
-				DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY |
-				DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN;
+				DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY |
+				DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN;
 			result = doca_flow_ct_add_entry(ct_queue,
 							NULL,
 							flags,
@@ -605,10 +606,10 @@ static doca_error_t update_nonactive_entries(struct doca_flow_port *port,
  * Run flow_ct_udp_update sample
  *
  * @nb_queues [in]: number of queues the sample will use
- * @ct_dev [in]: Flow CT device
+ * @ctx [in]: flow switch context the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct doca_dev *ct_dev)
+doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 {
 	const int nb_ports = 2, nb_entries = 6;
 	int ct_entries_arr_len = 0;
@@ -617,8 +618,8 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct doca_dev *ct_dev)
 	struct doca_flow_pipe_entry *ct_entries_arr[PACKET_BURST];
 	struct doca_flow_pipe *rss_pipe, *encap_pipe, *count_pipe, *ct_pipe = NULL, *udp_pipe;
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_flow_meta o_zone_mask, o_modify_mask, r_zone_mask, r_modify_mask;
-	struct doca_dev *dev_arr[nb_ports];
+	struct doca_flow_meta o_zone_mask, r_zone_mask;
+	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ctrl_status, ct_status;
 	uint32_t ct_flags = 0, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 0, nb_ipv4_sessions = 1024,
@@ -633,7 +634,7 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct doca_dev *ct_dev)
 	resource.nr_counters = 1;
 
 	result = init_doca_flow_cb(nb_queues,
-				   "switch,hws",
+				   "switch,hws,isolated",
 				   &resource,
 				   nr_shared_resources,
 				   check_for_valid_entry_aging,
@@ -657,6 +658,7 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct doca_dev *ct_dev)
 				   NULL,
 				   nb_ipv4_sessions,
 				   nb_ipv6_sessions,
+				   0,
 				   DUP_FILTER_CONN_NUM,
 				   false,
 				   &o_zone_mask,
@@ -669,10 +671,12 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct doca_dev *ct_dev)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = ct_dev;
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, nb_entries));
-	result = init_doca_flow_ports(nb_ports, ports, false, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_entries));
+	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+					     ctx->devs_ctx.nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_ct_destroy();
@@ -713,7 +717,7 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct doca_dev *ct_dev)
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
-	DOCA_LOG_INFO("Same UDP packets should be resent, if not, sessions will be aged");
+	DOCA_LOG_INFO("Same UDP packets should be resent. wait for packet to arrive, if not, sessions will be aged");
 	sleep(5);
 
 	result = update_nonactive_entries(ports[0], ct_pipe, ct_entries_arr, ct_entries_arr_len, ct_queue);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,6 +29,8 @@
 #include <doca_flow.h>
 #include <doca_log.h>
 
+#include <flow_common.h>
+
 #include <dpdk_utils.h>
 
 DOCA_LOG_REGISTER(FLOW_PARSER_META::MAIN);
@@ -48,10 +50,10 @@ int main(int argc, char **argv)
 	doca_error_t result;
 	struct doca_log_backend *sdk_log;
 	int exit_status = EXIT_FAILURE;
+	struct flow_dev_ctx flow_dev_ctx = {};
 	struct application_dpdk_config dpdk_config = {
 		.port_config.nb_ports = 2,
 		.port_config.nb_queues = 1,
-		.port_config.nb_hairpin_q = 1,
 	};
 
 	/* Register a logger backend */
@@ -69,15 +71,27 @@ int main(int argc, char **argv)
 
 	DOCA_LOG_INFO("Starting the sample");
 
-	result = doca_argp_init(NULL, NULL);
+	result = doca_argp_init(NULL, &flow_dev_ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
 		goto sample_exit;
 	}
-	doca_argp_set_dpdk_program(dpdk_init);
+	result = register_flow_device_params(NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register flow device params: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+
+	doca_argp_set_dpdk_program(flow_init_dpdk);
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+
+	result = init_doca_flow_devs(&flow_dev_ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to init flow devices: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 
@@ -100,7 +114,7 @@ int main(int argc, char **argv)
 dpdk_ports_queues_cleanup:
 	dpdk_queues_and_ports_fini(&dpdk_config);
 dpdk_cleanup:
-	dpdk_fini();
+	dpdk_fini_with_devs(dpdk_config.port_config.nb_ports);
 argp_cleanup:
 	doca_argp_destroy();
 sample_exit:

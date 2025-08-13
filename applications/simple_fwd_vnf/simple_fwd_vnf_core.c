@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -271,6 +271,17 @@ static doca_error_t age_thread_callback(void *param, void *config)
 }
 
 /*
+ * Convert the user context to the flow_dev_ctx struct
+ *
+ * @user_ctx [in]: User context
+ * @return: Flow device context
+ */
+static struct flow_dev_ctx *flow_dev_ctx_from_user_ctx(void *user_ctx)
+{
+	return &((struct simple_fwd_config *)user_ctx)->flow_devs;
+}
+
+/*
  * Registers all flags used by the application for DOCA argument parser, so that when parsing
  * it can be parsed accordingly
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -280,6 +291,13 @@ doca_error_t register_simple_fwd_params(void)
 	doca_error_t result;
 	struct doca_argp_param *stats_param, *nr_queues_param, *rx_only_param, *hw_offload_param;
 	struct doca_argp_param *hairpinq_param, *age_thread_param;
+
+	/* Register flow device params */
+	result = register_flow_device_params(flow_dev_ctx_from_user_ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register flow device params: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	/* Create and register stats timer param */
 	result = doca_argp_param_create(&stats_param);
@@ -323,7 +341,7 @@ doca_error_t register_simple_fwd_params(void)
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
 		return result;
 	}
-	doca_argp_param_set_short_name(rx_only_param, "r");
+	doca_argp_param_set_short_name(rx_only_param, "rx");
 	doca_argp_param_set_long_name(rx_only_param, "rx-only");
 	doca_argp_param_set_description(rx_only_param, "Set rx only");
 	doca_argp_param_set_callback(rx_only_param, rx_only_callback);
@@ -374,9 +392,9 @@ doca_error_t register_simple_fwd_params(void)
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
 		return result;
 	}
-	doca_argp_param_set_short_name(age_thread_param, "a");
+	doca_argp_param_set_short_name(age_thread_param, "g");
 	doca_argp_param_set_long_name(age_thread_param, "age-thread");
-	doca_argp_param_set_description(age_thread_param, "Start thread do aging");
+	doca_argp_param_set_description(age_thread_param, "Start thread to do aging");
 	doca_argp_param_set_callback(age_thread_param, age_thread_callback);
 	doca_argp_param_set_type(age_thread_param, DOCA_ARGP_TYPE_BOOLEAN);
 	result = doca_argp_register_param(age_thread_param);

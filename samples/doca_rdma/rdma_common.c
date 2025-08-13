@@ -1003,6 +1003,15 @@ doca_error_t destroy_rdma_resources(struct rdma_resources *resources, struct rdm
 {
 	doca_error_t result = DOCA_SUCCESS, tmp_result;
 
+	enum doca_ctx_states ctx_state = DOCA_CTX_STATE_IDLE;
+	result = doca_ctx_get_state(doca_rdma_as_ctx(resources->rdma), &ctx_state);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get DOCA rdma ctx state: %s", doca_error_get_descr(result));
+	}
+	if (ctx_state != DOCA_CTX_STATE_IDLE) {
+		(void)doca_ctx_stop(doca_rdma_as_ctx(resources->rdma));
+	}
+
 	/* Stop and destroy remote mmap if exists */
 	if (resources->remote_mmap != NULL) {
 		result = doca_mmap_stop(resources->remote_mmap);
@@ -1562,7 +1571,7 @@ void rdma_cm_connect_request_cb(struct doca_rdma_connection *connection, union d
 	result = doca_rdma_connection_accept(connection, NULL, 0);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to accept rdma cm connection: %s", doca_error_get_descr(result));
-		(void)doca_ctx_stop(resource->rdma_ctx);
+		resource->run_pe_progress = false;
 		return;
 	}
 
@@ -1570,7 +1579,7 @@ void rdma_cm_connect_request_cb(struct doca_rdma_connection *connection, union d
 	result = doca_rdma_connection_set_user_data(connection, connection_user_data);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set server connection user data: %s", doca_error_get_descr(result));
-		(void)doca_ctx_stop(resource->rdma_ctx);
+		resource->run_pe_progress = false;
 	}
 }
 
@@ -1616,7 +1625,8 @@ void rdma_cm_connect_failure_cb(struct doca_rdma_connection *connection,
 		}
 	}
 	DOCA_ERROR_PROPAGATE(resource->first_encountered_error, DOCA_ERROR_CONNECTION_ABORTED);
-	(void)doca_ctx_stop(resource->rdma_ctx);
+
+	resource->run_pe_progress = false;
 }
 
 void rdma_cm_disconnect_cb(struct doca_rdma_connection *connection,

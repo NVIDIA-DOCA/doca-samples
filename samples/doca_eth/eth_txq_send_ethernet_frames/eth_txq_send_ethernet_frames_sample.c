@@ -39,14 +39,14 @@
 
 DOCA_LOG_REGISTER(ETH_TXQ_SEND_ETHERNET_FRAMES);
 
-#define SLEEP_IN_NANOS (10 * 1000)  /* sample the task every 10 microseconds  */
-#define MAX_BURST_SIZE 256	    /* Max burst size to set for eth_txq */
-#define MAX_LIST_LENGTH 1	    /* Max number of elements in a doca_buf */
-#define BUFS_NUM 1		    /* Number of DOCA buffers */
-#define TASKS_NUM 1		    /* Tasks number */
-#define REGULAR_PKT_SIZE 1500	    /* Size of the packet in doca_eth_txq_task_send task */
-#define SEND_TASK_USER_DATA 0x43210 /* User data for send task */
-#define ETHER_TYPE_IPV4 0x0800	    /* IPV4 type */
+#define SLEEP_IN_NANOS (10 * 1000)     /* sample the task every 10 microseconds  */
+#define MAX_BURST_SIZE 256	       /* Max burst size to set for eth_txq */
+#define MAX_LIST_LENGTH 1	       /* Max number of elements in a doca_buf */
+#define BUFS_NUM 1		       /* Number of DOCA buffers */
+#define TASKS_NUM 1		       /* Tasks number */
+#define REGULAR_PKT_SIZE 1500	       /* Size of the packet in doca_eth_txq_task_send task */
+#define SEND_TASK_USER_DATA 0x43210    /* User data for send task */
+#define UNKNOWN_ETHER_TYPE_IPV4 0x88b5 /* Unknown IPV4 type */
 
 struct eth_txq_sample_objects {
 	struct eth_core_resources core_resources;	  /* A struct to hold ETH core resources */
@@ -271,7 +271,8 @@ static doca_error_t create_eth_txq_packet_buffers(uint8_t *dest_mac_addr, struct
 	payload = (uint8_t *)(eth_hdr + 1);
 	memcpy(&(eth_hdr->src_addr), state->src_mac_addr, DOCA_DEVINFO_MAC_ADDR_SIZE);
 	memcpy(&(eth_hdr->dst_addr), dest_mac_addr, DOCA_DEVINFO_MAC_ADDR_SIZE);
-	eth_hdr->ether_type = htobe16(ETHER_TYPE_IPV4);
+	/* Set unknown ether type to allow a packet with only ethernet header */
+	eth_hdr->ether_type = htobe16(UNKNOWN_ETHER_TYPE_IPV4);
 	memset(payload, 0x11, REGULAR_PKT_SIZE - sizeof(struct ether_hdr));
 
 	return DOCA_SUCCESS;

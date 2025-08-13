@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,6 +26,8 @@
 #ifndef SIMPLE_FWD_VNF_CORE_H_
 #define SIMPLE_FWD_VNF_CORE_H_
 
+#include <flow_common.h>
+
 #include <dpdk_utils.h>
 
 #include "app_vnf.h"
@@ -33,6 +35,7 @@
 /* Simple FWD VNF application configuration */
 struct simple_fwd_config {
 	struct application_dpdk_config *dpdk_cfg; /* DPDK configurations */
+	struct flow_dev_ctx flow_devs;		  /* Flow device context */
 	uint16_t rx_only; /* Whether or not to work in "receive mode" only, where the application does not send received
 			     packets */
 	uint16_t hw_offload;  /* Whether or not HW steering is used */

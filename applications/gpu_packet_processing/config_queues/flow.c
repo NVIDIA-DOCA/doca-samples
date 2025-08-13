@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -30,6 +30,9 @@
 #include "common.h"
 #include "dpdk_tcp/tcp_session_table.h"
 
+/* Since DPDK and ETH queues should have different IDs, we define a range for DPDK queues */
+#define MAX_DPDK_QUEUE_NUM 128
+
 DOCA_LOG_REGISTER(GPU_PACKET_PROCESSING_FLOW);
 
 static uint64_t default_flow_timeout_usec;
@@ -40,6 +43,7 @@ struct doca_flow_port *init_doca_flow(uint16_t port_id, uint8_t rxq_num)
 	struct doca_flow_port_cfg *port_cfg;
 	struct doca_flow_port *df_port;
 	struct doca_flow_cfg *rxq_flow_cfg;
+	struct doca_dev *dev;
 	int ret = 0;
 	struct rte_eth_dev_info dev_info = {0};
 	struct rte_eth_conf eth_conf = {
@@ -55,7 +59,6 @@ struct doca_flow_port *init_doca_flow(uint16_t port_id, uint8_t rxq_num)
 	};
 	struct rte_mempool *mp = NULL;
 	struct rte_eth_txconf tx_conf;
-	struct rte_flow_error error;
 
 	/*
 	 * DPDK should be initialized and started before DOCA Flow.
@@ -100,12 +103,6 @@ struct doca_flow_port *init_doca_flow(uint16_t port_id, uint8_t rxq_num)
 		}
 	}
 
-	ret = rte_flow_isolate(port_id, 1, &error);
-	if (ret) {
-		DOCA_LOG_ERR("Failed rte_flow_isolate with: %s", error.message);
-		return NULL;
-	}
-
 	ret = rte_eth_dev_start(port_id);
 	if (ret) {
 		DOCA_LOG_ERR("Failed rte_eth_dev_start with: %s", rte_strerror(-ret));
@@ -148,6 +145,12 @@ struct doca_flow_port *init_doca_flow(uint16_t port_id, uint8_t rxq_num)
 	}
 	doca_flow_cfg_destroy(rxq_flow_cfg);
 
+	result = doca_dpdk_port_as_dev(port_id, &dev);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get DOCA device: %s", doca_error_get_descr(result));
+		return NULL;
+	}
+
 	/* Start doca flow port */
 	result = doca_flow_port_cfg_create(&port_cfg);
 	if (result != DOCA_SUCCESS) {
@@ -157,6 +160,12 @@ struct doca_flow_port *init_doca_flow(uint16_t port_id, uint8_t rxq_num)
 	result = doca_flow_port_cfg_set_port_id(port_cfg, port_id);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg port_id: %s", doca_error_get_descr(result));
+		doca_flow_port_cfg_destroy(port_cfg);
+		return NULL;
+	}
+	result = doca_flow_port_cfg_set_dev(port_cfg, dev);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg DOCA device: %s", doca_error_get_descr(result));
 		doca_flow_port_cfg_destroy(port_cfg);
 		return NULL;
 	}
@@ -181,7 +190,6 @@ doca_error_t create_udp_pipe(struct rxq_udp_queues *udp_queues, struct doca_flow
 	struct doca_flow_fwd miss_fwd = {0};
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	struct doca_flow_pipe_entry *entry;
-	uint16_t flow_queue_id;
 	uint16_t rss_queues[MAX_QUEUES];
 	struct doca_flow_monitor monitor = {
 		.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED,
@@ -227,8 +235,8 @@ doca_error_t create_udp_pipe(struct rxq_udp_queues *udp_queues, struct doca_flow
 	}
 
 	for (int idx = 0; idx < udp_queues->numq; idx++) {
-		doca_eth_rxq_get_flow_queue_id(udp_queues->eth_rxq_cpu[idx], &flow_queue_id);
-		rss_queues[idx] = flow_queue_id;
+		doca_eth_rxq_apply_queue_id(udp_queues->eth_rxq_cpu[idx], MAX_DPDK_QUEUE_NUM + idx);
+		rss_queues[idx] = MAX_DPDK_QUEUE_NUM + idx;
 	}
 
 	fwd.type = DOCA_FLOW_FWD_RSS;
@@ -396,7 +404,6 @@ doca_error_t create_tcp_gpu_pipe(struct rxq_tcp_queues *tcp_queues,
 				 struct doca_flow_port *port,
 				 bool connection_based_flows)
 {
-	uint16_t flow_queue_id;
 	uint16_t rss_queues[MAX_QUEUES];
 	doca_error_t result;
 	struct doca_flow_pipe_entry *dummy_entry = NULL;
@@ -423,8 +430,8 @@ doca_error_t create_tcp_gpu_pipe(struct rxq_tcp_queues *tcp_queues,
 	};
 
 	for (int idx = 0; idx < tcp_queues->numq; idx++) {
-		doca_eth_rxq_get_flow_queue_id(tcp_queues->eth_rxq_cpu[idx], &flow_queue_id);
-		rss_queues[idx] = flow_queue_id;
+		doca_eth_rxq_apply_queue_id(tcp_queues->eth_rxq_cpu[idx], MAX_DPDK_QUEUE_NUM + MAX_QUEUES + idx);
+		rss_queues[idx] = MAX_DPDK_QUEUE_NUM + MAX_QUEUES + idx;
 	}
 
 	struct doca_flow_fwd fwd = {
@@ -531,7 +538,6 @@ doca_error_t create_icmp_gpu_pipe(struct rxq_icmp_queues *icmp_queues, struct do
 	struct doca_flow_fwd miss_fwd = {0};
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	struct doca_flow_pipe_entry *entry;
-	uint16_t flow_queue_id;
 	uint16_t rss_queues[MAX_QUEUES];
 	struct doca_flow_monitor monitor = {
 		.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED,
@@ -579,8 +585,8 @@ doca_error_t create_icmp_gpu_pipe(struct rxq_icmp_queues *icmp_queues, struct do
 	}
 
 	for (int idx = 0; idx < icmp_queues->numq; idx++) {
-		doca_eth_rxq_get_flow_queue_id(icmp_queues->eth_rxq_cpu[idx], &flow_queue_id);
-		rss_queues[idx] = flow_queue_id;
+		doca_eth_rxq_apply_queue_id(icmp_queues->eth_rxq_cpu[idx], MAX_DPDK_QUEUE_NUM + 2 * MAX_QUEUES + idx);
+		rss_queues[idx] = MAX_DPDK_QUEUE_NUM + 2 * MAX_QUEUES + idx;
 	}
 
 	fwd.type = DOCA_FLOW_FWD_RSS;

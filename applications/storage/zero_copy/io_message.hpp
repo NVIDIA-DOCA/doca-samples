@@ -67,7 +67,7 @@ public:
 	static inline io_message_type get_type(char const *buf)
 	{
 		io_message_type ret{};
-		static_cast<void>(storage::common::from_buffer(buf, reinterpret_cast<uint32_t &>(ret)));
+		static_cast<void>(storage::from_buffer(buf, reinterpret_cast<uint32_t &>(ret)));
 		return ret;
 	}
 
@@ -79,7 +79,7 @@ public:
 	 */
 	static inline void set_type(io_message_type type, char *buf)
 	{
-		storage::common::to_buffer(buf, static_cast<uint32_t>(type));
+		storage::to_buffer(buf, static_cast<uint32_t>(type));
 	}
 
 	/*
@@ -91,7 +91,7 @@ public:
 	static inline doca_data get_user_data(char const *buf)
 	{
 		doca_data ret{};
-		static_cast<void>(storage::common::from_buffer(buf + offsetof(layout, user_data), ret.u64));
+		static_cast<void>(storage::from_buffer(buf + offsetof(layout, user_data), ret.u64));
 		return ret;
 	}
 
@@ -103,7 +103,7 @@ public:
 	 */
 	static inline void set_user_data(doca_data user_data, char *buf)
 	{
-		storage::common::to_buffer(buf + offsetof(layout, user_data), user_data.u64);
+		storage::to_buffer(buf + offsetof(layout, user_data), user_data.u64);
 	}
 
 	/*
@@ -115,7 +115,7 @@ public:
 	static inline uint32_t get_correlation_id(char const *buf)
 	{
 		uint32_t ret{};
-		static_cast<void>(storage::common::from_buffer(buf + offsetof(layout, correlation_id), ret));
+		static_cast<void>(storage::from_buffer(buf + offsetof(layout, correlation_id), ret));
 		return ret;
 	}
 
@@ -127,7 +127,7 @@ public:
 	 */
 	static inline void set_correlation_id(uint32_t correlation_id, char *buf)
 	{
-		storage::common::to_buffer(buf + offsetof(layout, correlation_id), correlation_id);
+		storage::to_buffer(buf + offsetof(layout, correlation_id), correlation_id);
 	}
 
 	/*
@@ -139,8 +139,8 @@ public:
 	static inline doca_error_t get_result(char const *buf)
 	{
 		doca_error_t ret{};
-		static_cast<void>(storage::common::from_buffer(buf + offsetof(layout, result),
-							       reinterpret_cast<uint32_t &>(ret)));
+		static_cast<void>(
+			storage::from_buffer(buf + offsetof(layout, result), reinterpret_cast<uint32_t &>(ret)));
 		return ret;
 	}
 
@@ -152,7 +152,7 @@ public:
 	 */
 	static inline void set_result(doca_error_t result, char *buf)
 	{
-		storage::common::to_buffer(buf + offsetof(layout, result), static_cast<uint32_t>(result));
+		storage::to_buffer(buf + offsetof(layout, result), static_cast<uint32_t>(result));
 	}
 
 	/*
@@ -164,7 +164,7 @@ public:
 	static inline uint64_t get_io_address(char const *buf)
 	{
 		uint64_t ret{};
-		static_cast<void>(storage::common::from_buffer(buf + offsetof(layout, io_address), ret));
+		static_cast<void>(storage::from_buffer(buf + offsetof(layout, io_address), ret));
 		return ret;
 	}
 
@@ -176,7 +176,7 @@ public:
 	 */
 	static inline void set_io_address(uint64_t io_address, char *buf)
 	{
-		storage::common::to_buffer(buf + offsetof(layout, io_address), io_address);
+		storage::to_buffer(buf + offsetof(layout, io_address), io_address);
 	}
 
 	/*
@@ -188,7 +188,7 @@ public:
 	static inline uint32_t get_io_size(char const *buf)
 	{
 		uint32_t ret{};
-		static_cast<void>(storage::common::from_buffer(buf + offsetof(layout, io_size), ret));
+		static_cast<void>(storage::from_buffer(buf + offsetof(layout, io_size), ret));
 		return ret;
 	}
 
@@ -200,14 +200,14 @@ public:
 	 */
 	static inline void set_io_size(uint32_t io_size, char *buf)
 	{
-		storage::common::to_buffer(buf + offsetof(layout, io_size), io_size);
+		storage::to_buffer(buf + offsetof(layout, io_size), io_size);
 	}
 
 private:
 	/*
 	 * Physical model of the message to automate the calculation of value offsets
 	 */
-	struct alignas(storage::common::cache_line_size) layout {
+	struct alignas(storage::cache_line_size) layout {
 		uint32_t type; /* use 4 bytes for the layout to keep data members aligned */
 		uint32_t correlation_id;
 		doca_data user_data;

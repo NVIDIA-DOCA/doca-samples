@@ -60,7 +60,7 @@ const uint32_t default_pcc_rp_threads_list[PCC_RP_THREADS_NUM_DEFAULT_VALUE] = {
 	218, 219, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 240};
 /* Default PCC NP threads */
 const uint32_t default_pcc_np_threads_list[PCC_NP_THREADS_NUM_DEFAULT_VALUE] =
-	{16, 17, 18, 19, 20, 21, 22, 23, 32, 33, 34, 35, 36, 37, 38, 39};
+	{16, 17, 18, 19, 20, 21, 22, 23, 32, 33, 34, 35, 36, 37, 38, 39, 48};
 
 /*
  * Declare threads list flag
@@ -569,33 +569,6 @@ static doca_error_t device_name_callback(void *param, void *config)
 }
 
 /*
- * ARGP Callback - Handle PCC NP NIC Telemetry parameter
- *
- * @param [in]: Input parameter
- * @config [in/out]: Program configuration context
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t np_nic_telemetry_callback(void *param, void *config)
-{
-	struct pcc_config *pcc_cfg = (struct pcc_config *)config;
-	bool np_nic_telemetry = *((bool *)param);
-
-	if (user_set_app) {
-		PRINT_ERROR("Error: Can not set multiple runtime application.\n");
-		return DOCA_ERROR_INITIALIZATION;
-	}
-
-	if (np_nic_telemetry) {
-		pcc_cfg->app = pcc_np_nic_telemetry_app;
-		pcc_cfg->role = PCC_ROLE_NP;
-	}
-	user_set_app = true;
-	PRINT_INFO("Info: Set DOCA PCC NP NIC Telemetry application\n");
-
-	return DOCA_SUCCESS;
-}
-
-/*
  * ARGP Callback - Handle PCC RP Switch Telemetry parameter
  *
  * @param [in]: Input parameter
@@ -898,7 +871,6 @@ static doca_error_t dpa_application_key_callback(void *param, void *config)
 doca_error_t register_pcc_params(void)
 {
 	struct doca_argp_param *device_param;
-	struct doca_argp_param *np_nic_telemetry_param;
 	struct doca_argp_param *rp_switch_telemetry_param;
 	struct doca_argp_param *np_switch_telemetry_param;
 	struct doca_argp_param *threads_list_param;
@@ -926,26 +898,6 @@ doca_error_t register_pcc_params(void)
 	doca_argp_param_set_type(device_param, DOCA_ARGP_TYPE_STRING);
 	doca_argp_param_set_mandatory(device_param);
 	result = doca_argp_register_param(device_param);
-	if (result != DOCA_SUCCESS) {
-		PRINT_ERROR("Error: Failed to register program param: %s\n", doca_error_get_descr(result));
-		return result;
-	}
-
-	/* Create and register PCC NP NIC Telemetry parameter */
-	result = doca_argp_param_create(&np_nic_telemetry_param);
-	if (result != DOCA_SUCCESS) {
-		PRINT_ERROR("Error: Failed to create ARGP param: %s\n", doca_error_get_descr(result));
-		return result;
-	}
-	doca_argp_param_set_short_name(np_nic_telemetry_param, "np-nt");
-	doca_argp_param_set_long_name(np_nic_telemetry_param, "np-nic-telemetry");
-	doca_argp_param_set_arguments(np_nic_telemetry_param, "<PCC Notification Point NIC Telemetry>");
-	doca_argp_param_set_description(
-		np_nic_telemetry_param,
-		"Flag to indicate running as a Notification Point NIC Telemetry (optional). The application will generate CCMAD probe packets. By default the flag is set to false.");
-	doca_argp_param_set_callback(np_nic_telemetry_param, np_nic_telemetry_callback);
-	doca_argp_param_set_type(np_nic_telemetry_param, DOCA_ARGP_TYPE_BOOLEAN);
-	result = doca_argp_register_param(np_nic_telemetry_param);
 	if (result != DOCA_SUCCESS) {
 		PRINT_ERROR("Error: Failed to register program param: %s\n", doca_error_get_descr(result));
 		return result;

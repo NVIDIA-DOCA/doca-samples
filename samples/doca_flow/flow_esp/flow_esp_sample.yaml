@@ -33,7 +33,7 @@ description: "This sample demonstrates ESP flow matching using SPI and sequence 
               The root pipe matches packets with SN = 2 and a dynamic SPI.
               Packets with SPI = 5 proceed to a comparison pipe checking if SN < 3, which succeeds.
               Packets with SPI = 8 check if SN > 3, which fails, resulting in a drop.
-              Sample Command Line: ./build/doca_flow_esp  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+              Sample Command Line: ./build/doca_flow_esp -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Flow ESP comparison use case #1"
     args: ""

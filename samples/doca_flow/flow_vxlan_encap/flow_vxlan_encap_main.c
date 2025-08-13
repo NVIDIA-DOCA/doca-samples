@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,6 +29,8 @@
 #include <doca_flow.h>
 #include <doca_log.h>
 
+#include <flow_common.h>
+
 #include <dpdk_utils.h>
 
 DOCA_LOG_REGISTER(FLOW_VXLAN_ENCAP::MAIN);
@@ -40,8 +42,8 @@ doca_error_t flow_vxlan_encap(int nb_queues, enum doca_flow_tun_ext_vxlan_type v
  * Config for vxlan_encap params
  */
 struct vxlan_encap_config {
-	/* vxlan_type to create flow */
-	enum doca_flow_tun_ext_vxlan_type vxlan_type;
+	struct flow_dev_ctx flow_dev_ctx;	      /* Basic flow device context*/
+	enum doca_flow_tun_ext_vxlan_type vxlan_type; /* VXLAN type for the flow to create */
 };
 
 /*
@@ -71,6 +73,17 @@ static doca_error_t vxlan_type_callback(void *param, void *config)
 }
 
 /*
+ * Conversion function from a user context to the flow_dev_ctx struct
+ *
+ * @param [in]: User context
+ * @return: Pointer to the flow_dev_ctx struct
+ */
+static struct flow_dev_ctx *flow_dev_ctx_from_user_ctx(void *user_ctx)
+{
+	return &((struct vxlan_encap_config *)user_ctx)->flow_dev_ctx;
+}
+
+/*
  * Register for vxlan_encap params
  *
  * @return: EXIT_SUCCESS on success and EXIT_FAILURE otherwise
@@ -79,6 +92,12 @@ static int register_vxlan_type_params(void)
 {
 	doca_error_t result;
 	struct doca_argp_param *vxlan_type_param;
+
+	result = register_flow_device_params(flow_dev_ctx_from_user_ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register flow device params: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	/* Create and register vxlan-type para */
 	result = doca_argp_param_create(&vxlan_type_param);
@@ -102,6 +121,7 @@ static int register_vxlan_type_params(void)
 
 	return 0;
 }
+
 /*
  * Sample main function
  *
@@ -114,15 +134,13 @@ int main(int argc, char **argv)
 	doca_error_t result;
 	struct doca_log_backend *sdk_log;
 	int exit_status = EXIT_FAILURE;
+	struct vxlan_encap_config app_cfg = {};
 	struct application_dpdk_config dpdk_config = {
 		.port_config.nb_ports = 2,
 		.port_config.nb_queues = 4,
-		.port_config.nb_hairpin_q = 1,
 		.reserve_main_thread = true,
 	};
-	struct vxlan_encap_config app_cfg = {
-		.vxlan_type = DOCA_FLOW_TUN_EXT_VXLAN_STANDARD,
-	};
+	app_cfg.vxlan_type = DOCA_FLOW_TUN_EXT_VXLAN_STANDARD;
 
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
@@ -146,13 +164,20 @@ int main(int argc, char **argv)
 	}
 	result = register_vxlan_type_params();
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register Flow parameters: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to register sample params: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
-	doca_argp_set_dpdk_program(dpdk_init);
+
+	doca_argp_set_dpdk_program(flow_init_dpdk);
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+
+	result = init_doca_flow_devs(&app_cfg.flow_dev_ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to init flow devices: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 
@@ -175,7 +200,7 @@ int main(int argc, char **argv)
 dpdk_ports_queues_cleanup:
 	dpdk_queues_and_ports_fini(&dpdk_config);
 dpdk_cleanup:
-	dpdk_fini();
+	dpdk_fini_with_devs(dpdk_config.port_config.nb_ports);
 argp_cleanup:
 	doca_argp_destroy();
 sample_exit:

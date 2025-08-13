@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -28,9 +28,8 @@ mode_args:
 ports_description:
   port_0: doca_dev
   port_1: doca_dev
-description: "This sample illustrates how to build a pipe with 5-tuple match, forward action drop, and forward miss action to hairpin 
-              pipe. The sample also demonstrates how to dump pipe information to a file and query entry.
-              Sample Command Line: ./build/doca_flow_drop  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+description: "This sample illustrates how to build a pipe with 5-tuple match, forward action drop, and forward miss action to the other port.
+              Sample Command Line: ./build/doca_flow_drop -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Flow drop use case #1"
     args: ""

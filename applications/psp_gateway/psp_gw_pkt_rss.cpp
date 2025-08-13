@@ -46,10 +46,10 @@ static uint16_t max_tx_retries = 10;
  * @brief determine whether a given packet or request corresponds to a "Neighbor Solicitation"
  *
  * @params [in]: the parameters to the lcore routines
- * @eth_hdr [in]: a pointer to the ethernet header of the pakcet
+ * @eth_hdr [in]: a pointer to the ethernet header of the packet
  * @ether_type [in]: the packet ethernet type
  */
-static bool is_ns_request(struct rte_ether_hdr *eth_hdr, uint16_t ether_type)
+__attribute__((no_sanitize("alignment"))) static bool is_ns_request(struct rte_ether_hdr *eth_hdr, uint16_t ether_type)
 {
 	struct rte_ipv6_hdr *ipv6_hdr;
 	struct rte_flow_item_icmp6_nd_ns *icmp6_ns_hdr;
@@ -196,12 +196,12 @@ bool reinject_packet(struct rte_mbuf *packet, uint16_t port_id)
 	return nsent == 1;
 }
 
-uint16_t handle_arp(struct rte_mempool *mpool,
-		    uint16_t port_id,
-		    uint16_t queue_id,
-		    rte_ether_addr *port_src_mac,
-		    const struct rte_mbuf *request_pkt,
-		    uint32_t arp_response_meta_flag)
+__attribute__((no_sanitize("alignment"))) uint16_t handle_arp(struct rte_mempool *mpool,
+							      uint16_t port_id,
+							      uint16_t queue_id,
+							      rte_ether_addr *port_src_mac,
+							      const struct rte_mbuf *request_pkt,
+							      uint32_t arp_response_meta_flag)
 {
 	const struct rte_ether_hdr *request_eth_hdr = rte_pktmbuf_mtod(request_pkt, struct rte_ether_hdr *);
 	const struct rte_arp_hdr *request_arp_hdr = (rte_arp_hdr *)&request_eth_hdr[1];
@@ -258,12 +258,12 @@ uint16_t handle_arp(struct rte_mempool *mpool,
 	return 1;
 }
 
-uint16_t handle_neighbor_solicitation(struct rte_mempool *mpool,
-				      uint16_t port_id,
-				      uint16_t queue_id,
-				      rte_ether_addr *port_src_mac,
-				      const struct rte_mbuf *request_pkt,
-				      uint32_t na_response_meta_flag)
+__attribute__((no_sanitize("alignment"))) uint16_t handle_neighbor_solicitation(struct rte_mempool *mpool,
+										uint16_t port_id,
+										uint16_t queue_id,
+										rte_ether_addr *port_src_mac,
+										const struct rte_mbuf *request_pkt,
+										uint32_t na_response_meta_flag)
 {
 	uint8_t option_header_size = RTE_ETHER_ADDR_LEN + 2;
 	const struct rte_ether_hdr *request_eth_hdr = rte_pktmbuf_mtod(request_pkt, struct rte_ether_hdr *); // extract

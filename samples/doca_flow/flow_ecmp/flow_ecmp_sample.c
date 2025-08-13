@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -27,13 +27,11 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <rte_byteorder.h>
-
 #include <doca_log.h>
 #include <doca_flow.h>
 
-#include "flow_common.h"
-#include "flow_switch_common.h"
+#include <flow_common.h>
+#include <flow_switch_common.h>
 
 DOCA_LOG_REGISTER(FLOW_ECMP);
 
@@ -177,7 +175,7 @@ static doca_error_t create_hash_pipe(struct doca_flow_port *port, uint8_t nb_flo
 
 	/* match mask defines which header fields to use in order to calculate the entry index */
 	match_mask.outer.l3_type = DOCA_FLOW_L3_TYPE_IP6;
-	match_mask.outer.ip6.flow_label = rte_cpu_to_be_32(0x000fffff);
+	match_mask.outer.ip6.flow_label = DOCA_HTOBE32(0x000fffff);
 
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
@@ -328,7 +326,6 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 	struct doca_flow_port *switch_port;
 	struct doca_flow_port *ports[MAX_TOTAL_PORTS];
 	struct doca_flow_pipe *hash_pipe;
-	struct doca_dev *dev_arr[MAX_TOTAL_PORTS];
 	uint32_t actions_mem_size[MAX_TOTAL_PORTS];
 	uint8_t nb_ecmp_ports = nb_ports - 1;
 	uint8_t nb_entries = nb_ecmp_ports + 2;
@@ -352,10 +349,12 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = ctx->doca_dev[0];
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, nb_entries));
-	result = init_doca_flow_ports(nb_ports, ports, false, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_entries));
+	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+					     ctx->devs_ctx.nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

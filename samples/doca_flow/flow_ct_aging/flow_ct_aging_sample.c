@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -33,7 +33,8 @@
 #include <doca_flow_ct.h>
 
 #include "flow_ct_common.h"
-#include "flow_common.h"
+#include <flow_common.h>
+#include "flow_switch_common.h"
 
 #define N_BURST 32
 
@@ -249,8 +250,8 @@ static doca_error_t create_count_pipe(struct doca_flow_port *port, struct doca_f
 	memset(&match, 0, sizeof(match));
 	match.outer.ip4.dst_ip = BE_IPV4_ADDR(8, 8, 8, 8);
 	match.outer.ip4.src_ip = BE_IPV4_ADDR(1, 2, 3, 4);
-	match.outer.udp.l4_port.dst_port = rte_cpu_to_be_16(80);
-	match.outer.udp.l4_port.src_port = rte_cpu_to_be_16(1234);
+	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(80);
+	match.outer.udp.l4_port.src_port = DOCA_HTOBE16(1234);
 
 	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, NULL, 0, NULL, NULL);
 	if (result != DOCA_SUCCESS) {
@@ -311,8 +312,8 @@ static doca_error_t add_age_ct_entries(struct doca_flow_port *port,
 		match_r.ipv4.src_ip = match_o.ipv4.dst_ip;
 		match_r.ipv4.dst_ip = match_o.ipv4.src_ip;
 
-		match_o.ipv4.l4_port.src_port = rte_cpu_to_be_16(1234);
-		match_o.ipv4.l4_port.dst_port = rte_cpu_to_be_16(80);
+		match_o.ipv4.l4_port.src_port = DOCA_HTOBE16(1234);
+		match_o.ipv4.l4_port.dst_port = DOCA_HTOBE16(80);
 		match_r.ipv4.l4_port.src_port = match_o.ipv4.l4_port.dst_port;
 		match_r.ipv4.l4_port.dst_port = match_o.ipv4.l4_port.src_port;
 
@@ -371,10 +372,10 @@ static doca_error_t add_age_ct_entries(struct doca_flow_port *port,
  * Run flow_ct_aging sample
  *
  * @nb_queues [in]: number of queues the sample will use
- * @ct_dev [in]: Flow CT device
+ * @ctx [in]: flow switch context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t flow_ct_aging(uint16_t nb_queues, struct doca_dev *ct_dev)
+doca_error_t flow_ct_aging(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 {
 	const int nb_ports = 1, nb_aged_entries = 600;
 	int entry_idx, aged_entry_counter = 0;
@@ -382,9 +383,9 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct doca_dev *ct_dev)
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_pipe *count_pipe, *ct_pipe = NULL, *udp_pipe;
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_flow_meta o_zone_mask, o_modify_mask, r_zone_mask, r_modify_mask;
+	struct doca_flow_meta o_zone_mask, r_zone_mask;
+	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
 	struct aging_user_data *user_data[nb_aged_entries];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ct_status;
 	uint32_t ct_flags = 0, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 0,
@@ -399,7 +400,7 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct doca_dev *ct_dev)
 	resource.nr_counters = 1;
 
 	result = init_doca_flow_cb(nb_queues,
-				   "switch,hws",
+				   "switch,hws,isolated",
 				   &resource,
 				   nr_shared_resources,
 				   check_for_valid_entry_aging,
@@ -424,6 +425,7 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct doca_dev *ct_dev)
 				   nb_aged_entries,
 				   nb_ipv6_sessions,
 				   0,
+				   0,
 				   false,
 				   &o_zone_mask,
 				   &o_modify_mask,
@@ -435,10 +437,12 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct doca_dev *ct_dev)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = ct_dev;
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, nb_aged_entries));
-	result = init_doca_flow_ports(nb_ports, ports, false, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_aged_entries));
+	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+					     ctx->devs_ctx.nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_ct_destroy();

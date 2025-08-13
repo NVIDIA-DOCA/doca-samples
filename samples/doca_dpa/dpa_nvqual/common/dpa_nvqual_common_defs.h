@@ -47,7 +47,7 @@ extern struct doca_dpa_app *dpa_sample_app;
 /**
  * Size of copy bytes latency microseconds
  */
-#define DPA_NVQUAL_COPY_BYTE_LATENCY_USEC (0.08f)
+#define DPA_NVQUAL_COPY_BYTE_LATENCY_USEC (0.1f)
 
 /**
  * Watchdog time seconds to be calculated for iteration duration

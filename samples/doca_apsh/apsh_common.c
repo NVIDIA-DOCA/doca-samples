@@ -24,6 +24,7 @@
  */
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include <doca_argp.h>
 #include <doca_log.h>
@@ -353,8 +354,22 @@ doca_error_t init_doca_apsh_system(struct doca_apsh_ctx *ctx,
 	if (result != DOCA_SUCCESS)
 		goto err;
 
+	/* Check if os_symbols is a file or directory */
+	struct stat path_stat;
+	if (stat(os_symbols, &path_stat) != 0) {
+		DOCA_LOG_ERR("Failed to stat os_symbols path: %s", os_symbols);
+		result = DOCA_ERROR_IO_FAILED;
+		goto err;
+	}
+
 	/* Set the system os symbol map */
-	result = doca_apsh_sys_os_symbol_map_set(sys, os_symbols);
+	if (S_ISDIR(path_stat.st_mode)) {
+		DOCA_LOG_TRC("Setting os_symbols from directory: %s", os_symbols);
+		result = doca_apsh_sys_os_symbol_map_folder_set(sys, os_symbols);
+	} else {
+		DOCA_LOG_TRC("Setting os_symbols from file: %s", os_symbols);
+		result = doca_apsh_sys_os_symbol_map_set(sys, os_symbols);
+	}
 	if (result != DOCA_SUCCESS)
 		goto err;
 

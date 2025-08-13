@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -531,6 +531,7 @@ static void tx_error_cb(struct doca_task_batch *task_batch,
  * @dev_resrc [in]: Resources of the device to create the ETH RXQ context with
  * @pe [in]: DOCA progress engine to which the ETH RXQ context will be connected
  * @rx_success_cb [in]: RXQ event batch managed receive successful completion callback to set in registration
+ * @queue_id [in]: Queue ID for the ETH RXQ context
  * @data [in]: Pointer to data to save as user_data
  * @return: DOCA_SUCCESS on success and DOCA_ERROR_... otherwise
  */
@@ -538,6 +539,7 @@ static doca_error_t init_eth_rxq_ctx(struct eth_l2_fwd_cfg *cfg,
 				     struct eth_l2_fwd_dev_resources *dev_resrc,
 				     struct doca_pe *pe,
 				     doca_eth_rxq_event_batch_managed_recv_handler_cb_t rx_success_cb,
+				     uint16_t queue_id,
 				     void *data)
 {
 	union doca_data user_data;
@@ -618,11 +620,12 @@ static doca_error_t init_eth_rxq_ctx(struct eth_l2_fwd_cfg *cfg,
 		return result;
 	}
 
-	result = doca_eth_rxq_get_flow_queue_id(dev_resrc->eth_rxq, &dev_resrc->rxq_flow_queue_id);
+	result = doca_eth_rxq_apply_queue_id(dev_resrc->eth_rxq, queue_id);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get flow queue ID of RXQ: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to apply queue ID of RXQ: %s", doca_error_get_descr(result));
 		return result;
 	}
+	dev_resrc->rxq_queue_id = queue_id;
 
 	return DOCA_SUCCESS;
 }
@@ -786,7 +789,7 @@ doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_re
 			return result;
 		}
 
-		result = rxq_common_init_doca_flow(state->dev_resrc1.mlxdev, &state->dev_resrc1.flow_resrc);
+		result = rxq_common_init_doca_flow(state->dev_resrc1.mlxdev, 0, &state->dev_resrc1.flow_resrc);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to initialize DOCA flow port for device 1: %s",
 				     doca_error_get_descr(result));
@@ -806,6 +809,7 @@ doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_re
 					  &state->dev_resrc1,
 					  state->pe,
 					  rx_success_cb1,
+					  0,
 					  (void *)state->dev_resrc2.eth_txq);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to initialize ETH RXQ context for device 1: %s",
@@ -814,7 +818,7 @@ doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_re
 		}
 
 		flow_cfg.dev = state->dev_resrc1.mlxdev;
-		flow_cfg.rxq_flow_queue_ids = &(state->dev_resrc1.rxq_flow_queue_id);
+		flow_cfg.rxq_queue_ids = &(state->dev_resrc1.rxq_queue_id);
 		flow_cfg.nb_queues = 1;
 
 		result = allocate_eth_rxq_flow_resources(&flow_cfg, &state->dev_resrc1.flow_resrc);
@@ -834,7 +838,7 @@ doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_re
 			return result;
 		}
 
-		result = rxq_common_init_doca_flow(state->dev_resrc2.mlxdev, &state->dev_resrc2.flow_resrc);
+		result = rxq_common_init_doca_flow(state->dev_resrc2.mlxdev, 1, &state->dev_resrc2.flow_resrc);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to initialize DOCA flow port for device 2: %s",
 				     doca_error_get_descr(result));
@@ -854,6 +858,7 @@ doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_re
 					  &state->dev_resrc2,
 					  state->pe,
 					  rx_success_cb2,
+					  1,
 					  (void *)state->dev_resrc1.eth_txq);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to initialize ETH RXQ context for device 2: %s",
@@ -862,7 +867,7 @@ doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_re
 		}
 
 		flow_cfg.dev = state->dev_resrc2.mlxdev;
-		flow_cfg.rxq_flow_queue_ids = &(state->dev_resrc2.rxq_flow_queue_id);
+		flow_cfg.rxq_queue_ids = &(state->dev_resrc2.rxq_queue_id);
 		flow_cfg.nb_queues = 1;
 
 		result = allocate_eth_rxq_flow_resources(&flow_cfg, &state->dev_resrc2.flow_resrc);

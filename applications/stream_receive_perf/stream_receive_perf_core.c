@@ -1069,14 +1069,16 @@ doca_error_t init_stream(struct app_config *config,
 			     ptr_memory,
 			     size[0] + size[1],
 			     doca_error_get_name(ret));
-		goto free_memory;
+		free(ptr_memory);
+		goto destroy_stream;
 	}
 
 	/* start mmap */
 	ret = doca_mmap_start(globals->mmap);
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Error starting mmap: %s", doca_error_get_name(ret));
-		goto free_memory;
+		free(ptr_memory);
+		goto destroy_stream;
 	}
 
 	if (num_buffers == 1) {
@@ -1094,13 +1096,13 @@ doca_error_t init_stream(struct app_config *config,
 			ret = DOCA_ERROR_NO_MEMORY;
 			if (i > 0)
 				goto destroy_buffers;
-			goto free_memory;
+			goto destroy_stream;
 		}
 		ret = doca_buf_inventory_buf_get_by_addr(globals->inventory, globals->mmap, ptr[i], size[i], &buf);
 		if (ret != DOCA_SUCCESS) {
 			if (i > 0)
 				goto destroy_buffers;
-			goto free_memory;
+			goto destroy_stream;
 		}
 		if (i == 0)
 			data->buffer = buf;
@@ -1160,8 +1162,6 @@ destroy_buffers:
 	err = doca_buf_dec_refcount(data->buffer, NULL);
 	if (err != DOCA_SUCCESS)
 		DOCA_LOG_WARN("Error removing buffers: %s", doca_error_get_name(err));
-free_memory:
-	free(ptr_memory);
 destroy_stream:
 	err = doca_rmax_in_stream_destroy(data->stream);
 	if (err != DOCA_SUCCESS)

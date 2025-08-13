@@ -32,7 +32,7 @@ description: "The sample illustrate how to create a pipe/entry with metered
               traffic. The sample assume configuration of two ports. Any
               traffic injected at a high bandwidth into one of the ports is
               received at a metered (lower) bandwidth on the other port.
-              Sample Command Line: ./build/doca_flow_monior_meter  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+              Sample Command Line: ./build/doca_flow_monior_meter -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Flow monitor meter use case #1"
     args: ""

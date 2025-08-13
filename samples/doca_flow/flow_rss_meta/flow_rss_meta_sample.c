@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,7 +32,7 @@
 #include <doca_flow.h>
 #include <doca_bitfield.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 DOCA_LOG_REGISTER(FLOW_RSS_META);
 
@@ -66,9 +66,10 @@ static void process_packets(int ingress_port)
  *
  * @port [in]: port of the pipe
  * @pipe [out]: created pipe pointer
+ * @port_id [in]: port id
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t create_rss_meta_pipe(struct doca_flow_port *port, struct doca_flow_pipe **pipe)
+static doca_error_t create_rss_meta_pipe(struct doca_flow_port *port, struct doca_flow_pipe **pipe, int port_id)
 {
 	struct doca_flow_match match;
 	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
@@ -77,6 +78,8 @@ static doca_error_t create_rss_meta_pipe(struct doca_flow_port *port, struct doc
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	uint16_t rss_queues[1];
 	doca_error_t result;
+	enum doca_rss_type ip_rss_flag = port_id == 0 ? DOCA_FLOW_RSS_IPV4_SRC : DOCA_FLOW_RSS_IPV4_DST;
+	enum doca_rss_type tcp_rss_flag = port_id == 0 ? DOCA_FLOW_RSS_TCP_SRC : DOCA_FLOW_RSS_TCP_DST;
 
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
@@ -124,7 +127,7 @@ static doca_error_t create_rss_meta_pipe(struct doca_flow_port *port, struct doc
 	fwd.type = DOCA_FLOW_FWD_RSS;
 	fwd.rss_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 	fwd.rss.queues_array = rss_queues;
-	fwd.rss.inner_flags = DOCA_FLOW_RSS_IPV4 | DOCA_FLOW_RSS_TCP;
+	fwd.rss.inner_flags = ip_rss_flag | tcp_rss_flag;
 	fwd.rss.nr_queues = 1;
 
 	fwd_miss.type = DOCA_FLOW_FWD_DROP;
@@ -152,8 +155,8 @@ static doca_error_t add_rss_meta_pipe_entry(struct doca_flow_pipe *pipe, struct 
 	/* example 5-tuple to drop */
 	doca_be32_t dst_ip_addr = BE_IPV4_ADDR(8, 8, 8, 8);
 	doca_be32_t src_ip_addr = BE_IPV4_ADDR(1, 2, 3, 4);
-	doca_be16_t dst_port = rte_cpu_to_be_16(80);
-	doca_be16_t src_port = rte_cpu_to_be_16(1234);
+	doca_be16_t dst_port = DOCA_HTOBE16(80);
+	doca_be16_t src_port = DOCA_HTOBE16(1234);
 
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
@@ -186,7 +189,6 @@ doca_error_t flow_rss_meta(int nb_queues)
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *pipe;
 	struct entries_status status;
@@ -200,9 +202,8 @@ doca_error_t flow_rss_meta(int nb_queues)
 		return -1;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, num_of_entries));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -212,7 +213,7 @@ doca_error_t flow_rss_meta(int nb_queues)
 	for (port_id = 0; port_id < nb_ports; port_id++) {
 		memset(&status, 0, sizeof(status));
 
-		result = create_rss_meta_pipe(ports[port_id], &pipe);
+		result = create_rss_meta_pipe(ports[port_id], &pipe, port_id);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);

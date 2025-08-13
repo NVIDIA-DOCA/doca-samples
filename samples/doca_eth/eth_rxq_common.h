@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -40,19 +40,22 @@ struct eth_rxq_flow_resources {
 };
 
 struct eth_rxq_flow_config {
-	struct doca_dev *dev;	      /* DOCA device */
-	uint16_t *rxq_flow_queue_ids; /* DOCA ETH RXQ's flow queue IDs */
-	uint16_t nb_queues;	      /* Number of DOCA FLOW queues wanted */
+	struct doca_dev *dev;	 /* DOCA device */
+	uint16_t *rxq_queue_ids; /* DOCA ETH RXQ's queue IDs array */
+	uint16_t nb_queues;	 /* Number of queues IDs in the array */
 };
 
 /*
  * Initializes DOCA flow for ETH RXQ sample
  *
  * @dev [in]: Doca device to use for doca_flow_port
+ * @port_id [in]: doca_flow_port id to assign
  * @resources [in]: flow resources
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t rxq_common_init_doca_flow(struct doca_dev *dev, struct eth_rxq_flow_resources *resources);
+doca_error_t rxq_common_init_doca_flow(struct doca_dev *dev,
+				       uint16_t port_id,
+				       struct eth_rxq_flow_resources *resources);
 
 /*
  * Allocate DOCA flow resources for ETH RXQ sample

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -60,11 +60,6 @@ extern "C" {
 #define SYNC_EVENT_MASK_FFS (0xFFFFFFFFFFFFFFFF)
 
 /**
- * @brief default RDMA device GID index
- */
-#define RDMA_DEVICE_DEFAULT_GID_INDEX (1)
-
-/**
  * @brief default RDMA connection receive buffer length
  */
 #define RDMA_DEFAULT_BUF_LIST_LEN (1)
@@ -92,6 +87,8 @@ struct dpa_resources {
 	doca_dpa_dev_t rdma_dpa_ctx_handle;	  /**< RDMA DOCA DPA context handle */
 	struct doca_dpa_eu_affinity **affinities; /**< DPA thread affinity */
 	uint32_t num_affinities;		  /**< Number of affinities */
+	bool is_gid_index_set;			  /* Is the set_index parameter passed */
+	uint32_t gid_index;			  /* GID index for DOCA RDMA */
 };
 
 /**
@@ -103,6 +100,8 @@ struct dpa_config {
 								 RDMA device name */
 	char dpa_resources_file[DPA_RESOURCES_PATH_MAX_SIZE]; /**< Path to the DPA resources file */
 	char dpa_app_key[DPA_APP_KEY_MAX_SIZE];		      /**< DPA application key */
+	bool is_gid_index_set;				      /* Is the set_index parameter passed */
+	uint32_t gid_index;				      /* GID index for DOCA RDMA */
 };
 
 /**
@@ -148,6 +147,7 @@ struct dpa_rdma_obj {
 	uint32_t buf_list_len;			  /**< RDMA buffer list length */
 	uint32_t recv_queue_size;		  /**< RDMA receive queue size */
 	uint32_t max_connections_count;		  /**< RDMA max connections count */
+	bool is_gid_index_set;			  /**< Is the set_index parameter passed */
 	uint32_t gid_index;			  /**< RDMA GID index */
 	struct doca_dpa_completion *dpa_comp;	  /**< Attached DOCA DPA completion context */
 	struct doca_rdma *rdma;			  /**< Created RDMA */

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,7 +29,7 @@
 #include <doca_log.h>
 #include <doca_flow.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 DOCA_LOG_REGISTER(FLOW_LPM);
 
@@ -201,7 +201,7 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 	match.outer.ip4.src_ip = src_ip_addr;
 
 	/* add entry with full mask and fwd port */
-	match_mask.outer.ip4.src_ip = RTE_BE32(0xffffffff);
+	match_mask.outer.ip4.src_ip = DOCA_HTOBE32(0xffffffff);
 
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = port_id ^ 1;
@@ -222,7 +222,7 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 	}
 
 	/* add entry with mask on 16 MSBits and fwd drop */
-	match_mask.outer.ip4.src_ip = RTE_BE32(0xffff0000);
+	match_mask.outer.ip4.src_ip = DOCA_HTOBE32(0xffff0000);
 
 	fwd.type = DOCA_FLOW_FWD_DROP;
 
@@ -242,7 +242,7 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 	}
 
 	/* add default entry with 0 bits mask and fwd drop */
-	match_mask.outer.ip4.src_ip = RTE_BE32(0x00000000);
+	match_mask.outer.ip4.src_ip = DOCA_HTOBE32(0x00000000);
 
 	fwd.type = DOCA_FLOW_FWD_DROP;
 
@@ -279,7 +279,6 @@ doca_error_t flow_lpm(int nb_queues)
 	struct doca_flow_pipe_entry *entries[nb_ports][num_of_entries];
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *main_pipe;
 	struct doca_flow_pipe *lpm_pipe;
@@ -294,9 +293,8 @@ doca_error_t flow_lpm(int nb_queues)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, num_of_entries));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

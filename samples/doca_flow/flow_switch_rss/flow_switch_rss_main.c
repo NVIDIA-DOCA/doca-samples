@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -24,14 +24,14 @@
  */
 
 /*
- * The application is to verify switch RSS feature with shared / immediate / internal
- * hairpin RSS.
- * Shared / immediate RSS will be added to basic and control pipe with changeable
- * and constant combination in switch N2H/H2N/bi-direction.
- * Internal hairpin RSS will be tested with wire traffic from ingress to egress.
- * 3 ports are needed, so MPESW wire0/wire1/VF will all be covered.
+ * This application is designed to verify the switch RSS feature using shared, immediate,
+ * and internal RSS configurations.
+ * Shared and immediate RSS will be applied to both basic and control pipes, with combinations
+ * of changeable and constant settings in switch N2H, H2N, and bi-directional modes.
+ * Internal RSS will be tested by sending wire traffic from ingress to egress.
+ * Three ports are required, covering MPESW wire0, wire1, and VF.
  *
- * The test traffic as below:
+ * The test traffic is as follows:
  *
  * switch N2H:
  * 1.2.3.4, 8.8.8.8 -> basic constant immediate rss
@@ -63,9 +63,10 @@
 #include <doca_log.h>
 #include <doca_ctx.h>
 
-#include <dpdk_utils.h>
+#include <flow_common.h>
+#include <flow_switch_common.h>
 
-#include "flow_switch_common.h"
+#include <dpdk_utils.h>
 
 DOCA_LOG_REGISTER(FLOW_SWITCH_RSS::MAIN);
 
@@ -89,7 +90,6 @@ int main(int argc, char **argv)
 	struct application_dpdk_config dpdk_config = {
 		.port_config.nb_ports = SWITCH_RSS_PORTS,
 		.port_config.nb_queues = 10,
-		.port_config.isolated_mode = 1,
 		.port_config.switch_mode = 1,
 	};
 	struct flow_switch_ctx ctx = {0};
@@ -113,19 +113,22 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
 		goto sample_exit;
 	}
-	result = register_doca_flow_switch_param();
+	result = register_doca_flow_switch_params();
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register flow param: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
-	doca_argp_set_dpdk_program(init_flow_switch_dpdk);
+
+	doca_argp_set_dpdk_program(flow_init_dpdk);
+	ctx.devs_ctx.default_dev_args = FLOW_SWITCH_DEV_ARGS;
+
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 
-	result = init_doca_flow_switch_common(&ctx);
+	result = init_doca_flow_devs(&ctx.devs_ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init flow switch common: %s", doca_error_get_descr(result));
 		goto dpdk_cleanup;
@@ -160,7 +163,7 @@ dpdk_cleanup:
 argp_cleanup:
 	doca_argp_destroy();
 sample_exit:
-	destroy_doca_flow_switch_common(&ctx);
+	destroy_doca_flow_devs(&ctx.devs_ctx);
 	if (exit_status == EXIT_SUCCESS)
 		DOCA_LOG_INFO("Sample finished successfully");
 	else

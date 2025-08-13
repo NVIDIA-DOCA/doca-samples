@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -31,6 +31,7 @@
 #include <rte_random.h>
 
 #include <doca_flow.h>
+#include <doca_dpdk.h>
 #include <doca_log.h>
 #include <doca_bitfield.h>
 
@@ -78,9 +79,10 @@ static struct simple_fwd_app *simple_fwd_ins; /* Instance holding all allocated 
 
 /* user context struct that will be used in entries process callback */
 struct entries_status {
-	bool failure;	  /* will be set to true if some entry status will not be success */
-	int nb_processed; /* will hold the number of entries that was already processed */
-	void *ft_entry;	  /* pointer to struct simple_fwd_ft_entry */
+	bool failure;		     /* will be set to true if some entry status will not be success */
+	int nb_processed;	     /* will hold the number of entries that was already processed */
+	void *ft_entry;		     /* pointer to struct simple_fwd_ft_entry */
+	struct doca_flow_port *port; /* pointer to the port that pipe belongs to */
 };
 
 /*
@@ -98,6 +100,7 @@ static void simple_fwd_check_for_valid_entry(struct doca_flow_pipe_entry *entry,
 					     enum doca_flow_entry_op op,
 					     void *user_ctx)
 {
+	doca_error_t result;
 	(void)entry;
 	(void)op;
 	(void)pipe_queue;
@@ -112,6 +115,9 @@ static void simple_fwd_check_for_valid_entry(struct doca_flow_pipe_entry *entry,
 	if (op == DOCA_FLOW_ENTRY_OP_AGED) {
 		ft_entry = GET_FT_ENTRY((void *)(entry_status->ft_entry));
 		simple_fwd_ft_destroy_entry(simple_fwd_ins->ft, ft_entry);
+		result = doca_flow_entries_process(entry_status->port, pipe_queue, PULL_TIME_OUT, 1);
+		if (result != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 	} else if (op == DOCA_FLOW_ENTRY_OP_ADD)
 		entry_status->nb_processed++;
 	else if (op == DOCA_FLOW_ENTRY_OP_DEL) {
@@ -119,6 +125,41 @@ static void simple_fwd_check_for_valid_entry(struct doca_flow_pipe_entry *entry,
 		if (entry_status->nb_processed == 0)
 			free(entry_status);
 	}
+}
+
+static doca_error_t configure_tune_server(struct doca_flow_cfg *flow_cfg, enum doca_flow_tune_profile profile)
+{
+	doca_error_t result = DOCA_SUCCESS;
+	struct doca_flow_tune_cfg *tune_cfg;
+
+	result = doca_flow_tune_cfg_create(&tune_cfg);
+	if (result != DOCA_SUCCESS) {
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_INFO("DOCA Flow Tune Server isn't supported in this runtime version");
+			DOCA_LOG_INFO("Program will continue execution without activating the DOCA Flow Tune Server");
+			return DOCA_SUCCESS;
+		}
+
+		DOCA_LOG_ERR("Failed to create doca_flow_tune_cfg: %s", doca_error_get_descr(result));
+		goto out;
+	}
+
+	result = doca_flow_tune_cfg_set_profile(tune_cfg, profile);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_tune_cfg profile: %s", doca_error_get_descr(result));
+		goto cfg_destroy;
+	}
+
+	result = doca_flow_cfg_set_tune_cfg(flow_cfg, tune_cfg);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg tune_cfg: %s", doca_error_get_descr(result));
+		goto cfg_destroy;
+	}
+
+cfg_destroy:
+	doca_flow_tune_cfg_destroy(tune_cfg);
+out:
+	return result;
 }
 
 /*
@@ -182,6 +223,12 @@ static int simple_fwd_init_doca_flow(int nb_queues, const char *mode, uint32_t n
 		goto destroy_cfg;
 	}
 
+	result = configure_tune_server(flow_cfg, DOCA_FLOW_TUNE_PROFILE_FULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to configure tune server: %s", doca_error_get_descr(result));
+		goto destroy_cfg;
+	}
+
 	result = doca_flow_init(flow_cfg);
 	if (result != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to initialize doca flow: %s", doca_error_get_descr(result));
@@ -206,6 +253,13 @@ static struct doca_flow_port *simple_fwd_create_doca_flow_port(int port_id)
 	struct doca_flow_port_cfg *port_cfg;
 	doca_error_t result, tmp_result;
 	struct doca_flow_port *port;
+	struct doca_dev *dev;
+
+	result = doca_dpdk_port_as_dev(port_id, &dev);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get DOCA device: %s", doca_error_get_descr(result));
+		return NULL;
+	}
 
 	result = doca_flow_port_cfg_create(&port_cfg);
 	if (result != DOCA_SUCCESS) {
@@ -216,6 +270,12 @@ static struct doca_flow_port *simple_fwd_create_doca_flow_port(int port_id)
 	result = doca_flow_port_cfg_set_port_id(port_cfg, port_id);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg port_id: %s", doca_error_get_descr(result));
+		goto destroy_port_cfg;
+	}
+
+	result = doca_flow_port_cfg_set_dev(port_cfg, dev);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg doca device: %s", doca_error_get_descr(result));
 		goto destroy_port_cfg;
 	}
 
@@ -284,9 +344,14 @@ static int simple_fwd_init_doca_flow_ports(int nb_ports, struct doca_flow_port *
 			simple_fwd_stop_doca_flow_ports(portid + 1, ports);
 			return -1;
 		}
+	}
 
+	if (!is_hairpin)
+		return 0;
+
+	for (portid = 0; portid < nb_ports; portid++) {
 		/* Pair ports should be done in the following order: port0 with port1, port2 with port3 etc */
-		if (!is_hairpin || !portid || !(portid % 2))
+		if (!portid || !(portid % 2))
 			continue;
 
 		/* pair odd port with previous port */
@@ -294,7 +359,13 @@ static int simple_fwd_init_doca_flow_ports(int nb_ports, struct doca_flow_port *
 			simple_fwd_stop_doca_flow_ports(portid + 1, ports);
 			return -1;
 		}
+
+		if (doca_flow_port_pair(ports[portid ^ 1], ports[portid]) != DOCA_SUCCESS) {
+			simple_fwd_stop_doca_flow_ports(portid + 1, ports);
+			return -1;
+		}
 	}
+
 	return 0;
 }
 
@@ -447,6 +518,12 @@ static int simple_fwd_build_rss_flow(uint16_t port_id)
 	fwd.rss.queues_array = rss_queues;
 
 	status = (struct entries_status *)calloc(1, sizeof(struct entries_status));
+	if (status == NULL) {
+		DOCA_LOG_ERR("Failed to allocate memory for pipe");
+		goto destroy_pipe_cfg;
+	}
+
+	status->port = simple_fwd_ins->ports[port_cfg->port_id];
 
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, &simple_fwd_ins->pipe_rss[port_cfg->port_id]);
 	if (result != DOCA_SUCCESS) {
@@ -535,10 +612,16 @@ static int simple_fwd_build_hairpin_flow(uint16_t port_id)
 		goto destroy_pipe_cfg;
 	}
 
-	fwd.type = DOCA_FLOW_FWD_PORT;
-	fwd.port_id = port_cfg->port_id ^ 1;
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = simple_fwd_ins->vxlan_encap_pipe[port_cfg->port_id ^ 1];
 
 	status = (struct entries_status *)calloc(1, sizeof(struct entries_status));
+	if (status == NULL) {
+		DOCA_LOG_ERR("Failed to allocate memory for entries status");
+		goto destroy_pipe_cfg;
+	}
+
+	status->port = simple_fwd_ins->ports[port_cfg->port_id];
 
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, &simple_fwd_ins->pipe_hairpin[port_cfg->port_id]);
 	if (result != DOCA_SUCCESS) {
@@ -589,8 +672,8 @@ destroy_pipe_cfg:
 static void simple_fwd_build_fwd(struct simple_fwd_port_cfg *port_cfg, struct doca_flow_fwd *fwd)
 {
 	if (port_cfg->is_hairpin > 0) {
-		fwd->type = DOCA_FLOW_FWD_PORT;
-		fwd->port_id = port_cfg->port_id ^ 1;
+		fwd->type = DOCA_FLOW_FWD_PIPE;
+		fwd->next_pipe = simple_fwd_ins->vxlan_encap_pipe[port_cfg->port_id ^ 1];
 	}
 
 	else {
@@ -1054,10 +1137,15 @@ static doca_error_t simple_fwd_add_vxlan_encap_pipe_entry(struct simple_fwd_port
 	uint8_t dst_mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
 
 	status = (struct entries_status *)calloc(1, sizeof(struct entries_status));
+	if (status == NULL) {
+		DOCA_LOG_ERR("Failed to allocate memory for entries status");
+		return DOCA_ERROR_NO_MEMORY;
+	}
+
+	status->port = simple_fwd_ins->ports[port_cfg->port_id];
 
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
-	memset(status, 0, sizeof(*status));
 	match.meta.pkt_meta = DOCA_HTOBE32(1);
 
 	SET_MAC_ADDR(actions.encap_cfg.encap.outer.eth.src_mac,
@@ -1094,7 +1182,7 @@ static doca_error_t simple_fwd_add_vxlan_encap_pipe_entry(struct simple_fwd_port
 					  &entry);
 	if (result != DOCA_SUCCESS) {
 		free(status);
-		return -1;
+		return result;
 	}
 
 	result = doca_flow_entries_process(simple_fwd_ins->ports[port_cfg->port_id], 0, PULL_TIME_OUT, num_of_entries);
@@ -1141,6 +1229,20 @@ static int simple_fwd_init_ports_and_pipes(struct simple_fwd_port_cfg *port_cfg)
 		curr_port_cfg->nb_counters = port_cfg->nb_counters;
 		curr_port_cfg->age_thread = port_cfg->age_thread;
 
+		curr_port_cfg->port_id = port_id ^ 1;
+		result = simple_fwd_create_vxlan_encap_pipe(curr_port_cfg);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create vxlan encap pipe: %s", doca_error_get_descr(result));
+			return -1;
+		}
+
+		result = simple_fwd_add_vxlan_encap_pipe_entry(curr_port_cfg);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to add entry to vxlan encap pipe: %s", doca_error_get_descr(result));
+			return -1;
+		}
+
+		curr_port_cfg->port_id = port_id;
 		result = simple_fwd_build_hairpin_flow(curr_port_cfg->port_id);
 		if (result < 0) {
 			DOCA_LOG_ERR("Failed building hairpin flow");
@@ -1180,19 +1282,6 @@ static int simple_fwd_init_ports_and_pipes(struct simple_fwd_port_cfg *port_cfg)
 		result = simple_fwd_add_control_pipe_entries(curr_port_cfg);
 		if (result < 0) {
 			DOCA_LOG_ERR("Failed adding entries to the control pipe");
-			return -1;
-		}
-
-		curr_port_cfg->port_id = port_id ^ 1;
-		result = simple_fwd_create_vxlan_encap_pipe(curr_port_cfg);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create vxlan encap pipe: %s", doca_error_get_descr(result));
-			return -1;
-		}
-
-		result = simple_fwd_add_vxlan_encap_pipe_entry(curr_port_cfg);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to add entry to vxlan encap pipe: %s", doca_error_get_descr(result));
 			return -1;
 		}
 	}
@@ -1362,6 +1451,12 @@ static struct doca_flow_pipe_entry *simple_fwd_pipe_add_entry(struct simple_fwd_
 	doca_error_t result;
 
 	status = (struct entries_status *)calloc(1, sizeof(struct entries_status));
+	if (status == NULL) {
+		DOCA_LOG_ERR("Failed to allocate memory for entries status");
+		return NULL;
+	}
+
+	status->port = simple_fwd_ins->ports[pinfo->orig_port_id];
 
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
@@ -1518,7 +1613,7 @@ static void simple_fwd_handle_aging(uint32_t port_id, uint16_t queue)
  */
 static int simple_fwd_dump_stats(uint32_t port_id)
 {
-	return simple_fwd_dump_port_stats(port_id, simple_fwd_ins->ports[port_id]);
+	return simple_fwd_dump_port_stats(port_id);
 }
 
 /* Stores all functions pointers used by the application */

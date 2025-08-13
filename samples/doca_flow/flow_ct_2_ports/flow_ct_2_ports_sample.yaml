@@ -1,0 +1,57 @@
+#
+# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+number_of_ports: 2
+min_supported_nic:
+  - ConnectX-7
+mode_args:
+  - switch
+ports_description:
+  port_0: doca_dev
+  port_1: doca_rep_dev
+description: "This sample illustrates how to create a simple pipeline on two standalone e-switches. Multi-port e-switch must be disabled.
+              Sample Command Line: ./build/doca_flow_ct_2_ports  -- -l 60 -a pci/08:00.0 -a pci/08:00.1"
+use_cases:
+  - name: "Flow ct 2 ports use case #1"
+    args: ""
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(dst="2.2.2.2")/TCP()/Raw(load=b'Sent to port 0, dropped')
+              - Ether()/IP(dst="1.1.1.1")/UDP()/Raw(load=b'Sent to port 0, forwarded to RSS')
+          - receiving_port: 1
+            packets:
+              - Ether()/IP(dst="2.2.2.2")/TCP()/Raw(load=b'Sent to port 1, dropped')
+              - Ether()/IP(dst="1.1.1.1")/UDP()/Raw(load=b'Sent to port 1, forwarded to RSS')
+        validation:
+          - type: dump
+            expected_text:
+              - "Sample received 1 packets on port 0"
+              - "1 CT connections created"
+              - "1 CT connections processed"
+              - "Sample received 1 packets on port 1"
+              - "1 CT connections created"
+              - "1 CT connections processed"

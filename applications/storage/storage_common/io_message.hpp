@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -155,27 +155,27 @@ public:
 	}
 
 	/*
-	 * Get the message io address
+	 * Get the message io storage offset (offset within storage memory map)
 	 *
 	 * @buf [in]: Pointer to the message buffer
 	 * @return: Message io address
 	 */
-	static inline uint64_t get_io_address(char const *buf)
+	static inline uint64_t get_storage_offset(char const *buf)
 	{
 		uint64_t ret{};
-		static_cast<void>(storage::from_buffer(buf + offsetof(layout, io_address), ret));
+		static_cast<void>(storage::from_buffer(buf + offsetof(layout, storage_offset), ret));
 		return ret;
 	}
 
 	/*
-	 * Set the message io address
+	 * Set the message io storage offset (offset within storage memory map)
 	 *
-	 * @io_address [in]: Address value
+	 * @storage_offset [in]: Storage offset value
 	 * @buf [in/out]: Pointer to the message buffer
 	 */
-	static inline void set_io_address(uint64_t io_address, char *buf)
+	static inline void set_storage_offset(uint64_t storage_offset, char *buf)
 	{
-		storage::to_buffer(buf + offsetof(layout, io_address), io_address);
+		storage::to_buffer(buf + offsetof(layout, storage_offset), storage_offset);
 	}
 
 	/*
@@ -203,27 +203,27 @@ public:
 	}
 
 	/*
-	 * Get the message io remote offset
+	 * Get the message io requester offset (offset within requester memory map)
 	 *
 	 * @buf [in]: Pointer to the message buffer
-	 * @return: Message io output offset
+	 * @return: Requester offset
 	 */
-	static inline uint32_t get_remote_offset(char const *buf)
+	static inline uint64_t get_requester_offset(char const *buf)
 	{
-		uint32_t ret{};
-		static_cast<void>(storage::from_buffer(buf + offsetof(layout, remote_offset), ret));
+		uint64_t ret{};
+		static_cast<void>(storage::from_buffer(buf + offsetof(layout, requester_offset), ret));
 		return ret;
 	}
 
 	/*
-	 * Set the message io remote offset
+	 * Set the message io requester offset (offset within requester memory map)
 	 *
-	 * @remote_offset [in]: Remote offset value
+	 * @requester_offset [in]: Requester offset value
 	 * @buf [in/out]: Pointer to the message buffer
 	 */
-	static inline void set_remote_offset(uint32_t remote_offset, char *buf)
+	static inline void set_requester_offset(uint64_t requester_offset, char *buf)
 	{
-		storage::to_buffer(buf + offsetof(layout, remote_offset), remote_offset);
+		storage::to_buffer(buf + offsetof(layout, requester_offset), requester_offset);
 	}
 
 private:
@@ -236,8 +236,8 @@ private:
 		doca_data user_data;
 		doca_error_t result;
 		uint32_t io_size;
-		uint64_t io_address;
-		uint32_t remote_offset;
+		uint64_t requester_offset;
+		uint64_t storage_offset;
 	};
 
 	static_assert(sizeof(layout) == storage::size_of_io_message,

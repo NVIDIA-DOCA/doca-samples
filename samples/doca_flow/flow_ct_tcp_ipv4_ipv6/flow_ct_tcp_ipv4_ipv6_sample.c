@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,7 +32,8 @@
 #include <doca_flow_ct.h>
 
 #include "flow_ct_common.h"
-#include "flow_common.h"
+#include <flow_common.h>
+#include "flow_switch_common.h"
 
 #define PACKET_BURST 128
 
@@ -505,6 +506,12 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 				DOCA_LOG_ERR("Failed to remove CT pipe entry: %s", doca_error_get_descr(result));
 				return result;
 			}
+			/*process entries*/
+			result = flow_ct_queue_reserve(port, ct_queue, ct_status, 0);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
+				return result;
+			}
 			sessions--;
 			DOCA_LOG_INFO("TCP session was ended");
 		} else if (DOCA_FLOW_MATCH_TCP_FLAG_SYN) {
@@ -566,8 +573,8 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 					return DOCA_ERROR_BAD_STATE;
 				}
 			}
-			DOCA_LOG_INFO(
-				"Origin IPv4 + Reply IPv6 entries created, waiting for IPv6 'FIN' packet before ending the session");
+			DOCA_LOG_INFO("Origin IPv4 + Reply IPv6 entries created");
+			DOCA_LOG_INFO("waiting for IPv6 'FIN' packet to arrive before ending the session");
 		} else {
 			DOCA_LOG_WARN("Sample is only able to process IPv4 'SYN', IPv6 'FIN'");
 			return DOCA_ERROR_NOT_SUPPORTED;
@@ -585,10 +592,10 @@ static doca_error_t process_packets(struct doca_flow_port *port,
  * Run flow_ct_tcp_ipv4_ipv6 sample
  *
  * @nb_queues [in]: number of queues the sample will use
- * @ct_dev [in]: Flow CT device
+ * @ctx [in]: flow switch context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct doca_dev *ct_dev)
+doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 {
 	const int nb_ports = 2, nb_entries = 9;
 	struct flow_resources resource;
@@ -597,8 +604,8 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct doca_dev *ct_dev)
 	struct doca_flow_pipe *egress_pipe, *ct_miss_pipe, *tcp_flags_filter_pipe, *rss_pipe, *tcp_pipe;
 	struct doca_flow_pipe *ct_pipe = NULL;
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_flow_meta o_zone_mask, o_modify_mask, r_zone_mask, r_modify_mask;
-	struct doca_dev *dev_arr[nb_ports];
+	struct doca_flow_meta o_zone_mask, r_zone_mask;
+	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ctrl_status, ct_status;
 	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 0, nb_ipv4_sessions = 1024,
@@ -612,7 +619,7 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct doca_dev *ct_dev)
 
 	resource.nr_counters = 1;
 
-	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws,isolated", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -633,6 +640,7 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct doca_dev *ct_dev)
 				   nb_ipv4_sessions,
 				   nb_ipv6_sessions,
 				   0,
+				   0,
 				   false,
 				   &o_zone_mask,
 				   &o_modify_mask,
@@ -644,10 +652,12 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct doca_dev *ct_dev)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = ct_dev;
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, nb_entries));
-	result = init_doca_flow_ports(nb_ports, ports, false, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_entries));
+	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+					     ctx->devs_ctx.nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_ct_destroy();
@@ -690,7 +700,7 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct doca_dev *ct_dev)
 		goto cleanup;
 	}
 
-	DOCA_LOG_INFO("Wait few seconds for 'SYN' packet ipv4 to arrive");
+	DOCA_LOG_INFO("Wait few seconds for 'SYN' ipv4 packet to arrive");
 
 	sleep(5);
 	result = process_packets(ports[0], ct_queue, &ct_status, &tcp_entry);

@@ -63,6 +63,7 @@ static constexpr uint16_t PSP_PERF_ALL = PSP_PERF_KEY_GEN_PRINT | PSP_PERF_INSER
 static const uint32_t PSP_MAX_PEERS = 1 << 20;	  /* Maximum number of peers supported by the PSP Gateway */
 static const uint32_t PSP_MAX_SESSIONS = 1 << 20; /* Maximum number of sessions supported by the PSP Gateway for each
 						     host */
+static const uint32_t PSP_MAX_DEVICE_REPS = 8;	  /* Maximum number of representors supported by the PSP Gateway */
 
 static const std::string PSP_PERF_KEY_GEN_PRINT_STR = "key-gen";
 static const std::string PSP_PERF_INSERTION_PRINT_STR = "insertion";
@@ -129,9 +130,9 @@ struct entries_status {
 struct psp_gw_app_config {
 	struct application_dpdk_config dpdk_config; /* Configuration details of DPDK ports and queues */
 
-	std::string pf_pcie_addr;    /* PCI domain:bus:device:function string of the host PF */
-	std::string pf_repr_indices; /* Representor list string, such  as vf0 or pf[0-1] */
-	std::string core_mask;	     /* EAL core mask */
+	struct doca_dev *pf_dev;	 /* Host PF device */
+	struct doca_dev_rep *vf_dev_rep; /* VF representor device */
+	std::string core_mask;		 /* EAL core mask */
 
 	std::string local_svc_addr; /* The IPv4 addr (and optional port number) of the locally running gRPC service */
 	std::string json_path;	    /* The path to the JSON file containing the sessions configuration */
@@ -142,6 +143,8 @@ struct psp_gw_app_config {
 	rte_ether_addr nexthop_dmac; /* The dst MAC to apply on encap, if enabled */
 
 	uint32_t max_tunnels; /* The maximum number of outgoing tunnel connections supported on this host */
+
+	uint16_t grpc_queue_id; /* The queue ID for the gRPC requests */
 
 	struct psp_gw_net_config net_config; /* List of remote peers supporting PSP connections */
 

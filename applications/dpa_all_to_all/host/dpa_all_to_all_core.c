@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -347,6 +347,13 @@ static doca_error_t create_dpa_context(struct a2a_resources *resources)
 		DOCA_LOG_ERR("open_dpa_devices() failed");
 		return result;
 	}
+
+	/* Sleep for 10 * my_rank milliseconds to ensure resources are ready to use before creating the context */
+	struct timespec sleep_ts = {
+		.tv_sec = 0,
+		.tv_nsec = 10 * resources->my_rank * 1000000, /* Convert ms to ns */
+	};
+	nanosleep(&sleep_ts, NULL);
 
 	/* Create doca_dpa context */
 	result = doca_dpa_create(resources->pf_doca_device, &(resources->pf_doca_dpa));
@@ -997,7 +1004,7 @@ static doca_error_t connect_dpa_a2a_rdmas(struct a2a_resources *resources)
 	/* MPI request used for synchronization between processes */
 	MPI_Request reqs[4];
 	int i;
-	doca_error_t result;
+	doca_error_t result = DOCA_SUCCESS;
 
 	for (i = 0; i < resources->num_ranks; i++) {
 		/*
@@ -1197,7 +1204,7 @@ static doca_error_t destroy_rdma(struct doca_rdma *rdma, struct doca_dev *doca_d
 static doca_error_t prepare_dpa_a2a_dpa_completions(struct a2a_resources *resources)
 {
 	int i, j;
-	doca_error_t result, tmp_result;
+	doca_error_t result = DOCA_SUCCESS, tmp_result;
 
 	/* Create dpa completion contexts as number of the processes */
 	resources->dpa_completions = calloc(resources->num_ranks, sizeof(*(resources->dpa_completions)));

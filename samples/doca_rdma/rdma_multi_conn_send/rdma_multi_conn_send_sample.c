@@ -132,17 +132,19 @@ static void rdma_multi_conn_send_error_callback(struct doca_rdma_task_send *rdma
 	struct doca_task *task = doca_rdma_task_send_as_task(rdma_send_task);
 	doca_error_t *first_encountered_error = (doca_error_t *)task_user_data.ptr;
 	doca_error_t result;
+	struct doca_buf *src_buf = NULL;
 
 	/* Update that an error was encountered */
 	result = doca_task_get_status(task);
 	DOCA_ERROR_PROPAGATE(*first_encountered_error, result);
 	DOCA_LOG_ERR("RDMA send task failed: %s", doca_error_get_descr(result));
 
-	doca_task_free(task);
-	result = doca_buf_dec_refcount(resources->src_buf, NULL);
+	src_buf = (struct doca_buf *)doca_rdma_task_send_get_src_buf(rdma_send_task);
+	result = doca_buf_dec_refcount(src_buf, NULL);
 	if (result != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to decrease src_buf count: %s", doca_error_get_descr(result));
 
+	doca_task_free(task);
 	resources->num_remaining_tasks--;
 	/* Stop context once all tasks are completed */
 	if (resources->num_remaining_tasks == 0)
@@ -216,7 +218,7 @@ static doca_error_t rdma_multi_conn_send_prepare_and_submit_task(struct rdma_res
 	union doca_data task_user_data = {0};
 	void *src_buf_data;
 	struct doca_buf *src_bufs[MAX_NUM_CONNECTIONS] = {0};
-	doca_error_t result, tmp_result;
+	doca_error_t result = DOCA_SUCCESS, tmp_result;
 	uint32_t i = 0;
 
 	DOCA_LOG_INFO(

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,17 +26,25 @@
 #ifndef FLOW_COMMON_H_
 #define FLOW_COMMON_H_
 
+#include <rte_common.h>
+
+#include <doca_argp.h>
+#include <doca_flow.h>
+#include <doca_dev.h>
+#include <doca_bitfield.h>
+
+#include <common.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <rte_byteorder.h>
-#include <rte_common.h>
+#ifndef BE_IPV4_ADDR
+#define BE_IPV4_ADDR(a, b, c, d) \
+	(DOCA_HTOBE32(((uint32_t)a << 24) + (b << 16) + (c << 8) + d)) /* create IPV4 address */
+#endif
 
-#include <doca_flow.h>
-#include <doca_dev.h>
-
-#define BE_IPV4_ADDR(a, b, c, d) (RTE_BE32(((uint32_t)a << 24) + (b << 16) + (c << 8) + d)) /* create IPV4 address */
+#ifndef SET_IPV6_ADDR
 #define SET_IPV6_ADDR(addr, a, b, c, d) \
 	do { \
 		addr[0] = a & 0xffffffff; \
@@ -44,6 +52,9 @@ extern "C" {
 		addr[2] = c & 0xffffffff; \
 		addr[3] = d & 0xffffffff; \
 	} while (0) /* create IPv6 address */
+#endif
+
+#ifndef SET_MAC_ADDR
 #define SET_MAC_ADDR(addr, a, b, c, d, e, f) \
 	do { \
 		addr[0] = a & 0xff; \
@@ -52,24 +63,39 @@ extern "C" {
 		addr[3] = d & 0xff; \
 		addr[4] = e & 0xff; \
 		addr[5] = f & 0xff; \
-	} while (0)						    /* create source mac address */
-#define BUILD_VNI(uint24_vni) (RTE_BE32((uint32_t)uint24_vni << 8)) /* create VNI */
-#define DEFAULT_TIMEOUT_US (10000)				    /* default timeout for processing entries */
-#define NB_ACTIONS_ARR (1)					    /* default length for action array */
+	} while (0) /* create source mac address */
+#endif
+
+#ifndef DEFAULT_TIMEOUT_US
+#define DEFAULT_TIMEOUT_US (10000) /* default timeout for processing entries */
+#endif
+
+#ifndef NB_ACTIONS_ARR
+#define NB_ACTIONS_ARR (1) /* default length for action array */
+#endif
+
+#ifndef SHARED_RESOURCE_NUM_VALUES
 #define SHARED_RESOURCE_NUM_VALUES (8) /* Number of doca_flow_shared_resource_type values */
+#endif
+
+#define FLOW_COMMON_DEV_MAX (8)	   /* Max number of devices */
+#define FLOW_COMMON_REPS_MAX (16)  /* Max number of reps per device */
+#define FLOW_COMMON_PORTS_MAX (16) /* Max number of ports overall */
 
 #ifndef MAX
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #endif
-#define MIN_ACTIONS_MEM_SIZE_PER_QUEUE (256) /* Minimal actions memory size required per queue */
-#define INITIAL_ACTIONS_MEM_SIZE (2048)	     /* Needed when app creates a small number of entries */
-#define ACTIONS_MEM_SIZE(nr_queues, entries) \
-	rte_align32pow2( \
-		MAX((uint32_t)(entries * DOCA_FLOW_MAX_ENTRY_ACTIONS_MEM_SIZE), \
-		    (uint32_t)(nr_queues * MIN_ACTIONS_MEM_SIZE_PER_QUEUE + INITIAL_ACTIONS_MEM_SIZE))) /* Total \
-												 actions \
-												 memory size \
-											       */
+
+#ifndef GLOBAL_ACTIONS_MEM_SIZE
+#define GLOBAL_ACTIONS_MEM_SIZE (1024) /* required in samples with low number of entries */
+#endif
+
+#ifndef ACTIONS_MEM_SIZE
+#define ACTIONS_MEM_SIZE(entries) \
+	rte_align32pow2((uint32_t)(entries * DOCA_FLOW_MAX_ENTRY_ACTIONS_MEM_SIZE + GLOBAL_ACTIONS_MEM_SIZE));
+#endif
+
+#ifndef ARRAY_DIM
 #define ARRAY_DIM(a) (sizeof(a) / sizeof((a)[0]))
 #define ARRAY_INIT(array, val) \
 	do { \
@@ -77,6 +103,9 @@ extern "C" {
 			array[i] = val; \
 		} \
 	} while (0)
+#endif
+
+#ifndef DEFS_REG_OPCODE
 #define DEFS_REG_OPCODE(opcode_str, ___sname, ___field) \
 	do { \
 		int rc; \
@@ -87,6 +116,10 @@ extern "C" {
 		if (rc < 0) \
 			return rc; \
 	} while (0)
+#endif
+
+/* Conversion function from a user context to the flow_dev_ctx struct */
+typedef struct flow_dev_ctx *(*flow_dev_ctx_from_user_ctx_t)(void *user_ctx);
 
 /* user context struct that will be used in entries process callback */
 struct entries_status {
@@ -99,6 +132,41 @@ struct flow_resources {
 	uint32_t nr_counters; /* number of counters to configure */
 	uint32_t nr_meters;   /* number of traffic meters to configure */
 };
+
+struct flow_devs_manager {
+	struct doca_dev *doca_dev;				 /* port's DOCA device */
+	const char *dev_arg;					 /* port's DOCA device argument */
+	struct doca_dev_rep *doca_dev_rep[FLOW_COMMON_REPS_MAX]; /* DOCA representor devices associated with port */
+	uint16_t nb_reps;					 /* Number of reps associated with port */
+};
+
+/* doca flow device context */
+struct flow_dev_ctx {
+	uint16_t nb_devs;					    /* number of doca devices */
+	uint16_t nb_ports;					    /* number of overall ports */
+	struct flow_devs_manager devs_manager[FLOW_COMMON_DEV_MAX]; /* Array of devs manager DOCA devices */
+	tasks_check port_cap;					    /* Optional port capability callback */
+	const char *default_dev_args;				    /* Default device arguments */
+};
+
+/*
+ * Init DPDK, probe the ports and open their related DOCA devices.
+ *
+ * This function sets the DPDK init callback into ARGP and start it,
+ * starting ARGP triggers the DPDK init callback which creates the devices.
+ *
+ * @argc [in]: command line arguments size
+ * @argv [in]: array of command line arguments
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t flow_dpdk_init_and_open_devs(int argc, char **argv);
+
+/*
+ * Fini DPDK and close all devices related to its ports.
+ *
+ * @nb_ports [in]: number of DPDK probed ports
+ */
+void flow_dpdk_fini_and_close_devs(int nb_ports);
 
 /*
  * Initialize DOCA Flow library
@@ -154,32 +222,47 @@ doca_error_t init_doca_flow_cb(int nb_queues,
  *
  * @nb_ports [in]: number of ports to create
  * @ports [in]: array of ports to create
- * @is_hairpin [in]: port pair should run if is_hairpin = true
+ * @is_port_fwd [in]: if set to true, this function will call doca_flow_port_pair() as required
  * @dev_arr [in]: doca device array for each port
  * @actions_mem_size[in]: array of actions memory size
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t init_doca_flow_ports(int nb_ports,
 				  struct doca_flow_port *ports[],
-				  bool is_hairpin,
+				  bool is_port_fwd,
 				  struct doca_dev *dev_arr[],
 				  uint32_t actions_mem_size[]);
+
+/*
+ * Initialize DOCA Flow VNF ports
+ *
+ * This function assumes DPDK port probed using DOCA DPDK API.
+ * It can be done either directly with `doca_dpdk_port_probe` or using `dpdk_init_with_devs` function.
+ *
+ * @nb_ports [in]: number of ports to create
+ * @ports [in]: array of ports to create
+ * @actions_mem_size[in]: array of actions memory size
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t init_doca_flow_vnf_ports(int nb_ports, struct doca_flow_port *ports[], uint32_t actions_mem_size[]);
 
 /*
  * Initialize DOCA Flow ports with operation state
  *
  * @nb_ports [in]: number of ports to create
  * @ports [in]: array of ports to create
- * @is_hairpin [in]: port pair should run if is_hairpin = true
+ * @is_port_fwd [in]: if set to true, this function will call doca_flow_port_pair() as required
  * @dev_arr [in]: doca device array for each port
+ * @dev_rep_arr [in]: doca reprtesentor array for each port
  * @states [in]: operation states array for each port
  * @actions_mem_size[in]: actions memory size
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t init_doca_flow_ports_with_op_state(int nb_ports,
 						struct doca_flow_port *ports[],
-						bool is_hairpin,
+						bool is_port_fwd,
 						struct doca_dev *dev_arr[],
+						struct doca_dev_rep *dev_rep_arr[],
 						enum doca_flow_port_operation_state *states,
 						uint32_t actions_mem_size[]);
 
@@ -230,6 +313,73 @@ doca_error_t set_flow_pipe_cfg(struct doca_flow_pipe_cfg *cfg,
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t flow_process_entries(struct doca_flow_port *port, struct entries_status *status, uint32_t nr_entries);
+
+/**
+ * Initialize DPDK to be prepared for device probing for DOCA Flow library.
+ *
+ * @argc [in]: command line arguments size
+ * @dpdk_argv [in]: array of command line arguments
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t flow_init_dpdk(int argc, char **dpdk_argv);
+
+/*
+ * Register DOCA Flow device parameters
+ *
+ * @converter [in]: conversion function from a user context to the flow_dev_ctx struct (optional)
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t register_flow_device_params(flow_dev_ctx_from_user_ctx_t converter);
+
+/*
+ * Register DOCA Flow switch device parameters
+ *
+ * @converter [in]: conversion function from a user context to the flow_dev_ctx struct (optional)
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t register_flow_switch_device_params(flow_dev_ctx_from_user_ctx_t converter);
+
+/*
+ * DOCA Flow device handling callback
+ *
+ * @param [in]: input parameter
+ * @config [out]: configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t flow_param_dev_callback(void *param, void *config);
+
+/*
+ * DOCA Flow device representor handling callback
+ *
+ * @param [in]: input parameter
+ * @config [out]: configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t flow_param_rep_callback(void *param, void *config);
+
+/*
+ * Init DOCA Flow devices
+ *
+ * @ctx [in]: flow devices context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t init_doca_flow_devs(struct flow_dev_ctx *ctx);
+
+/*
+ * Destroy DOCA Flow devices context
+ *
+ * @ctx [in]: flow devices context
+ */
+void destroy_doca_flow_devs(struct flow_dev_ctx *ctx);
+
+/*
+ * Close DOCA representor devices.
+ *
+ * @dev_reps [in]: array of DOCA representor devices to close.
+ * @nb_reps[in]: Amount of DOCA representor devices to close.
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t close_doca_dev_reps(struct doca_dev_rep *dev_reps[], uint16_t nb_reps);
 
 #ifdef __cplusplus
 } /* extern "C" */

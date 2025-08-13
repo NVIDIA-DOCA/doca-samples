@@ -57,6 +57,8 @@ sample_srcs = [
 	'../flow_ct_common.c',
 	# Common code for the DOCA Flow library samples
 	'../flow_common.c',
+	# Common switch code for the DOCA Flow library samples
+	'../flow_switch_common.c',
 	# Common code for all DOCA samples
 	'../../common.c',
 	# Common code for all DOCA applications

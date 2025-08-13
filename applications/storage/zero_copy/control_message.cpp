@@ -244,32 +244,32 @@ uint32_t to_buffer(zero_copy::control_message const &msg, char *buffer, uint32_t
 		return 0;
 	}
 
-	buffer = storage::common::to_buffer(buffer, message_wire_size);
-	buffer = storage::common::to_buffer(buffer, static_cast<uint16_t>(msg.type));
-	buffer = storage::common::to_buffer(buffer, msg.correlation_id);
+	buffer = storage::to_buffer(buffer, message_wire_size);
+	buffer = storage::to_buffer(buffer, static_cast<uint16_t>(msg.type));
+	buffer = storage::to_buffer(buffer, msg.correlation_id);
 
 	switch (msg.type) {
 	case control_message_type::response: {
 		auto &details = dynamic_cast<control_message::response const &>(*msg.details);
-		buffer = storage::common::to_buffer(buffer, static_cast<uint32_t>(details.result));
-		storage::common::to_buffer(buffer, details.message);
+		buffer = storage::to_buffer(buffer, static_cast<uint32_t>(details.result));
+		storage::to_buffer(buffer, details.message);
 	} break;
 	case control_message_type::configure_data_path: {
 		auto &details = dynamic_cast<control_message::configure_data_path const &>(*msg.details);
-		buffer = storage::common::to_buffer(buffer, details.buffer_count);
-		buffer = storage::common::to_buffer(buffer, details.buffer_size);
-		buffer = storage::common::to_buffer(buffer, details.batch_size);
-		storage::common::to_buffer(buffer, details.mmap_export_blob);
+		buffer = storage::to_buffer(buffer, details.buffer_count);
+		buffer = storage::to_buffer(buffer, details.buffer_size);
+		buffer = storage::to_buffer(buffer, details.batch_size);
+		storage::to_buffer(buffer, details.mmap_export_blob);
 	} break;
 	case control_message_type::create_rdma_connection_request: {
 		auto &details = dynamic_cast<control_message::create_rdma_connection_request const &>(*msg.details);
-		buffer = storage::common::to_buffer(buffer, static_cast<uint8_t>(details.role));
-		storage::common::to_buffer(buffer, details.connection_details);
+		buffer = storage::to_buffer(buffer, static_cast<uint8_t>(details.role));
+		storage::to_buffer(buffer, details.connection_details);
 	} break;
 	case control_message_type::create_rdma_connection_response: {
 		auto &details = dynamic_cast<control_message::create_rdma_connection_response const &>(*msg.details);
-		buffer = storage::common::to_buffer(buffer, static_cast<uint8_t>(details.role));
-		storage::common::to_buffer(buffer, details.connection_details);
+		buffer = storage::to_buffer(buffer, static_cast<uint8_t>(details.role));
+		storage::to_buffer(buffer, details.connection_details);
 	} break;
 	case control_message_type::start_storage:   /* FALLTHROUGH */
 	case control_message_type::destroy_objects: /* FALLTHROUGH */
@@ -290,7 +290,7 @@ uint32_t from_buffer(char const *buffer, uint32_t buffer_size, zero_copy::contro
 		return 0;
 	}
 
-	buffer = storage::common::from_buffer(buffer, msg.wire_size);
+	buffer = storage::from_buffer(buffer, msg.wire_size);
 	if (buffer_size < msg.wire_size) {
 		DOCA_LOG_ERR("Unable to decode message from buffer containing %u bytes. Expected %u bytes",
 			     buffer_size,
@@ -298,34 +298,34 @@ uint32_t from_buffer(char const *buffer, uint32_t buffer_size, zero_copy::contro
 		return 0;
 	}
 
-	buffer = storage::common::from_buffer(buffer, reinterpret_cast<uint16_t &>(msg.type));
-	buffer = storage::common::from_buffer(buffer, msg.correlation_id);
+	buffer = storage::from_buffer(buffer, reinterpret_cast<uint16_t &>(msg.type));
+	buffer = storage::from_buffer(buffer, msg.correlation_id);
 
 	switch (msg.type) {
 	case control_message_type::response: {
 		auto details = std::make_unique<control_message::response>();
-		buffer = storage::common::from_buffer(buffer, reinterpret_cast<uint32_t &>(details->result));
-		storage::common::from_buffer(buffer, details->message);
+		buffer = storage::from_buffer(buffer, reinterpret_cast<uint32_t &>(details->result));
+		storage::from_buffer(buffer, details->message);
 		msg.details = std::move(details);
 	} break;
 	case control_message_type::configure_data_path: {
 		auto details = std::make_unique<control_message::configure_data_path>();
-		buffer = storage::common::from_buffer(buffer, details->buffer_count);
-		buffer = storage::common::from_buffer(buffer, details->buffer_size);
-		buffer = storage::common::from_buffer(buffer, details->batch_size);
-		storage::common::from_buffer(buffer, details->mmap_export_blob);
+		buffer = storage::from_buffer(buffer, details->buffer_count);
+		buffer = storage::from_buffer(buffer, details->buffer_size);
+		buffer = storage::from_buffer(buffer, details->batch_size);
+		storage::from_buffer(buffer, details->mmap_export_blob);
 		msg.details = std::move(details);
 	} break;
 	case control_message_type::create_rdma_connection_request: {
 		auto details = std::make_unique<control_message::create_rdma_connection_request>();
-		buffer = storage::common::from_buffer(buffer, reinterpret_cast<uint8_t &>(details->role));
-		storage::common::from_buffer(buffer, details->connection_details);
+		buffer = storage::from_buffer(buffer, reinterpret_cast<uint8_t &>(details->role));
+		storage::from_buffer(buffer, details->connection_details);
 		msg.details = std::move(details);
 	} break;
 	case control_message_type::create_rdma_connection_response: {
 		auto details = std::make_unique<control_message::create_rdma_connection_response>();
-		buffer = storage::common::from_buffer(buffer, reinterpret_cast<uint8_t &>(details->role));
-		storage::common::from_buffer(buffer, details->connection_details);
+		buffer = storage::from_buffer(buffer, reinterpret_cast<uint8_t &>(details->role));
+		storage::from_buffer(buffer, details->connection_details);
 		msg.details = std::move(details);
 	} break;
 	case control_message_type::start_storage:   /* FALLTHROUGH */
@@ -368,9 +368,9 @@ std::string to_string(zero_copy::control_message const &msg)
 		s += ", batch_size: ";
 		s += std::to_string(details.batch_size);
 		s += ", mmap_blob: ";
-		storage::common::bytes_to_hex_str(reinterpret_cast<char const *>(details.mmap_export_blob.data()),
-						  details.mmap_export_blob.size(),
-						  s);
+		storage::bytes_to_hex_str(reinterpret_cast<char const *>(details.mmap_export_blob.data()),
+					  details.mmap_export_blob.size(),
+					  s);
 	} break;
 	case control_message_type::start_storage: {
 		s += "start_storage";
@@ -383,18 +383,18 @@ std::string to_string(zero_copy::control_message const &msg)
 		s += "create_rdma_connection_request, role: ";
 		s += (details.role == rdma_connection_role::data ? "data" : "ctrl");
 		s += ", connection_details: ";
-		storage::common::bytes_to_hex_str(reinterpret_cast<char const *>(details.connection_details.data()),
-						  details.connection_details.size(),
-						  s);
+		storage::bytes_to_hex_str(reinterpret_cast<char const *>(details.connection_details.data()),
+					  details.connection_details.size(),
+					  s);
 	} break;
 	case control_message_type::create_rdma_connection_response: {
 		auto &details = dynamic_cast<control_message::create_rdma_connection_response const &>(*msg.details);
 		s += "create_rdma_connection_response, role: ";
 		s += (details.role == rdma_connection_role::data ? "data" : "ctrl");
 		s += ", connection_details: ";
-		storage::common::bytes_to_hex_str(reinterpret_cast<char const *>(details.connection_details.data()),
-						  details.connection_details.size(),
-						  s);
+		storage::bytes_to_hex_str(reinterpret_cast<char const *>(details.connection_details.data()),
+					  details.connection_details.size(),
+					  s);
 	} break;
 	case control_message_type::start_data_path_connections: {
 		s += "start_data_path_connections";
@@ -414,7 +414,7 @@ bool control_message_reassembler::append(char const *fragment, uint32_t fragment
 			return false;
 
 		recombined_buffer.reserve(fragment_size);
-		static_cast<void>(storage::common::from_buffer(fragment, message_byte_count));
+		static_cast<void>(storage::from_buffer(fragment, message_byte_count));
 
 		std::copy(fragment, fragment + fragment_size, std::back_inserter(recombined_buffer));
 
@@ -442,7 +442,7 @@ zero_copy::control_message control_message_reassembler::extract_message(void)
 
 	message_byte_count = 0;
 	if (!recombined_buffer.empty()) {
-		static_cast<void>(storage::common::from_buffer(recombined_buffer.data(), message_byte_count));
+		static_cast<void>(storage::from_buffer(recombined_buffer.data(), message_byte_count));
 		DOCA_LOG_DBG("Start reading %u byte message. Have %lu bytes so far",
 			     message_byte_count,
 			     recombined_buffer.size());

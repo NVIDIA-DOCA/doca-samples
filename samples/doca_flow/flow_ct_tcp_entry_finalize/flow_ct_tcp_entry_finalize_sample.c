@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,7 +32,8 @@
 #include <doca_flow_ct.h>
 
 #include "flow_ct_common.h"
-#include "flow_common.h"
+#include <flow_common.h>
+#include "flow_switch_common.h"
 
 #define PACKET_BURST 128
 #define DEFAULT_CNT_DELAY_S 2
@@ -448,8 +449,8 @@ static doca_error_t process_syn_packets(struct doca_flow_port *port,
 	struct doca_flow_ct_match match_o;
 	struct doca_flow_ct_match match_r;
 	uint32_t flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
-			 DOCA_FLOW_CT_ENTRY_FLAGS_ENTRY_FINALIZE | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY |
-			 DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN;
+			 DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_ENTRY_FINALIZE |
+			 DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN;
 	uint8_t tcp_state;
 	doca_error_t result;
 	int rc, i, nb_packets, nb_process = 0;
@@ -646,6 +647,8 @@ static void entry_finalize_cb(struct doca_flow_pipe *pipe, void *entry, uint16_t
 
 	DOCA_LOG_INFO("Entry %d, origin total bytes: %ld", nb_entry_finalize_triggers, query_o.counter.total_bytes);
 	DOCA_LOG_INFO("Entry %d, origin total packets: %ld", nb_entry_finalize_triggers, query_o.counter.total_pkts);
+	DOCA_LOG_INFO("Entry %d, reply total bytes: %ld", nb_entry_finalize_triggers, query_r.counter.total_bytes);
+	DOCA_LOG_INFO("Entry %d, reply total packets: %ld", nb_entry_finalize_triggers, query_r.counter.total_pkts);
 	DOCA_LOG_INFO("Entry %d, last hit since Epoch (sec) : %ld", nb_entry_finalize_triggers, last_hit_s);
 }
 
@@ -653,10 +656,10 @@ static void entry_finalize_cb(struct doca_flow_pipe *pipe, void *entry, uint16_t
  * Run flow_ct_tcp_entry_finalize sample
  *
  * @nb_queues [in]: number of queues the sample will use
- * @ct_dev [in]: Flow CT device
+ * @ctx [in]: flow switch context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct doca_dev *ct_dev)
+doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 {
 	const int nb_ports = 2, nb_entries = 7;
 	struct flow_resources resource;
@@ -665,8 +668,8 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct doca_dev *ct_
 	struct doca_flow_pipe *egress_pipe, *ct_miss_pipe, *tcp_flags_filter_pipe, *rss_pipe, *tcp_pipe;
 	struct doca_flow_pipe *ct_pipe = NULL;
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_flow_meta o_zone_mask, o_modify_mask, r_zone_mask, r_modify_mask;
-	struct doca_dev *dev_arr[nb_ports];
+	struct doca_flow_meta o_zone_mask, r_zone_mask;
+	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ctrl_status, ct_status;
 	uint32_t ct_flags = 0, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 0, nb_ipv4_sessions = 1024,
@@ -680,7 +683,7 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct doca_dev *ct_
 
 	resource.nr_counters = 1;
 
-	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws,isolated", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -699,6 +702,7 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct doca_dev *ct_
 				   entry_finalize_cb,
 				   nb_ipv4_sessions,
 				   nb_ipv6_sessions,
+				   nb_ipv4_sessions + nb_ipv6_sessions,
 				   0,
 				   false,
 				   &o_zone_mask,
@@ -711,10 +715,12 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct doca_dev *ct_
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = ct_dev;
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, nb_entries));
-	result = init_doca_flow_ports(nb_ports, ports, false, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_entries));
+	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+					     ctx->devs_ctx.nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_ct_destroy();
@@ -766,7 +772,8 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct doca_dev *ct_
 		goto cleanup;
 
 	sleep(DEFAULT_CNT_DELAY_S + DEFAULT_CNT_QUERY_INTERVAL);
-	DOCA_LOG_INFO("TCP session was created, waiting for 'FIN'/'RST' packet before ending the session");
+	DOCA_LOG_INFO("TCP session was created");
+	DOCA_LOG_INFO("waiting for 'FIN'/'RST' packet to arrive before ending the session");
 
 	sleep(7);
 	result = process_fin_packets(ports[0], ct_queue, &tcp_entry);

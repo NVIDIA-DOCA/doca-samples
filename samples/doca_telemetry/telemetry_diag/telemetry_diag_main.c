@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -285,6 +285,22 @@ static doca_error_t example_json_file_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - Handle reconfig_sample_period parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t reconfig_sample_period_callback(void *param, void *config)
+{
+	struct telemetry_diag_sample_cfg *telemetry_diag_sample_cfg = (struct telemetry_diag_sample_cfg *)config;
+	uint32_t *reconfig_sample_period = (uint32_t *)param;
+
+	telemetry_diag_sample_cfg->reconfig_sample_period = *reconfig_sample_period;
+	return DOCA_SUCCESS;
+}
+
+/*
  * Register the command line parameters for the sample.
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -294,7 +310,7 @@ static doca_error_t register_telemetry_diag_params(void)
 	doca_error_t result;
 	struct doca_argp_param *pci_param, *data_ids_param, *run_time_param, *sample_period_param,
 		*log_max_num_samples_param, *max_num_samples_per_read_param, *sample_mode_param, *output_format_param,
-		*output_param, *force_ownership_param, *generate_example_json;
+		*output_param, *force_ownership_param, *generate_example_json, *reconfig_sample_period_param;
 
 	result = doca_argp_param_create(&pci_param);
 	if (result != DOCA_SUCCESS) {
@@ -472,6 +488,24 @@ All other flags are ignored");
 	result = doca_argp_register_param(generate_example_json);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&reconfig_sample_period_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(reconfig_sample_period_param, "rs");
+	doca_argp_param_set_long_name(reconfig_sample_period_param, "reconfig-sample-period");
+	doca_argp_param_set_description(
+		reconfig_sample_period_param,
+		"Reconfig sample period, in nanoseconds. It means after the first sampling run with the sample_period, if the reconfig_sample_period is non-0, before the current diag instance is stopped and destroyed, the second sampling run will be done based on the reconfig_sample_period.");
+	doca_argp_param_set_callback(reconfig_sample_period_param, reconfig_sample_period_callback);
+	doca_argp_param_set_type(reconfig_sample_period_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(reconfig_sample_period_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_name(result));
 		return result;
 	}
 
@@ -833,6 +867,7 @@ static void set_default_params(struct telemetry_diag_sample_cfg *cfg)
 	strncpy(cfg->output_path, DEFAULT_OUTPUT_PATH, TELEMETRY_DIAG_SAMPLE_MAX_FILE_NAME - 1);
 	strncpy(cfg->data_ids_input_path, DEFAULT_DATA_IDS_PATH, TELEMETRY_DIAG_SAMPLE_MAX_FILE_NAME - 1);
 	strncpy(cfg->data_ids_example_export_path, DEFAULT_EXAMPLE_JSON_PATH, TELEMETRY_DIAG_SAMPLE_MAX_FILE_NAME - 1);
+	cfg->reconfig_sample_period = 0;
 }
 
 /*

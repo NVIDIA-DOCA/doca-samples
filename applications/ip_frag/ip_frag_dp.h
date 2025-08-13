@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,11 +26,14 @@
 #ifndef IP_FRAG_DP_H_
 #define IP_FRAG_DP_H_
 
+#include <stdbool.h>
+
 #include <doca_error.h>
 #include <doca_flow.h>
-#include <dpdk_utils.h>
 
-#include <stdbool.h>
+#include <flow_common.h>
+
+#include <dpdk_utils.h>
 
 #define UNUSED(x) ((void)(x))
 
@@ -62,6 +65,7 @@ struct ip_frag_config {
 	bool hw_cksum;			   /* Use hardware checksum optimization */
 	uint32_t frag_tbl_timeout;	   /* Fragmentation table timeout in ms */
 	uint32_t frag_tbl_size;		   /* Fragmentation table size */
+	struct flow_dev_ctx flow_devs;	   /* Flow device context */
 };
 
 struct ip_frag_pipe_cfg {

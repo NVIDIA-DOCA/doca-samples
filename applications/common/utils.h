@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -73,10 +73,7 @@ void linear_array_init_u16(uint16_t *array, uint16_t n);
 
 #include <bsd/string.h>
 
-#else
-
-#ifndef strlcpy
-
+#elif !defined(DOCA_USE_LIBC_STRING_L_FUNC)
 /*
  * This method wraps our implementation of strlcpy when libbsd is missing
  * @dst [in]: destination string
@@ -85,10 +82,6 @@ void linear_array_init_u16(uint16_t *array, uint16_t n);
  * @return: total length of the string (src) we tried to create
  */
 size_t strlcpy(char *dst, const char *src, size_t size);
-
-#endif /* strlcpy */
-
-#ifndef strlcat
 
 /*
  * This method wraps our implementation of strlcat when libbsd is missing
@@ -99,8 +92,6 @@ size_t strlcpy(char *dst, const char *src, size_t size);
  */
 size_t strlcat(char *dst, const char *src, size_t size);
 
-#endif /* strlcat */
-
-#endif /* DOCA_USE_LIBBSD */
+#endif /* DOCA_USE_STRING_L_FUNC */
 
 #endif /* COMMON_UTILS_H_ */

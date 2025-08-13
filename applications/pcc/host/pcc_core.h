@@ -32,8 +32,9 @@
 
 #define PCC_RP_THREADS_NUM_DEFAULT_VALUE \
 	(48 + 1) /* Default Number of PCC RP threads, the extra one is used for communication */
-#define PCC_NP_THREADS_NUM_DEFAULT_VALUE (16)			      /* Default Number of PCC NP threads */
-#define WAIT_TIME_DEFAULT_VALUE (-1)				      /* Wait time - default value (infinity) */
+#define PCC_NP_THREADS_NUM_DEFAULT_VALUE \
+	(16 + 1)		     /* Default Number of PCC NP threads, the extra one is used for communication */
+#define WAIT_TIME_DEFAULT_VALUE (-1) /* Wait time - default value (infinity) */
 #define IFA2_HOP_LIMIT_DEFAULT_VALUE (0xFE)			      /* IFA2 packet hop limit value */
 #define IFA2_GNS_DEFAULT_VALUE (0xF)				      /* IFA2 packet GNS value */
 #define IFA2_GNS_IGNORE_DEFAULT_VALUE (0)			      /* IFA2 packet GNS value */
@@ -98,11 +99,6 @@ extern struct doca_pcc_app *pcc_rp_rtt_template_app;
  * DOCA PCC Reaction Point Switch Telemetry DPA program name
  */
 extern struct doca_pcc_app *pcc_rp_switch_telemetry_app;
-
-/*
- * DOCA PCC Notification Point NIC Telemetry DPA program name
- */
-extern struct doca_pcc_app *pcc_np_nic_telemetry_app;
 
 /*
  * DOCA PCC Notification Point Switch Telemetry DPA program name

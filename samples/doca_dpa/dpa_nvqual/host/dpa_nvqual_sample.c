@@ -39,7 +39,7 @@ DOCA_LOG_REGISTER(DPA_NVQUAL);
 doca_dpa_func_t dpa_nvqual_kernel;
 doca_dpa_func_t dpa_nvqual_entry_point;
 
-struct doca_log_backend *stdout_logger = NULL;
+static struct doca_log_backend *stdout_logger = NULL;
 
 static bool interrupted = false;
 
@@ -235,8 +235,8 @@ static doca_error_t user_factor_param_callback(void *param, void *config)
 {
 	struct dpa_nvqual_config *dpa_cfg = (struct dpa_nvqual_config *)config;
 	float user_factor = strtof((char *)param, NULL);
-	if (user_factor == (float)0) {
-		DOCA_LOG_ERR("Failed to convert ARGP param user factor to float");
+	if (user_factor <= (float)0 || user_factor > (float)1) {
+		DOCA_LOG_ERR("User factor parameter is out of range. Expected range: (0, 1]");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 	memcpy(&dpa_cfg->user_factor, &user_factor, sizeof(dpa_cfg->user_factor));
@@ -332,7 +332,7 @@ doca_error_t dpa_nvqual_register_params(void)
 	doca_argp_param_set_arguments(user_factor, "[user factor]");
 	doca_argp_param_set_description(
 		user_factor,
-		"user factor from type float (optional). If not provided then 0.75f be chosen.");
+		"user factor from type float in the range of (0, 1] to determine the duration of each iteration (optional). If not provided then set to 0.75f.");
 	doca_argp_param_set_callback(user_factor, user_factor_param_callback);
 	doca_argp_param_set_type(user_factor, DOCA_ARGP_TYPE_STRING);
 	err = doca_argp_register_param(user_factor);
@@ -993,6 +993,11 @@ doca_error_t dpa_nvqual(struct dpa_nvqual_config *nvqual_argp_cfg)
 	}
 #endif
 	struct dpa_nvqual *nvq = (struct dpa_nvqual *)malloc(sizeof(struct dpa_nvqual));
+	if (nvq == NULL) {
+		DOCA_LOG_ERR("Failed to allocate memory for main context");
+		return DOCA_ERROR_NO_MEMORY;
+	}
+
 	doca_err = setup(nvqual_argp_cfg, nvq);
 	if (doca_err != DOCA_SUCCESS) {
 		tear_down(nvq);

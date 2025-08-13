@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -34,7 +34,7 @@
 #include "doca_flow.h"
 #include "doca_flow_net.h"
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 DOCA_LOG_REGISTER(FLOW_IPV6_FLOW_LABEL);
 
@@ -45,6 +45,9 @@ DOCA_LOG_REGISTER(FLOW_IPV6_FLOW_LABEL);
 #define NB_ENCAP_PIPE_ENTRIES (2)
 #define NB_EGRESS_PIPE_ENTRIES (NB_MODIFY_PIPE_ENTRIES + NB_ENCAP_PIPE_ENTRIES)
 #define TOTAL_ENTRIES (NB_INGRESS_PIPE_ENTRIES + NB_EGRESS_PIPE_ENTRIES)
+
+struct doca_flow_pipe *egress_pipe[2];
+
 /*
  * Create DOCA Flow ingress pipe with transport layer match and set pkt meta value.
  *
@@ -76,7 +79,7 @@ static doca_error_t create_ingress_pipe(struct doca_flow_port *port,
 	match.parser_meta.outer_l4_type = 0xffffffff;
 	match.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TRANSPORT;
 	match.outer.transport.src_port = 0xffff;
-	match.outer.transport.dst_port = rte_cpu_to_be_16(80);
+	match.outer.transport.dst_port = DOCA_HTOBE16(80);
 
 	/* Set meta data to match on the egress domain */
 	actions.meta.pkt_meta = UINT32_MAX;
@@ -115,8 +118,8 @@ static doca_error_t create_ingress_pipe(struct doca_flow_port *port,
 	}
 
 	/* Forwarding traffic to other port */
-	fwd.type = DOCA_FLOW_FWD_PORT;
-	fwd.port_id = port_id ^ 1;
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = egress_pipe[port_id ^ 1];
 
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, &pipe);
 	if (result != DOCA_SUCCESS) {
@@ -126,7 +129,7 @@ static doca_error_t create_ingress_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_TCP;
-	match.outer.transport.src_port = rte_cpu_to_be_16(1234);
+	match.outer.transport.src_port = DOCA_HTOBE16(1234);
 	actions.meta.pkt_meta = DOCA_HTOBE32(1);
 	flags = DOCA_FLOW_WAIT_FOR_BATCH;
 	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, flags, status, &entry);
@@ -143,7 +146,7 @@ static doca_error_t create_ingress_pipe(struct doca_flow_port *port,
 	}
 
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_TCP;
-	match.outer.transport.src_port = rte_cpu_to_be_16(5678);
+	match.outer.transport.src_port = DOCA_HTOBE16(5678);
 	actions.meta.pkt_meta = DOCA_HTOBE32(2);
 	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, flags, status, &entry);
 	if (result != DOCA_SUCCESS) {
@@ -256,12 +259,14 @@ static doca_error_t add_encap_pipe_entries(struct doca_flow_pipe *pipe, struct e
  * Create DOCA Flow pipe on EGRESS domain with match on the packet meta and encap action with changeable values.
  *
  * @port [in]: port of the pipe.
+ * @port_id [in]: pipe port ID
  * @next_pipe [in]: pointer to modify pipe for forwarding to.
  * @status [in]: user context for adding entries.
  * @nb_entries [out]: pointer to put into number of entries.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t create_encap_pipe(struct doca_flow_port *port,
+				      int port_id,
 				      struct doca_flow_pipe *next_pipe,
 				      struct entries_status *status,
 				      uint32_t *nb_entries)
@@ -293,7 +298,7 @@ static doca_error_t create_encap_pipe(struct doca_flow_port *port,
 	actions.encap_cfg.encap.outer.ip6.hop_limit = 64;
 	actions.encap_cfg.encap.outer.ip6.traffic_class = 0xdb;
 	actions.encap_cfg.encap.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-	actions.encap_cfg.encap.outer.udp.l4_port.dst_port = RTE_BE16(DOCA_FLOW_MPLS_DEFAULT_PORT);
+	actions.encap_cfg.encap.outer.udp.l4_port.dst_port = DOCA_HTOBE16(DOCA_FLOW_MPLS_DEFAULT_PORT);
 	actions.encap_cfg.encap.tun.type = DOCA_FLOW_TUN_MPLS_O_UDP;
 	actions.encap_cfg.encap.tun.mpls[0].label = 0xffffffff;
 	actions.encap_cfg.encap.tun.mpls[1].label = 0xffffffff;
@@ -350,6 +355,8 @@ static doca_error_t create_encap_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to add entries to encap pipe: %s", doca_error_get_descr(result));
 		return result;
 	}
+
+	egress_pipe[port_id] = pipe;
 
 	*nb_entries = 2;
 	return DOCA_SUCCESS;
@@ -538,7 +545,7 @@ static doca_error_t prepare_egress_pipeline(struct doca_flow_port *pair_port,
 		return result;
 	}
 
-	result = create_encap_pipe(pair_port, pipe, status, &nb_pipe_entries);
+	result = create_encap_pipe(pair_port, pair_port_id, pipe, status, &nb_pipe_entries);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create encap pipe with entries: %s", doca_error_get_descr(result));
 		return result;
@@ -596,7 +603,6 @@ doca_error_t flow_ipv6_flow_label(int nb_queues)
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status egress_status;
 	struct entries_status ingress_status;
@@ -609,9 +615,8 @@ doca_error_t flow_ipv6_flow_label(int nb_queues)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, TOTAL_ENTRIES));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(TOTAL_ENTRIES));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

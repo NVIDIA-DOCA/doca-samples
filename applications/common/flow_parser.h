@@ -136,13 +136,6 @@ void set_port_pipes_flush(void (*action)(uint16_t port_id));
 void set_query(void (*action)(uint64_t entry_id, struct doca_flow_resource_query *states));
 
 /*
- * Set the function to be called once port pipes dump command is entered
- *
- * @action [in]: Function callback
- */
-void set_port_pipes_dump(void (*action)(uint16_t port_id, FILE *fd));
-
-/*
  * Initialize parser and open the command line interface
  *
  * @shell_prompt [in]: String for the shell to prompt

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -37,7 +37,6 @@ DOCA_LOG_REGISTER(ETH::RXQ::COMMON);
 
 #define COUNTERS_NUM (1 << 19)
 #define DEFAULT_METADATA 1234
-#define DEFAULT_FLOW_TAG 5678
 
 static bool is_flow_initialized = false;
 
@@ -94,7 +93,7 @@ destroy_cfg:
  * @df_port [out]: DOCA Flow port to start
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t start_doca_flow_port(struct doca_dev *dev, struct doca_flow_port **df_port)
+static doca_error_t start_doca_flow_port(struct doca_dev *dev, uint16_t port_id, struct doca_flow_port **df_port)
 {
 	doca_error_t status, tmp_result;
 	struct doca_flow_port_cfg *port_cfg;
@@ -105,7 +104,7 @@ static doca_error_t start_doca_flow_port(struct doca_dev *dev, struct doca_flow_
 		return status;
 	}
 
-	status = doca_flow_port_cfg_set_port_id(port_cfg, 0);
+	status = doca_flow_port_cfg_set_port_id(port_cfg, port_id);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg port ID, err: %s", doca_error_get_name(status));
 		goto destroy_port_cfg;
@@ -136,14 +135,14 @@ destroy_port_cfg:
  * Create root pipe and add an entry into desired RXQ queue
  *
  * @df_port [in]: DOCA Flow port to create root pipe in
- * @rxq_flow_queue_ids [in]: Pointer to RXQ queue ID
- * @nb_queues [in]: Number of flow queues supplied
+ * @rxq_queue_ids [in]: Pointer to RXQ queue IDs array
+ * @nb_queues [in]: Number of queues IDs in the array
  * @root_pipe [out]: DOCA Flow pipe to create
  * @root_entry [out]: DOCA Flow port entry to create
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t create_root_pipe(struct doca_flow_port *df_port,
-				     uint16_t *rxq_flow_queue_ids,
+				     uint16_t *rxq_queue_ids,
 				     uint16_t nb_queues,
 				     struct doca_flow_pipe **root_pipe,
 				     struct doca_flow_pipe_entry **root_entry)
@@ -158,7 +157,7 @@ static doca_error_t create_root_pipe(struct doca_flow_port *df_port,
 		.rss_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED,
 		.rss =
 			{
-				.queues_array = rxq_flow_queue_ids,
+				.queues_array = rxq_queue_ids,
 				.nr_queues = nb_queues,
 				.outer_flags = DOCA_FLOW_RSS_IPV4 | DOCA_FLOW_RSS_UDP,
 			},
@@ -170,7 +169,6 @@ static doca_error_t create_root_pipe(struct doca_flow_port *df_port,
 	memset(&all_match, 0, sizeof(all_match));
 	memset(&actions, 0, sizeof(actions));
 	actions.meta.pkt_meta = DOCA_HTOBE32(DEFAULT_METADATA);
-	actions.meta.mark = DOCA_HTOBE32(DEFAULT_FLOW_TAG);
 	actions_arr[0] = &actions;
 
 	status = doca_flow_pipe_cfg_create(&pipe_cfg, df_port);
@@ -235,7 +233,7 @@ destroy_pipe_cfg:
 	return status;
 }
 
-doca_error_t rxq_common_init_doca_flow(struct doca_dev *dev, struct eth_rxq_flow_resources *resources)
+doca_error_t rxq_common_init_doca_flow(struct doca_dev *dev, uint16_t port_id, struct eth_rxq_flow_resources *resources)
 {
 	doca_error_t status;
 
@@ -254,7 +252,7 @@ doca_error_t rxq_common_init_doca_flow(struct doca_dev *dev, struct eth_rxq_flow
 		is_flow_initialized = true;
 	}
 
-	status = start_doca_flow_port(dev, &(resources->df_port));
+	status = start_doca_flow_port(dev, port_id, &(resources->df_port));
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to allocate eth_rxq_flow_resources: failed to init DOCA flow port, err: %s",
 			     doca_error_get_name(status));
@@ -274,7 +272,7 @@ doca_error_t allocate_eth_rxq_flow_resources(struct eth_rxq_flow_config *cfg, st
 	doca_error_t status, clean_status;
 
 	status = create_root_pipe(resources->df_port,
-				  cfg->rxq_flow_queue_ids,
+				  cfg->rxq_queue_ids,
 				  cfg->nb_queues,
 				  &(resources->root_pipe),
 				  &(resources->root_entry));

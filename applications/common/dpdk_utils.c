@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -28,10 +28,13 @@
 #include <rte_malloc.h>
 
 #include <doca_log.h>
+#include <doca_dev.h>
+#include <doca_dpdk.h>
 #include <doca_mmap.h>
 #include <doca_buf_inventory.h>
 
 #include "dpdk_utils.h"
+#include "utils.h"
 
 DOCA_LOG_REGISTER(NUTILS);
 
@@ -46,199 +49,15 @@ DOCA_LOG_REGISTER(NUTILS);
 		addr[12], addr[13], addr[14], addr[15]
 #endif
 
+#define AUX_DEV_IDENTIFIER_PREFIX "auxiliary:mlx5_core.sf."
+#define AUX_DEV_IDENTIFIER_MAX_SIZE (32)
+#define DEV_IDENTIFIER_MAX_SIZE (MAX(AUX_DEV_IDENTIFIER_MAX_SIZE, DOCA_DEVINFO_PCI_ADDR_SIZE))
+
 struct dpdk_mempool_shadow {
 	struct doca_dev *device;     /* DOCA device used to register memory */
 	struct doca_mmap **mmap_arr; /* DOCA mmap array that has mapped the packet buffers */
 	uint32_t nb_mmaps;	     /* Number of elements in mmap_arr */
 };
-
-/*
- * Bind port to all the peer ports
- *
- * @port_id [in]: port ID
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t bind_hairpin_queues(uint16_t port_id)
-{
-	/* Configure the Rx and Tx hairpin queues for the selected port */
-	int result = 0, peer_port, peer_ports_len;
-	uint16_t peer_ports[RTE_MAX_ETHPORTS];
-
-	/* bind current Tx to all peer Rx */
-	peer_ports_len = rte_eth_hairpin_get_peer_ports(port_id, peer_ports, RTE_MAX_ETHPORTS, 1);
-	if (peer_ports_len < 0) {
-		DOCA_LOG_ERR("Failed to get hairpin peer Rx ports of port %d, (%d)", port_id, peer_ports_len);
-		return DOCA_ERROR_DRIVER;
-	}
-	for (peer_port = 0; peer_port < peer_ports_len; peer_port++) {
-		result = rte_eth_hairpin_bind(port_id, peer_ports[peer_port]);
-		if (result < 0) {
-			DOCA_LOG_ERR("Failed to bind hairpin queues (%d)", result);
-			return DOCA_ERROR_DRIVER;
-		}
-	}
-	/* bind all peer Tx to current Rx */
-	peer_ports_len = rte_eth_hairpin_get_peer_ports(port_id, peer_ports, RTE_MAX_ETHPORTS, 0);
-	if (peer_ports_len < 0) {
-		DOCA_LOG_ERR("Failed to get hairpin peer Tx ports of port %d, (%d)", port_id, peer_ports_len);
-		return DOCA_ERROR_DRIVER;
-	}
-
-	for (peer_port = 0; peer_port < peer_ports_len; peer_port++) {
-		result = rte_eth_hairpin_bind(peer_ports[peer_port], port_id);
-		if (result < 0) {
-			DOCA_LOG_ERR("Failed to bind hairpin queues (%d)", result);
-			return DOCA_ERROR_DRIVER;
-		}
-	}
-	return DOCA_SUCCESS;
-}
-
-/*
- * Unbind port from all its peer ports
- *
- * @port_id [in]: port ID
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t unbind_hairpin_queues(uint16_t port_id)
-{
-	/* Configure the Rx and Tx hairpin queues for the selected port */
-	int result = 0, peer_port, peer_ports_len;
-	uint16_t peer_ports[RTE_MAX_ETHPORTS];
-
-	/* unbind current Tx from all peer Rx */
-	peer_ports_len = rte_eth_hairpin_get_peer_ports(port_id, peer_ports, RTE_MAX_ETHPORTS, 1);
-	if (peer_ports_len < 0) {
-		DOCA_LOG_ERR("Failed to get hairpin peer Tx ports of port %d, (%d)", port_id, peer_ports_len);
-		return DOCA_ERROR_DRIVER;
-	}
-
-	for (peer_port = 0; peer_port < peer_ports_len; peer_port++) {
-		result = rte_eth_hairpin_unbind(port_id, peer_ports[peer_port]);
-		if (result < 0) {
-			DOCA_LOG_ERR("Failed to bind hairpin queues (%d)", result);
-			return DOCA_ERROR_DRIVER;
-		}
-	}
-	/* unbind all peer Tx from current Rx */
-	peer_ports_len = rte_eth_hairpin_get_peer_ports(port_id, peer_ports, RTE_MAX_ETHPORTS, 0);
-	if (peer_ports_len < 0) {
-		DOCA_LOG_ERR("Failed to get hairpin peer Tx ports of port %d, (%d)", port_id, peer_ports_len);
-		return DOCA_ERROR_DRIVER;
-	}
-	for (peer_port = 0; peer_port < peer_ports_len; peer_port++) {
-		result = rte_eth_hairpin_unbind(peer_ports[peer_port], port_id);
-		if (result < 0) {
-			DOCA_LOG_ERR("Failed to bind hairpin queues (%d)", result);
-			return DOCA_ERROR_DRIVER;
-		}
-	}
-	return DOCA_SUCCESS;
-}
-
-/*
- * Set up all hairpin queues
- *
- * @port_id [in]: port ID
- * @peer_port_id [in]: peer port ID
- * @reserved_hairpin_q_list [in]: list of hairpin queues index
- * @hairpin_queue_len [in]: length of reserved_hairpin_q_list
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t setup_hairpin_queues(uint16_t port_id,
-					 uint16_t peer_port_id,
-					 uint16_t *reserved_hairpin_q_list,
-					 int hairpin_queue_len)
-{
-	/* Port:
-	 *	0. RX queue
-	 *	1. RX hairpin queue rte_eth_rx_hairpin_queue_setup
-	 *	2. TX hairpin queue rte_eth_tx_hairpin_queue_setup
-	 */
-
-	int result = 0, hairpin_q;
-	uint16_t nb_tx_rx_desc = 2048;
-	uint32_t manual = 1;
-	uint32_t tx_exp = 1;
-	struct rte_eth_hairpin_conf hairpin_conf = {
-		.peer_count = 1,
-		.manual_bind = !!manual,
-		.tx_explicit = !!tx_exp,
-		.peers[0] = {peer_port_id, 0},
-	};
-
-	for (hairpin_q = 0; hairpin_q < hairpin_queue_len; hairpin_q++) {
-		// TX
-		hairpin_conf.peers[0].queue = reserved_hairpin_q_list[hairpin_q];
-		result = rte_eth_tx_hairpin_queue_setup(port_id,
-							reserved_hairpin_q_list[hairpin_q],
-							nb_tx_rx_desc,
-							&hairpin_conf);
-		if (result < 0) {
-			DOCA_LOG_ERR("Failed to setup hairpin queues (%d)", result);
-			return DOCA_ERROR_DRIVER;
-		}
-
-		// RX
-		hairpin_conf.peers[0].queue = reserved_hairpin_q_list[hairpin_q];
-		result = rte_eth_rx_hairpin_queue_setup(port_id,
-							reserved_hairpin_q_list[hairpin_q],
-							nb_tx_rx_desc,
-							&hairpin_conf);
-		if (result < 0) {
-			DOCA_LOG_ERR("Failed to setup hairpin queues (%d)", result);
-			return DOCA_ERROR_DRIVER;
-		}
-	}
-	return DOCA_SUCCESS;
-}
-
-/*
- * Unbind hairpin queues from all ports
- *
- * @nb_ports [in]: number of ports
- */
-static void disable_hairpin_queues(uint16_t nb_ports)
-{
-	doca_error_t result;
-	uint16_t port_id;
-
-	for (port_id = 0; port_id < nb_ports; port_id++) {
-		if (!rte_eth_dev_is_valid_port(port_id))
-			continue;
-		result = unbind_hairpin_queues(port_id);
-		if (result != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Disabling hairpin queues failed: err=%d, port=%u", result, port_id);
-	}
-}
-
-/*
- * Bind hairpin queues to all ports
- *
- * @nb_ports [in]: number of ports
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t enable_hairpin_queues(uint8_t nb_ports)
-{
-	uint16_t port_id;
-	uint16_t n = 0;
-	doca_error_t result;
-
-	for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++) {
-		if (!rte_eth_dev_is_valid_port(port_id))
-			/* the device ID  might not be contiguous */
-			continue;
-		result = bind_hairpin_queues(port_id);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Hairpin bind failed on port=%u", port_id);
-			disable_hairpin_queues(port_id);
-			return result;
-		}
-		if (++n >= nb_ports)
-			break;
-	}
-	return DOCA_SUCCESS;
-}
 
 /*
  * Creates a new mempool in memory to hold the mbufs
@@ -271,18 +90,14 @@ static doca_error_t allocate_mempool(const uint32_t total_nb_mbufs,
  */
 static doca_error_t port_init(struct rte_mempool *mbuf_pool, uint8_t port, struct application_dpdk_config *app_config)
 {
-	doca_error_t result;
 	int ret = 0;
 	int symmetric_hash_key_length = RSS_KEY_LEN;
-	const uint16_t nb_hairpin_queues = app_config->port_config.nb_hairpin_q;
 	const uint16_t rx_rings = app_config->port_config.nb_queues;
 	const uint16_t tx_rings = app_config->port_config.nb_queues;
 	const uint16_t rss_support = !!(app_config->port_config.rss_support && (app_config->port_config.nb_queues > 1));
-	bool isolated = !!app_config->port_config.isolated_mode;
-	uint16_t q, queue_index;
+	uint16_t q;
 	struct rte_ether_addr addr;
 	struct rte_eth_dev_info dev_info;
-	struct rte_flow_error error;
 	uint8_t symmetric_hash_key[RSS_KEY_LEN] = {
 		0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
 		0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
@@ -316,7 +131,7 @@ static doca_error_t port_init(struct rte_mempool *mbuf_pool, uint8_t port, struc
 	port_conf.txmode.offloads = app_config->port_config.tx_offloads;
 
 	/* Configure the Ethernet device */
-	ret = rte_eth_dev_configure(port, rx_rings + nb_hairpin_queues, tx_rings + nb_hairpin_queues, &port_conf);
+	ret = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
 	if (ret < 0) {
 		DOCA_LOG_ERR("Failed to configure the ethernet device - (%d)", ret);
 		return DOCA_ERROR_DRIVER;
@@ -353,58 +168,6 @@ static doca_error_t port_init(struct rte_mempool *mbuf_pool, uint8_t port, struc
 			return DOCA_ERROR_DRIVER;
 		}
 	}
-
-	/* Enabled hairpin queue before port start */
-	if (nb_hairpin_queues) {
-		uint16_t rss_queue_list[nb_hairpin_queues];
-
-		if (app_config->port_config.self_hairpin && rte_eth_dev_is_valid_port(port ^ 1)) {
-			/* Hairpin to both self and peer */
-			assert((nb_hairpin_queues % 2) == 0);
-			for (queue_index = 0; queue_index < nb_hairpin_queues / 2; queue_index++)
-				rss_queue_list[queue_index] = app_config->port_config.nb_queues + queue_index * 2;
-			result = setup_hairpin_queues(port, port, rss_queue_list, nb_hairpin_queues / 2);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Cannot hairpin self port %" PRIu8 ", ret: %s",
-					     port,
-					     doca_error_get_descr(result));
-				return result;
-			}
-			for (queue_index = 0; queue_index < nb_hairpin_queues / 2; queue_index++)
-				rss_queue_list[queue_index] = app_config->port_config.nb_queues + queue_index * 2 + 1;
-			result = setup_hairpin_queues(port, port ^ 1, rss_queue_list, nb_hairpin_queues / 2);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Cannot hairpin peer port %" PRIu8 ", ret: %s",
-					     port ^ 1,
-					     doca_error_get_descr(result));
-				return result;
-			}
-		} else {
-			/* Hairpin to self or peer */
-			for (queue_index = 0; queue_index < nb_hairpin_queues; queue_index++)
-				rss_queue_list[queue_index] = app_config->port_config.nb_queues + queue_index;
-			if (rte_eth_dev_is_valid_port(port ^ 1))
-				result = setup_hairpin_queues(port, port ^ 1, rss_queue_list, nb_hairpin_queues);
-			else
-				result = setup_hairpin_queues(port, port, rss_queue_list, nb_hairpin_queues);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Cannot hairpin port %" PRIu8 ", ret=%d", port, result);
-				return result;
-			}
-		}
-	}
-
-	/* Set isolated mode (true or false) before port start */
-	ret = rte_flow_isolate(port, isolated, &error);
-	if (ret < 0) {
-		DOCA_LOG_ERR("Port %u could not be set isolated mode to %s (%s)",
-			     port,
-			     isolated ? "true" : "false",
-			     error.message);
-		return DOCA_ERROR_DRIVER;
-	}
-	if (isolated)
-		DOCA_LOG_INFO("Ingress traffic on port %u is in isolated mode", port);
 
 	/* Start the Ethernet port */
 	ret = rte_eth_dev_start(port);
@@ -547,24 +310,11 @@ doca_error_t dpdk_queues_and_ports_init(struct application_dpdk_config *app_dpdk
 		}
 	}
 
-	/* Enable hairpin queues */
-	if (app_dpdk_config->port_config.nb_hairpin_q > 0) {
-		result = enable_hairpin_queues(app_dpdk_config->port_config.nb_ports);
-		if (result != DOCA_SUCCESS)
-			goto ports_cleanup;
-	}
-
 	return DOCA_SUCCESS;
-
-ports_cleanup:
-	dpdk_ports_fini(app_dpdk_config, RTE_MAX_ETHPORTS);
-	return result;
 }
 
 void dpdk_queues_and_ports_fini(struct application_dpdk_config *app_dpdk_config)
 {
-	disable_hairpin_queues(RTE_MAX_ETHPORTS);
-
 	dpdk_ports_fini(app_dpdk_config, RTE_MAX_ETHPORTS);
 }
 
@@ -902,6 +652,24 @@ void print_header_info(const struct rte_mbuf *packet, const bool l2, const bool 
 		print_l3_header(packet);
 	if (l4)
 		print_l4_header(packet);
+}
+
+void dpdk_fini_with_devs(uint16_t nb_devs)
+{
+	struct doca_dev *dev;
+	doca_error_t result;
+	int i;
+
+	dpdk_fini();
+	for (i = 0; i < nb_devs; i++) {
+		result = doca_dpdk_port_as_dev(i, &dev);
+		if (result != DOCA_SUCCESS)
+			DOCA_LOG_WARN("Failed to get device for closing port %d: %s", i, doca_error_get_descr(result));
+
+		result = doca_dev_close(dev);
+		if (result != DOCA_SUCCESS)
+			DOCA_LOG_WARN("Failed to close device for port %d: %s", i, doca_error_get_descr(result));
+	}
 }
 
 doca_error_t dpdk_init(int argc, char **argv)

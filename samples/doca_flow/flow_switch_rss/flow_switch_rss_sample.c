@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,7 +26,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <rte_byteorder.h>
 #include <rte_ethdev.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
@@ -36,7 +35,7 @@
 #include <doca_flow.h>
 #include <doca_dev.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 #include "flow_switch_common.h"
 
 DOCA_LOG_REGISTER(FLOW_SWITCH_SWITCH_RSS);
@@ -69,10 +68,10 @@ enum ingress_root_entry_type {
 	INGRESS_ROOT_TO_MAX = INGRESS_ROOT_TO_VPORT,
 };
 
-enum switch_rss_pipe_dir_type {
-	SWITCH_RSS_PIPE_DIR_N2H, /* Network to host direction pipe */
-	SWITCH_RSS_PIPE_DIR_BI,	 /* Bi-direction pipe */
-	SWITCH_RSS_PIPE_DIR_MAX,
+enum switch_rss_pipe_dom_type {
+	SWITCH_RSS_PIPE_DOM_INGRESS, /* Network to host direction pipe */
+	SWITCH_RSS_PIPE_DOM_EGRESS,  /* Host to network direction pipe */
+	SWITCH_RSS_PIPE_DOM_MAX,
 };
 
 #define NB_EGRESS_ENTRIES (SWITCH_RSS_BASIC_PIPE_MAX + SWITCH_RSS_CONTROL_MAX)
@@ -83,7 +82,7 @@ enum switch_rss_pipe_dir_type {
 
 #define NB_TOTAL_ENTRIES \
 	(1 + NB_INGRESS_ENTRIES + NB_EGRESS_ENTRIES + NB_VPORT_ENTRIES + \
-	 (SWITCH_RSS_BASIC_PIPE_MAX + SWITCH_RSS_CONTROL_MAX) * SWITCH_RSS_PIPE_DIR_MAX)
+	 (SWITCH_RSS_BASIC_PIPE_MAX + SWITCH_RSS_CONTROL_MAX) * SWITCH_RSS_PIPE_DOM_MAX)
 
 #define MAX_PKTS 16
 
@@ -94,14 +93,14 @@ static struct doca_flow_pipe *pipe_ingress;
 static struct doca_flow_pipe *pipe_vport;
 static struct doca_flow_pipe *pipe_rss;
 
-static struct doca_flow_pipe *pipe_basic_switch_rss[SWITCH_RSS_PIPE_DIR_MAX][SWITCH_RSS_BASIC_PIPE_MAX];
-static struct doca_flow_pipe *pipe_control_switch_rss[SWITCH_RSS_PIPE_DIR_MAX];
+static struct doca_flow_pipe *pipe_basic_switch_rss[SWITCH_RSS_PIPE_DOM_MAX][SWITCH_RSS_BASIC_PIPE_MAX];
+static struct doca_flow_pipe *pipe_control_switch_rss[SWITCH_RSS_PIPE_DOM_MAX];
 
-static struct doca_flow_pipe_entry *entry_basic_switch_rss[SWITCH_RSS_PIPE_DIR_MAX][SWITCH_RSS_BASIC_PIPE_MAX];
-static struct doca_flow_pipe_entry *entry_control_switch_rss[SWITCH_RSS_PIPE_DIR_MAX][SWITCH_RSS_CONTROL_MAX];
+static struct doca_flow_pipe_entry *entry_basic_switch_rss[SWITCH_RSS_PIPE_DOM_MAX][SWITCH_RSS_BASIC_PIPE_MAX];
+static struct doca_flow_pipe_entry *entry_control_switch_rss[SWITCH_RSS_PIPE_DOM_MAX][SWITCH_RSS_CONTROL_MAX];
 static struct doca_flow_pipe_entry *rss_entry;
 
-static uint16_t basic_queue_map[SWITCH_RSS_PIPE_DIR_MAX][SWITCH_RSS_BASIC_PIPE_MAX] = {
+static uint16_t basic_queue_map[SWITCH_RSS_PIPE_DOM_MAX][SWITCH_RSS_BASIC_PIPE_MAX] = {
 	{
 		0,
 		1,
@@ -113,7 +112,7 @@ static uint16_t basic_queue_map[SWITCH_RSS_PIPE_DIR_MAX][SWITCH_RSS_BASIC_PIPE_M
 		5,
 	},
 };
-static uint16_t control_queue_map[SWITCH_RSS_PIPE_DIR_MAX][SWITCH_RSS_CONTROL_MAX] = {
+static uint16_t control_queue_map[SWITCH_RSS_PIPE_DOM_MAX][SWITCH_RSS_CONTROL_MAX] = {
 	{
 		6,
 		7,
@@ -271,7 +270,7 @@ static doca_error_t add_rss_pipe_entry(struct doca_flow_pipe *pipe, struct entri
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t create_switch_rss_control_pipe(struct doca_flow_port *port,
-						   enum switch_rss_pipe_dir_type dir,
+						   enum switch_rss_pipe_dom_type dir,
 						   struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_pipe_cfg *pipe_cfg;
@@ -289,8 +288,8 @@ static doca_error_t create_switch_rss_control_pipe(struct doca_flow_port *port,
 		goto destroy_pipe_cfg;
 	}
 
-	if (dir == SWITCH_RSS_PIPE_DIR_N2H) {
-		result = doca_flow_pipe_cfg_set_dir_info(pipe_cfg, DOCA_FLOW_DIRECTION_NETWORK_TO_HOST);
+	if (dir == SWITCH_RSS_PIPE_DOM_INGRESS) {
+		result = doca_flow_pipe_cfg_set_domain(pipe_cfg, DOCA_FLOW_PIPE_DOMAIN_DEFAULT);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg domain: %s", doca_error_get_descr(result));
 			goto destroy_pipe_cfg;
@@ -319,7 +318,7 @@ destroy_pipe_cfg:
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t create_switch_rss_pipe(struct doca_flow_port *port,
-					   enum switch_rss_pipe_dir_type dir,
+					   enum switch_rss_pipe_dom_type dir,
 					   enum switch_rss_basic_pipe_type type,
 					   struct doca_flow_pipe **pipe)
 {
@@ -363,8 +362,8 @@ static doca_error_t create_switch_rss_pipe(struct doca_flow_port *port,
 		goto destroy_pipe_cfg;
 	}
 
-	if (dir == SWITCH_RSS_PIPE_DIR_N2H) {
-		result = doca_flow_pipe_cfg_set_dir_info(pipe_cfg, DOCA_FLOW_DIRECTION_NETWORK_TO_HOST);
+	if (dir == SWITCH_RSS_PIPE_DOM_INGRESS) {
+		result = doca_flow_pipe_cfg_set_domain(pipe_cfg, DOCA_FLOW_PIPE_DOMAIN_DEFAULT);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg domain: %s", doca_error_get_descr(result));
 			goto destroy_pipe_cfg;
@@ -638,9 +637,9 @@ static doca_error_t add_switch_egress_pipe_entries(struct doca_flow_pipe *pipe, 
 
 		fwd.type = DOCA_FLOW_FWD_PIPE;
 		if (entry_index < SWITCH_RSS_BASIC_PIPE_MAX)
-			fwd.next_pipe = pipe_basic_switch_rss[SWITCH_RSS_PIPE_DIR_BI][entry_index];
+			fwd.next_pipe = pipe_basic_switch_rss[SWITCH_RSS_PIPE_DOM_EGRESS][entry_index];
 		else if (entry_index < INGRESS_ROOT_TO_CONTROL)
-			fwd.next_pipe = pipe_control_switch_rss[SWITCH_RSS_PIPE_DIR_BI];
+			fwd.next_pipe = pipe_control_switch_rss[SWITCH_RSS_PIPE_DOM_EGRESS];
 
 		result = doca_flow_pipe_add_entry(0,
 						  pipe,
@@ -689,9 +688,9 @@ static doca_error_t add_switch_ingress_pipe_entries(struct doca_flow_pipe *pipe,
 
 		fwd.type = DOCA_FLOW_FWD_PIPE;
 		if (entry_index < INGRESS_ROOT_TO_BASIC)
-			fwd.next_pipe = pipe_basic_switch_rss[SWITCH_RSS_PIPE_DIR_N2H][entry_index];
+			fwd.next_pipe = pipe_basic_switch_rss[SWITCH_RSS_PIPE_DOM_INGRESS][entry_index];
 		else if (entry_index < INGRESS_ROOT_TO_CONTROL)
-			fwd.next_pipe = pipe_control_switch_rss[SWITCH_RSS_PIPE_DIR_N2H];
+			fwd.next_pipe = pipe_control_switch_rss[SWITCH_RSS_PIPE_DOM_INGRESS];
 		else if (entry_index < INGRESS_ROOT_TO_EGRESS)
 			fwd.next_pipe = pipe_egress;
 		else if (entry_index < INGRESS_ROOT_TO_VPORT)
@@ -773,7 +772,7 @@ static doca_error_t add_switch_vport_pipe_entries(struct doca_flow_pipe *pipe, s
  * @dir [in]: pipe direction
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static int create_switch_rss_pipes(struct doca_flow_port *port, enum switch_rss_pipe_dir_type dir)
+static int create_switch_rss_pipes(struct doca_flow_port *port, enum switch_rss_pipe_dom_type dir)
 {
 	doca_error_t result;
 	int i;
@@ -802,7 +801,7 @@ static int create_switch_rss_pipes(struct doca_flow_port *port, enum switch_rss_
  * @status [in]: user context for adding entry
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static int add_switch_rss_pipe_entries(enum switch_rss_pipe_dir_type dir, struct entries_status *status)
+static int add_switch_rss_pipe_entries(enum switch_rss_pipe_dom_type dir, struct entries_status *status)
 {
 	struct doca_flow_match match;
 	struct doca_flow_fwd fwd;
@@ -907,7 +906,6 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_resource_query query_stats;
 	struct entries_status status;
@@ -916,7 +914,6 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	uint32_t shared_rss_ids;
 	struct doca_flow_shared_resource_cfg cfg = {0};
 	struct doca_flow_resource_rss_cfg rss_cfg = {0};
-	struct doca_dev *doca_dev = ctx->doca_dev[0];
 	const char *start_str;
 	bool is_expert = ctx->is_expert;
 	int i;
@@ -936,11 +933,12 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 		return result;
 	}
 
-	/* Doca_dev is opened for proxy_port only */
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = doca_dev;
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, NB_TOTAL_ENTRIES));
-	result = init_doca_flow_ports(nb_ports, ports, false /* is_hairpin */, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(NB_TOTAL_ENTRIES));
+	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+					     ctx->devs_ctx.nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -990,7 +988,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	}
 
 	/* Create Newtowrk to host rss pipes */
-	result = create_switch_rss_pipes(doca_flow_port_switch_get(ports[0]), SWITCH_RSS_PIPE_DIR_N2H);
+	result = create_switch_rss_pipes(doca_flow_port_switch_get(ports[0]), SWITCH_RSS_PIPE_DOM_INGRESS);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create rx rss pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
@@ -998,7 +996,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 		return result;
 	}
 
-	result = add_switch_rss_pipe_entries(SWITCH_RSS_PIPE_DIR_N2H, &status);
+	result = add_switch_rss_pipe_entries(SWITCH_RSS_PIPE_DOM_INGRESS, &status);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add rx entry: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
@@ -1007,7 +1005,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	}
 
 	/* Create bi-direction rss pipe */
-	result = create_switch_rss_pipes(doca_flow_port_switch_get(ports[0]), SWITCH_RSS_PIPE_DIR_BI);
+	result = create_switch_rss_pipes(doca_flow_port_switch_get(ports[0]), SWITCH_RSS_PIPE_DOM_EGRESS);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create unified rss pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
@@ -1015,7 +1013,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 		return result;
 	}
 
-	result = add_switch_rss_pipe_entries(SWITCH_RSS_PIPE_DIR_BI, &status);
+	result = add_switch_rss_pipe_entries(SWITCH_RSS_PIPE_DOM_EGRESS, &status);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add unified entry: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
@@ -1135,7 +1133,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	}
 
 	for (entry_idx = 0; entry_idx < SWITCH_RSS_BASIC_PIPE_MAX; entry_idx++) {
-		result = doca_flow_resource_query_entry(entry_basic_switch_rss[SWITCH_RSS_PIPE_DIR_N2H][entry_idx],
+		result = doca_flow_resource_query_entry(entry_basic_switch_rss[SWITCH_RSS_PIPE_DOM_INGRESS][entry_idx],
 							&query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
@@ -1149,7 +1147,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	}
 
 	for (entry_idx = 0; entry_idx < SWITCH_RSS_BASIC_PIPE_MAX; entry_idx++) {
-		result = doca_flow_resource_query_entry(entry_basic_switch_rss[SWITCH_RSS_PIPE_DIR_BI][entry_idx],
+		result = doca_flow_resource_query_entry(entry_basic_switch_rss[SWITCH_RSS_PIPE_DOM_EGRESS][entry_idx],
 							&query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
@@ -1163,7 +1161,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	}
 
 	for (entry_idx = 0; entry_idx < SWITCH_RSS_CONTROL_MAX; entry_idx++) {
-		result = doca_flow_resource_query_entry(entry_control_switch_rss[SWITCH_RSS_PIPE_DIR_N2H][entry_idx],
+		result = doca_flow_resource_query_entry(entry_control_switch_rss[SWITCH_RSS_PIPE_DOM_EGRESS][entry_idx],
 							&query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
@@ -1177,7 +1175,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	}
 
 	for (entry_idx = 0; entry_idx < SWITCH_RSS_CONTROL_MAX; entry_idx++) {
-		result = doca_flow_resource_query_entry(entry_control_switch_rss[SWITCH_RSS_PIPE_DIR_BI][entry_idx],
+		result = doca_flow_resource_query_entry(entry_control_switch_rss[SWITCH_RSS_PIPE_DOM_EGRESS][entry_idx],
 							&query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));

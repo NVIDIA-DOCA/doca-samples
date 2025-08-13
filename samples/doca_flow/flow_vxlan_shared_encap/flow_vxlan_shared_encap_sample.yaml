@@ -34,7 +34,7 @@ ports_description:
   port_1: doca_dev
 description: "This sample shows how to use DOCA Flow actions to create a VXLAN tunnel and shared vxlan actions as well as
               illustrating the usage of matching TCP and UDP packets in the same pipe.
-              Sample Command Line: ./build/doca_flow_vxlan_shared_encap  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+              Sample Command Line: ./build/doca_flow_vxlan_shared_encap -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Flow VXLAN shared encap use case #1"
     args: ""

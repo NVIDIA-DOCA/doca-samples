@@ -161,14 +161,13 @@ static int simple_fwd_port_stats_display(uint16_t port, FILE *f)
 	return 0;
 }
 
-int simple_fwd_dump_port_stats(uint16_t port_id, struct doca_flow_port *port)
+int simple_fwd_dump_port_stats(uint16_t port_id)
 {
 	int result = 0;
 	const char clr[] = {27, '[', '2', 'J', '\0'};
 	const char topLeft[] = {27, '[', '1', ';', '1', 'H', '\0'};
 
 	fprintf(stdout, "%s%s", clr, topLeft);
-	doca_flow_port_pipes_dump(port, stdout);
 
 	result = simple_fwd_port_stats_display(port_id, stdout);
 	fflush(stdout);

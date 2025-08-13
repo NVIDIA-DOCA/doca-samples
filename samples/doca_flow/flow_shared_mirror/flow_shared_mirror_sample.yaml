@@ -29,7 +29,7 @@ ports_description:
   port_0: doca_dev
   port_1: doca_rep_dev
 description: "The sample illustrates how to create a pipe/entry for shared mirror.
-              Sample Command Line: ./build/doca_flow_shared_mirror   -- -l 60 -p 08:00.0 -r sf[0]"
+              Sample Command Line: ./build/doca_flow_shared_mirror -- -l 60 -r pci/08:00.0,pf0sf[0]"
 use_cases:
   - name: "Switch shared mirror use case #1"
     args: ""

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -56,7 +56,7 @@ struct eth_rxq_sample_objects {
 	struct eth_rxq_flow_resources flow_resources; /* A struct to hold DOCA flow resources */
 	struct doca_eth_rxq *eth_rxq;		      /* DOCA ETH RXQ context */
 	uint64_t total_received_packets;	      /* Counter for received packets */
-	uint16_t rxq_flow_queue_id;		      /* DOCA ETH RXQ's flow queue ID */
+	uint16_t rxq_queue_id;			      /* DOCA ETH RXQ's queue ID */
 	bool timestamp_enable;			      /* timestamp enable */
 	uint16_t headroom_size;			      /* headroom size */
 	uint16_t tailroom_size;			      /* tailroom size */
@@ -79,7 +79,7 @@ static void event_batch_managed_rcv_success_cb(struct doca_eth_rxq_event_batch_m
 {
 	doca_error_t ret;
 	struct eth_rxq_sample_objects *state;
-	const uint32_t *metadata_array = NULL, *flow_tag_array = NULL, *rx_hash_array = NULL;
+	const uint32_t *metadata_array = NULL, *rx_hash_array = NULL;
 	const uint64_t *timestamp_array = NULL;
 	size_t packet_size;
 	uint16_t headroom_size;
@@ -93,10 +93,6 @@ static void event_batch_managed_rcv_success_cb(struct doca_eth_rxq_event_batch_m
 	ret = doca_eth_rxq_event_batch_managed_recv_get_metadata_array(event_batch_managed_recv, &metadata_array);
 	if (ret != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to get metadata_array, err: %s", doca_error_get_name(ret));
-
-	ret = doca_eth_rxq_event_batch_managed_recv_get_flow_tag_array(event_batch_managed_recv, &flow_tag_array);
-	if (ret != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to get flow_tag_arrat, err: %s", doca_error_get_name(ret));
 
 	ret = doca_eth_rxq_event_batch_managed_recv_get_rx_hash_array(event_batch_managed_recv, &rx_hash_array);
 	if (ret != DOCA_SUCCESS)
@@ -150,9 +146,6 @@ static void event_batch_managed_rcv_success_cb(struct doca_eth_rxq_event_batch_m
 													1,
 													i,
 													0));
-
-		if (flow_tag_array != NULL)
-			DOCA_LOG_INFO("Packet#%u: flow_tag associated with the packet is %u", i, flow_tag_array[i]);
 
 		if (rx_hash_array != NULL)
 			DOCA_LOG_INFO("Packet#%u: rx_hash associated with the packet is %u", i, rx_hash_array[i]);
@@ -286,12 +279,6 @@ static doca_error_t create_eth_rxq_ctx(struct eth_rxq_sample_objects *state)
 		goto destroy_eth_rxq;
 	}
 
-	status = doca_eth_rxq_set_flow_tag(state->eth_rxq, 1);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to enable flow_tag, err: %s", doca_error_get_name(status));
-		goto destroy_eth_rxq;
-	}
-
 	status = doca_eth_rxq_set_rx_hash(state->eth_rxq, 1);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to enable rx_hash, err: %s", doca_error_get_name(status));
@@ -335,11 +322,12 @@ static doca_error_t create_eth_rxq_ctx(struct eth_rxq_sample_objects *state)
 		goto destroy_eth_rxq;
 	}
 
-	status = doca_eth_rxq_get_flow_queue_id(state->eth_rxq, &(state->rxq_flow_queue_id));
+	status = doca_eth_rxq_apply_queue_id(state->eth_rxq, 0);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get flow queue ID of RXQ, err: %s", doca_error_get_name(status));
+		DOCA_LOG_ERR("Failed to apply queue ID of RXQ, err: %s", doca_error_get_name(status));
 		goto stop_ctx;
 	}
+	state->rxq_queue_id = 0;
 
 	return DOCA_SUCCESS;
 stop_ctx:
@@ -484,7 +472,7 @@ doca_error_t eth_rxq_batch_managed_mempool_receive(const char *ib_dev_name,
 
 	flow_cfg.dev = state.core_resources.core_objs.dev;
 
-	status = rxq_common_init_doca_flow(flow_cfg.dev, &(state.flow_resources));
+	status = rxq_common_init_doca_flow(flow_cfg.dev, 0, &(state.flow_resources));
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init doca flow, err: %s", doca_error_get_name(status));
 		goto rxq_cleanup;
@@ -496,7 +484,7 @@ doca_error_t eth_rxq_batch_managed_mempool_receive(const char *ib_dev_name,
 		goto rxq_cleanup;
 	}
 
-	flow_cfg.rxq_flow_queue_ids = &(state.rxq_flow_queue_id);
+	flow_cfg.rxq_queue_ids = &(state.rxq_queue_id);
 	flow_cfg.nb_queues = 1;
 
 	status = allocate_eth_rxq_flow_resources(&flow_cfg, &(state.flow_resources));

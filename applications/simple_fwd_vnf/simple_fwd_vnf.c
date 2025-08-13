@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,6 +32,8 @@
 
 #include <doca_argp.h>
 #include <doca_flow_tune_server.h>
+#include <doca_dpdk.h>
+#include <doca_dev.h>
 #include <doca_log.h>
 
 #include <dpdk_utils.h>
@@ -59,6 +61,21 @@ static void signal_handler(int signum)
 }
 
 /*
+ * Close DOCA devices for all ports
+ *
+ * @nb_devs [in]: number of devices to close
+ */
+static void simple_fwd_close_doca_devs(int nb_devs)
+{
+	struct doca_dev *dev;
+	int i;
+
+	for (i = 0; i < nb_devs; i++)
+		if (doca_dpdk_port_as_dev(i, &dev) == DOCA_SUCCESS)
+			doca_dev_close(dev);
+}
+
+/*
  * Simple forward VNF application main function
  *
  * @argc [in]: command line arguments size
@@ -75,7 +92,6 @@ int main(int argc, char **argv)
 	struct application_dpdk_config dpdk_config = {
 		.port_config.nb_ports = 2,
 		.port_config.nb_queues = 4,
-		.port_config.nb_hairpin_q = 4,
 		.port_config.enable_mbuf_metadata = 1,
 		.reserve_main_thread = true,
 	};
@@ -110,7 +126,7 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
 		return EXIT_FAILURE;
 	}
-	doca_argp_set_dpdk_program(dpdk_init);
+	doca_argp_set_dpdk_program(flow_init_dpdk);
 	result = register_simple_fwd_params();
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register application params: %s", doca_error_get_descr(result));
@@ -120,6 +136,13 @@ int main(int argc, char **argv)
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse application input: %s", doca_error_get_descr(result));
+		doca_argp_destroy();
+		return EXIT_FAILURE;
+	}
+
+	result = init_doca_flow_devs(&app_cfg.flow_devs);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to init flow devices: %s", doca_error_get_descr(result));
 		doca_argp_destroy();
 		return EXIT_FAILURE;
 	}
@@ -187,6 +210,7 @@ exit_app:
 	/* DPDK cleanup resources */
 	dpdk_queues_and_ports_fini(&dpdk_config);
 dpdk_destroy:
+	simple_fwd_close_doca_devs(dpdk_config.port_config.nb_ports);
 	dpdk_fini();
 
 	/* ARGP cleanup */

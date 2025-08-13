@@ -31,7 +31,7 @@ ports_description:
 description: "The sample illustrates how to use DOCA_FLOW_FWD_TARGET and how to obtain an instance
               of struct doca_flow_target, specifically kernel. The matching cretiria in the sample
               are arbitrary, i.e. they are randomly chosen and are there only to show the use of the target.
-              Sample Command Line: ./build/doca_flow_fwd_target  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+              Sample Command Line: ./build/doca_flow_fwd_target -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Flow fwd_target use case #1"
     args: ""

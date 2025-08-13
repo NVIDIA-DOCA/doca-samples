@@ -29,7 +29,7 @@ ports_description:
   port_1: doca_dev
 description: "This sample illustrates the use of DOCA Flow's aging functionality. It demonstrates how
               to build a pipe and add different entries with different user data and remove them once they are aged.
-              Sample Command Line: ./build/doca_flow_aging  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+              Sample Command Line: ./build/doca_flow_aging -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Flow aging use case #1"
     args: ""

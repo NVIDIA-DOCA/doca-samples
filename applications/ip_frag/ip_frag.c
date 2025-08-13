@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -168,6 +168,17 @@ static doca_error_t ip_frag_mbuf_hw_cksum_callback(void *param, void *config)
 }
 
 /*
+ * Convert the user context to the flow_dev_ctx struct
+ *
+ * @user_ctx [in]: User context
+ * @return: Flow device context
+ */
+static struct flow_dev_ctx *flow_dev_ctx_from_user_ctx(void *user_ctx)
+{
+	return &((struct ip_frag_config *)user_ctx)->flow_devs;
+}
+
+/*
  * Handle application parameters registration
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -180,6 +191,13 @@ static doca_error_t ip_frag_register_params(void)
 	struct doca_argp_param *frag_tbl_size_param;
 	struct doca_argp_param *mbuf_chain_param;
 	doca_error_t result;
+
+	/* Register flow device params */
+	result = register_flow_device_params(flow_dev_ctx_from_user_ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register flow device params: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	/* Create and register ip_frag application mode */
 	result = doca_argp_param_create(&app_mode_param);
@@ -342,13 +360,13 @@ static doca_error_t validate_mode(enum ip_frag_mode mode)
 	switch (mode) {
 	case IP_FRAG_MODE_BIDIR:
 		if (num_ports != 2) {
-			DOCA_LOG_ERR("Bidir mode requires two ports.");
+			DOCA_LOG_ERR("Bidir mode requires two ports, got %u", num_ports);
 			return DOCA_ERROR_NOT_SUPPORTED;
 		}
 		break;
 	case IP_FRAG_MODE_MULTIPORT:
 		if (num_ports != 4) {
-			DOCA_LOG_ERR("Multiport mode requires four ports.");
+			DOCA_LOG_ERR("Multiport mode requires four ports, got %u", num_ports);
 			return DOCA_ERROR_NOT_SUPPORTED;
 		}
 		break;
@@ -401,7 +419,8 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
 		goto app_exit;
 	}
-	doca_argp_set_dpdk_program(dpdk_init);
+
+	doca_argp_set_dpdk_program(flow_init_dpdk);
 
 	result = ip_frag_register_params();
 	if (result != DOCA_SUCCESS) {
@@ -413,6 +432,12 @@ int main(int argc, char **argv)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse application input: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
+	}
+
+	result = init_doca_flow_devs(&cfg.flow_devs);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to init flow devices: %s", doca_error_get_descr(result));
+		goto dpdk_cleanup;
 	}
 
 	result = validate_mode(cfg.mode);
@@ -454,7 +479,7 @@ int main(int argc, char **argv)
 dpdk_ports_queues_cleanup:
 	dpdk_queues_and_ports_fini(&dpdk_config);
 dpdk_cleanup:
-	dpdk_fini();
+	dpdk_fini_with_devs(dpdk_config.port_config.nb_ports);
 argp_cleanup:
 	doca_argp_destroy();
 app_exit:

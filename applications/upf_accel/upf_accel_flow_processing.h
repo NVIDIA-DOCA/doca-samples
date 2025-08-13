@@ -49,8 +49,9 @@ struct upf_accel_fp_sw_counters {
 struct upf_accel_fp_accel_counters {
 	uint64_t current;      /* Number of currently accelerated flows */
 	uint64_t total;	       /* Total number of accelerated flows since app startup */
-	uint64_t errors;       /* Acceleration errors */
+	uint64_t accel_errors; /* Acceleration errors */
 	uint64_t aging_errors; /* Number of failed aging cases */
+	uint64_t del_errors;   /* Number of failed delete cases */
 };
 
 struct upf_accel_fp_data {
@@ -58,6 +59,8 @@ struct upf_accel_fp_data {
 	uint16_t queue_id;							  /* Queue id */
 	struct rte_hash *dyn_tbl;						  /* Dynamic connection table */
 	struct upf_accel_entry_ctx *dyn_tbl_data;				  /* Dynamic connection table data */
+	struct rte_hash *dyn_ext_tbl;						  /* Dynamic extension table */
+	struct upf_accel_entry_ctx *dyn_ext_tbl_data;				  /* Dynamic extension table data */
 	struct upf_accel_fp_sw_counters sw_counters;				  /* SW DP counters */
 	struct app_shared_counter_ids quota_cntrs;				  /* Quota counters to handle */
 	struct upf_accel_fp_accel_counters accel_counters[PARSER_PKT_TYPE_NUM];	  /* Port acceleration counters */

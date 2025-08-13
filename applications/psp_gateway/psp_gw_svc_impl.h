@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -218,10 +218,12 @@ private:
 	 *
 	 * @new_sessions_keys [in]: The new sessions to create entries for
 	 * @peer_svc_addr [in]: The peer to which we will create a tunnel
+	 * @queue_id [in]: The queue ID for to add the entries to
 	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
 	 */
 	doca_error_t add_encrypt_entries(std::vector<psp_session_and_key_t> &new_sessions_keys,
-					 std::string peer_svc_addr);
+					 std::string peer_svc_addr,
+					 uint16_t queue_id);
 	/**
 	 * @brief Prepares the session for the given peer virtual IP
 	 *

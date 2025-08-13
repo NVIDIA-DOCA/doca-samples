@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,15 +29,14 @@
 #include <doca_log.h>
 #include <doca_flow.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 DOCA_LOG_REGISTER(FLOW_ACL);
 
 #define ACL_MEM_REQ_PER_ENTRY (32)
 
-#define ACL_ACTIONS_MEM_SIZE(nr_queues, entries) \
-	rte_align32pow2(MAX((uint32_t)(entries * ACL_MEM_REQ_PER_ENTRY * DOCA_FLOW_MAX_ENTRY_ACTIONS_MEM_SIZE), \
-			    (uint32_t)(nr_queues * MIN_ACTIONS_MEM_SIZE_PER_QUEUE))) /* Total actions memory size */
+#define ACL_ACTIONS_MEM_SIZE(entries) \
+	rte_align32pow2((uint32_t)(entries * ACL_MEM_REQ_PER_ENTRY * DOCA_FLOW_MAX_ENTRY_ACTIONS_MEM_SIZE))
 
 /* for egress use domain = DOCA_FLOW_PIPE_DOMAIN_EGRESS*/
 static enum doca_flow_pipe_domain domain = DOCA_FLOW_PIPE_DOMAIN_DEFAULT;
@@ -103,6 +102,84 @@ destroy_pipe_cfg:
 }
 
 /*
+ * Create DOCA Flow main pipe
+ *
+ * @port [in]: port of the pipe
+ * @next_pipe [in]: acl pipe to forward the matched traffic
+ * @pipe [out]: created pipe pointer
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t create_main_pipe(struct doca_flow_port *port,
+				     struct doca_flow_pipe *next_pipe,
+				     struct doca_flow_pipe **pipe)
+{
+	struct doca_flow_pipe_cfg *pipe_cfg;
+	struct doca_flow_match match;
+	struct doca_flow_monitor monitor_counter;
+	struct doca_flow_fwd fwd;
+	doca_error_t result;
+
+	memset(&match, 0, sizeof(match));
+	memset(&monitor_counter, 0, sizeof(monitor_counter));
+	memset(&fwd, 0, sizeof(fwd));
+
+	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
+
+	monitor_counter.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
+
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = next_pipe;
+
+	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = set_flow_pipe_cfg(pipe_cfg, "MAIN_PIPE", DOCA_FLOW_PIPE_BASIC, true);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor_counter);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
+destroy_pipe_cfg:
+	doca_flow_pipe_cfg_destroy(pipe_cfg);
+	return result;
+}
+
+/*
+ * Add DOCA Flow pipe entry to the main pipe that forwards ipv4 traffic to acl pipe
+ *
+ * @pipe [in]: pipe of the entry
+ * @status [in]: user context for adding entry
+ * @entry [out]: result of entry addition
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t add_main_pipe_entry(struct doca_flow_pipe *pipe,
+					struct entries_status *status,
+					struct doca_flow_pipe_entry **entry)
+{
+	struct doca_flow_match match;
+
+	memset(&match, 0, sizeof(match));
+
+	return doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, status, entry);
+}
+
+/*
  * Add DOCA Flow ACL pipe that matched IPV4 addresses
  *
  * @port [in]: port of the pipe
@@ -114,6 +191,7 @@ doca_error_t create_acl_pipe(struct doca_flow_port *port, bool is_root, struct d
 {
 	struct doca_flow_match match;
 	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
+	struct doca_flow_monitor monitor_counter;
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	struct doca_flow_fwd fwd_miss;
 	struct doca_flow_fwd fwd = {.type = DOCA_FLOW_FWD_CHANGEABLE};
@@ -121,6 +199,7 @@ doca_error_t create_acl_pipe(struct doca_flow_port *port, bool is_root, struct d
 
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
+	memset(&monitor_counter, 0, sizeof(monitor_counter));
 	memset(&fwd_miss, 0, sizeof(fwd_miss));
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
@@ -132,6 +211,8 @@ doca_error_t create_acl_pipe(struct doca_flow_port *port, bool is_root, struct d
 	match.outer.tcp.l4_port.dst_port = 0xffff;
 
 	actions_arr[0] = &actions;
+
+	monitor_counter.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
 	fwd_miss.type = DOCA_FLOW_FWD_DROP;
 
@@ -164,6 +245,12 @@ doca_error_t create_acl_pipe(struct doca_flow_port *port, bool is_root, struct d
 	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor_counter);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 
@@ -202,6 +289,7 @@ destroy_pipe_cfg:
  * @flag [in]: Flow entry will be pushed to hw immediately or not. enum doca_flow_flags_type.
  *	flag DOCA_FLOW_WAIT_FOR_BATCH is using for collecting entries by ACL module
  *	flag DOCA_FLOW_NO_WAIT is using for adding the entry and starting building and offloading
+ * @param[out] entry The entry inserted.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t add_acl_specific_entry(struct doca_flow_pipe *pipe,
@@ -218,7 +306,8 @@ doca_error_t add_acl_specific_entry(struct doca_flow_pipe *pipe,
 				    doca_be16_t dst_port_mask,
 				    uint16_t priority,
 				    bool is_allow,
-				    enum doca_flow_flags_type flag)
+				    enum doca_flow_flags_type flag,
+				    struct doca_flow_pipe_entry **entry)
 {
 	struct doca_flow_match match;
 	struct doca_flow_match match_mask;
@@ -264,7 +353,7 @@ doca_error_t add_acl_specific_entry(struct doca_flow_pipe *pipe,
 	} else
 		fwd.type = DOCA_FLOW_FWD_DROP;
 
-	result = doca_flow_pipe_acl_add_entry(0, pipe, &match, &match_mask, priority, &fwd, flag, status, NULL);
+	result = doca_flow_pipe_acl_add_entry(0, pipe, &match, &match_mask, priority, &fwd, flag, status, entry);
 
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add acl pipe entry: %s", doca_error_get_descr(result));
@@ -280,27 +369,33 @@ doca_error_t add_acl_specific_entry(struct doca_flow_pipe *pipe,
  * @pipe [in]: pipe of the entry
  * @port_id [in]: port ID of the entry
  * @status [in]: user context for adding entry
+ * @entries [out]: array of pointers to created entries
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t add_acl_pipe_entries(struct doca_flow_pipe *pipe, int port_id, struct entries_status *status)
+doca_error_t add_acl_pipe_entries(struct doca_flow_pipe *pipe,
+				  int port_id,
+				  struct entries_status *status,
+				  struct doca_flow_pipe_entry **entries)
 {
 	doca_error_t result;
+	int i_entry = 0;
 
 	result = add_acl_specific_entry(pipe,
 					port_id,
 					status,
 					BE_IPV4_ADDR(1, 2, 3, 4),
 					BE_IPV4_ADDR(8, 8, 8, 8),
-					RTE_BE16(1234),
-					RTE_BE16(80),
+					DOCA_HTOBE16(1234),
+					DOCA_HTOBE16(80),
 					DOCA_FLOW_L4_TYPE_EXT_TCP,
-					RTE_BE32(0xffffffff),
-					RTE_BE32(0xffffffff),
-					RTE_BE16(0x00),
-					RTE_BE16(0x0),
+					DOCA_HTOBE32(0xffffffff),
+					DOCA_HTOBE32(0xffffffff),
+					DOCA_HTOBE16(0x00),
+					DOCA_HTOBE16(0x0),
 					10,
 					false,
-					DOCA_FLOW_WAIT_FOR_BATCH);
+					DOCA_FLOW_WAIT_FOR_BATCH,
+					&entries[i_entry++]);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -309,16 +404,17 @@ doca_error_t add_acl_pipe_entries(struct doca_flow_pipe *pipe, int port_id, stru
 					status,
 					BE_IPV4_ADDR(172, 20, 1, 4),
 					BE_IPV4_ADDR(192, 168, 3, 4),
-					RTE_BE16(1234),
-					RTE_BE16(80),
+					DOCA_HTOBE16(1234),
+					DOCA_HTOBE16(80),
 					DOCA_FLOW_L4_TYPE_EXT_UDP,
-					RTE_BE32(0xffffffff),
-					RTE_BE32(0xffffffff),
-					RTE_BE16(0x0),
-					RTE_BE16(3000),
+					DOCA_HTOBE32(0xffffffff),
+					DOCA_HTOBE32(0xffffffff),
+					DOCA_HTOBE16(0x0),
+					DOCA_HTOBE16(3000),
 					50,
 					true,
-					DOCA_FLOW_WAIT_FOR_BATCH);
+					DOCA_FLOW_WAIT_FOR_BATCH,
+					&entries[i_entry++]);
 
 	if (result != DOCA_SUCCESS)
 		return result;
@@ -328,16 +424,17 @@ doca_error_t add_acl_pipe_entries(struct doca_flow_pipe *pipe, int port_id, stru
 					status,
 					BE_IPV4_ADDR(172, 20, 1, 4),
 					BE_IPV4_ADDR(192, 168, 3, 4),
-					RTE_BE16(1234),
-					RTE_BE16(80),
+					DOCA_HTOBE16(1234),
+					DOCA_HTOBE16(80),
 					DOCA_FLOW_L4_TYPE_EXT_TCP,
-					RTE_BE32(0xffffffff),
-					RTE_BE32(0xffffffff),
-					RTE_BE16(1234),
-					RTE_BE16(0x0),
+					DOCA_HTOBE32(0xffffffff),
+					DOCA_HTOBE32(0xffffffff),
+					DOCA_HTOBE16(1234),
+					DOCA_HTOBE16(0x0),
 					40,
 					true,
-					DOCA_FLOW_WAIT_FOR_BATCH);
+					DOCA_FLOW_WAIT_FOR_BATCH,
+					&entries[i_entry++]);
 
 	if (result != DOCA_SUCCESS)
 		return result;
@@ -347,16 +444,17 @@ doca_error_t add_acl_pipe_entries(struct doca_flow_pipe *pipe, int port_id, stru
 					status,
 					BE_IPV4_ADDR(1, 2, 3, 5),
 					BE_IPV4_ADDR(8, 8, 8, 6),
-					RTE_BE16(1234),
-					RTE_BE16(80),
+					DOCA_HTOBE16(1234),
+					DOCA_HTOBE16(80),
 					DOCA_FLOW_L4_TYPE_EXT_TCP,
-					RTE_BE32(0xffffff00),
-					RTE_BE32(0xffffff00),
-					RTE_BE16(0xffff),
-					RTE_BE16(80),
+					DOCA_HTOBE32(0xffffff00),
+					DOCA_HTOBE32(0xffffff00),
+					DOCA_HTOBE16(0xffff),
+					DOCA_HTOBE16(80),
 					20,
 					true,
-					DOCA_FLOW_NO_WAIT);
+					DOCA_FLOW_NO_WAIT,
+					&entries[i_entry++]);
 
 	if (result != DOCA_SUCCESS)
 		return result;
@@ -373,17 +471,20 @@ doca_error_t add_acl_pipe_entries(struct doca_flow_pipe *pipe, int port_id, stru
 doca_error_t flow_acl(int nb_queues)
 {
 	const int nb_ports = 2;
-	struct flow_resources resource = {0};
+	/* 1 entry for main pipe and 4 entries for ACL pipe */
+	const int num_of_entries = 5;
+	struct flow_resources resource = {.nr_counters = num_of_entries * nb_ports};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *acl_pipe;
+	struct doca_flow_pipe *main_pipe;
 	struct doca_flow_pipe *rx_pipe;
 	struct entries_status status;
-	int num_of_entries = 4;
+	struct doca_flow_pipe_entry *entries[nb_ports][num_of_entries];
 	doca_error_t result;
 	int port_id, port_acl;
+	struct doca_flow_resource_query stats;
 
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
@@ -391,9 +492,8 @@ doca_error_t flow_acl(int nb_queues)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACL_ACTIONS_MEM_SIZE(nb_queues, num_of_entries));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACL_ACTIONS_MEM_SIZE(num_of_entries));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -408,7 +508,7 @@ doca_error_t flow_acl(int nb_queues)
 		else // domain == DOCA_FLOW_PIPE_DOMAIN_EGRESS
 			port_acl = port_id ^ 1;
 
-		result = create_acl_pipe(ports[port_acl], true, &acl_pipe);
+		result = create_acl_pipe(ports[port_acl], false, &acl_pipe);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create acl pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
@@ -416,8 +516,24 @@ doca_error_t flow_acl(int nb_queues)
 			return result;
 		}
 
-		result = add_acl_pipe_entries(acl_pipe, port_acl, &status);
+		result = add_acl_pipe_entries(acl_pipe, port_acl, &status, &entries[port_id][1]);
 		if (result != DOCA_SUCCESS) {
+			stop_doca_flow_ports(nb_ports, ports);
+			doca_flow_destroy();
+			return result;
+		}
+
+		result = create_main_pipe(ports[port_id], acl_pipe, &main_pipe);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create main pipe: %s", doca_error_get_descr(result));
+			stop_doca_flow_ports(nb_ports, ports);
+			doca_flow_destroy();
+			return result;
+		}
+
+		result = add_main_pipe_entry(main_pipe, &status, &entries[port_id][0]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;
@@ -450,7 +566,33 @@ doca_error_t flow_acl(int nb_queues)
 	}
 
 	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
-	sleep(50);
+	sleep(20);
+
+	for (port_id = 0; port_id < nb_ports; port_id++) {
+		result = doca_flow_resource_query_entry(entries[port_id][0], &stats);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Port %d failed to query main pipe entry: %s",
+				     port_id,
+				     doca_error_get_descr(result));
+			return result;
+		}
+		DOCA_LOG_INFO("Port %d, main pipe entry received %lu packets", port_id, stats.counter.total_pkts);
+
+		for (int acl_entry_id = 1; acl_entry_id < num_of_entries; acl_entry_id++) {
+			result = doca_flow_resource_query_entry(entries[port_id][acl_entry_id], &stats);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Port %d failed to query ACL pipe entry %d: %s",
+					     port_id,
+					     acl_entry_id,
+					     doca_error_get_descr(result));
+				return result;
+			}
+			DOCA_LOG_INFO("Port %d, ACL pipe entry %d received %lu packets",
+				      port_id,
+				      acl_entry_id,
+				      stats.counter.total_pkts);
+		}
+	}
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

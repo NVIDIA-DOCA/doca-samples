@@ -31,7 +31,9 @@
 
 DOCA_LOG_REGISTER(GPU_SEND_WAIT_TIME::KERNEL);
 
-__global__ void send_wait_on_time(struct doca_gpu_eth_txq *eth_txq_gpu, struct doca_gpu_buf_arr *buf_arr_gpu, uint64_t *intervals_gpu)
+__global__ void send_wait_on_time(struct doca_gpu_eth_txq *eth_txq_gpu,
+				  struct doca_gpu_buf_arr *buf_arr_gpu,
+				  uint64_t *intervals_gpu)
 {
 	doca_error_t result;
 	struct doca_gpu_buf *buf_ptr = NULL;

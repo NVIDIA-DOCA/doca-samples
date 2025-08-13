@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -27,12 +27,19 @@
 #include <doca_flow.h>
 #include <doca_log.h>
 
+#include <flow_common.h>
+
 #include <dpdk_utils.h>
 
 DOCA_LOG_REGISTER(FLOW_LOOPBACK::MAIN);
 
 #define NB_PORTS 2
 #define MAC_ADDR_LEN 6
+
+struct flow_loopback_ctx {
+	struct flow_dev_ctx flow_dev_ctx;	       /* Basic flow device context*/
+	uint8_t mac_addresses[NB_PORTS][MAC_ADDR_LEN]; /* MAC addresses for the ports */
+};
 
 /* Sample's Logic */
 doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6]);
@@ -46,10 +53,10 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6]);
  */
 static doca_error_t mac_addresses_callback(void *param, void *opaque)
 {
+	char *mac_addresses_param = (char *)param;
+	struct flow_loopback_ctx *ctx = (struct flow_loopback_ctx *)opaque;
 	char mac1[18];
 	char mac2[18];
-	uint8_t(*mac_addresses)[MAC_ADDR_LEN] = (uint8_t(*)[MAC_ADDR_LEN])opaque;
-	char *mac_addresses_param = (char *)param;
 
 	/* Split the input into two MAC addresses */
 	if (sscanf(mac_addresses_param, "%17s %17s", mac1, mac2) != 2) {
@@ -60,12 +67,12 @@ static doca_error_t mac_addresses_callback(void *param, void *opaque)
 	/* Parse the first MAC address */
 	if (sscanf(mac1,
 		   "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-		   &mac_addresses[0][0],
-		   &mac_addresses[0][1],
-		   &mac_addresses[0][2],
-		   &mac_addresses[0][3],
-		   &mac_addresses[0][4],
-		   &mac_addresses[0][5]) != MAC_ADDR_LEN) {
+		   &ctx->mac_addresses[0][0],
+		   &ctx->mac_addresses[0][1],
+		   &ctx->mac_addresses[0][2],
+		   &ctx->mac_addresses[0][3],
+		   &ctx->mac_addresses[0][4],
+		   &ctx->mac_addresses[0][5]) != MAC_ADDR_LEN) {
 		DOCA_LOG_ERR("Invalid MAC address format: %s", mac1);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
@@ -73,16 +80,27 @@ static doca_error_t mac_addresses_callback(void *param, void *opaque)
 	/*  Parse the second MAC address */
 	if (sscanf(mac2,
 		   "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-		   &mac_addresses[1][0],
-		   &mac_addresses[1][1],
-		   &mac_addresses[1][2],
-		   &mac_addresses[1][3],
-		   &mac_addresses[1][4],
-		   &mac_addresses[1][5]) != MAC_ADDR_LEN) {
+		   &ctx->mac_addresses[1][0],
+		   &ctx->mac_addresses[1][1],
+		   &ctx->mac_addresses[1][2],
+		   &ctx->mac_addresses[1][3],
+		   &ctx->mac_addresses[1][4],
+		   &ctx->mac_addresses[1][5]) != MAC_ADDR_LEN) {
 		DOCA_LOG_ERR("Invalid MAC address format: %s", mac2);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 	return DOCA_SUCCESS;
+}
+
+/*
+ * Conversion function from a user context to the flow_dev_ctx struct
+ *
+ * @param [in]: User context
+ * @return: Pointer to the flow_dev_ctx struct
+ */
+static struct flow_dev_ctx *flow_dev_ctx_from_user_ctx(void *user_ctx)
+{
+	return &((struct flow_loopback_ctx *)user_ctx)->flow_dev_ctx;
 }
 
 /*
@@ -94,6 +112,12 @@ doca_error_t register_flow_loopback_params(void)
 {
 	doca_error_t result;
 	struct doca_argp_param *mac_addresses_param;
+
+	result = register_flow_device_params(flow_dev_ctx_from_user_ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register flow device params: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	result = doca_argp_param_create(&mac_addresses_param);
 	if (result != DOCA_SUCCESS) {
@@ -126,11 +150,10 @@ int main(int argc, char **argv)
 	doca_error_t result;
 	struct doca_log_backend *sdk_log;
 	int exit_status = EXIT_FAILURE;
-	uint8_t mac_addresses[NB_PORTS][MAC_ADDR_LEN] = {};
+	struct flow_loopback_ctx flow_loopback_ctx = {};
 	struct application_dpdk_config dpdk_config = {
 		.port_config.nb_ports = NB_PORTS,
 		.port_config.nb_queues = 1,
-		.port_config.nb_hairpin_q = 1,
 		.port_config.enable_mbuf_metadata = 1,
 		.port_config.lpbk_support = 1,
 	};
@@ -150,22 +173,26 @@ int main(int argc, char **argv)
 
 	DOCA_LOG_INFO("Starting the sample");
 
-	result = doca_argp_init(NULL, &mac_addresses);
+	result = doca_argp_init(NULL, &flow_loopback_ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
 		goto sample_exit;
 	}
-	doca_argp_set_dpdk_program(dpdk_init);
 	result = register_flow_loopback_params();
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register samples params: %s", doca_error_get_descr(result));
-		doca_argp_destroy();
-		return EXIT_FAILURE;
+		goto argp_cleanup;
 	}
-
+	doca_argp_set_dpdk_program(flow_init_dpdk);
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+
+	result = init_doca_flow_devs(&flow_loopback_ctx.flow_dev_ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to init flow devices: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 
@@ -177,7 +204,7 @@ int main(int argc, char **argv)
 	}
 
 	/* run sample */
-	result = flow_loopback(dpdk_config.port_config.nb_queues, mac_addresses);
+	result = flow_loopback(dpdk_config.port_config.nb_queues, flow_loopback_ctx.mac_addresses);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("flow_loopback() encountered an error: %s", doca_error_get_descr(result));
 		goto dpdk_ports_queues_cleanup;
@@ -188,7 +215,7 @@ int main(int argc, char **argv)
 dpdk_ports_queues_cleanup:
 	dpdk_queues_and_ports_fini(&dpdk_config);
 dpdk_cleanup:
-	dpdk_fini();
+	dpdk_fini_with_devs(NB_PORTS);
 argp_cleanup:
 	doca_argp_destroy();
 sample_exit:

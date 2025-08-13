@@ -28,6 +28,7 @@
 
 #include <doca_log.h>
 #include <doca_flow.h>
+#include <doca_dpdk.h>
 #include <dpdk_utils.h>
 #include <packet_parser.h>
 
@@ -1240,6 +1241,28 @@ static doca_error_t ip_frag_rss_pipes_create(struct ip_frag_ctx *ctx)
 	return DOCA_SUCCESS;
 }
 
+/*
+ * Fill DOCA device array to use during port starting.
+ *
+ * @ctx [in] Ip_Frag context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t fill_device_array(struct ip_frag_ctx *ctx)
+{
+	doca_error_t ret;
+	int port_id;
+
+	for (port_id = 0; port_id < ctx->num_ports; port_id++) {
+		ret = doca_dpdk_port_as_dev(port_id, &ctx->dev_arr[port_id]);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get device for port %d: %s", port_id, doca_error_get_descr(ret));
+			return ret;
+		}
+	}
+
+	return DOCA_SUCCESS;
+}
+
 doca_error_t ip_frag(struct ip_frag_config *cfg, struct application_dpdk_config *dpdk_cfg)
 {
 	struct rte_mempool *indirect_pools[RTE_MAX_NUMA_NODES] = {NULL};
@@ -1268,6 +1291,10 @@ doca_error_t ip_frag(struct ip_frag_config *cfg, struct application_dpdk_config 
 		goto cleanup_doca_flow;
 
 	ret = ip_frag_wt_data_init(cfg, indirect_pools, &wt_data_arr);
+	if (ret != DOCA_SUCCESS)
+		goto cleanup_doca_flow;
+
+	ret = fill_device_array(&ctx);
 	if (ret != DOCA_SUCCESS)
 		goto cleanup_doca_flow;
 

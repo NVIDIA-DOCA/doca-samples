@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -30,7 +30,7 @@
 #include <doca_log.h>
 #include <doca_flow.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 /* Number of action descriptors */
 #define NB_ACTION_DESC (1)
@@ -241,9 +241,9 @@ doca_error_t flow_tcp_seq(int nb_queues)
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *root_pipe, *action_pipe, *comparison_pipe;
+	struct entries_status status;
 	uint32_t num_of_entries = 3;
 	doca_error_t result;
 	int port_id;
@@ -254,9 +254,8 @@ doca_error_t flow_tcp_seq(int nb_queues)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, num_of_entries));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -264,7 +263,7 @@ doca_error_t flow_tcp_seq(int nb_queues)
 	}
 
 	for (port_id = 0; port_id < nb_ports; port_id++) {
-		struct entries_status status = {0};
+		memset(&status, 0, sizeof(status));
 
 		result = create_action_pipe(ports[port_id], port_id, &action_pipe);
 		if (result != DOCA_SUCCESS) {

@@ -171,7 +171,7 @@ doca_error_t devemu_pci_device_hotplug(const char *pci_address, const char *unpl
 		}
 	} else {
 		/* Prepare emulated device before plugging it towards the host */
-		result = doca_devemu_pci_dev_create_rep(resources.pci_type, &resources.rep);
+		result = doca_devemu_pci_type_create_rep(resources.pci_type, &resources.rep);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Unable to create PCI emulated device representor: %s",
 				     doca_error_get_descr(result));

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -30,7 +30,7 @@
 #include <doca_flow.h>
 #include <doca_bitfield.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 DOCA_LOG_REGISTER(FLOW_GTP_ENCAP);
 
@@ -38,13 +38,13 @@ DOCA_LOG_REGISTER(FLOW_GTP_ENCAP);
  * Create DOCA Flow pipe with match on header types to filter out non IPV4 packets.
  *
  * @port [in]: port of the pipe
- * @port_id [in]: port ID of the pipe
+ * @next_pipe [in]: pointer of next pipe
  * @status [in]: user context for adding entry
  * @pipe [out]: created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t create_classifier_pipe(struct doca_flow_port *port,
-					   int port_id,
+					   struct doca_flow_pipe *next_pipe,
 					   struct entries_status *status,
 					   struct doca_flow_pipe **pipe)
 {
@@ -77,8 +77,8 @@ static doca_error_t create_classifier_pipe(struct doca_flow_port *port,
 	}
 
 	/* forwarding traffic to other port */
-	fwd.type = DOCA_FLOW_FWD_PORT;
-	fwd.port_id = port_id ^ 1;
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = next_pipe;
 
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
 	if (result != DOCA_SUCCESS) {
@@ -233,7 +233,6 @@ doca_error_t flow_gtp_encap(int nb_queues)
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *pipe;
 	struct doca_flow_pipe *classifier_pipe;
@@ -250,9 +249,8 @@ doca_error_t flow_gtp_encap(int nb_queues)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, num_of_entries_ingress + num_of_entries_egress));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries_ingress + num_of_entries_egress));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -263,12 +261,6 @@ doca_error_t flow_gtp_encap(int nb_queues)
 		memset(&status_ingress, 0, sizeof(status_ingress));
 		memset(&status_egress, 0, sizeof(status_egress));
 
-		result = create_classifier_pipe(ports[port_id], port_id, &status_ingress, &classifier_pipe);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create match pipe: %s", doca_error_get_descr(result));
-			goto err;
-		}
-
 		result = create_gtp_encap_pipe(ports[port_id ^ 1], port_id ^ 1, &pipe);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create gtp encap pipe: %s", doca_error_get_descr(result));
@@ -278,6 +270,12 @@ doca_error_t flow_gtp_encap(int nb_queues)
 		result = add_gtp_encap_pipe_entry(pipe, &status_egress);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry to gtp encap pipe: %s", doca_error_get_descr(result));
+			goto err;
+		}
+
+		result = create_classifier_pipe(ports[port_id], pipe, &status_ingress, &classifier_pipe);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create match pipe: %s", doca_error_get_descr(result));
 			goto err;
 		}
 

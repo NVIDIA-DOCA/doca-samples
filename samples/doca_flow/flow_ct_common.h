@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -30,21 +30,11 @@
 #include <doca_argp.h>
 #include <doca_flow.h>
 #include <doca_flow_ct.h>
-
 #include "flow_common.h"
-
-#define FLOW_CT_COMMON_DEVARGS \
-	"dv_flow_en=2,dv_xmeta_en=4,representor=pf[0-1],repr_matching_en=0," \
-	"fdb_def_rule_en=0,vport_match=1"
+#include "flow_switch_common.h"
 
 #define DUP_FILTER_CONN_NUM 512
-#define MAX_PORTS 4
 #define CT_DEFAULT_QUEUE_DEPTH 512
-
-struct ct_config {
-	int n_ports;						     /* Number of ports configured */
-	char ct_dev_pci_addr[MAX_PORTS][DOCA_DEVINFO_PCI_ADDR_SIZE]; /* Flow CT DOCA device PCI address */
-};
 
 /*
  * Register the command line parameters for the DOCA Flow CT samples
@@ -63,6 +53,7 @@ doca_error_t flow_ct_register_params(void);
  * @entry_finalize_cb [in]: Entry finalize callback
  * @nb_ipv4_sessions [in]: Number of IPv4 sessions
  * @nb_ipv6_sessions [in]: Number of IPv6 sessions
+ * @nb_asym_counter [in]: Number of asymmetric counters
  * @dup_filter_sz [in]: Number of connections to cache in duplication filter
  * @o_match_inner [in]: Origin match inner
  * @o_zone_mask [in]: Origin zone mask
@@ -79,22 +70,14 @@ doca_error_t init_doca_flow_ct(uint32_t flags,
 			       doca_flow_ct_entry_finalize_cb entry_finalize_cb,
 			       uint32_t nb_ipv4_sessions,
 			       uint32_t nb_ipv6_sessions,
+			       uint32_t nb_asym_counter,
 			       uint32_t dup_filter_sz,
 			       bool o_match_inner,
 			       struct doca_flow_meta *o_zone_mask,
-			       struct doca_flow_meta *o_modify_mask,
+			       struct doca_flow_ct_meta *o_modify_mask,
 			       bool r_match_inner,
 			       struct doca_flow_meta *r_zone_mask,
-			       struct doca_flow_meta *r_modify_mask);
-
-/*
- * Initialize DPDK environment for DOCA Flow CT
- *
- * @argc [in]: Number of program command line arguments
- * @dpdk_argv [in]: DPDK command line arguments create by argp library
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-doca_error_t flow_ct_dpdk_init(int argc, char **dpdk_argv);
+			       struct doca_flow_ct_meta *r_modify_mask);
 
 /*
  * Verify if DOCA device is ECPF by checking all supported capabilities
@@ -113,6 +96,15 @@ doca_error_t flow_ct_capable(struct doca_devinfo *dev_info);
  * @return: hash value
  */
 uint32_t flow_ct_hash_6tuple(const struct doca_flow_ct_match *match, doca_be32_t zone_field, bool is_ipv6);
+
+/*
+ * Attach a DPDK port specified by DOCA device.
+ *
+ * @rep_value [in]: PCIe address object
+ * @ct_dev [out]: DOCA device object
+ * @return: DOCA_SUCCESS on success and doca_error code otherwise
+ */
+doca_error_t flow_ct_port_probe(const char *rep_value, struct doca_dev *ct_dev);
 
 /*
  * Initialize DPDK environment for DOCA Flow CT
@@ -142,6 +134,44 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 				 struct doca_flow_pipe *fwd_pipe,
 				 struct entries_status *status,
 				 struct doca_flow_pipe **pipe);
+
+/*
+ * Create a CT entry - prepare, add, process
+ *
+ * @port [in]: DOCA flow port
+ * @ct_queue [in]: CT queue
+ * @pipe [in]: CT pipe
+ * @prepare_flags [in]: flags for preparing the entry
+ * @entry_flags [in]: flags for adding the entry
+ * @match_origin [in]: Origin match
+ * @match_reply [in]: Reply match
+ * @hash_origin [in]: Origin hash
+ * @hash_reply [in]: Reply hash
+ * @actions_origin [in]: Origin actions
+ * @actions_reply [in]: Reply actions
+ * @fwd_handle_origin [in]: Origin fwd handle
+ * @fwd_handle_reply [in]: Reply fwd handle
+ * @timeout_s [in]: Timeout
+ * @ct_status [in]: CT status
+ * @entry [in]: CT entry
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
+				  uint16_t ct_queue,
+				  struct doca_flow_pipe *pipe,
+				  uint32_t prepare_flags,
+				  uint32_t entry_flags,
+				  struct doca_flow_ct_match *match_origin,
+				  struct doca_flow_ct_match *match_reply,
+				  uint32_t hash_origin,
+				  uint32_t hash_reply,
+				  const struct doca_flow_ct_actions *actions_origin,
+				  const struct doca_flow_ct_actions *actions_reply,
+				  uint32_t fwd_handle_origin,
+				  uint32_t fwd_handle_reply,
+				  uint32_t timeout_s,
+				  struct entries_status *ct_status,
+				  struct doca_flow_pipe_entry **entry);
 
 /*
  * Poll the queue until expected room available.

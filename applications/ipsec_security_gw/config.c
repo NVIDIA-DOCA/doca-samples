@@ -135,7 +135,7 @@ static doca_error_t create_key_type(struct json_object *cur_rule, enum doca_flow
 		return DOCA_SUCCESS;
 	}
 	if (json_object_get_type(json_key_type) != json_type_int) {
-		DOCA_LOG_ERR("Expecting a int value for \"key-type\"");
+		DOCA_LOG_ERR("Expecting an int value for \"key-type\"");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -213,7 +213,7 @@ static doca_error_t create_salt(struct json_object *cur_rule, uint32_t *salt)
 		return DOCA_SUCCESS;
 	}
 	if (json_object_get_type(json_salt) != json_type_int) {
-		DOCA_LOG_ERR("Expecting a int value for \"salt\"");
+		DOCA_LOG_ERR("Expecting an int value for \"salt\"");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 	*salt = (uint32_t)json_object_get_int64(json_salt);
@@ -237,7 +237,7 @@ static doca_error_t create_lifetime_threshold(struct json_object *cur_rule, uint
 		return DOCA_SUCCESS;
 	}
 	if (json_object_get_type(json_lifetime) != json_type_int) {
-		DOCA_LOG_ERR("Expecting a int value for \"lifetime-threshold\"");
+		DOCA_LOG_ERR("Expecting an int value for \"lifetime-threshold\"");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 	*lifetime_threshold = (uint32_t)json_object_get_int64(json_lifetime);
@@ -317,7 +317,7 @@ static doca_error_t create_l3_type(struct json_object *cur_rule,
 		return DOCA_SUCCESS;
 	}
 	if (json_object_get_type(json_ip) != json_type_int) {
-		DOCA_LOG_ERR("Expecting a int value for \"ip-version\"");
+		DOCA_LOG_ERR("Expecting an int value for \"ip-version\"");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -420,7 +420,7 @@ static doca_error_t create_port(struct json_object *cur_rule, char *port_type, i
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 	if (json_object_get_type(json_port) != json_type_int) {
-		DOCA_LOG_ERR("Expecting a int value for \"%s\"", port_type);
+		DOCA_LOG_ERR("Expecting an int value for \"%s\"", port_type);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -444,7 +444,7 @@ static doca_error_t create_spi(struct json_object *cur_rule, doca_be32_t *esp_sp
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 	if (json_object_get_type(json_spi) != json_type_int) {
-		DOCA_LOG_ERR("Expecting a int value for \"spi\"");
+		DOCA_LOG_ERR("Expecting an int value for \"spi\"");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -834,11 +834,11 @@ static doca_error_t parse_sn_initial(struct json_object *json_config, struct ips
 	int64_t sn_init;
 
 	if (!json_object_object_get_ex(json_config, "sn-initial", &sn_init_config)) {
-		DOCA_LOG_DBG("Missing \"sn_initial\" parameter, using zero as default");
+		DOCA_LOG_DBG("Missing \"sn-initial\" parameter, using 1 as the default value");
 		return DOCA_SUCCESS;
 	}
 	if (json_object_get_type(sn_init_config) != json_type_int) {
-		DOCA_LOG_ERR("Expecting a int value for \"sn-initial\"");
+		DOCA_LOG_ERR("Expecting an int value for \"sn-initial\"");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 	sn_init = json_object_get_int64(sn_init_config); /* notice that in future use of 64 bits for SN (for e.g. ESN)
@@ -847,14 +847,6 @@ static doca_error_t parse_sn_initial(struct json_object *json_config, struct ips
 							  */
 	if (sn_init < 0 || sn_init > UINT32_MAX) {
 		DOCA_LOG_ERR("\"sn-initial\" should get non-negative 32 bits value");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-	if (app_cfg->sw_antireplay && (UINT32_MAX - (uint32_t)sn_init < SW_WINDOW_SIZE)) {
-		DOCA_LOG_ERR("SN initial value is too close to the maximum value");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-	if (!app_cfg->sw_antireplay && (UINT32_MAX - (uint32_t)sn_init < HW_WINDOW_SIZE)) {
-		DOCA_LOG_ERR("SN initial value is too close to the maximum value");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -947,7 +939,7 @@ static doca_error_t parse_vxlan_encap_config(struct json_object *json_config, st
 		return DOCA_SUCCESS;
 	}
 	if (json_object_get_type(vni_config) != json_type_int) {
-		DOCA_LOG_ERR("Expecting a int value for \"vni\"");
+		DOCA_LOG_ERR("Expecting an int value for \"vni\"");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 	app_cfg->vni = json_object_get_int(vni_config);
@@ -1033,12 +1025,12 @@ static doca_error_t parse_icv_length(struct json_object *json_config, struct ips
 	struct json_object *icv_length_config;
 
 	if (!json_object_object_get_ex(json_config, "icv-length", &icv_length_config)) {
-		DOCA_LOG_DBG("Missing \"icv_length\" parameter, default is 16");
+		DOCA_LOG_DBG("Missing \"icv-length\" parameter, default is 16");
 		app_cfg->icv_length = DOCA_FLOW_CRYPTO_ICV_LENGTH_16;
 		return DOCA_SUCCESS;
 	}
 	if (json_object_get_type(icv_length_config) != json_type_int) {
-		DOCA_LOG_ERR("Expecting a int value for \"icv-length\"");
+		DOCA_LOG_ERR("Expecting an int value for \"icv-length\"");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -1169,38 +1161,31 @@ static doca_error_t allocate_json_buffer_dynamic(FILE *fp, size_t *file_length, 
  */
 static doca_error_t validate_config(struct ipsec_security_gw_config *app_cfg)
 {
-	if (app_cfg->objects.secured_dev.has_device == false) {
+	if (app_cfg->objects.secured_dev.doca_dev == NULL) {
 		DOCA_LOG_ERR("Secure port is missing");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_VNF) {
-		if (app_cfg->objects.unsecured_dev.has_device == false) {
-			DOCA_LOG_ERR("Unsecure port is missing for vnf mode");
-			return DOCA_ERROR_INVALID_VALUE;
-		}
-		if (app_cfg->objects.unsecured_dev.open_by_pci == true &&
-		    app_cfg->objects.unsecured_dev.open_by_name == true) {
-			DOCA_LOG_ERR("Please specify only one parameter for the unsecured device: -u / -un");
-			return DOCA_ERROR_INVALID_VALUE;
-		}
-	}
-
-	if (app_cfg->objects.secured_dev.open_by_pci == true && app_cfg->objects.secured_dev.open_by_name == true) {
-		DOCA_LOG_ERR("Please specify only one parameter for the secured device: -s / -sn");
+	if (app_cfg->objects.unsecured_dev.doca_dev == NULL) {
+		DOCA_LOG_ERR("Unsecure port is missing");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_SWITCH && app_cfg->objects.unsecured_dev.has_device == true)
-		DOCA_LOG_WARN("In switch mode unsecure port parameter will be ignored");
+	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_VNF && app_cfg->objects.unsecured_dev.is_representor) {
+		DOCA_LOG_ERR("Please specify only the device parameter for the unsecured device: -u");
+		return DOCA_ERROR_INVALID_VALUE;
+	} else if (app_cfg->flow_mode == IPSEC_SECURITY_GW_SWITCH && !app_cfg->objects.unsecured_dev.is_representor) {
+		DOCA_LOG_ERR("Please specify the representor parameter for the unsecured device: -ur");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
-	/* verify that encap is enabled if sw increment is enabled */
+	/* Verify that encap is enabled if SW increment is enabled */
 	if (app_cfg->sw_sn_inc_enable && (app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_BOTH ||
 					  app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_ENCAP)) {
 		DOCA_LOG_ERR("SW SN Increment cannot be enabled when offloading encap");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
-	/* verify that encap is enabled if sw antireplay is enabled */
+	/* Verify that encap is enabled if SW anti-replay is enabled */
 	if (app_cfg->sw_antireplay && (app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_BOTH ||
 				       app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_DECAP)) {
 		DOCA_LOG_ERR("SW Anti-Replay cannot be enabled when offloading decap");
@@ -1291,13 +1276,13 @@ doca_error_t ipsec_security_gw_parse_config(struct ipsec_security_gw_config *app
 	nb_decrypt_alloc = DYN_RESERVED_RULES;
 	if (!app_cfg->socket_ctx.socket_conf) {
 		if (!json_object_object_get_ex(parsed_json, "encrypt-rules", &json_encrypt_rules)) {
-			DOCA_LOG_ERR("Missing \"encrypt_rules\" parameter");
+			DOCA_LOG_ERR("Missing \"encrypt-rules\" parameter");
 			result = DOCA_ERROR_INVALID_VALUE;
 			goto json_release;
 		}
 
 		if (!json_object_object_get_ex(parsed_json, "decrypt-rules", &json_decrypt_rules)) {
-			DOCA_LOG_ERR("Missing \"decrypt_rules\" parameter");
+			DOCA_LOG_ERR("Missing \"decrypt-rules\" parameter");
 			result = DOCA_ERROR_INVALID_VALUE;
 			goto json_release;
 		}
@@ -1368,105 +1353,95 @@ json_release:
 }
 
 /*
- * Parse the input PCI address and set the relevant fields in the struct
+ * Parse the input device and set the relevant fields in the struct
  *
  * @param [in]: Input parameter
  * @dev_info [out]: device info struct
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t parse_pci_param(void *param, struct ipsec_security_gw_dev_info *dev_info)
+static doca_error_t parse_device_param(void *param, struct ipsec_security_gw_dev_info *dev_info)
 {
-	char *pci_addr = (char *)param;
+	struct doca_argp_device_ctx *dev_ctx = (struct doca_argp_device_ctx *)param;
 
-	if (strnlen(pci_addr, DOCA_DEVINFO_PCI_ADDR_SIZE) == DOCA_DEVINFO_PCI_ADDR_SIZE) {
-		DOCA_LOG_ERR("Entered device PCI address exceeding the maximum size of %d",
-			     DOCA_DEVINFO_PCI_ADDR_SIZE - 1);
-		return DOCA_ERROR_INVALID_VALUE;
+	if (dev_ctx->devargs != NULL) {
+		DOCA_LOG_WARN("Passed device args are not needed, and will be overriden by the application");
+		/* Fallthrough */
 	}
 
-	strlcpy(dev_info->pci_addr, pci_addr, DOCA_DEVINFO_PCI_ADDR_SIZE);
-
-	dev_info->has_device = true;
-	dev_info->open_by_pci = true;
+	dev_info->doca_dev = dev_ctx->dev;
 
 	return DOCA_SUCCESS;
 }
 
 /*
- * Parse the input name and set the relevant fields in the struct
+ * Parse the input representor device and set the relevant fields in the struct
  *
  * @param [in]: Input parameter
  * @dev_info [out]: device info struct
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t parse_iface_name_param(void *param, struct ipsec_security_gw_dev_info *dev_info)
+static doca_error_t parse_device_rep_param(void *param, struct ipsec_security_gw_dev_info *dev_info)
 {
-	char *iface_name = (char *)param;
+	struct doca_argp_device_rep_ctx *dev_rep_ctx = (struct doca_argp_device_rep_ctx *)param;
 
-	if (strnlen(iface_name, DOCA_DEVINFO_IFACE_NAME_SIZE) == DOCA_DEVINFO_IFACE_NAME_SIZE) {
-		DOCA_LOG_ERR("Device name is too long - MAX=%d", DOCA_DEVINFO_IFACE_NAME_SIZE - 1);
+	if (dev_info->doca_dev_rep != NULL) {
+		DOCA_LOG_ERR("More than a single representor was passed, yet only one representor is supported");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
-	strlcpy(dev_info->iface_name, iface_name, DOCA_DEVINFO_IFACE_NAME_SIZE);
-	dev_info->has_device = true;
-	dev_info->open_by_name = true;
+
+	if (dev_rep_ctx->dev_ctx.devargs != NULL) {
+		DOCA_LOG_WARN(
+			"Passed representor device args are not needed, and will be overriden by the application");
+		/* Fallthrough */
+	}
+
+	dev_info->doca_dev = dev_rep_ctx->dev_ctx.dev;
+	dev_info->doca_dev_rep = dev_rep_ctx->dev_rep;
+	dev_info->is_representor = true;
+
 	return DOCA_SUCCESS;
 }
 
 /*
- * ARGP Callback - Handle DOCA device PCI address parameter for secured port
+ * ARGP Callback - Handle DOCA device for secured port
  *
  * @param [in]: Input parameter
  * @config [in/out]: Program configuration context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t secured_callback(void *param, void *config)
+static doca_error_t secured_dev_callback(void *param, void *config)
 {
 	struct ipsec_security_gw_config *app_cfg = (struct ipsec_security_gw_config *)config;
 
-	return parse_pci_param(param, &app_cfg->objects.secured_dev);
+	return parse_device_param(param, &app_cfg->objects.secured_dev);
 }
 
 /*
- * ARGP Callback - Handle DOCA device PCI address parameter for unsecured port
+ * ARGP Callback - Handle DOCA device for unsecured port
  *
  * @param [in]: Input parameter
  * @config [in/out]: Program configuration context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t unsecured_callback(void *param, void *config)
+static doca_error_t unsecured_dev_callback(void *param, void *config)
 {
 	struct ipsec_security_gw_config *app_cfg = (struct ipsec_security_gw_config *)config;
 
-	return parse_pci_param(param, &app_cfg->objects.unsecured_dev);
+	return parse_device_param(param, &app_cfg->objects.unsecured_dev);
 }
 
 /*
- * ARGP Callback - Handle DOCA device name for secured port
+ * ARGP Callback - Handle DOCA device representor for unsecured port
  *
  * @param [in]: Input parameter
  * @config [in/out]: Program configuration context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t secured_name_callback(void *param, void *config)
+static doca_error_t unsecured_dev_rep_callback(void *param, void *config)
 {
 	struct ipsec_security_gw_config *app_cfg = (struct ipsec_security_gw_config *)config;
 
-	return parse_iface_name_param(param, &app_cfg->objects.secured_dev);
-}
-
-/*
- * ARGP Callback - Handle DOCA device name for unsecured port
- *
- * @param [in]: Input parameter
- * @config [in/out]: Program configuration context
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t unsecured_name_callback(void *param, void *config)
-{
-	struct ipsec_security_gw_config *app_cfg = (struct ipsec_security_gw_config *)config;
-
-	return parse_iface_name_param(param, &app_cfg->objects.unsecured_dev);
+	return parse_device_rep_param(param, &app_cfg->objects.unsecured_dev);
 }
 
 /*
@@ -1579,9 +1554,9 @@ doca_error_t register_ipsec_security_gw_params(void)
 {
 	doca_error_t result;
 	struct doca_argp_param *secured_param, *unsecured_param, *config_param, *ipsec_mode, *socket_path,
-		*secured_name_param, *unsecured_name_param, *nb_cores, *debug_mode;
+		*unsecured_rep_param, *nb_cores, *debug_mode;
 
-	/* Create and register ingress pci param */
+	/* Create and register ingress device param */
 	result = doca_argp_param_create(&secured_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
@@ -1589,16 +1564,17 @@ doca_error_t register_ipsec_security_gw_params(void)
 	}
 	doca_argp_param_set_short_name(secured_param, "s");
 	doca_argp_param_set_long_name(secured_param, "secured");
-	doca_argp_param_set_description(secured_param, "secured port pci-address");
-	doca_argp_param_set_callback(secured_param, secured_callback);
-	doca_argp_param_set_type(secured_param, DOCA_ARGP_TYPE_STRING);
+	doca_argp_param_set_description(secured_param, "secured port device identifier");
+	doca_argp_param_set_callback(secured_param, secured_dev_callback);
+	doca_argp_param_set_type(secured_param, DOCA_ARGP_TYPE_DEVICE);
+	doca_argp_param_set_mandatory(secured_param);
 	result = doca_argp_register_param(secured_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
 		return result;
 	}
 
-	/* Create and register egress pci param */
+	/* Create and register egress device param */
 	result = doca_argp_param_create(&unsecured_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
@@ -1606,9 +1582,9 @@ doca_error_t register_ipsec_security_gw_params(void)
 	}
 	doca_argp_param_set_short_name(unsecured_param, "u");
 	doca_argp_param_set_long_name(unsecured_param, "unsecured");
-	doca_argp_param_set_description(unsecured_param, "unsecured port pci-address");
-	doca_argp_param_set_callback(unsecured_param, unsecured_callback);
-	doca_argp_param_set_type(unsecured_param, DOCA_ARGP_TYPE_STRING);
+	doca_argp_param_set_description(unsecured_param, "unsecured port device identifier");
+	doca_argp_param_set_callback(unsecured_param, unsecured_dev_callback);
+	doca_argp_param_set_type(unsecured_param, DOCA_ARGP_TYPE_DEVICE);
 	result = doca_argp_register_param(unsecured_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
@@ -1667,35 +1643,18 @@ doca_error_t register_ipsec_security_gw_params(void)
 		return result;
 	}
 
-	/* Create and register secured device name param */
-	result = doca_argp_param_create(&secured_name_param);
+	/* Create and register unsecured device representor param */
+	result = doca_argp_param_create(&unsecured_rep_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
 		return result;
 	}
-	doca_argp_param_set_short_name(secured_name_param, "sn");
-	doca_argp_param_set_long_name(secured_name_param, "secured-name");
-	doca_argp_param_set_description(secured_name_param, "secured port interface name");
-	doca_argp_param_set_callback(secured_name_param, secured_name_callback);
-	doca_argp_param_set_type(secured_name_param, DOCA_ARGP_TYPE_STRING);
-	result = doca_argp_register_param(secured_name_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	/* Create and register unsecured device name param */
-	result = doca_argp_param_create(&unsecured_name_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
-		return result;
-	}
-	doca_argp_param_set_short_name(unsecured_name_param, "un");
-	doca_argp_param_set_long_name(unsecured_name_param, "unsecured-name");
-	doca_argp_param_set_description(unsecured_name_param, "unsecured port interface name");
-	doca_argp_param_set_callback(unsecured_name_param, unsecured_name_callback);
-	doca_argp_param_set_type(unsecured_name_param, DOCA_ARGP_TYPE_STRING);
-	result = doca_argp_register_param(unsecured_name_param);
+	doca_argp_param_set_short_name(unsecured_rep_param, "ur");
+	doca_argp_param_set_long_name(unsecured_rep_param, "unsecured-rep");
+	doca_argp_param_set_description(unsecured_rep_param, "unsecured port representor device identifier");
+	doca_argp_param_set_callback(unsecured_rep_param, unsecured_dev_rep_callback);
+	doca_argp_param_set_type(unsecured_rep_param, DOCA_ARGP_TYPE_DEVICE_REP);
+	result = doca_argp_register_param(unsecured_rep_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
 		return result;
@@ -1728,7 +1687,11 @@ doca_error_t register_ipsec_security_gw_params(void)
 	doca_argp_param_set_description(debug_mode, "Enable debug counters");
 	doca_argp_param_set_callback(debug_mode, debug_mode_callback);
 	doca_argp_param_set_type(debug_mode, DOCA_ARGP_TYPE_BOOLEAN);
-	doca_argp_register_param(debug_mode);
+	result = doca_argp_register_param(debug_mode);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	/* Register version callback for DOCA SDK & RUNTIME */
 	result = doca_argp_register_version_callback(sdk_version_callback);

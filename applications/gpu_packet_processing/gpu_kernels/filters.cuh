@@ -31,35 +31,32 @@
 
 #define ACK_MASK (0x00 | TCP_FLAG_ACK)
 
-__device__ __inline__ int
-raw_to_udp(const uintptr_t buf_addr, struct eth_ip_udp_hdr **hdr, uint8_t **payload)
+__device__ __inline__ int raw_to_udp(const uintptr_t buf_addr, struct eth_ip_udp_hdr **hdr, uint8_t **payload)
 {
-	(*hdr) = (struct eth_ip_udp_hdr *) buf_addr;
-	(*payload) = (uint8_t *) (buf_addr + sizeof(struct eth_ip_udp_hdr));
+	(*hdr) = (struct eth_ip_udp_hdr *)buf_addr;
+	(*payload) = (uint8_t *)(buf_addr + sizeof(struct eth_ip_udp_hdr));
 
 	return 0;
 }
 
-__device__ __inline__ int
-raw_to_tcp(const uintptr_t buf_addr, struct eth_ip_tcp_hdr **hdr, uint8_t **payload)
+__device__ __inline__ int raw_to_tcp(const uintptr_t buf_addr, struct eth_ip_tcp_hdr **hdr, uint8_t **payload)
 {
-	(*hdr) = (struct eth_ip_tcp_hdr *) buf_addr;
-	(*payload) = (uint8_t *) (buf_addr + sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr) + (((*hdr)->l4_hdr.dt_off >> 4) * sizeof(int)));
+	(*hdr) = (struct eth_ip_tcp_hdr *)buf_addr;
+	(*payload) = (uint8_t *)(buf_addr + sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr) +
+				 (((*hdr)->l4_hdr.dt_off >> 4) * sizeof(int)));
 
 	return 0;
 }
 
-__device__ __inline__ int
-raw_to_icmp(const uintptr_t buf_addr, struct eth_ip_icmp_hdr **hdr, uint8_t **payload)
+__device__ __inline__ int raw_to_icmp(const uintptr_t buf_addr, struct eth_ip_icmp_hdr **hdr, uint8_t **payload)
 {
-	(*hdr) = (struct eth_ip_icmp_hdr *) buf_addr;
-	(*payload) = (uint8_t *) (buf_addr + sizeof(struct eth_ip_icmp_hdr));
+	(*hdr) = (struct eth_ip_icmp_hdr *)buf_addr;
+	(*payload) = (uint8_t *)(buf_addr + sizeof(struct eth_ip_icmp_hdr));
 
 	return 0;
 }
 
-__device__ __inline__ int
-wipe_packet_32b(uint8_t *payload)
+__device__ __inline__ int wipe_packet_32b(uint8_t *payload)
 {
 #pragma unroll
 	for (int idx = 0; idx < 32; idx++)
@@ -69,19 +66,18 @@ wipe_packet_32b(uint8_t *payload)
 }
 
 /* TCP */
-__device__ __inline__ int
-filter_is_http(const uint8_t *pld)
+__device__ __inline__ int filter_is_http(const uint8_t *pld)
 {
 	/* HTTP/1.1 */
 	if (pld[0] != 'H')
 		return 0;
-	if (pld[1] == 'T' && pld[2] == 'T' && pld[3] == 'P' && pld[4] == '/' && pld[5] == '1' && pld[6] == '.' && pld[7] == '1')
+	if (pld[1] == 'T' && pld[2] == 'T' && pld[3] == 'P' && pld[4] == '/' && pld[5] == '1' && pld[6] == '.' &&
+	    pld[7] == '1')
 		return 1;
 	return 0;
 }
 
-__device__ __inline__ int
-filter_is_http_get(const uint8_t *pld)
+__device__ __inline__ int filter_is_http_get(const uint8_t *pld)
 {
 	/* GET / */
 	if (pld[0] != 'G')
@@ -91,8 +87,7 @@ filter_is_http_get(const uint8_t *pld)
 	return 0;
 }
 
-__device__ __inline__ int
-filter_is_http_post(const uint8_t *pld)
+__device__ __inline__ int filter_is_http_post(const uint8_t *pld)
 {
 	/* POST / */
 	if (pld[0] != 'P')
@@ -102,8 +97,7 @@ filter_is_http_post(const uint8_t *pld)
 	return 0;
 }
 
-__device__ __inline__ int
-filter_is_http_head(const uint8_t *pld)
+__device__ __inline__ int filter_is_http_head(const uint8_t *pld)
 {
 	/* HEAD / */
 	if (pld[0] != 'H' || pld[1] != 'E')
@@ -113,27 +107,23 @@ filter_is_http_head(const uint8_t *pld)
 	return 0;
 }
 
-__device__ __inline__ int
-filter_is_tcp_syn(const struct tcp_hdr *l4_hdr)
+__device__ __inline__ int filter_is_tcp_syn(const struct tcp_hdr *l4_hdr)
 {
 	return l4_hdr->tcp_flags & TCP_FLAG_SYN;
 }
 
-__device__ __inline__ int
-filter_is_tcp_fin(const struct tcp_hdr *l4_hdr)
+__device__ __inline__ int filter_is_tcp_fin(const struct tcp_hdr *l4_hdr)
 {
 	return l4_hdr->tcp_flags & TCP_FLAG_FIN;
 }
 
-__device__ __inline__ int
-filter_is_tcp_ack(const struct tcp_hdr *l4_hdr)
+__device__ __inline__ int filter_is_tcp_ack(const struct tcp_hdr *l4_hdr)
 {
 	return l4_hdr->tcp_flags & ACK_MASK;
 }
 
 /* UDP */
-__device__ __inline__ int
-filter_is_dns(const struct udp_hdr *l4_hdr, const uint8_t *pld)
+__device__ __inline__ int filter_is_dns(const struct udp_hdr *l4_hdr, const uint8_t *pld)
 {
 	/* Dig deeper into query flags: https://stackoverflow.com/questions/7565300/identifying-dns-packets */
 	if (BYTE_SWAP16(l4_hdr->dst_port) == DNS_POST)
@@ -142,8 +132,7 @@ filter_is_dns(const struct udp_hdr *l4_hdr, const uint8_t *pld)
 	return 0;
 }
 
-__device__ __inline__ unsigned long long
-_gputimestamp()
+__device__ __inline__ unsigned long long _gputimestamp()
 {
 	unsigned long long globaltimer;
 	// 64-bit GPU global nanosecond timer

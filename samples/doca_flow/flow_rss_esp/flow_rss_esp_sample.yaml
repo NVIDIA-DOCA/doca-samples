@@ -29,7 +29,7 @@ ports_description:
   port_0: doca_dev
   port_1: doca_dev
 description: "The sample illustrates how to use ESP SPI for RSS traffic distribution.
-              Sample Command Line: ./build/doca_flow_rss_esp  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+              Sample Command Line: ./build/doca_flow_rss_esp -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "RSS ESP distribution case #1"
     args: ""

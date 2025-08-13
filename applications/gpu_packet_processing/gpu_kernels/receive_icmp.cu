@@ -36,8 +36,7 @@
 
 DOCA_LOG_REGISTER(GPU_SANITY::KernelReceiveIcmp);
 
-static
-__device__ void icmp_swap_mac_addr(struct eth_ip_icmp_hdr *hdr)
+static __device__ void icmp_swap_mac_addr(struct eth_ip_icmp_hdr *hdr)
 {
 	uint16_t addr_bytes[3];
 
@@ -54,8 +53,7 @@ __device__ void icmp_swap_mac_addr(struct eth_ip_icmp_hdr *hdr)
 	((uint16_t *)hdr->l2_hdr.d_addr_bytes)[2] = addr_bytes[2];
 }
 
-static
-__device__ void icmp_swap_ip_addr(struct eth_ip_icmp_hdr *hdr)
+static __device__ void icmp_swap_ip_addr(struct eth_ip_icmp_hdr *hdr)
 {
 	uint32_t tmp;
 
@@ -64,8 +62,7 @@ __device__ void icmp_swap_ip_addr(struct eth_ip_icmp_hdr *hdr)
 	hdr->l3_hdr.dst_addr = tmp;
 }
 
-static __device__ uint16_t
-icmp_checksum(const uint16_t *icmph, int len)
+static __device__ uint16_t icmp_checksum(const uint16_t *icmph, int len)
 {
 	uint32_t sum = 0;
 	uint16_t odd_byte;
@@ -76,17 +73,19 @@ icmp_checksum(const uint16_t *icmph, int len)
 	}
 
 	if (len == 1) {
-		*(uint8_t*)(&odd_byte) = * (uint8_t*)icmph;
+		*(uint8_t *)(&odd_byte) = *(uint8_t *)icmph;
 		sum += odd_byte;
 	}
 
-	sum =  (sum >> 16) + (sum & 0xffff);
+	sum = (sum >> 16) + (sum & 0xffff);
 	sum += (sum >> 16);
 
 	return (~sum);
 }
 
-__global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond, struct doca_gpu_eth_rxq *rxq, struct doca_gpu_eth_txq *txq)
+__global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond,
+					 struct doca_gpu_eth_rxq *rxq,
+					 struct doca_gpu_eth_txq *txq)
 {
 	__shared__ uint32_t rx_pkt_num;
 	__shared__ uint64_t rx_buf_idx;
@@ -105,7 +104,11 @@ __global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond, struct doca_gpu_et
 		return;
 
 	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
-		ret = doca_gpu_dev_eth_rxq_receive_warp(rxq, MAX_RX_NUM_PKTS_ICMP, MAX_RX_TIMEOUT_NS_ICMP, &rx_pkt_num, &rx_buf_idx);
+		ret = doca_gpu_dev_eth_rxq_receive_warp(rxq,
+							MAX_RX_NUM_PKTS_ICMP,
+							MAX_RX_TIMEOUT_NS_ICMP,
+							&rx_pkt_num,
+							&rx_buf_idx);
 		/* If any thread returns receive error, the whole execution stops */
 		if (ret != DOCA_SUCCESS) {
 			if (lane_id == 0) {
@@ -114,7 +117,11 @@ __global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond, struct doca_gpu_et
 				 * If application prints this message on the console, something bad happened and
 				 * applications needs to exit
 				 */
-				printf("Receive ICMP kernel error %d warp %d lane %d error %d\n", ret, warp_id, rx_pkt_num, ret);
+				printf("Receive ICMP kernel error %d warp %d lane %d error %d\n",
+				       ret,
+				       warp_id,
+				       rx_pkt_num,
+				       ret);
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 			}
 			break;
@@ -139,12 +146,20 @@ __global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond, struct doca_gpu_et
 
 				hdr->l4_hdr.type = ICMP_ECHO_REPLY;
 				hdr->l4_hdr.cksum = 0;
-				hdr->l4_hdr.cksum = icmp_checksum((uint16_t *)&(hdr->l4_hdr), nbytes - (sizeof(struct ether_hdr) - sizeof(struct ipv4_hdr)));
+				hdr->l4_hdr.cksum =
+					icmp_checksum((uint16_t *)&(hdr->l4_hdr),
+						      nbytes - (sizeof(struct ether_hdr) - sizeof(struct ipv4_hdr)));
 				/* Will translate in a notification caught by DOCA PE on the CPU side. */
-				doca_gpu_dev_eth_txq_send_enqueue_strong(txq, buf_ptr, nbytes, DOCA_GPU_SEND_FLAG_NOTIFY);
-			}
-			else
-				printf("Unknown ICMP type %d code %d id %d seq %d\n", hdr->l4_hdr.type, hdr->l4_hdr.code, BYTE_SWAP16(hdr->l4_hdr.ident), BYTE_SWAP16(hdr->l4_hdr.seq_nb));
+				doca_gpu_dev_eth_txq_send_enqueue_strong(txq,
+									 buf_ptr,
+									 nbytes,
+									 DOCA_GPU_SEND_FLAG_NOTIFY);
+			} else
+				printf("Unknown ICMP type %d code %d id %d seq %d\n",
+				       hdr->l4_hdr.type,
+				       hdr->l4_hdr.code,
+				       BYTE_SWAP16(hdr->l4_hdr.ident),
+				       BYTE_SWAP16(hdr->l4_hdr.seq_nb));
 
 			buf_idx += WARP_SIZE;
 		}
@@ -177,7 +192,9 @@ doca_error_t kernel_receive_icmp(cudaStream_t stream, uint32_t *exit_cond, struc
 	}
 
 	/* Assume MAX_QUEUES_ICMP == 1 */
-	cuda_kernel_receive_icmp<<<1, WARP_SIZE, 0, stream>>>(exit_cond, icmp_queues->eth_rxq_gpu[0], icmp_queues->eth_txq_gpu[0]);
+	cuda_kernel_receive_icmp<<<1, WARP_SIZE, 0, stream>>>(exit_cond,
+							      icmp_queues->eth_rxq_gpu[0],
+							      icmp_queues->eth_txq_gpu[0]);
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
 		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));

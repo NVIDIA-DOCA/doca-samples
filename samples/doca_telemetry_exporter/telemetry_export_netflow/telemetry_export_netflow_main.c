@@ -31,7 +31,7 @@
 DOCA_LOG_REGISTER(TELEMETRY_EXPORTER::NETFLOW::MAIN);
 
 /* Sample's Logic */
-int telemetry_netflow_export(void);
+doca_error_t telemetry_netflow_export(void);
 
 /*
  * Sample main function

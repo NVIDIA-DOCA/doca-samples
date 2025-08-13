@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -45,7 +45,7 @@ doca_error_t kernel_launch(struct dpa_resources *resources);
  */
 int main(int argc, char **argv)
 {
-	struct dpa_config cfg;
+	struct dpa_config cfg = {0};
 	struct dpa_resources resources = {0};
 	doca_error_t result;
 	struct doca_log_backend *sdk_log;

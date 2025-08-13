@@ -29,7 +29,7 @@ ports_decription:
   port_0: doca_dev
   port_1: doca_dev
 description: "This sample demonstrates how to set a meta data in ingress match on it in egress encap the packet and copy inner value or meta data to outer ipv6 label.
-              Sample Command Line: ./build/doca_flow_ipv6_flow_label  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+              Sample Command Line: ./build/doca_flow_ipv6_flow_label -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Flow ipv6 flow label use case #1"
     args: ""

@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -41,6 +41,8 @@ sample_dependencies = []
 sample_dependencies += dependency('doca-common')
 # The DOCA library of the sample itself
 sample_dependencies += dependency('doca-flow')
+# Additional DOCA library that is relevant for this sample
+sample_dependencies += dependency('doca-dpdk-bridge')
 # Utility DOCA library for executables
 sample_dependencies += dependency('doca-argp')
 # Required DOCA Driver
@@ -51,6 +53,8 @@ sample_srcs = [
 	SAMPLE_NAME + '_sample.c',
 	# Main function for the sample's executable
 	SAMPLE_NAME + '_main.c',
+	# Common code for all DOCA samples
+	'../../common.c',
 	# Common code for the DOCA library samples
 	'../flow_common.c',
 	# Common code for all DOCA applications
@@ -60,6 +64,8 @@ sample_srcs = [
 sample_inc_dirs  = []
 # Common DOCA library logic
 sample_inc_dirs += include_directories('..')
+# Common DOCA logic (samples)
+sample_inc_dirs += include_directories('../../')
 # Common DOCA logic (applications)
 sample_inc_dirs += include_directories('../../../applications/common/')
 

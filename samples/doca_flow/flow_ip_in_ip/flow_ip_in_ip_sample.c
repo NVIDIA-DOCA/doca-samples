@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -35,7 +35,7 @@
 #include "doca_flow.h"
 #include "doca_flow_net.h"
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 DOCA_LOG_REGISTER(FLOW_IP_IN_IP);
 
@@ -45,10 +45,10 @@ DOCA_LOG_REGISTER(FLOW_IP_IN_IP);
 #define NB_ENCAP_ACTIONS (2)
 #define NB_DECAP_ACTIONS (1)
 
-#define NB_HAIRPIN_PIPE_ENTRIES (1)
+#define NB_PORT_FWD_PIPE_ENTRIES (1)
 #define NB_ENCAP_PIPE_ENTRIES (2)
 #define NB_DECAP_PIPE_ENTRIES (2)
-#define NB_INGRESS_PIPE_ENTRIES (NB_HAIRPIN_PIPE_ENTRIES + NB_DECAP_PIPE_ENTRIES)
+#define NB_INGRESS_PIPE_ENTRIES (NB_PORT_FWD_PIPE_ENTRIES + NB_DECAP_PIPE_ENTRIES)
 #define NB_EGRESS_PIPE_ENTRIES (NB_ENCAP_PIPE_ENTRIES)
 #define TOTAL_ENTRIES (NB_INGRESS_PIPE_ENTRIES + NB_EGRESS_PIPE_ENTRIES)
 
@@ -59,17 +59,19 @@ DOCA_LOG_REGISTER(FLOW_IP_IN_IP);
  * Create DOCA Flow ingress pipe with transport layer match and set pkt meta value.
  *
  * @port [in]: port of the pipe.
+ * @dest_pipe [in]: dest pipe.
  * @dest_port_id [in]: port ID of the pipe.
  * @is_root [in]: whether this is the root pipe for the port
  * @status [in]: user context for adding entries.
  * @nb_entries [out]: pointer to put into number of entries.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t create_hairpin_pipe(struct doca_flow_port *port,
-					int dest_port_id,
-					bool is_root,
-					struct entries_status *status,
-					struct doca_flow_pipe **pipe)
+static doca_error_t create_port_fwd_pipe(struct doca_flow_port *port,
+					 struct doca_flow_pipe *dest_pipe,
+					 int dest_port_id,
+					 bool is_root,
+					 struct entries_status *status,
+					 struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_pipe_entry *entry;
 	struct doca_flow_match match;
@@ -91,7 +93,7 @@ static doca_error_t create_hairpin_pipe(struct doca_flow_port *port,
 		return result;
 	}
 
-	result = set_flow_pipe_cfg(pipe_cfg, "HAIRPIN_PIPE", DOCA_FLOW_PIPE_BASIC, is_root);
+	result = set_flow_pipe_cfg(pipe_cfg, "PORT_FWD_PIPE", DOCA_FLOW_PIPE_BASIC, is_root);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -118,12 +120,17 @@ static doca_error_t create_hairpin_pipe(struct doca_flow_port *port,
 	}
 
 	/* Forwarding traffic to other port */
-	fwd.type = DOCA_FLOW_FWD_PORT;
-	fwd.port_id = dest_port_id;
+	if (dest_pipe) {
+		fwd.type = DOCA_FLOW_FWD_PIPE;
+		fwd.next_pipe = dest_pipe;
+	} else {
+		fwd.type = DOCA_FLOW_FWD_PORT;
+		fwd.port_id = dest_port_id;
+	}
 
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create hairpin pipe: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to create port forwarding pipe: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
@@ -131,7 +138,7 @@ static doca_error_t create_hairpin_pipe(struct doca_flow_port *port,
 	flags = DOCA_FLOW_NO_WAIT;
 	result = doca_flow_pipe_add_entry(0, *pipe, &match, &actions, NULL, NULL, flags, status, &entry);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to add hairpin entry: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to add port forwarding entry: %s", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -458,21 +465,8 @@ static doca_error_t prepare_encap_pipeline(struct doca_flow_port *ingress_port,
 					   struct entries_status *status,
 					   struct doca_flow_pipe_entry *encap_entries[])
 {
-	struct doca_flow_pipe *hairpin_pipe, *encap_pipe;
+	struct doca_flow_pipe *port_fwd_pipe, *encap_pipe;
 	doca_error_t result;
-
-	status->nb_processed = 0;
-
-	result = create_hairpin_pipe(ingress_port, egress_port_id, true, status, &hairpin_pipe);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create hairpin pipe with entries: %s", doca_error_get_descr(result));
-		return result;
-	}
-	result = flow_process_entries(ingress_port, status, NB_HAIRPIN_PIPE_ENTRIES);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to process encap entries: %s", doca_error_get_descr(result));
-		return result;
-	}
 
 	status->nb_processed = 0;
 
@@ -487,6 +481,19 @@ static doca_error_t prepare_encap_pipeline(struct doca_flow_port *ingress_port,
 		return result;
 	}
 	result = flow_process_entries(egress_port, status, NB_EGRESS_PIPE_ENTRIES);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to process encap entries: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	status->nb_processed = 0;
+
+	result = create_port_fwd_pipe(ingress_port, encap_pipe, egress_port_id, true, status, &port_fwd_pipe);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create port fwd pipe with entries: %s", doca_error_get_descr(result));
+		return result;
+	}
+	result = flow_process_entries(ingress_port, status, NB_PORT_FWD_PIPE_ENTRIES);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to process encap entries: %s", doca_error_get_descr(result));
 		return result;
@@ -509,18 +516,18 @@ static doca_error_t prepare_decap_pipeline(struct doca_flow_port *ingress_port,
 					   struct entries_status *status,
 					   struct doca_flow_pipe_entry *decap_entries[])
 {
-	struct doca_flow_pipe *hairpin_pipe, *decap_pipe;
+	struct doca_flow_pipe *port_fwd_pipe, *decap_pipe;
 	doca_error_t result;
 
 	status->nb_processed = 0;
 
-	result = create_hairpin_pipe(ingress_port, egress_port_id, false, status, &hairpin_pipe);
+	result = create_port_fwd_pipe(ingress_port, NULL, egress_port_id, false, status, &port_fwd_pipe);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create hairpin pipe with entries: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to create port forwarding pipe with entries: %s", doca_error_get_descr(result));
 		return result;
 	}
 
-	result = create_decap_pipe(ingress_port, hairpin_pipe, &decap_pipe);
+	result = create_decap_pipe(ingress_port, port_fwd_pipe, &decap_pipe);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create decap pipe with entries: %s", doca_error_get_descr(result));
 		return result;
@@ -551,35 +558,34 @@ doca_error_t flow_ip_in_ip(int nb_queues)
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	doca_error_t result;
-	uint32_t raw_port_id = 0;
-	uint32_t tunnel_port_id = raw_port_id ^ 1;
+	uint32_t raw_port_id = 0;		   /* sends and receives "raw" (not encapped) packets */
+	uint32_t tunnel_port_id = raw_port_id ^ 1; /* sends and receives "tunnel" packets (IP-in-IP encap) */
 	struct doca_flow_pipe_entry *encap_entries[NB_ENCAP_PIPE_ENTRIES];
 	struct doca_flow_pipe_entry *decap_entries[NB_DECAP_PIPE_ENTRIES];
 	struct entries_status entries_status = {0};
 	struct doca_flow_resource_query encap_ipv4_query_stats, encap_ipv6_query_stats, decap_ipv4_query_stats,
 		decap_ipv6_query_stats;
 
-	resource.nr_counters = nb_ports * NB_HAIRPIN_PIPE_ENTRIES + NB_DECAP_PIPE_ENTRIES + NB_ENCAP_PIPE_ENTRIES;
+	resource.nr_counters = nb_ports * NB_PORT_FWD_PIPE_ENTRIES + NB_DECAP_PIPE_ENTRIES + NB_ENCAP_PIPE_ENTRIES;
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, TOTAL_ENTRIES));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(TOTAL_ENTRIES));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
 		return result;
 	}
-	result = prepare_encap_pipeline(ports[raw_port_id],    /* packet arrives here, is hairpinned */
-					ports[tunnel_port_id], /* packet is encapped here */
-					tunnel_port_id,	       /* packet is forwarded here */
+
+	result = prepare_encap_pipeline(ports[raw_port_id],
+					ports[tunnel_port_id],
+					tunnel_port_id,
 					&entries_status,
 					encap_entries);
 	if (result != DOCA_SUCCESS) {

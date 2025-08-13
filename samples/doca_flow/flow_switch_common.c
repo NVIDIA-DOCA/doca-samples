@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -24,7 +24,6 @@
  */
 #include <string.h>
 
-#include <rte_byteorder.h>
 #include <rte_ethdev.h>
 
 #include <doca_argp.h>
@@ -33,68 +32,10 @@
 
 #include <dpdk_utils.h>
 
+#include "flow_common.h"
 #include "flow_switch_common.h"
 
-#define FLOW_SWITCH_DEV_ARGS "dv_flow_en=2,fdb_def_rule_en=0,vport_match=1,repr_matching_en=0,dv_xmeta_en=4"
-#define FLOW_SWITCH_REP_ARG ",representor="
-
 DOCA_LOG_REGISTER(flow_switch_common);
-
-doca_error_t init_flow_switch_dpdk(int argc, char **dpdk_argv)
-{
-	char *argv[argc + 2];
-
-	memcpy(argv, dpdk_argv, sizeof(argv[0]) * argc);
-	argv[argc++] = "-a";
-	argv[argc++] = "pci:00:00.0";
-
-	return dpdk_init(argc, argv);
-}
-
-/*
- * Get DOCA Flow switch device PCI
- *
- * @param [in]: input parameter
- * @config [out]: configuration context
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
- */
-static doca_error_t param_flow_switch_pci_callback(void *param, void *config)
-{
-	struct flow_switch_ctx *ctx = (struct flow_switch_ctx *)config;
-	char *n = (char *)param;
-
-	if (FLOW_SWITCH_PORTS_MAX <= ctx->nb_ports) {
-		DOCA_LOG_ERR("Encountered too many PCI devices, maximal amount is: %d", FLOW_SWITCH_PORTS_MAX);
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-
-	ctx->dev_arg[ctx->nb_ports++] = n;
-
-	return DOCA_SUCCESS;
-}
-
-/*
- * Get DOCA Flow switch device representor
- *
- * @param [in]: input parameter
- * @config [out]: configuration context
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
- */
-static doca_error_t param_flow_switch_rep_callback(void *param, void *config)
-{
-	struct flow_switch_ctx *ctx = (struct flow_switch_ctx *)config;
-	char *n = (char *)param;
-
-	if (FLOW_SWITCH_PORTS_MAX <= ctx->nb_reps) {
-		DOCA_LOG_ERR("Encountered too many PCI devices representors, maximal amount is: %d",
-			     FLOW_SWITCH_PORTS_MAX);
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-
-	ctx->rep_arg[ctx->nb_reps++] = n;
-
-	return DOCA_SUCCESS;
-}
 
 /*
  * Get DOCA Flow switch mode
@@ -112,44 +53,14 @@ static doca_error_t param_flow_switch_exp_callback(void *param, void *config)
 	return DOCA_SUCCESS;
 }
 
-doca_error_t register_doca_flow_switch_param(void)
+doca_error_t register_doca_flow_switch_params(void)
 {
 	doca_error_t result;
-	struct doca_argp_param *pci_param;
-	struct doca_argp_param *rep_param;
 	struct doca_argp_param *exp_param;
 
-	result = doca_argp_param_create(&pci_param);
+	result = register_flow_device_params(NULL);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create flow switch ARGP param: %s", doca_error_get_descr(result));
-		return result;
-	}
-	doca_argp_param_set_short_name(pci_param, "p");
-	doca_argp_param_set_long_name(pci_param, "pci");
-	doca_argp_param_set_description(pci_param, "device PCI address");
-	doca_argp_param_set_callback(pci_param, param_flow_switch_pci_callback);
-	doca_argp_param_set_type(pci_param, DOCA_ARGP_TYPE_STRING);
-	doca_argp_param_set_multiplicity(pci_param);
-	result = doca_argp_register_param(pci_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register flow switch ARGP param: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	result = doca_argp_param_create(&rep_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create flow switch ARGP param: %s", doca_error_get_descr(result));
-		return result;
-	}
-	doca_argp_param_set_short_name(rep_param, "r");
-	doca_argp_param_set_long_name(rep_param, "rep");
-	doca_argp_param_set_description(rep_param, "device representor");
-	doca_argp_param_set_callback(rep_param, param_flow_switch_rep_callback);
-	doca_argp_param_set_type(rep_param, DOCA_ARGP_TYPE_STRING);
-	doca_argp_param_set_multiplicity(rep_param);
-	result = doca_argp_register_param(rep_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register flow switch ARGP param: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to register flow ARGP device params: %s", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -172,62 +83,45 @@ doca_error_t register_doca_flow_switch_param(void)
 	return DOCA_SUCCESS;
 }
 
-doca_error_t init_doca_flow_switch_common(struct flow_switch_ctx *ctx)
+doca_error_t init_doca_flow_switch_ports(struct flow_devs_manager devs_manager[],
+					 int nb_managers,
+					 struct doca_flow_port *ports[],
+					 int nb_ports,
+					 uint32_t actions_mem_size[])
 {
-	char *port_args[FLOW_SWITCH_PORTS_MAX] = {0};
-	char *dpdk_arg;
-	doca_error_t result;
-	int i;
+	struct doca_dev *dev_arr[FLOW_COMMON_DEV_MAX];
+	struct doca_dev_rep *dev_rep_arr[FLOW_COMMON_REPS_MAX];
+	int nb_devs = 0;
 
-	for (i = 0; i < ctx->nb_ports; i++) {
-		/* Probe dpdk dev by doca_dev */
-		result = open_doca_device_with_pci(ctx->dev_arg[i], ctx->port_cap, &ctx->doca_dev[i]);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to open DOCA device: %s", doca_error_get_descr(result));
-			goto quit;
-		}
-
-		if (ctx->rep_arg[i]) {
-			port_args[i] = calloc(1,
-					      strlen(FLOW_SWITCH_DEV_ARGS) + strlen(FLOW_SWITCH_REP_ARG) +
-						      strlen(ctx->rep_arg[i]) + 1);
-			if (!port_args[i]) {
-				DOCA_LOG_ERR("Failed to allocate dpdk args port: %d", i);
-				result = DOCA_ERROR_NO_MEMORY;
-				goto quit;
-			}
-			strcpy(port_args[i], FLOW_SWITCH_DEV_ARGS);
-			strcat(port_args[i], FLOW_SWITCH_REP_ARG);
-			strcat(port_args[i], ctx->rep_arg[i]);
-			dpdk_arg = port_args[i];
-		} else {
-			dpdk_arg = FLOW_SWITCH_DEV_ARGS;
-		}
-		result = doca_dpdk_port_probe(ctx->doca_dev[i], dpdk_arg);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to probe DOCA device: %s", doca_error_get_descr(result));
-			goto quit;
-		}
+	if (nb_managers <= 0) {
+		DOCA_LOG_ERR("Failed to init doca flow switch ports: Invalid number of switch managers: %d",
+			     nb_managers);
+		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-quit:
-	for (i = 0; i < ctx->nb_ports; i++)
-		free(port_args[i]);
-	if (result != DOCA_SUCCESS)
-		destroy_doca_flow_switch_common(ctx);
-	return result;
-}
-
-void destroy_doca_flow_switch_common(struct flow_switch_ctx *ctx)
-{
-	int i;
-
-	for (i = 0; i < ctx->nb_ports; i++) {
-		if (ctx->doca_dev[i]) {
-			doca_dev_close(ctx->doca_dev[i]);
-			ctx->doca_dev[i] = NULL;
-		}
+	memset(dev_arr, 0, sizeof(struct doca_dev *) * FLOW_COMMON_DEV_MAX);
+	memset(dev_rep_arr, 0, sizeof(struct doca_dev_rep *) * FLOW_COMMON_REPS_MAX);
+	for (int i = 0; i < nb_managers; i++) {
+		dev_arr[nb_devs++] = devs_manager[i].doca_dev;
+		for (int j = 0; j < devs_manager[i].nb_reps; j++)
+			dev_rep_arr[nb_devs++] = devs_manager[i].doca_dev_rep[j];
 	}
+
+	if (nb_devs < nb_ports) {
+		DOCA_LOG_ERR("Insufficient DOCA devices: required %d for %d ports, but only %d provided",
+			     nb_ports,
+			     nb_ports,
+			     nb_devs);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	return init_doca_flow_ports_with_op_state(nb_ports,
+						  ports,
+						  false /* is_port_fwd */,
+						  dev_arr,
+						  dev_rep_arr,
+						  NULL,
+						  actions_mem_size);
 }
 
 uint8_t get_dpdk_nb_ports(void)

@@ -44,7 +44,7 @@ public:
 		std::string representor_id;
 		std::string command_channel_name;
 		std::vector<uint32_t> cpu_set;
-		storage::common::ip_address storage_server_address;
+		storage::ip_address storage_server_address;
 	};
 
 	/*

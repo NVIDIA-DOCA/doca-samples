@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -33,7 +33,8 @@
 #include <doca_bitfield.h>
 
 #include "flow_ct_common.h"
-#include "flow_common.h"
+#include <flow_common.h>
+#include "flow_switch_common.h"
 
 #define PACKET_BURST 128
 #define NB_COUNTERS 6
@@ -633,8 +634,8 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 					return DOCA_ERROR_BAD_STATE;
 				}
 			}
-			DOCA_LOG_INFO(
-				"TCP session was created, waiting for 'FIN'/'RST' packet before ending the session");
+			DOCA_LOG_INFO("TCP session was created");
+			DOCA_LOG_INFO("waiting for 'FIN'/'RST' packet to arrive before ending the session");
 		} else if (tcp_state & DOCA_FLOW_MATCH_TCP_FLAG_FIN || tcp_state & DOCA_FLOW_MATCH_TCP_FLAG_RST) {
 			if (sessions == 0) {
 				DOCA_LOG_INFO("No alive session to destroy, skip destroy");
@@ -643,6 +644,12 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 			result = doca_flow_ct_rm_entry(ct_queue, NULL, flags, *entry);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to remove CT pipe entry: %s", doca_error_get_descr(result));
+				return result;
+			}
+			/*process entries*/
+			result = flow_ct_queue_reserve(port, ct_queue, ct_status, 0);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 				return result;
 			}
 			*entry = NULL;
@@ -729,10 +736,10 @@ static doca_error_t print_pipe_counters(uint16_t ct_queue, struct doca_flow_pipe
  * Run flow_ct_tcp sample
  *
  * @nb_queues [in]: number of queues the sample will use
- * @ct_dev [in]: Flow CT device
+ * @ctx [in]: flow switch context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct doca_dev *ct_dev)
+doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 {
 	const int nb_ports = 2, nb_entries = 7;
 	struct flow_resources resource;
@@ -741,8 +748,8 @@ doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct doca_dev *ct_dev)
 	struct doca_flow_pipe *ct_pipe = NULL;
 	struct doca_flow_port *ports[nb_ports];
 	struct doca_flow_ct_actions shared_action;
-	struct doca_flow_meta o_zone_mask, o_modify_mask, r_zone_mask, r_modify_mask;
-	struct doca_dev *dev_arr[nb_ports];
+	struct doca_flow_meta o_zone_mask, r_zone_mask;
+	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ctrl_status, ct_status;
 	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 4096, nb_ipv4_sessions = 1024,
@@ -757,7 +764,7 @@ doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct doca_dev *ct_dev)
 
 	resource.nr_counters = NB_COUNTERS;
 
-	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws,isolated", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -777,6 +784,7 @@ doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct doca_dev *ct_dev)
 				   NULL,
 				   nb_ipv4_sessions,
 				   nb_ipv6_sessions,
+				   nb_ipv4_sessions + nb_ipv6_sessions,
 				   0,
 				   false,
 				   &o_zone_mask,
@@ -789,10 +797,12 @@ doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct doca_dev *ct_dev)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = ct_dev;
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, nb_entries));
-	result = init_doca_flow_ports(nb_ports, ports, false, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_entries));
+	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+					     ctx->devs_ctx.nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_ct_destroy();
@@ -821,8 +831,8 @@ doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct doca_dev *ct_dev)
 		goto cleanup;
 
 	shared_action.data.action_idx = 0;
-	shared_action.data.meta.pkt_meta = DOCA_HTOBE32(1);
-	shared_action.data.meta.u32[0] = DOCA_HTOBE32(1);
+	shared_action.data.meta.flow.pkt_meta = DOCA_HTOBE32(1);
+	shared_action.data.meta.flow.u32[0] = DOCA_HTOBE32(1);
 
 	result = doca_flow_ct_actions_add_shared(ct_queue, ct_pipe, &shared_action, 1, &shared_action_handle);
 	if (result != DOCA_SUCCESS)

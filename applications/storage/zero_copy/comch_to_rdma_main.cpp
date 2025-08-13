@@ -33,7 +33,7 @@
 
 #include <storage_common/doca_utils.hpp>
 #include <storage_common/ip_address.hpp>
-#include <storage_common/posix_utils.hpp>
+#include <storage_common/os_utils.hpp>
 #include <zero_copy/comch_to_rdma_application.hpp>
 
 using namespace std::string_literals;
@@ -83,71 +83,71 @@ storage::zero_copy::comch_to_rdma_application::configuration parse_cli_args(int 
 
 	doca_error_t ret;
 
-	ret = doca_argp_init("doca_storage_zero_copy_comch_to_rdma", &config);
+	ret = doca_argp_init(NULL, &config);
 	if (ret != DOCA_SUCCESS) {
 		throw std::runtime_error{"Failed to parse CLI args: "s + doca_error_get_name(ret)};
 	}
 
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_STRING,
 		"d",
 		"device",
 		"Device identifier",
-		storage::common::required_value,
-		storage::common::single_value,
+		storage::required_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::comch_to_rdma_application::configuration *>(cfg)->device_id =
 				static_cast<char const *>(value);
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_STRING,
 		"r",
 		"representor",
 		"Device host side representor identifier",
-		storage::common::required_value,
-		storage::common::single_value,
+		storage::required_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::comch_to_rdma_application::configuration *>(cfg)
 				->representor_id = static_cast<char const *>(value);
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_INT,
 		nullptr,
 		"cpu",
 		"CPU core to which the process affinity can be set",
-		storage::common::required_value,
-		storage::common::multiple_values,
+		storage::required_value,
+		storage::multiple_values,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::comch_to_rdma_application::configuration *>(cfg)
 				->cpu_set.push_back(*static_cast<int *>(value));
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_STRING,
 		nullptr,
 		"storage-server",
 		"One or more storage server addresses in <ip_addr>:<port> format",
-		storage::common::required_value,
-		storage::common::multiple_values,
+		storage::required_value,
+		storage::multiple_values,
 		[](void *value, void *cfg) noexcept {
 			try {
 				static_cast<storage::zero_copy::comch_to_rdma_application::configuration *>(cfg)
 					->storage_server_address =
-					storage::common::parse_ip_v4_address(static_cast<char const *>(value));
+					storage::parse_ip_v4_address(static_cast<char const *>(value));
 				return DOCA_SUCCESS;
 			} catch (std::runtime_error const &ex) {
 				return DOCA_ERROR_INVALID_VALUE;
 			}
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_STRING,
 		nullptr,
 		"command-channel-name",
 		"Name of the channel used by the doca_comch_server. Default: storage_zero_copy_comch",
-		storage::common::optional_value,
-		storage::common::single_value,
+		storage::optional_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::comch_to_rdma_application::configuration *>(cfg)
 				->command_channel_name = static_cast<char const *>(value);
@@ -191,7 +191,7 @@ bool register_signal_handlers() noexcept
 	sigemptyset(&new_sigaction.sa_mask);
 
 	if (sigaction(SIGINT, &new_sigaction, nullptr) != 0) {
-		printf("failed to set SIGINT signal handler: %s\n", storage::common::strerror_r(errno).c_str());
+		printf("failed to set SIGINT signal handler: %s\n", storage::strerror_r(errno).c_str());
 		return false;
 	}
 
@@ -210,7 +210,7 @@ bool register_signal_handlers() noexcept
 int main(int argc, char **argv)
 {
 	int rc = EXIT_SUCCESS;
-	storage::common::create_doca_logger_backend();
+	storage::create_doca_logger_backend();
 	if (!register_signal_handlers()) {
 		return EXIT_FAILURE;
 	}

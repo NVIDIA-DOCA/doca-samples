@@ -31,7 +31,7 @@ ports_description:
   port_0: doca_dev
   port_1: doca_dev
 description: "This sample demonstrates how to use DOCA Flow to process and modify GTP PSC packets with specific QFI values.
-              Sample Command Line: ./build/doca_flow_gtp  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+              Sample Command Line: ./build/doca_flow_gtp -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Flow GTP PSC use case #1"
     args: ""

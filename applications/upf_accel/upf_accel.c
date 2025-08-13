@@ -43,7 +43,15 @@
 
 DOCA_LOG_REGISTER(UPF_ACCEL);
 
+#define UPF_ACCEL_RSS_KEY_LEN 40
+
 volatile bool force_quit;
+
+static uint8_t upf_accel_rss_hash_key[UPF_ACCEL_RSS_KEY_LEN] = {
+	0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+	0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+	0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+};
 
 /*
  * Calculate quota counter index according to a port id and zero based index
@@ -330,17 +338,12 @@ static doca_error_t upf_accel_pipe_encap_counter_insert(struct upf_accel_ctx *up
 							struct doca_flow_pipe_entry **entry)
 {
 	const struct upf_accel_far *far = upf_accel_get_far_by_id(upf_accel_ctx->upf_accel_cfg->fars, far_id);
-	struct doca_flow_actions act_enc = {.action_idx = (!!qfi) ? UPF_ACCEL_ENCAP_ACTION_5G :
-								    UPF_ACCEL_ENCAP_ACTION_4G,
-					    .encap_cfg.encap = {.tun = {
-									.gtp_ext_psc_qfi = qfi & 0x3f,
-								}}};
+	struct doca_flow_actions act_enc = {.encap_cfg.encap.tun.gtp_ext_psc_qfi = qfi & 0x3f};
 	struct doca_flow_actions act_none = {.action_idx = UPF_ACCEL_ENCAP_ACTION_NONE};
 	struct doca_flow_monitor mon = {
 		.shared_counter = {.shared_counter_id = port_id_and_idx_to_quota_counter(port_id, pdr_idx)}};
 	struct doca_flow_match match = {.meta.pkt_meta = DOCA_HTOBE32(pdr_id)};
 	struct upf_accel_entry_cfg entry_cfg = {.match = &match,
-						.action = (pdi_si == UPF_ACCEL_PDR_PDI_SI_DL) ? &act_enc : &act_none,
 						.fwd = NULL,
 						.domain = DOCA_FLOW_PIPE_DOMAIN_EGRESS,
 						.entry_idx = pdr_id,
@@ -352,8 +355,24 @@ static doca_error_t upf_accel_pipe_encap_counter_insert(struct upf_accel_ctx *up
 		DOCA_LOG_ERR("Couldn't find FAR ID");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
-	act_enc.encap_cfg.encap.outer.ip4.dst_ip = RTE_BE32(far->fp_oh_ip.v4);
-	act_enc.encap_cfg.encap.tun.gtp_teid = RTE_BE32(far->fp_oh_teid);
+
+	if (far->fp_oh_ip.ip_version == DOCA_FLOW_L3_TYPE_IP4 && !!qfi) { /* Encap with IPv4 5G */
+		act_enc.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV4_5G;
+		act_enc.encap_cfg.encap.outer.ip4.dst_ip = DOCA_HTOBE32(far->fp_oh_ip.addr.v4);
+	} else if (far->fp_oh_ip.ip_version == DOCA_FLOW_L3_TYPE_IP6 && !!qfi) { /* Encap with IPv6 5G */
+		act_enc.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV6_5G;
+		memcpy(act_enc.encap_cfg.encap.outer.ip6.dst_ip, far->fp_oh_ip.addr.v6, UPF_ACCEL_NUM_BYTES_IPV6);
+	} else if (far->fp_oh_ip.ip_version == DOCA_FLOW_L3_TYPE_IP4 && !qfi) { /* Encap with IPv4 4G */
+		act_enc.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV4_4G;
+		act_enc.encap_cfg.encap.outer.ip4.dst_ip = DOCA_HTOBE32(far->fp_oh_ip.addr.v4);
+	} else if (far->fp_oh_ip.ip_version == DOCA_FLOW_L3_TYPE_IP6 && !qfi) { /* Encap with IPv6 4G */
+		act_enc.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV6_4G;
+		memcpy(act_enc.encap_cfg.encap.outer.ip6.dst_ip, far->fp_oh_ip.addr.v6, UPF_ACCEL_NUM_BYTES_IPV6);
+	}
+
+	entry_cfg.action = (pdi_si == UPF_ACCEL_PDR_PDI_SI_DL) ? &act_enc : &act_none;
+
+	act_enc.encap_cfg.encap.tun.gtp_teid = DOCA_HTOBE32(far->fp_oh_teid);
 
 	if (pipe_pdr_insert(upf_accel_ctx, &entry_cfg, entry)) {
 		DOCA_LOG_ERR("Failed to insert pdr entry: %u", DOCA_BETOH32(entry_cfg.match->meta.pkt_meta));
@@ -673,6 +692,8 @@ static void upf_accel_fp_data_cleanup(struct upf_accel_fp_data *fp_data_arr)
 		fp_data = &fp_data_arr[lcore];
 
 		free_quota_counters_ids(&fp_data->quota_cntrs, fp_data->ctx->num_ports);
+		rte_free(fp_data->dyn_ext_tbl_data);
+		rte_hash_free(fp_data->dyn_ext_tbl);
 		rte_free(fp_data->dyn_tbl_data);
 		rte_hash_free(fp_data->dyn_tbl);
 	}
@@ -705,6 +726,15 @@ static doca_error_t upf_accel_fp_data_init(struct upf_accel_ctx *ctx, struct upf
 		.socket_id = rte_socket_id(),
 		.extra_flag = RTE_HASH_EXTRA_FLAGS_EXT_TABLE,
 	};
+	struct rte_hash_parameters dyn_ext_tbl_params = {
+		.name = mem_name,
+		.entries = ht_size * PARSER_PKT_TYPE_NUM,
+		.key_len = sizeof(struct upf_accel_match_extension),
+		.hash_func = rte_hash_crc,
+		.hash_func_init_val = 0,
+		.socket_id = rte_socket_id(),
+		.extra_flag = RTE_HASH_EXTRA_FLAGS_EXT_TABLE,
+	};
 	uint16_t curr_quota_base_cntr_idx = 0;
 	struct upf_accel_fp_data *fp_data_arr;
 	struct upf_accel_fp_data *fp_data;
@@ -712,6 +742,7 @@ static doca_error_t upf_accel_fp_data_init(struct upf_accel_ctx *ctx, struct upf
 	unsigned int lcore;
 	size_t num_cntrs;
 	doca_error_t res;
+	uint32_t i;
 
 	fp_data_arr = rte_calloc("FP data", RTE_MAX_LCORE, sizeof(*fp_data), RTE_CACHE_LINE_SIZE);
 	if (!fp_data_arr) {
@@ -742,6 +773,29 @@ static doca_error_t upf_accel_fp_data_init(struct upf_accel_ctx *ctx, struct upf
 			DOCA_LOG_ERR("Failed to allocate dynamic connection table data");
 			res = DOCA_ERROR_NO_MEMORY;
 			goto cleanup;
+		}
+
+		snprintf(mem_name, sizeof(mem_name), "Dyn ext ht %u", lcore);
+		fp_data->dyn_ext_tbl = rte_hash_create(&dyn_ext_tbl_params);
+		if (!fp_data->dyn_ext_tbl) {
+			DOCA_LOG_ERR("Failed to allocate dynamic extension table");
+			res = DOCA_ERROR_NO_MEMORY;
+			goto cleanup;
+		}
+
+		snprintf(mem_name, sizeof(mem_name), "Dyn ext data %u", lcore);
+		fp_data->dyn_ext_tbl_data = rte_calloc(mem_name,
+						       dyn_ext_tbl_params.entries,
+						       sizeof(*fp_data->dyn_ext_tbl_data),
+						       RTE_CACHE_LINE_SIZE);
+		if (!fp_data->dyn_ext_tbl_data) {
+			DOCA_LOG_ERR("Failed to allocate dynamic extension table data");
+			res = DOCA_ERROR_NO_MEMORY;
+			goto cleanup;
+		}
+
+		for (i = 0; i < dyn_ext_tbl_params.entries; ++i) {
+			fp_data->dyn_ext_tbl_data[i].type = UPF_ACCEL_RULE_DYNAMIC_EXTENSION;
 		}
 
 		num_cntrs = quota_cntrs_per_core_num;
@@ -776,6 +830,28 @@ static doca_error_t upf_accel_fp_data_init(struct upf_accel_ctx *ctx, struct upf
 cleanup:
 	upf_accel_fp_data_cleanup(fp_data_arr);
 	return res;
+}
+
+/*
+ * Fill DOCA device array to use during port starting.
+ *
+ * @ctx [in] UPF Acceleration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t fill_device_array(struct upf_accel_ctx *ctx)
+{
+	doca_error_t ret;
+	int port_id;
+
+	for (port_id = 0; port_id < ctx->num_ports; port_id++) {
+		ret = doca_dpdk_port_as_dev(port_id, &ctx->dev_arr[port_id]);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get device for port %d: %s", port_id, doca_error_get_descr(ret));
+			return ret;
+		}
+	}
+
+	return DOCA_SUCCESS;
 }
 
 /*
@@ -862,43 +938,49 @@ static void upf_accel_fp_accel_counters_print(struct upf_accel_fp_data *fp_data_
 		}
 
 		DOCA_LOG_INFO(
-			"Core %3u %s ran_current=%-8lu ran_aged=%-8lu ran_total=%-8lu ran_errors=%-8lu ran_aging_errors=%-8lu wan_current=%-8lu wan_aged=%-8lu wan_total=%-8lu wan_errors=%-8lu wan_aging_errors=%-8lu",
+			"Core %3u %s ran_current=%-8lu ran_aged=%-8lu ran_total=%-8lu ran_accel_errors=%-8lu ran_aging_errors=%-8lu ran_del_errors=%-8lu wan_current=%-8lu wan_aged=%-8lu wan_total=%-8lu wan_accel_errors=%-8lu wan_aging_errors=%-8lu wan_del_errors=%-8lu",
 			lcore,
 			name,
 			ran_counters->current,
 			ran_counters->total - ran_counters->current,
 			ran_counters->total,
-			ran_counters->errors,
+			ran_counters->accel_errors,
 			ran_counters->aging_errors,
+			ran_counters->del_errors,
 			wan_counters->current,
 			wan_counters->total - wan_counters->current,
 			wan_counters->total,
-			wan_counters->errors,
-			wan_counters->aging_errors);
+			wan_counters->accel_errors,
+			wan_counters->aging_errors,
+			wan_counters->del_errors);
 
 		ran_sum.current += ran_counters->current;
 		ran_sum.total += ran_counters->total;
-		ran_sum.errors += ran_counters->errors;
+		ran_sum.accel_errors += ran_counters->accel_errors;
 		ran_sum.aging_errors += ran_counters->aging_errors;
+		ran_sum.del_errors += ran_counters->del_errors;
 		wan_sum.current += wan_counters->current;
 		wan_sum.total += wan_counters->total;
-		wan_sum.errors += wan_counters->errors;
+		wan_sum.accel_errors += wan_counters->accel_errors;
 		wan_sum.aging_errors += wan_counters->aging_errors;
+		wan_sum.del_errors += wan_counters->del_errors;
 	}
 
 	DOCA_LOG_INFO(
-		"TOTAL    %s ran_current=%-8lu ran_aged=%-8lu ran_total=%-8lu ran_errors=%-8lu ran_aging_errors=%-8lu wan_current=%-8lu wan_aged=%-8lu wan_total=%-8lu wan_errors=%-8lu wan_aging_errors=%-8lu",
+		"TOTAL    %s ran_current=%-8lu ran_aged=%-8lu ran_total=%-8lu ran_accel_errors=%-8lu ran_aging_errors=%-8lu ran_del_errors=%-8lu wan_current=%-8lu wan_aged=%-8lu wan_total=%-8lu wan_accel_errors=%-8lu wan_aging_errors=%-8lu wan_del_errors=%-8lu",
 		name,
 		ran_sum.current,
 		ran_sum.total - ran_sum.current,
 		ran_sum.total,
-		ran_sum.errors,
+		ran_sum.accel_errors,
 		ran_sum.aging_errors,
+		ran_sum.del_errors,
 		wan_sum.current,
 		wan_sum.total - wan_sum.current,
 		wan_sum.total,
-		wan_sum.errors,
-		wan_sum.aging_errors);
+		wan_sum.accel_errors,
+		wan_sum.aging_errors,
+		wan_sum.del_errors);
 }
 
 /*
@@ -1134,6 +1216,101 @@ static enum upf_accel_port upf_accel_single_port_get_fwd_port(enum upf_accel_por
 }
 
 /*
+ * Initialize DOCA Flow
+ *
+ * @nb_queues [in]: number of queues
+ * @mode [in]: HW running mode
+ * @resource [in]: flow resources
+ * @nr_shared_resources [in]: number of shared flow resources
+ * @cb [in]: callback function for processing flow entries
+ */
+static doca_error_t upf_accel_doca_flow_init(int nb_queues,
+					     const char *mode,
+					     struct flow_resources *resource,
+					     uint32_t nr_shared_resources[],
+					     doca_flow_entry_process_cb cb)
+{
+	struct doca_flow_cfg *flow_cfg;
+	uint16_t qidx, rss_queues[nb_queues];
+	struct doca_flow_resource_rss_cfg rss = {0};
+	doca_error_t result, tmp_result;
+
+	result = doca_flow_cfg_create(&flow_cfg);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create doca_flow_cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	rss.nr_queues = nb_queues;
+	for (qidx = 0; qidx < nb_queues; qidx++)
+		rss_queues[qidx] = qidx;
+	rss.queues_array = rss_queues;
+	result = doca_flow_cfg_set_default_rss(flow_cfg, &rss);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg rss: %s", doca_error_get_descr(result));
+		goto destroy_cfg;
+	}
+
+	result = doca_flow_cfg_set_pipe_queues(flow_cfg, nb_queues);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg pipe_queues: %s", doca_error_get_descr(result));
+		goto destroy_cfg;
+	}
+
+	result = doca_flow_cfg_set_mode_args(flow_cfg, mode);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg mode_args: %s", doca_error_get_descr(result));
+		goto destroy_cfg;
+	}
+
+	result = doca_flow_cfg_set_nr_counters(flow_cfg, resource->nr_counters);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_counters: %s", doca_error_get_descr(result));
+		goto destroy_cfg;
+	}
+
+	result = doca_flow_cfg_set_nr_meters(flow_cfg, resource->nr_meters);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_meters: %s", doca_error_get_descr(result));
+		goto destroy_cfg;
+	}
+
+	result = doca_flow_cfg_set_cb_entry_process(flow_cfg, cb);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg doca_flow_entry_process_cb: %s",
+			     doca_error_get_descr(result));
+		goto destroy_cfg;
+	}
+
+	for (int i = 0; i < SHARED_RESOURCE_NUM_VALUES; i++) {
+		result = doca_flow_cfg_set_nr_shared_resource(flow_cfg, nr_shared_resources[i], i);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_shared_resources: %s",
+				     doca_error_get_descr(result));
+			goto destroy_cfg;
+		}
+	}
+
+	result = doca_flow_cfg_set_rss_key(flow_cfg, upf_accel_rss_hash_key, UPF_ACCEL_RSS_KEY_LEN);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg rss key: %s", doca_error_get_descr(result));
+		goto destroy_cfg;
+	}
+
+	result = doca_flow_init(flow_cfg);
+	if (result != DOCA_SUCCESS)
+		DOCA_LOG_ERR("Failed to initialize DOCA Flow: %s", doca_error_get_descr(result));
+destroy_cfg:
+	tmp_result = doca_flow_cfg_destroy(flow_cfg);
+	if (tmp_result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to destroy doca_flow_cfg: %s", doca_error_get_descr(tmp_result));
+		DOCA_ERROR_PROPAGATE(result, tmp_result);
+	}
+
+	return result;
+}
+
+/*
  * UPF Acceleration application deinitialization
  *
  * @upf_accel_ctx [in/out]: UPF Acceleration context
@@ -1169,13 +1346,11 @@ static doca_error_t init_upf_accel(struct upf_accel_ctx *upf_accel_ctx, struct u
 	doca_error_t result, tmp_result;
 	enum upf_accel_port port_id;
 
-	result = init_doca_flow_cb(upf_accel_ctx->num_queues,
-				   "vnf,hws",
-				   &upf_accel_ctx->resource,
-				   upf_accel_ctx->num_shared_resources,
-				   upf_accel_check_for_valid_entry_aging,
-				   NULL,
-				   NULL);
+	result = upf_accel_doca_flow_init(upf_accel_ctx->num_queues,
+					  "vnf,hws",
+					  &upf_accel_ctx->resource,
+					  upf_accel_ctx->num_shared_resources,
+					  upf_accel_check_for_valid_entry_aging);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -1187,7 +1362,13 @@ static doca_error_t init_upf_accel(struct upf_accel_ctx *upf_accel_ctx, struct u
 		goto cleanup_doca_flow;
 	}
 
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(upf_accel_ctx->num_queues, UPF_ACCEL_MAX_NUM_CONNECTIONS));
+	result = fill_device_array(upf_accel_ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to fill device array");
+		goto cleanup_fp_data;
+	}
+
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(UPF_ACCEL_MAX_NUM_CONNECTIONS));
 	result = init_doca_flow_ports(upf_accel_ctx->num_ports,
 				      upf_accel_ctx->ports,
 				      true,
@@ -1419,6 +1600,17 @@ static doca_error_t fixed_port_callback(void *param, void *config)
 }
 
 /*
+ * Convert the user context to the flow_dev_ctx struct
+ *
+ * @user_ctx [in]: User context
+ * @return: Flow device context
+ */
+static struct flow_dev_ctx *flow_dev_ctx_from_user_ctx(void *user_ctx)
+{
+	return &((struct upf_accel_config *)user_ctx)->flow_devs;
+}
+
+/*
  * Handle application parameters registration
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -1431,6 +1623,13 @@ static doca_error_t upf_accel_register_params(void)
 	struct doca_argp_param *pkts_before_accel_param;
 	struct doca_argp_param *fixed_port_param;
 	doca_error_t result;
+
+	/* Register flow device params */
+	result = register_flow_device_params(flow_dev_ctx_from_user_ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register flow device params: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	/* Create and register UPF Acceleration JSON PDR definitions file path */
 	result = doca_argp_param_create(&pdr_file_path_param);
@@ -1473,7 +1672,7 @@ static doca_error_t upf_accel_register_params(void)
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
 		return result;
 	}
-	doca_argp_param_set_short_name(aging_time_sec_param, "a");
+	doca_argp_param_set_short_name(aging_time_sec_param, "t");
 	doca_argp_param_set_long_name(aging_time_sec_param, "aging-time-sec");
 	doca_argp_param_set_description(aging_time_sec_param, "Aging period in seconds");
 	doca_argp_param_set_callback(aging_time_sec_param, aging_time_sec_callback);
@@ -1555,8 +1754,6 @@ int main(int argc, char **argv)
 		.fixed_port = UPF_ACCEL_FIXED_PORT_NONE,
 	};
 	struct application_dpdk_config dpdk_config = {
-		.port_config.nb_hairpin_q = 1,
-		.port_config.isolated_mode = 1,
 		.port_config.enable_mbuf_metadata = 1,
 	};
 	struct upf_accel_fp_data *fp_data_arr = NULL;
@@ -1583,7 +1780,7 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
 		goto upf_accel_exit;
 	}
-	doca_argp_set_dpdk_program(dpdk_init);
+	doca_argp_set_dpdk_program(flow_init_dpdk);
 
 	result = upf_accel_register_params();
 	if (result != DOCA_SUCCESS) {
@@ -1595,6 +1792,12 @@ int main(int argc, char **argv)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse app input: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
+	}
+
+	result = init_doca_flow_devs(&upf_accel_cfg.flow_devs);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to init flow devices: %s", doca_error_get_descr(result));
+		goto dpdk_cleanup;
 	}
 
 	result = upf_accel_dpdk_config_num_ports(&dpdk_config);
@@ -1665,7 +1868,7 @@ dpdk_smf_cleanup:
 dpdk_ports_queues_cleanup:
 	dpdk_queues_and_ports_fini(&dpdk_config);
 dpdk_cleanup:
-	dpdk_fini();
+	dpdk_fini_with_devs(dpdk_config.port_config.nb_ports);
 argp_cleanup:
 	doca_argp_destroy();
 upf_accel_exit:

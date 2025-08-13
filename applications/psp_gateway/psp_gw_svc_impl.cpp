@@ -185,7 +185,7 @@ doca_error_t PSP_GatewayImpl::request_tunnel_to_host(struct psp_gw_peer *peer,
 				copy_ip_addr(*peer_virt_ip, session.dst_vip);
 				session.pkt_count_ingress = UINT64_MAX;
 
-				result = psp_flows->add_ingress_acl_entry(&session);
+				result = psp_flows->add_ingress_acl_entry(&session, 0);
 				if (result != DOCA_SUCCESS) {
 					DOCA_LOG_ERR("Failed to open ACL (%s <- %s) on SPI %d: %s",
 						     local_vip.c_str(),
@@ -246,7 +246,7 @@ doca_error_t PSP_GatewayImpl::request_tunnel_to_host(struct psp_gw_peer *peer,
 			return result;
 		}
 	}
-	result = add_encrypt_entries(new_session_keys, peer_svc_pip);
+	result = add_encrypt_entries(new_session_keys, peer_svc_pip, 0);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add encrypt entries for peer %s: %s",
 			     peer_svc_pip.c_str(),
@@ -258,14 +258,15 @@ doca_error_t PSP_GatewayImpl::request_tunnel_to_host(struct psp_gw_peer *peer,
 }
 
 doca_error_t PSP_GatewayImpl::add_encrypt_entries(std::vector<psp_session_and_key_t> &new_sessions_keys,
-						  std::string peer_svc_addr)
+						  std::string peer_svc_addr,
+						  uint16_t queue_id)
 {
 	DOCA_LOG_DBG("Adding %d encrypt entries for peer %s", (int)new_sessions_keys.size(), peer_svc_addr.c_str());
 
 	uint64_t start_time = rte_get_tsc_cycles();
 	for (int i = 0; i < (int)new_sessions_keys.size(); i++) {
 		doca_error_t result =
-			psp_flows->add_encrypt_entry(new_sessions_keys[i].first, new_sessions_keys[i].second);
+			psp_flows->add_encrypt_entry(new_sessions_keys[i].first, new_sessions_keys[i].second, queue_id);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add encrypt entry for %s: %s",
 				     peer_svc_addr.c_str(),
@@ -421,7 +422,7 @@ int PSP_GatewayImpl::select_psp_version(const ::psp_gateway::MultiTunnelRequest 
 			copy_ip_addr(peer_vip, session.dst_vip);
 			session.pkt_count_ingress = UINT64_MAX;
 
-			result = psp_flows->add_ingress_acl_entry(&session);
+			result = psp_flows->add_ingress_acl_entry(&session, config->grpc_queue_id);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to open ACL (%s <- %s) on SPI %d: %s",
 					     local_vip_str.c_str(),
@@ -464,7 +465,7 @@ int PSP_GatewayImpl::select_psp_version(const ::psp_gateway::MultiTunnelRequest 
 	}
 
 	if (reversed_sessions_keys.size() > 0) {
-		result = add_encrypt_entries(reversed_sessions_keys, peer);
+		result = add_encrypt_entries(reversed_sessions_keys, peer, config->grpc_queue_id);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add encrypt entries for peer %s: %s",
 				     peer.c_str(),

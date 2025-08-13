@@ -30,7 +30,7 @@ ports_description:
   port_1: doca_rep_dev
   port_2: doca_rep_dev
 description: "The sample illustrates how to create a pipe/entry for sending traffic from wire back to wire port.
-              Sample Command Line: ./build/doca_flow_switch_to_wire   -- -l 60 -p 08:00.0 -r sf[0-2]"
+              Sample Command Line: ./build/doca_flow_switch_to_wire -- -l 60 -r pci/08:00.0,pf0sf[0-2]"
 use_cases:
   - name: "Switch to wire use case #1"
     args: ""

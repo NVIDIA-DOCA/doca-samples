@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -45,11 +45,12 @@
 
 DOCA_LOG_REGISTER(IPSEC_SECURITY_GW);
 
-#define DEFAULT_NB_CORES 4	  /* Default number of running cores */
-#define PACKET_BURST 32		  /* The number of packets in the rx queue */
-#define NB_TX_BURST_TRIES 5	  /* Number of tries for sending batch of packets */
-#define MIN_ENTRIES_PER_CORE 1024 /* Minimum number of entries per core */
-#define MAC_ADDRESS_SIZE 6	  /* Size of mac address */
+#define DEFAULT_NB_CORES 4		   /* Default number of running cores */
+#define PACKET_BURST 32			   /* The number of packets in the rx queue */
+#define NB_TX_BURST_TRIES 5		   /* Number of tries for sending batch of packets */
+#define MIN_ENTRIES_PER_CORE 1024	   /* Minimum number of entries per core */
+#define MAC_ADDRESS_SIZE 6		   /* Size of mac address */
+#define ONE_SECOND_IN_MICROSECONDS 1000000 /* One second in microseconds */
 
 /* Rule Inserter worker thread context struct */
 struct multi_thread_insertion_ctx {
@@ -163,8 +164,10 @@ static void query_encrypt_pipes(struct ipsec_security_gw_config *app_cfg)
 {
 	bool changed = false;
 
-	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_SWITCH)
+	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_SWITCH) {
 		changed |= query_pipe_info(&app_cfg->encrypt_pipes.encrypt_root);
+		changed |= query_pipe_info(&app_cfg->switch_pipes.pkt_meta_pipe);
+	}
 	changed |= query_pipe_info(&app_cfg->encrypt_pipes.ipv4_tcp_pipe);
 	changed |= query_pipe_info(&app_cfg->encrypt_pipes.ipv4_udp_pipe);
 	changed |= query_pipe_info(&app_cfg->encrypt_pipes.ipv6_tcp_pipe);
@@ -177,8 +180,10 @@ static void query_encrypt_pipes(struct ipsec_security_gw_config *app_cfg)
 	changed |= query_pipe_info(&app_cfg->encrypt_pipes.marker_insert_pipe);
 	if (app_cfg->vxlan_encap)
 		changed |= query_pipe_info(&app_cfg->encrypt_pipes.vxlan_encap_pipe);
-	if (changed)
+	if (changed) {
 		printf("\n");
+		fflush(stdout);
+	}
 }
 
 /*
@@ -196,8 +201,10 @@ static void query_decrypt_pipes(struct ipsec_security_gw_config *app_cfg)
 	changed |= query_pipe_info(&app_cfg->decrypt_pipes.decrypt_ipv6_pipe);
 	changed |= query_pipe_info(&app_cfg->decrypt_pipes.decap_pipe);
 	changed |= query_pipe_info(&app_cfg->decrypt_pipes.marker_remove_pipe);
-	if (changed)
+	if (changed) {
 		printf("\n");
+		fflush(stdout);
+	}
 }
 
 /*
@@ -207,17 +214,21 @@ static void query_decrypt_pipes(struct ipsec_security_gw_config *app_cfg)
  */
 static void process_syndrome_packets(void *args)
 {
+	doca_error_t result;
 	struct ipsec_security_gw_core_ctx *ctx = (struct ipsec_security_gw_core_ctx *)args;
 	int i;
 	uint64_t start_time, end_time;
-	double delta;
-	double cycle_time = 5;
-	uint64_t max_timeout = 4000000;
-	uint32_t max_resources = ctx->config->app_rules.nb_decrypt_rules + ctx->config->app_rules.nb_encrypt_rules;
+	uint64_t delta;
+	uint64_t cycle_time = ONE_SECOND_IN_MICROSECONDS;
+	uint64_t max_timeout = (ctx->config->debug_mode ? 0.9 : 0.95) * ONE_SECOND_IN_MICROSECONDS;
 
 	while (!force_quit) {
 		start_time = rte_get_timer_cycles();
-		doca_flow_crypto_ipsec_resource_handle(ctx->ports[SECURED_IDX]->port, max_timeout, max_resources);
+		result = doca_flow_crypto_ipsec_resource_handle(ctx->ports[SECURED_IDX]->port, max_timeout, 0);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to handle IPSec resources: %s", doca_error_get_descr(result));
+			/* Fallthrough - We want to continue the loop, regardless of the result */
+		}
 		if (ctx->config->debug_mode) {
 			query_encrypt_pipes(ctx->config);
 			query_decrypt_pipes(ctx->config);
@@ -225,9 +236,10 @@ static void process_syndrome_packets(void *args)
 				query_bad_syndrome(&ctx->config->app_rules.decrypt_rules[i]);
 		}
 		end_time = rte_get_timer_cycles();
-		delta = (end_time - start_time) / rte_get_timer_hz();
-		if (delta < cycle_time)
-			sleep(cycle_time - delta);
+		delta = (end_time - start_time) / (rte_get_timer_hz() / ONE_SECOND_IN_MICROSECONDS);
+		if (delta < cycle_time) {
+			usleep(cycle_time - delta);
+		}
 	}
 	free(ctx);
 }
@@ -1043,9 +1055,7 @@ int main(int argc, char **argv)
 		.port_config.nb_ports = nb_ports,
 		.port_config.nb_queues = 2, /* This will be updated according to app_cfg.nb_cores in
 					       dpdk_queues_and_ports_init() */
-		.port_config.nb_hairpin_q = 2,
 		.port_config.enable_mbuf_metadata = true,
-		.port_config.isolated_mode = true,
 		.reserve_main_thread = true,
 	};
 	char cores_str[10];
@@ -1056,6 +1066,8 @@ int main(int argc, char **argv)
 
 	app_cfg.dpdk_config = &dpdk_config;
 	app_cfg.nb_cores = DEFAULT_NB_CORES;
+	/* Per the RFC, the initial SN on the wire should be 1, so use it as the default value */
+	app_cfg.sn_initial = 1;
 
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
@@ -1110,8 +1122,9 @@ int main(int argc, char **argv)
 		goto dpdk_destroy;
 	}
 
-	if (app_cfg.flow_mode == IPSEC_SECURITY_GW_SWITCH)
-		dpdk_config.port_config.self_hairpin = true;
+	if (app_cfg.flow_mode == IPSEC_SECURITY_GW_SWITCH) {
+		dpdk_config.port_config.switch_mode = true;
+	}
 
 	result = ipsec_security_gw_init_devices(&app_cfg);
 	if (result != DOCA_SUCCESS) {

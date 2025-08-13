@@ -29,7 +29,7 @@ ports_description:
   port_0: doca_dev
   port_1: doca_dev
 description: "This sample receives a packet, encapsulates it with VXLAN, and loops it back to the same port. Re-injected (encapsulated) packets are marked with 10, while others are marked with 0.
-              Sample Command Line: ./build/doca_flow_loopback  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+              Sample Command Line: ./build/doca_flow_loopback -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Flow loopback use case #1"
     args: ""

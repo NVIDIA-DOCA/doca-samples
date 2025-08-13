@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -30,17 +30,18 @@
 #include <doca_log.h>
 #include <doca_dpdk.h>
 
-#include <dpdk_utils.h>
+#include <flow_common.h>
+#include <flow_switch_common.h>
 
-#include "flow_switch_common.h"
+#include <dpdk_utils.h>
 
 DOCA_LOG_REGISTER(FLOW_SWITCH_HOT_UPGRADE::MAIN);
 
 /* Sample's Logic */
 doca_error_t flow_switch_hot_upgrade(int nb_queues,
 				     int nb_ports,
-				     struct doca_dev *dev_main,
-				     struct doca_dev *dev_sec,
+				     struct flow_devs_manager devs_manager[],
+				     uint16_t nb_devs,
 				     enum doca_flow_port_operation_state state);
 
 /* doca flow hot upgrade context */
@@ -78,7 +79,7 @@ doca_error_t register_extra_params(void)
 	struct doca_argp_param *state_param;
 
 	/* Register common switch sample parameters */
-	result = register_doca_flow_switch_param();
+	result = register_doca_flow_switch_params();
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register flow switch parameters: %s", doca_error_get_descr(result));
 		return result;
@@ -123,7 +124,7 @@ int main(int argc, char **argv)
 	struct application_dpdk_config dpdk_config = {
 		.port_config.nb_ports = 6,
 		.port_config.nb_queues = 1,
-		.port_config.isolated_mode = 1,
+		.port_config.switch_mode = 1,
 	};
 	struct flow_hot_upgrade_ctx ctx = {0};
 
@@ -154,14 +155,16 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
-	doca_argp_set_dpdk_program(init_flow_switch_dpdk);
+	doca_argp_set_dpdk_program(flow_init_dpdk);
+	ctx.switch_ctx.devs_ctx.default_dev_args = FLOW_SWITCH_DEV_ARGS;
+
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 
-	result = init_doca_flow_switch_common(&ctx.switch_ctx);
+	result = init_doca_flow_devs(&ctx.switch_ctx.devs_ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init flow switch common: %s", doca_error_get_descr(result));
 		goto dpdk_cleanup;
@@ -177,8 +180,8 @@ int main(int argc, char **argv)
 	/* run sample */
 	result = flow_switch_hot_upgrade(dpdk_config.port_config.nb_queues,
 					 dpdk_config.port_config.nb_ports,
-					 ctx.switch_ctx.doca_dev[0],
-					 ctx.switch_ctx.doca_dev[1],
+					 ctx.switch_ctx.devs_ctx.devs_manager,
+					 ctx.switch_ctx.devs_ctx.nb_devs,
 					 ctx.state);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("flow_switch_hot_upgrade() encountered an error: %s", doca_error_get_descr(result));
@@ -194,7 +197,7 @@ dpdk_cleanup:
 argp_cleanup:
 	doca_argp_destroy();
 sample_exit:
-	destroy_doca_flow_switch_common(&ctx.switch_ctx);
+	destroy_doca_flow_devs(&ctx.switch_ctx.devs_ctx);
 	if (exit_status == EXIT_SUCCESS)
 		DOCA_LOG_INFO("Sample finished successfully");
 	else

@@ -51,6 +51,8 @@ struct program_core_objects {
 	struct doca_pe *pe;		    /* doca progress engine */
 };
 
+typedef doca_error_t (*open_dev_cb)(struct doca_devinfo *devinfo, void *usr_ctx, struct doca_dev **dev);
+
 /*
  * Open a DOCA device according to a given PCI address
  *
@@ -60,6 +62,22 @@ struct program_core_objects {
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t open_doca_device_with_pci(const char *pci_addr, tasks_check func, struct doca_dev **retval);
+
+/*
+ * Open a DOCA device according to a given PCI address and a callback function
+ *
+ * @pci_addr [in]: PCI address
+ * @func [in]: pointer to a function that checks if the device have some task capabilities (Ignored if set to NULL)
+ * @open_dev_cb [in]: pointer to a function that opens the device
+ * @usr_ctx [in]: user context
+ * @retval [out]: pointer to doca_dev struct, NULL if not found
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t open_doca_device_with_pci_and_callback(const char *pci_addr,
+						    tasks_check func,
+						    open_dev_cb open_dev_cb,
+						    void *usr_ctx,
+						    struct doca_dev **retval);
 
 /*
  * Open a DOCA device according to a given IB device name
@@ -88,6 +106,16 @@ doca_error_t open_doca_device_with_iface_name(const uint8_t *value,
 					      size_t val_size,
 					      tasks_check func,
 					      struct doca_dev **retval);
+
+/*
+ * Open a DOCA device according to a given SF index
+ *
+ * @sf_index [in]: SF index
+ * @func [in]: pointer to a function that checks if the device have some task capabilities (Ignored if set to NULL)
+ * @retval [out]: pointer to doca_dev struct, NULL if not found
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t open_doca_device_with_sf_index(uint32_t sf_index, tasks_check func, struct doca_dev **retval);
 
 /*
  * Open a DOCA device with a custom set of capabilities
@@ -180,6 +208,23 @@ uint64_t align_up_uint64(uint64_t value, uint64_t alignment);
  * @return: aligned value
  */
 uint64_t align_down_uint64(uint64_t value, uint64_t alignment);
+
+/*
+ * Align up to uint32
+ *
+ * @value [in]: value to align up
+ * @alignment [in]: alignment value
+ * @return: aligned value
+ */
+uint32_t align_up_uint32(uint32_t value, uint32_t alignment);
+
+/*
+ * Next power of two
+ *
+ * @x [in]: value x
+ * @return: next power of two
+ */
+uint64_t next_power_of_two(uint64_t x);
 
 /*
  * Allocate DOCA buf list

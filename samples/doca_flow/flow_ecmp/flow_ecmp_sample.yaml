@@ -34,7 +34,7 @@ ports_description:
 use_cases:
   - name: "Flow ecmp use case #1"
     description: "This sample illustrates ECMP feature using a hash pipe. The sample enables the user to determine how many ports are included in ECMP distribution, in this case the number is 4.
-                  Sample Command Line: ./build/doca_flow_ecmp   -- -l 60 -p 03:00.0 -r sf[0-3]"
+                  Sample Command Line: ./build/doca_flow_ecmp -- -l 60 -r pci/03:00.0,pf0sf[0-3]"
     args: ""
     stages:
       - name: "Sending packets iteration 1"
