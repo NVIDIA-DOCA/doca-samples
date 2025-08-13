@@ -109,7 +109,7 @@ if lz4_dev_dep.found()
                override_options : ['cpp_std=c++17'],
                c_args : base_c_args,
                cpp_args : base_cpp_args,
-               dependencies : app_dependencies,
+               dependencies : app_dependencies + lz4_dev_dep,
                include_directories : app_inc_dirs + include_directories('.'),
                install : install_apps,
     )
