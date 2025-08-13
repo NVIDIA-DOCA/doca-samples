@@ -32,7 +32,7 @@
 #include <doca_error.h>
 #include <doca_version.h>
 
-#include <storage_common/posix_utils.hpp>
+#include <storage_common/os_utils.hpp>
 #include <storage_common/doca_utils.hpp>
 #include <zero_copy/initiator_comch_application.hpp>
 
@@ -90,126 +90,126 @@ storage::zero_copy::initiator_comch_application::configuration parse_cli_args(in
 
 	doca_error_t ret;
 
-	ret = doca_argp_init("doca_storage_zero_copy_initiator_comch", &config);
+	ret = doca_argp_init(NULL, &config);
 	if (ret != DOCA_SUCCESS) {
 		throw std::runtime_error{"Failed to parse CLI args: "s + doca_error_get_name(ret)};
 	}
 
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_STRING,
 		"d",
 		"device",
 		"Device identifier",
-		storage::common::required_value,
-		storage::common::single_value,
+		storage::required_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::initiator_comch_application::configuration *>(cfg)->device_id =
 				static_cast<char const *>(value);
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_STRING,
 		nullptr,
 		"operation",
 		"Operation to perform. One of: read|write",
-		storage::common::required_value,
-		storage::common::single_value,
+		storage::required_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::initiator_comch_application::configuration *>(cfg)
 				->operation_type = static_cast<char const *>(value);
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_INT,
 		nullptr,
 		"run-limit-operation-count",
 		"Run N operations then stop",
-		storage::common::required_value,
-		storage::common::single_value,
+		storage::required_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::initiator_comch_application::configuration *>(cfg)
 				->run_limit_operation_count = *static_cast<int *>(value);
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_INT,
 		nullptr,
 		"cpu",
 		"CPU core to which the process affinity can be set",
-		storage::common::required_value,
-		storage::common::multiple_values,
+		storage::required_value,
+		storage::multiple_values,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::initiator_comch_application::configuration *>(cfg)
 				->cpu_set.push_back(*static_cast<int *>(value));
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_INT,
 		nullptr,
 		"per-cpu-buffer-count",
 		"Number of memory buffers to create. Default: 64",
-		storage::common::optional_value,
-		storage::common::single_value,
+		storage::optional_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::initiator_comch_application::configuration *>(cfg)
 				->buffer_count = *static_cast<int *>(value);
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_INT,
 		nullptr,
 		"buffer-size",
 		"Size of each created buffer. Default: 4096",
-		storage::common::optional_value,
-		storage::common::single_value,
+		storage::optional_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::initiator_comch_application::configuration *>(cfg)->buffer_size =
 				*static_cast<int *>(value);
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_BOOLEAN,
 		nullptr,
 		"validate-writes",
 		"Enable validation of writes operations by reading them back afterwards. Default: false",
-		storage::common::optional_value,
-		storage::common::single_value,
+		storage::optional_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::initiator_comch_application::configuration *>(cfg)
 				->validate_writes = *static_cast<uint8_t *>(value);
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_STRING,
 		nullptr,
 		"command-channel-name",
 		"Name of the channel used by the doca_comch_client. Default: storage_zero_copy_comch",
-		storage::common::optional_value,
-		storage::common::single_value,
+		storage::optional_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::initiator_comch_application::configuration *>(cfg)
 				->command_channel_name = static_cast<char const *>(value);
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_INT,
 		nullptr,
 		"control-timeout",
 		"Time (in seconds) to wait while performing control operations. Default: 10",
-		storage::common::optional_value,
-		storage::common::single_value,
+		storage::optional_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::initiator_comch_application::configuration *>(cfg)
 				->control_timeout = std::chrono::seconds{*static_cast<int *>(value)};
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_INT,
 		nullptr,
 		"batch-size",
 		"Batch size: Default: ${per-cpu-buffer-count} / 2",
-		storage::common::optional_value,
-		storage::common::single_value,
+		storage::optional_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::initiator_comch_application::configuration *>(cfg)->batch_size =
 				*static_cast<int *>(value);
@@ -248,11 +248,11 @@ void validate_configuration(storage::zero_copy::initiator_comch_application::con
 		printf("Invalid configuration: buffer-size must not be zero\n");
 	}
 
-	if ((cfg.buffer_size % storage::common::cache_line_size) != 0) {
+	if ((cfg.buffer_size % storage::cache_line_size) != 0) {
 		valid_configuration = false;
 		printf("Invalid configuration: buffer-size(%u) must be a multiple of the cache line size(%u) to avoid false sharing\n",
 		       cfg.buffer_size,
-		       storage::common::cache_line_size);
+		       storage::cache_line_size);
 	}
 
 	if (cfg.buffer_count == 0) {
@@ -302,7 +302,7 @@ bool register_signal_handlers() noexcept
 	sigemptyset(&new_sigaction.sa_mask);
 
 	if (sigaction(SIGINT, &new_sigaction, nullptr) != 0) {
-		printf("failed to set SIGINT signal handler: %s\n", storage::common::strerror_r(errno).c_str());
+		printf("failed to set SIGINT signal handler: %s\n", storage::strerror_r(errno).c_str());
 		return false;
 	}
 
@@ -321,7 +321,7 @@ bool register_signal_handlers() noexcept
 int main(int argc, char **argv)
 {
 	int rc = EXIT_SUCCESS;
-	storage::common::create_doca_logger_backend();
+	storage::create_doca_logger_backend();
 	if (!register_signal_handlers()) {
 		return EXIT_FAILURE;
 	}

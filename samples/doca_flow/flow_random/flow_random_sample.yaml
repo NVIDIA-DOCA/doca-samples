@@ -29,7 +29,7 @@ ports_description:
   port_0: doca_dev
   port_1: doca_dev
 description: "The sample illustrates how to use random matching for traffic sampling and distributing.
-              Sample Command Line: ./build/doca_flow_random  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+              Sample Command Line: ./build/doca_flow_random -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Random case: sampling"
     args: ""

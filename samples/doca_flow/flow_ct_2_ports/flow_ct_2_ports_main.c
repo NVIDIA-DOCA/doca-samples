@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,15 +29,16 @@
 #include <doca_log.h>
 #include <doca_dpdk.h>
 
-#include <dpdk_utils.h>
+#include <flow_ct_common.h>
+#include <flow_switch_common.h>
+#include <common.h>
 
-#include "flow_ct_common.h"
-#include "common.h"
+#include <dpdk_utils.h>
 
 DOCA_LOG_REGISTER(FLOW_CT_2_PORTS::MAIN);
 
 /* Sample's Logic */
-doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct doca_dev *dev_arr[], int nb_ports);
+doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx);
 
 /*
  * Sample main function
@@ -51,17 +52,12 @@ int main(int argc, char **argv)
 	doca_error_t result;
 	struct doca_log_backend *sdk_log;
 	int exit_status = EXIT_FAILURE;
-	struct doca_dev *ct_dev[MAX_PORTS] = {};
-	struct ct_config ct_cfg = {0};
+	struct flow_dev_ctx ct_cfg = {0};
 	struct application_dpdk_config dpdk_config = {
 		.port_config.nb_queues = 2,
-		.port_config.isolated_mode = 1,
 		.port_config.switch_mode = 1,
-		.port_config.nb_hairpin_q = 2,
-		.port_config.self_hairpin = 1,
 		.reserve_main_thread = false,
 	};
-	int i;
 
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
@@ -83,9 +79,11 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
 		goto sample_exit;
 	}
-	doca_argp_set_dpdk_program(flow_ct_dpdk_init);
+	doca_argp_set_dpdk_program(flow_init_dpdk);
+	ct_cfg.default_dev_args = FLOW_SWITCH_DEV_ARGS;
+	ct_cfg.port_cap = flow_ct_capable;
 
-	result = flow_ct_register_params();
+	result = register_flow_device_params(NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register Flow Ct sample parameters: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
@@ -97,30 +95,21 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
-	for (i = 0; i < ct_cfg.n_ports; i++) {
-		result = open_doca_device_with_pci(ct_cfg.ct_dev_pci_addr[i], flow_ct_capable, &ct_dev[i]);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to open Flow CT device: %s", doca_error_get_descr(result));
-			goto dpdk_cleanup;
-		}
-
-		result = doca_dpdk_port_probe(ct_dev[i], FLOW_CT_COMMON_DEVARGS);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to open Flow CT device: %s", doca_error_get_descr(result));
-			goto device_cleanup;
-		}
+	result = init_doca_flow_devs(&ct_cfg);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to init flow switch common: %s", doca_error_get_descr(result));
+		goto dpdk_cleanup;
 	}
-
 	/* update queues and ports */
-	dpdk_config.port_config.nb_ports = ct_cfg.n_ports;
+	dpdk_config.port_config.nb_ports = ct_cfg.nb_ports;
 	result = dpdk_queues_and_ports_init(&dpdk_config);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to update ports and queues");
-		goto device_cleanup;
+		goto dpdk_cleanup;
 	}
 
 	/* run sample */
-	result = flow_ct_2_ports(dpdk_config.port_config.nb_queues, ct_dev, ct_cfg.n_ports);
+	result = flow_ct_2_ports(dpdk_config.port_config.nb_queues, &ct_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Encountered an error: %s", doca_error_get_descr(result));
 		goto dpdk_ports_queues_cleanup;
@@ -129,15 +118,12 @@ int main(int argc, char **argv)
 	exit_status = EXIT_SUCCESS;
 dpdk_ports_queues_cleanup:
 	dpdk_queues_and_ports_fini(&dpdk_config);
-device_cleanup:
-	for (i = 0; i < ct_cfg.n_ports; i++)
-		if (ct_dev[i] != NULL)
-			doca_dev_close(ct_dev[i]);
 dpdk_cleanup:
 	dpdk_fini();
 argp_cleanup:
 	doca_argp_destroy();
 sample_exit:
+	destroy_doca_flow_devs(&ct_cfg);
 	if (exit_status == EXIT_SUCCESS)
 		DOCA_LOG_INFO("Sample finished successfully");
 	else

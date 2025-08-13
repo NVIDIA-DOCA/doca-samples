@@ -38,6 +38,7 @@
 
 #include <doca_devemu_vfs.h>
 #include <doca_devemu_vfs_type.h>
+#include <doca_devemu_vfs_dev.h>
 
 DOCA_LOG_REGISTER(DPU_DEVEMU_VFS_DEVICE_LIST);
 

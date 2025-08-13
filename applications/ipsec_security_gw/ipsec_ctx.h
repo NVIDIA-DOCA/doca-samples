@@ -62,11 +62,11 @@ struct bad_syndrome_entry {
 	uint32_t previous_stats;	    /* last query stats */
 };
 
-/* struct to hold antireplay state */
+/* struct to hold anti-replay state */
 struct antireplay_state {
-	uint32_t window_size; /* antireplay window size */
+	uint32_t window_size; /* anti-replay window size */
 	uint32_t end_win_sn;  /* end of window sequence number */
-	uint64_t bitmap;      /* antireplay bitmap - LSB is with lowest sequence number */
+	uint64_t bitmap;      /* anti-replay bitmap - LSB is with lowest sequence number */
 };
 
 /* entry information struct */
@@ -212,12 +212,9 @@ enum ipsec_security_gw_fwd_syndrome {
 
 /* IPsec Security Gateway device information */
 struct ipsec_security_gw_dev_info {
-	char pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE];     /* PCI address */
-	char iface_name[DOCA_DEVINFO_IFACE_NAME_SIZE]; /* interface name */
-	bool open_by_pci;			       /* true if user sent PCI address */
-	bool open_by_name;			       /* true if user sent interface name */
-	struct doca_dev *doca_dev;		       /* DOCA device */
-	bool has_device;			       /* true if the user sent PCI address or interface name */
+	bool is_representor;		   /* true if device is representor */
+	struct doca_dev *doca_dev;	   /* DOCA device */
+	struct doca_dev_rep *doca_dev_rep; /* DOCA device representor */
 };
 
 /* IPsec Security Gateway DOCA objects */

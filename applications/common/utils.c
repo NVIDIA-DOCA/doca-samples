@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -114,9 +114,7 @@ void linear_array_init_u16(uint16_t *array, uint16_t n)
 		array[i] = i;
 }
 
-#ifndef DOCA_USE_LIBBSD
-
-#ifndef strlcpy
+#if !defined(DOCA_USE_LIBBSD) && !defined(DOCA_USE_LIBC_STRING_L_FUNC)
 
 #include <string.h>
 
@@ -135,12 +133,6 @@ size_t strlcpy(char *dst, const char *src, size_t size)
 	return src_len;
 }
 
-#endif /* strlcpy */
-
-#ifndef strlcat
-
-#include <string.h>
-
 size_t strlcat(char *dst, const char *src, size_t size)
 {
 	size_t dst_len = strnlen(dst, size);
@@ -151,6 +143,4 @@ size_t strlcat(char *dst, const char *src, size_t size)
 	return dst_len + strlcpy(dst + dst_len, src, size - dst_len);
 }
 
-#endif /* strlcat */
-
-#endif /* ! DOCA_USE_LIBBSD */
+#endif /* !DOCA_USE_LIBBSD && !DOCA_USE_LIBC_STRING_L_FUNC */

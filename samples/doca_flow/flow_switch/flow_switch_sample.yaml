@@ -33,7 +33,7 @@ ports_description:
   port_4: doca_rep_dev
   port_5: doca_rep_dev
 description: "This sample illustrates how to use two switches working concurrently on two different physical functions.
-              Sample Command Line: ./build/doca_flow_switch   -- -l 60 -p 08:00.0 -p 08:00.1 -r sf[0-1] -r sf[0-1]"
+              Sample Command Line: ./build/doca_flow_switch -- -l 60 -r pci/08:00.0,pf0sf[0-1] -r pci/08:00.1,pf1sf[0-1]"
 use_cases:
   - name: "Flow switch use case #1"
     args: ""

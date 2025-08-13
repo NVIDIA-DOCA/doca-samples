@@ -91,10 +91,12 @@ public:
 	 * @param [in] pf The Host PF object, already opened and probed,
 	 *        but not started, by DOCA, of the device which sends
 	 *        and receives encrypted packets
+	 * @param [in] vf_dev The DOCA device representor device which sends
+	 *        and received plaintext packets.
 	 * @param [in] vf_port_id The port_id of the device which sends
 	 *        and received plaintext packets.
 	 */
-	PSP_GatewayFlows(psp_pf_dev *pf, uint16_t vf_port_id, psp_gw_app_config *app_config);
+	PSP_GatewayFlows(psp_pf_dev *pf, doca_dev_rep *vf_dev, uint16_t vf_port_id, psp_gw_app_config *app_config);
 
 	/**
 	 * Deallocates all associated DOCA objects.
@@ -125,18 +127,20 @@ public:
 	 *
 	 * @session [in]: the session for which an encryption flow should be created
 	 * @encrypt_key [in]: the encryption key to use for the session
+	 * @queue_id [in]: the queue ID for to add the entry to
 	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
 	 */
-	doca_error_t add_encrypt_entry(psp_session_t *session, const void *encrypt_key);
+	doca_error_t add_encrypt_entry(psp_session_t *session, const void *encrypt_key, uint16_t queue_id);
 
 	/**
 	 * @brief Adds an ingress ACL entry for the given session to accept
 	 *        the combination of src_vip and SPI.
 	 *
 	 * @session [in]: the session for which an ingress ACL flow should be created
+	 * @queue_id [in]: the queue ID for to add the entry to
 	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
 	 */
-	doca_error_t add_ingress_acl_entry(psp_session_t *session);
+	doca_error_t add_ingress_acl_entry(psp_session_t *session, uint16_t queue_id);
 
 	/**
 	 * @brief Removes the indicated flow entry.
@@ -189,10 +193,11 @@ private:
 	 *
 	 * @port_id [in]: the numerical index of the port
 	 * @port_dev [in]: the doca_dev returned from doca_dev_open()
+	 * @port_rep [in]: the doca_dev_rep returned from doca_dev_rep_open()
 	 * @port [out]: the resulting port object
 	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
 	 */
-	doca_error_t start_port(uint16_t port_id, doca_dev *port_dev, doca_flow_port **port);
+	doca_error_t start_port(uint16_t port_id, doca_dev *port_dev, doca_dev_rep *port_rep, doca_flow_port **port);
 
 	/**
 	 * @brief handles the initialization DOCA Flow
@@ -434,12 +439,16 @@ private:
 
 	uint16_t vf_port_id{UINT16_MAX};
 
+	doca_dev_rep *vf_dev_rep{};
+
 	doca_flow_port *vf_port{};
 
 	bool sampling_enabled{false};
 
 	std::vector<uint16_t> rss_queues;
-	doca_flow_fwd fwd_rss{};
+	doca_flow_fwd fwd_changeable_rss{};
+	doca_flow_fwd fwd_ipv4_rss{};
+	doca_flow_fwd fwd_ipv6_rss{};
 
 	// Pipe and pipe entry application state:
 
@@ -469,7 +478,8 @@ private:
 	doca_flow_pipe *ingress_src_ip6_pipe{};
 
 	// static pipe entries
-	doca_flow_pipe_entry *default_rss_entry{};
+	doca_flow_pipe_entry *ipv4_rss_entry{};
+	doca_flow_pipe_entry *ipv6_rss_entry{};
 	doca_flow_pipe_entry *default_decrypt_entry{};
 	doca_flow_pipe_entry *default_ingr_sampling_entry{};
 	doca_flow_pipe_entry *egr_sampling_rss{};
@@ -496,7 +506,8 @@ private:
 	doca_flow_pipe_entry *ipv6_empty_pipe_entry{};
 	doca_flow_pipe_entry *root_default_drop{};
 	doca_flow_pipe_entry *fwd_to_wire_entry{};
-	doca_flow_pipe_entry *fwd_to_rss_entry{};
+	doca_flow_pipe_entry *fwd_ipv4_rss_entry{};
+	doca_flow_pipe_entry *fwd_ipv6_rss_entry{};
 	doca_flow_pipe_entry *set_sample_bit_entry{};
 
 	// commonly used setting to enable per-entry counters

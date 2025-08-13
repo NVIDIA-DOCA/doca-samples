@@ -40,7 +40,6 @@ Usage: doca_dpa_initiator_target [DOCA Flags] [Program Flags]
 - `-v, --version`                           Print program version information
 - `-l, --log-level`                         Set the (numeric) log level for the program <10=DISABLE, 20=CRITICAL, 30=ERROR, 40=WARNING, 50=INFO, 60=DEBUG, 70=TRACE>
 - `--sdk-log-level`                         Set the SDK (numeric) log level for the program <10=DISABLE, 20=CRITICAL, 30=ERROR, 40=WARNING, 50=INFO, 60=DEBUG, 70=TRACE>
-- `-j, --json <path>`                       Parse all command flags from an input json file
 
 ### Program Flags:
 - `-pf_dev, --pf-device <PF DOCA device name>` PF device name that supports DPA (optional). If not provided, then a random device will be chosen.

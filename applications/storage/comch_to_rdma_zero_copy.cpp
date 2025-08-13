@@ -88,41 +88,20 @@ struct thread_stats {
 class zero_copy_app_worker {
 public:
 	struct alignas(storage::cache_line_size) hot_data {
-		doca_pe *pe;
-		uint64_t pe_hit_count;
-		uint64_t pe_miss_count;
-		uint64_t completed_transaction_count;
-		uint32_t in_flight_transaction_count;
-		uint32_t core_idx;
-		uint8_t batch_count;
-		uint8_t batch_size;
-		std::atomic_bool run_flag;
-		bool error_flag;
-
-		hot_data();
-		hot_data(hot_data const &other) = delete;
-		hot_data(hot_data &&other) noexcept;
-		hot_data &operator=(hot_data const &other) = delete;
-		hot_data &operator=(hot_data &&other) noexcept;
-
-		/*
-		 * ComCh post recv helper to control batch submission flags
-		 *
-		 * @task [in]: Task to submit
-		 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
-		 */
-		doca_error_t submit_comch_recv_task(doca_comch_consumer_task_post_recv *task);
+		doca_pe *pe = nullptr;
+		uint64_t pe_hit_count = 0;
+		uint64_t pe_miss_count = 0;
+		uint64_t completed_transaction_count = 0;
+		uint32_t in_flight_transaction_count = 0;
+		uint32_t core_idx = 0;
+		std::atomic_bool run_flag = false;
+		bool error_flag = false;
 	};
 	static_assert(sizeof(zero_copy_app_worker::hot_data) == storage::cache_line_size,
 		      "Expected thread_context::hot_data to occupy one cache line");
 
 	~zero_copy_app_worker();
-	zero_copy_app_worker() = delete;
-	zero_copy_app_worker(doca_dev *dev, doca_comch_connection *comch_conn, uint32_t task_count, uint32_t batch_size);
-	zero_copy_app_worker(zero_copy_app_worker const &) = delete;
-	[[maybe_unused]] zero_copy_app_worker(zero_copy_app_worker &&) noexcept;
-	zero_copy_app_worker &operator=(zero_copy_app_worker const &) = delete;
-	[[maybe_unused]] zero_copy_app_worker &operator=(zero_copy_app_worker &&) noexcept;
+	void init(doca_dev *dev, doca_comch_connection *comch_conn, uint32_t task_count);
 
 	std::vector<uint8_t> get_local_rdma_connection_blob(storage::control::rdma_connection_role role);
 	void connect_rdma(storage::control::rdma_connection_role role, std::vector<uint8_t> const &blob);
@@ -130,7 +109,7 @@ public:
 	void stop_processing(void) noexcept;
 	void destroy_comch_objects(void) noexcept;
 
-	void create_tasks(uint32_t task_count, uint32_t batch_size, uint32_t remote_consumer_id);
+	void create_tasks(uint32_t task_count, uint32_t remote_consumer_id);
 
 	/*
 	 * Prepare thread proc
@@ -141,22 +120,21 @@ public:
 	[[nodiscard]] hot_data const &get_hot_data() const noexcept;
 
 private:
-	hot_data m_hot_data;
-	uint8_t *m_io_message_region;
-	doca_mmap *m_io_message_mmap;
-	doca_buf_inventory *m_io_message_inv;
-	std::vector<doca_buf *> m_io_message_bufs;
-	doca_comch_consumer *m_consumer;
-	doca_comch_producer *m_producer;
-	storage::rdma_conn_pair m_rdma_ctrl_ctx;
-	storage::rdma_conn_pair m_rdma_data_ctx;
-	std::vector<doca_comch_consumer_task_post_recv *> m_host_request_tasks;
-	std::vector<doca_comch_producer_task_send *> m_host_response_tasks;
-	std::vector<doca_rdma_task_send *> m_storage_request_tasks;
-	std::vector<doca_rdma_task_receive *> m_storage_response_tasks;
-	std::thread m_thread;
+	hot_data m_hot_data = {};
+	uint8_t *m_io_message_region = nullptr;
+	doca_mmap *m_io_message_mmap = nullptr;
+	doca_buf_inventory *m_io_message_inv = nullptr;
+	std::vector<doca_buf *> m_io_message_bufs = {};
+	doca_comch_consumer *m_consumer = nullptr;
+	doca_comch_producer *m_producer = nullptr;
+	storage::rdma_conn_pair m_rdma_ctrl_ctx = {};
+	storage::rdma_conn_pair m_rdma_data_ctx = {};
+	std::vector<doca_comch_consumer_task_post_recv *> m_host_request_tasks = {};
+	std::vector<doca_comch_producer_task_send *> m_host_response_tasks = {};
+	std::vector<doca_rdma_task_send *> m_storage_request_tasks = {};
+	std::vector<doca_rdma_task_receive *> m_storage_response_tasks = {};
+	std::thread m_thread = {};
 
-	void init(doca_dev *dev, doca_comch_connection *comch_conn, uint32_t task_count, uint32_t batch_size);
 	void cleanup(void) noexcept;
 
 	static void doca_comch_consumer_task_post_recv_cb(doca_comch_consumer_task_post_recv *task,
@@ -223,7 +201,6 @@ private:
 	uint32_t m_storage_block_size;
 	uint32_t m_message_id_counter;
 	uint32_t m_task_count;
-	uint32_t m_batch_size;
 	uint32_t m_core_count;
 	bool m_abort_flag;
 
@@ -461,67 +438,6 @@ zero_copy_app_configuration parse_cli_args(int argc, char **argv)
 	return config;
 }
 
-zero_copy_app_worker::hot_data::hot_data()
-	: pe{nullptr},
-	  pe_hit_count{0},
-	  pe_miss_count{0},
-	  completed_transaction_count{0},
-	  in_flight_transaction_count{0},
-	  core_idx{0},
-	  batch_count{0},
-	  batch_size{1},
-	  run_flag{false},
-	  error_flag{false}
-{
-}
-
-zero_copy_app_worker::hot_data::hot_data(hot_data &&other) noexcept
-	: pe{other.pe},
-	  pe_hit_count{other.pe_hit_count},
-	  pe_miss_count{other.pe_miss_count},
-	  completed_transaction_count{other.completed_transaction_count},
-	  in_flight_transaction_count{other.in_flight_transaction_count},
-	  core_idx{other.core_idx},
-	  batch_count{other.batch_count},
-	  batch_size{other.batch_size},
-	  run_flag{other.run_flag.load()},
-	  error_flag{other.error_flag}
-{
-	other.pe = nullptr;
-}
-
-zero_copy_app_worker::hot_data &zero_copy_app_worker::hot_data::operator=(hot_data &&other) noexcept
-{
-	if (std::addressof(other) == this)
-		return *this;
-
-	pe = other.pe;
-	pe_hit_count = other.pe_hit_count;
-	pe_miss_count = other.pe_miss_count;
-	completed_transaction_count = other.completed_transaction_count;
-	in_flight_transaction_count = other.in_flight_transaction_count;
-	core_idx = other.core_idx;
-	batch_count = other.batch_count;
-	batch_size = other.batch_size;
-	run_flag = other.run_flag.load();
-	error_flag = other.error_flag;
-
-	other.pe = nullptr;
-
-	return *this;
-}
-
-doca_error_t zero_copy_app_worker::hot_data::submit_comch_recv_task(doca_comch_consumer_task_post_recv *task)
-{
-	doca_task_submit_flag submit_flag = DOCA_TASK_SUBMIT_FLAG_NONE;
-	if (--batch_count == 0) {
-		submit_flag = DOCA_TASK_SUBMIT_FLAG_FLUSH;
-		batch_count = batch_size;
-	}
-
-	return doca_task_submit_ex(doca_comch_consumer_task_post_recv_as_task(task), submit_flag);
-}
-
 zero_copy_app_worker::~zero_copy_app_worker()
 {
 	if (m_thread.joinable()) {
@@ -532,87 +448,102 @@ zero_copy_app_worker::~zero_copy_app_worker()
 	cleanup();
 }
 
-zero_copy_app_worker::zero_copy_app_worker(doca_dev *dev,
-					   doca_comch_connection *comch_conn,
-					   uint32_t task_count,
-					   uint32_t batch_size)
-	: m_hot_data{},
-	  m_io_message_region{nullptr},
-	  m_io_message_mmap{nullptr},
-	  m_io_message_inv{nullptr},
-	  m_io_message_bufs{},
-	  m_consumer{nullptr},
-	  m_producer{nullptr},
-	  m_rdma_ctrl_ctx{},
-	  m_rdma_data_ctx{},
-	  m_host_request_tasks{},
-	  m_host_response_tasks{},
-	  m_storage_request_tasks{},
-	  m_storage_response_tasks{},
-	  m_thread{}
+void zero_copy_app_worker::init(doca_dev *dev, doca_comch_connection *comch_conn, uint32_t task_count)
 {
-	try {
-		init(dev, comch_conn, task_count, batch_size);
-	} catch (storage::runtime_error const &) {
-		cleanup();
-		throw;
+	doca_error_t ret;
+	auto const page_size = storage::get_system_page_size();
+
+	auto const raw_io_messages_size = task_count * storage::size_of_io_message * 2;
+
+	DOCA_LOG_DBG("Allocate comch buffers memory (%zu bytes, aligned to %u byte pages)",
+		     raw_io_messages_size,
+		     page_size);
+	m_io_message_region = static_cast<uint8_t *>(
+		storage::aligned_alloc(page_size, storage::aligned_size(page_size, raw_io_messages_size)));
+	if (m_io_message_region == nullptr) {
+		throw storage::runtime_error{DOCA_ERROR_NO_MEMORY, "Failed to allocate comch fast path buffers memory"};
 	}
-}
 
-zero_copy_app_worker::zero_copy_app_worker(zero_copy_app_worker &&other) noexcept
-	: m_hot_data{std::move(other.m_hot_data)},
-	  m_io_message_region{other.m_io_message_region},
-	  m_io_message_mmap{other.m_io_message_mmap},
-	  m_io_message_inv{other.m_io_message_inv},
-	  m_io_message_bufs{std::move(other.m_io_message_bufs)},
-	  m_consumer{other.m_consumer},
-	  m_producer{other.m_producer},
-	  m_rdma_ctrl_ctx{other.m_rdma_ctrl_ctx},
-	  m_rdma_data_ctx{other.m_rdma_data_ctx},
-	  m_host_request_tasks{std::move(other.m_host_request_tasks)},
-	  m_host_response_tasks{std::move(other.m_host_response_tasks)},
-	  m_storage_request_tasks{std::move(other.m_storage_request_tasks)},
-	  m_storage_response_tasks{std::move(other.m_storage_response_tasks)},
-	  m_thread{std::move(other.m_thread)}
-{
-	other.m_io_message_region = nullptr;
-	other.m_io_message_mmap = nullptr;
-	other.m_io_message_inv = nullptr;
-	other.m_consumer = nullptr;
-	other.m_producer = nullptr;
-	other.m_rdma_ctrl_ctx = {};
-	other.m_rdma_data_ctx = {};
-}
+	m_io_message_mmap = storage::make_mmap(dev,
+					       reinterpret_cast<char *>(m_io_message_region),
+					       raw_io_messages_size,
+					       DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_PCI_READ_WRITE);
 
-zero_copy_app_worker &zero_copy_app_worker::operator=(zero_copy_app_worker &&other) noexcept
-{
-	if (std::addressof(other) == this)
-		return *this;
+	ret = doca_buf_inventory_create(task_count * 2, &m_io_message_inv);
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to create comch fast path doca_buf_inventory"};
+	}
 
-	m_hot_data = std::move(other.m_hot_data);
-	m_io_message_region = other.m_io_message_region;
-	m_io_message_mmap = other.m_io_message_mmap;
-	m_io_message_inv = other.m_io_message_inv;
-	m_io_message_bufs = std::move(other.m_io_message_bufs);
-	m_consumer = other.m_consumer;
-	m_producer = other.m_producer;
-	m_rdma_ctrl_ctx = other.m_rdma_ctrl_ctx;
-	m_rdma_data_ctx = other.m_rdma_data_ctx;
-	m_host_request_tasks = std::move(other.m_host_request_tasks);
-	m_host_response_tasks = std::move(other.m_host_response_tasks);
-	m_storage_request_tasks = std::move(other.m_storage_request_tasks);
-	m_storage_response_tasks = std::move(other.m_storage_response_tasks);
-	m_thread = std::move(other.m_thread);
+	ret = doca_buf_inventory_start(m_io_message_inv);
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to start comch fast path doca_buf_inventory"};
+	}
 
-	other.m_io_message_region = nullptr;
-	other.m_io_message_mmap = nullptr;
-	other.m_io_message_inv = nullptr;
-	other.m_consumer = nullptr;
-	other.m_producer = nullptr;
-	other.m_rdma_ctrl_ctx = {};
-	other.m_rdma_data_ctx = {};
+	DOCA_LOG_DBG("Create hot path progress engine");
+	ret = doca_pe_create(std::addressof(m_hot_data.pe));
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to create doca_pe"};
+	}
 
-	return *this;
+	m_consumer = storage::make_comch_consumer(comch_conn,
+						  m_io_message_mmap,
+						  m_hot_data.pe,
+						  task_count,
+						  doca_data{.ptr = std::addressof(m_hot_data)},
+						  doca_comch_consumer_task_post_recv_cb,
+						  doca_comch_consumer_task_post_recv_error_cb);
+
+	m_producer = storage::make_comch_producer(comch_conn,
+						  m_hot_data.pe,
+						  task_count,
+						  doca_data{.ptr = std::addressof(m_hot_data)},
+						  doca_comch_producer_task_send_cb,
+						  doca_comch_producer_task_send_error_cb);
+	auto const rdma_permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_READ |
+				      DOCA_ACCESS_FLAG_RDMA_WRITE;
+
+	m_rdma_ctrl_ctx.rdma = storage::make_rdma_context(dev,
+							  m_hot_data.pe,
+							  doca_data{.ptr = std::addressof(m_hot_data)},
+							  rdma_permissions);
+
+	ret = doca_rdma_task_receive_set_conf(m_rdma_ctrl_ctx.rdma,
+					      doca_rdma_task_receive_cb,
+					      doca_rdma_task_receive_error_cb,
+					      task_count);
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to configure rdma receive task pool"};
+	}
+
+	ret = doca_rdma_task_send_set_conf(m_rdma_ctrl_ctx.rdma,
+					   doca_rdma_task_send_cb,
+					   doca_rdma_task_send_error_cb,
+					   task_count);
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to configure rdma send task pool"};
+	}
+
+	ret = doca_ctx_start(doca_rdma_as_ctx(m_rdma_ctrl_ctx.rdma));
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to start doca_rdma context"};
+	}
+
+	m_rdma_data_ctx.rdma = storage::make_rdma_context(dev,
+							  m_hot_data.pe,
+							  doca_data{.ptr = std::addressof(m_hot_data)},
+							  rdma_permissions);
+
+	ret = doca_ctx_start(doca_rdma_as_ctx(m_rdma_data_ctx.rdma));
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to start doca_rdma context"};
+	}
+
+	m_hot_data.run_flag = false;
+	m_hot_data.error_flag = false;
+	m_hot_data.pe_hit_count = 0;
+	m_hot_data.pe_miss_count = 0;
+	m_hot_data.completed_transaction_count = 0;
+	m_hot_data.in_flight_transaction_count = 0;
 }
 
 std::vector<uint8_t> zero_copy_app_worker::get_local_rdma_connection_blob(storage::control::rdma_connection_role role)
@@ -755,18 +686,18 @@ void zero_copy_app_worker::destroy_comch_objects(void) noexcept
 	}
 }
 
-void zero_copy_app_worker::create_tasks(uint32_t task_count, uint32_t batch_size, uint32_t remote_consumer_id)
+void zero_copy_app_worker::create_tasks(uint32_t task_count, uint32_t remote_consumer_id)
 {
 	doca_error_t ret;
 
 	auto *buf_addr = m_io_message_region;
-	m_io_message_bufs.reserve((task_count * 2) + batch_size);
-	m_host_request_tasks.reserve(task_count + batch_size);
+	m_io_message_bufs.reserve(task_count * 2);
+	m_host_request_tasks.reserve(task_count);
 	m_host_response_tasks.reserve(task_count);
-	m_storage_request_tasks.reserve(task_count + batch_size);
+	m_storage_request_tasks.reserve(task_count);
 	m_storage_request_tasks.reserve(task_count);
 
-	for (uint32_t ii = 0; ii != (task_count + batch_size); ++ii) {
+	for (uint32_t ii = 0; ii != task_count; ++ii) {
 		doca_buf *storage_request_buff = nullptr;
 
 		ret = doca_buf_inventory_buf_get_by_addr(m_io_message_inv,
@@ -807,9 +738,7 @@ void zero_copy_app_worker::create_tasks(uint32_t task_count, uint32_t batch_size
 			doca_data{.ptr = doca_rdma_task_send_as_task(rdma_task_send)}));
 		static_cast<void>(doca_task_set_user_data(doca_rdma_task_send_as_task(rdma_task_send),
 							  doca_data{.ptr = comch_consumer_task_post_recv}));
-	}
 
-	for (uint32_t ii = 0; ii != task_count; ++ii) {
 		doca_buf *storage_recv_buf = nullptr;
 
 		ret = doca_buf_inventory_buf_get_by_addr(m_io_message_inv,
@@ -898,108 +827,6 @@ void zero_copy_app_worker::start_thread_proc(void)
 zero_copy_app_worker::hot_data const &zero_copy_app_worker::get_hot_data(void) const noexcept
 {
 	return m_hot_data;
-}
-
-void zero_copy_app_worker::init(doca_dev *dev,
-				doca_comch_connection *comch_conn,
-				uint32_t task_count,
-				uint32_t batch_size)
-{
-	doca_error_t ret;
-	auto const page_size = storage::get_system_page_size();
-
-	m_hot_data.batch_size = batch_size;
-	auto const raw_io_messages_size = (task_count + batch_size) * storage::size_of_io_message * 2;
-
-	DOCA_LOG_DBG("Allocate comch buffers memory (%zu bytes, aligned to %u byte pages)",
-		     raw_io_messages_size,
-		     page_size);
-	m_io_message_region = static_cast<uint8_t *>(
-		storage::aligned_alloc(page_size, storage::aligned_size(page_size, raw_io_messages_size)));
-	if (m_io_message_region == nullptr) {
-		throw storage::runtime_error{DOCA_ERROR_NO_MEMORY, "Failed to allocate comch fast path buffers memory"};
-	}
-
-	m_io_message_mmap = storage::make_mmap(dev,
-					       reinterpret_cast<char *>(m_io_message_region),
-					       raw_io_messages_size,
-					       DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_PCI_READ_WRITE);
-
-	ret = doca_buf_inventory_create((task_count * 2) + batch_size, &m_io_message_inv);
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to create comch fast path doca_buf_inventory"};
-	}
-
-	ret = doca_buf_inventory_start(m_io_message_inv);
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to start comch fast path doca_buf_inventory"};
-	}
-
-	DOCA_LOG_DBG("Create hot path progress engine");
-	ret = doca_pe_create(std::addressof(m_hot_data.pe));
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to create doca_pe"};
-	}
-
-	m_consumer = storage::make_comch_consumer(comch_conn,
-						  m_io_message_mmap,
-						  m_hot_data.pe,
-						  task_count + batch_size,
-						  doca_data{.ptr = std::addressof(m_hot_data)},
-						  doca_comch_consumer_task_post_recv_cb,
-						  doca_comch_consumer_task_post_recv_error_cb);
-
-	m_producer = storage::make_comch_producer(comch_conn,
-						  m_hot_data.pe,
-						  task_count,
-						  doca_data{.ptr = std::addressof(m_hot_data)},
-						  doca_comch_producer_task_send_cb,
-						  doca_comch_producer_task_send_error_cb);
-	auto const rdma_permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_READ |
-				      DOCA_ACCESS_FLAG_RDMA_WRITE;
-
-	m_rdma_ctrl_ctx.rdma = storage::make_rdma_context(dev,
-							  m_hot_data.pe,
-							  doca_data{.ptr = std::addressof(m_hot_data)},
-							  rdma_permissions);
-
-	ret = doca_rdma_task_receive_set_conf(m_rdma_ctrl_ctx.rdma,
-					      doca_rdma_task_receive_cb,
-					      doca_rdma_task_receive_error_cb,
-					      task_count);
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to configure rdma receive task pool"};
-	}
-
-	ret = doca_rdma_task_send_set_conf(m_rdma_ctrl_ctx.rdma,
-					   doca_rdma_task_send_cb,
-					   doca_rdma_task_send_error_cb,
-					   task_count + batch_size);
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to configure rdma send task pool"};
-	}
-
-	ret = doca_ctx_start(doca_rdma_as_ctx(m_rdma_ctrl_ctx.rdma));
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to start doca_rdma context"};
-	}
-
-	m_rdma_data_ctx.rdma = storage::make_rdma_context(dev,
-							  m_hot_data.pe,
-							  doca_data{.ptr = std::addressof(m_hot_data)},
-							  rdma_permissions);
-
-	ret = doca_ctx_start(doca_rdma_as_ctx(m_rdma_data_ctx.rdma));
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to start doca_rdma context"};
-	}
-
-	m_hot_data.run_flag = false;
-	m_hot_data.error_flag = false;
-	m_hot_data.pe_hit_count = 0;
-	m_hot_data.pe_miss_count = 0;
-	m_hot_data.completed_transaction_count = 0;
-	m_hot_data.in_flight_transaction_count = 0;
 }
 
 void zero_copy_app_worker::cleanup(void) noexcept
@@ -1168,7 +995,7 @@ void zero_copy_app_worker::doca_rdma_task_send_cb(doca_rdma_task_send *task,
 
 	static_cast<void>(doca_buf_reset_data_len(doca_comch_consumer_task_post_recv_get_buf(host_request_task)));
 
-	auto ret = hot_data->submit_comch_recv_task(host_request_task);
+	auto ret = doca_task_submit(doca_comch_consumer_task_post_recv_as_task(host_request_task));
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to submit doca_comch_consumer_task_post_recv: %s", doca_error_get_name(ret));
 		hot_data->error_flag = true;
@@ -1281,7 +1108,6 @@ zero_copy_app::zero_copy_app(zero_copy_app_configuration const &cfg)
 	  m_storage_block_size{},
 	  m_message_id_counter{},
 	  m_task_count{0},
-	  m_batch_size{0},
 	  m_core_count{0},
 	  m_abort_flag{false}
 {
@@ -1664,7 +1490,6 @@ storage::control::message zero_copy_app::process_init_storage(storage::control::
 	m_remote_consumer_ids.reserve(init_storage_details->core_count);
 
 	m_task_count = init_storage_details->task_count;
-	m_batch_size = init_storage_details->batch_size;
 	m_core_count = init_storage_details->core_count;
 	m_remote_io_mmap = storage::make_mmap(m_dev,
 					      init_storage_details->mmap_export_blob.data(),
@@ -1683,7 +1508,7 @@ storage::control::message zero_copy_app::process_init_storage(storage::control::
 		return std::vector<uint8_t>{reexport_blob, reexport_blob + reexport_blob_size};
 	}();
 
-	DOCA_LOG_INFO("Configured storage: %u cores, %u tasks, %u batch_size", m_core_count, m_task_count, m_batch_size);
+	DOCA_LOG_INFO("Configured storage: %u cores, %u tasks", m_core_count, m_task_count);
 
 	DOCA_LOG_DBG("Forward request to storage...");
 	auto storage_request = storage::control::message{
@@ -1691,7 +1516,6 @@ storage::control::message zero_copy_app::process_init_storage(storage::control::
 		storage::control::message_id{m_message_id_counter++},
 		client_request.correlation_id,
 		std::make_unique<storage::control::init_storage_payload>(init_storage_details->task_count,
-									 init_storage_details->batch_size,
 									 init_storage_details->core_count,
 									 std::move(mmap_export_blob)),
 	};
@@ -1742,7 +1566,7 @@ storage::control::message zero_copy_app::process_start_storage(storage::control:
 	if (storage_response.message_type == storage::control::message_type::start_storage_response) {
 		verify_connections_are_ready();
 		for (uint32_t ii = 0; ii != m_core_count; ++ii) {
-			m_workers[ii].create_tasks(m_task_count, m_batch_size, m_remote_consumer_ids[ii]);
+			m_workers[ii].create_tasks(m_task_count, m_remote_consumer_ids[ii]);
 			m_workers[ii].start_thread_proc();
 		}
 		return storage::control::message{
@@ -1865,14 +1689,10 @@ storage::control::message zero_copy_app::process_shutdown(storage::control::mess
 
 void zero_copy_app::prepare_thread_contexts(storage::control::correlation_id cid)
 {
-	m_workers = storage::make_aligned<zero_copy_app_worker>{}.object_array(
-		m_core_count,
-		m_dev,
-		m_client_control_channel->get_comch_connection(),
-		m_task_count,
-		m_batch_size);
+	m_workers = storage::make_aligned<zero_copy_app_worker>{}.object_array(m_core_count);
 
 	for (uint32_t ii = 0; ii != m_core_count; ++ii) {
+		m_workers[ii].init(m_dev, m_client_control_channel->get_comch_connection(), m_task_count);
 		connect_rdma(ii, storage::control::rdma_connection_role::io_data, cid);
 		connect_rdma(ii, storage::control::rdma_connection_role::io_control, cid);
 		m_workers[ii].prepare_thread_proc(m_cfg.cpu_set[ii]);

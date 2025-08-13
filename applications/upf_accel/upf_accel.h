@@ -37,6 +37,9 @@
 #include <flow_common.h>
 #include <packet_parser.h>
 
+#define UPF_ACCEL_LOG_MAX_NUM_CONNECTIONS 19
+#define UPF_ACCEL_MAX_NUM_CONNECTIONS (1ul << UPF_ACCEL_LOG_MAX_NUM_CONNECTIONS)
+
 enum upf_accel_port {
 	UPF_ACCEL_PORT0,
 	UPF_ACCEL_PORT1,
@@ -49,6 +52,7 @@ enum upf_accel_port {
 #define UPF_ACCEL_PDR_STR_LEN 64
 #define UPF_ACCEL_PDR_URRIDS_LEN 16
 #define UPF_ACCEL_PDR_QERIDS_LEN 16
+#define UPF_ACCEL_IP_STR_LEN 64
 
 #define UPF_ACCEL_LOG_MAX_NUM_PDR 5
 #define UPF_ACCEL_MAX_NUM_PDR (1ul << UPF_ACCEL_LOG_MAX_NUM_PDR)
@@ -66,6 +70,12 @@ enum upf_accel_port {
 
 #define UPF_ACCEL_SRC_IP 0xc0a80101 // 192.168.1.1
 #define UPF_ACCEL_DST_IP 0xc0a80201 // 192.168.2.1
+#define UPF_ACCEL_SRC_IPV6 \
+	{ \
+		0x2801, 0xdb8, 0, 0, 0, 0, 0xc0a8, 0x0101 \
+	}
+
+#define UPF_ACCEL_NUM_BYTES_IPV6 16
 
 #define UPF_ACCEL_LOG_MAX_PDR_NUM_RATE_METERS 2
 #define UPF_ACCEL_MAX_PDR_NUM_RATE_METERS (1ul << UPF_ACCEL_LOG_MAX_PDR_NUM_RATE_METERS)
@@ -119,8 +129,6 @@ enum upf_accel_pipe_drop_type {
 enum upf_accel_pipe_type {
 	UPF_ACCEL_PIPE_RX_ROOT,
 	UPF_ACCEL_PIPE_FAR,
-	UPF_ACCEL_PIPE_DL_TO_SW,
-	UPF_ACCEL_PIPE_UL_TO_SW,
 	UPF_ACCEL_PIPE_RX_VXLAN_DECAP,
 	UPF_ACCEL_PIPE_RX_DROPS_START,
 	UPF_ACCEL_PIPE_RX_DROPS_END = UPF_ACCEL_PIPE_RX_DROPS_START + UPF_ACCEL_DROP_NUM,
@@ -139,17 +147,38 @@ enum upf_accel_pipe_type {
 
 	UPF_ACCEL_PIPE_ULDL,
 	UPF_ACCEL_PIPE_EXT_GTP,
-	UPF_ACCEL_PIPE_8T,
-	UPF_ACCEL_PIPE_7T,
-	UPF_ACCEL_PIPE_5T,
+
+	UPF_ACCEL_PIPE_8T_INNER_IP_TYPE,
+	UPF_ACCEL_PIPE_8T_IPV4,
+	UPF_ACCEL_PIPE_8T_IPV6,
+	UPF_ACCEL_PIPE_8T_IPV6_EXT,
+
+	UPF_ACCEL_PIPE_7T_INNER_IP_TYPE,
+	UPF_ACCEL_PIPE_7T_IPV4,
+	UPF_ACCEL_PIPE_7T_IPV6,
+	UPF_ACCEL_PIPE_7T_IPV6_EXT,
+
+	UPF_ACCEL_PIPE_UL_TO_SW_IPV4,
+	UPF_ACCEL_PIPE_UL_TO_SW_IPV6,
+
+	UPF_ACCEL_PIPE_5T_OUTER_IP_TYPE,
+	UPF_ACCEL_PIPE_5T_IPV4,
+	UPF_ACCEL_PIPE_5T_IPV6,
+	UPF_ACCEL_PIPE_5T_IPV6_EXT,
+
+	UPF_ACCEL_PIPE_DL_TO_SW_IPV4,
+	UPF_ACCEL_PIPE_DL_TO_SW_IPV6,
+
 	UPF_ACCEL_PIPE_DECAP,
 
 	UPF_ACCEL_PIPE_NUM,
 };
 
 enum upf_accel_encap_action_type {
-	UPF_ACCEL_ENCAP_ACTION_4G,
-	UPF_ACCEL_ENCAP_ACTION_5G,
+	UPF_ACCEL_ENCAP_ACTION_IPV4_4G,
+	UPF_ACCEL_ENCAP_ACTION_IPV4_5G,
+	UPF_ACCEL_ENCAP_ACTION_IPV6_4G,
+	UPF_ACCEL_ENCAP_ACTION_IPV6_5G,
 	UPF_ACCEL_ENCAP_ACTION_NONE,
 	UPF_ACCEL_ENCAP_ACTION_NUM,
 };
@@ -157,14 +186,16 @@ enum upf_accel_encap_action_type {
 enum upf_accel_rule_type {
 	UPF_ACCEL_RULE_DYNAMIC,
 	UPF_ACCEL_RULE_STATIC,
+	UPF_ACCEL_RULE_DYNAMIC_EXTENSION,
 };
 
-enum upf_accel_flow_status {
-	UPF_ACCEL_FLOW_STATUS_NONE,	     /* Flow isn't active on this port (not established yet or aged out) */
-	UPF_ACCEL_FLOW_STATUS_PENDING,	     /* Flow is in the proccess of being established */
-	UPF_ACCEL_FLOW_STATUS_UNACCELERATED, /* Flow not accelerated yet */
-	UPF_ACCEL_FLOW_STATUS_ACCELERATED,   /* Flow is accelerated (by HW) */
-	UPF_ACCEL_FLOW_STATUS_FAILED_ACCELERATION, /* Failed to accelerate */
+enum upf_accel_entry_state {
+	UPF_ACCEL_ENTRY_STATE_NONE,		      /* Entry isn't active (not established yet or deleted) */
+	UPF_ACCEL_ENTRY_STATE_PENDING,		      /* Entry is in the proccess of being created */
+	UPF_ACCEL_ENTRY_STATE_UNACCELERATED,	      /* Entry not accelerated yet */
+	UPF_ACCEL_ENTRY_STATE_PENDING_ACCELERATION,   /* Entry is in the proccess of HW acceleration */
+	UPF_ACCEL_ENTRY_STATE_ACCELERATED,	      /* Entry is accelerated (by HW) */
+	UPF_ACCEL_ENTRY_STATE_PENDING_DEACCELERATION, /* Flow is in the proccess of removal from acceleration */
 };
 
 struct app_shared_counter_ids {
@@ -173,12 +204,15 @@ struct app_shared_counter_ids {
 	size_t cntrs_num;		    /* Number of counters (in each port) */
 };
 
+union upf_accel_ip {
+	uint32_t v4;			      /* IPV4 address */
+	uint8_t v6[UPF_ACCEL_NUM_BYTES_IPV6]; /* IPV6 address */
+} __rte_aligned(UPF_ACCEL_NUM_BYTES_IPV6);
+
 struct upf_accel_ip_addr {
-	union {
-		uint32_t v4;	/* IPV4 address */
-		uint8_t v6[12]; /* IPV6 address */
-	};
-	uint8_t netmask; /* IP netmask */
+	union upf_accel_ip addr;	   /* IP address */
+	union upf_accel_ip mask;	   /* IP address mask */
+	enum doca_flow_l3_type ip_version; /* IP version */
 };
 
 struct upf_accel_ip_port_range {
@@ -267,29 +301,39 @@ struct upf_accel_config {
 	uint32_t sw_aging_time_sec;	    /* Amount of seconds before deleting an unaccelerated flow */
 	uint32_t dpi_threshold;		    /* Number of packets handled in SW before deciding to accelerate */
 	uint32_t fixed_port;		    /* UL port number in fixed port mode */
+	struct flow_dev_ctx flow_devs;	    /* Flow device context */
 };
 
 struct upf_accel_match_tun {
-	uint32_t te_ip; /* Source IP */
-	uint32_t te_id; /* TEID */
-	uint8_t qfi;	/* QFI */
+	union upf_accel_ip te_ip; /* Source IP */
+	uint32_t te_id;		  /* TEID */
+	uint8_t qfi;		  /* QFI */
+	uint8_t ip_version;	  /* IP version */
 };
-static_assert(sizeof(struct upf_accel_match_tun) == 12, "Unexpected tunnel key size");
+static_assert(sizeof(struct upf_accel_match_tun) == 32, "Unexpected tunnel key size");
 
 struct upf_accel_match_5t {
-	uint32_t ue_ip;	      /* User equipment IP */
-	uint32_t extern_ip;   /* Extern IP */
-	uint16_t ue_port;     /* User equipment port */
-	uint16_t extern_port; /* Extern port */
-	uint8_t ip_proto;     /* IP protocol */
+	union upf_accel_ip ue_ip;     /* User equipment IP */
+	union upf_accel_ip extern_ip; /* Extern IP */
+	uint16_t ue_port;	      /* User equipment port */
+	uint16_t extern_port;	      /* Extern port */
+	uint8_t ip_version;	      /* IP version */
+	uint8_t ip_proto;	      /* IP protocol */
 };
-static_assert(sizeof(struct upf_accel_match_5t) == 16, "Unexpected 5t key size");
+static_assert(sizeof(struct upf_accel_match_5t) == 48, "Unexpected 5t key size");
 
 struct upf_accel_match_8t {
 	struct upf_accel_match_5t inner;  /* Inner match */
 	struct upf_accel_match_tun outer; /* Outer (tunnel) match */
 };
-static_assert(sizeof(struct upf_accel_match_8t) == 28, "Unexpected 8t key size");
+static_assert(sizeof(struct upf_accel_match_8t) == 80, "Unexpected 8t key size");
+
+struct upf_accel_match_extension {
+	uint8_t ue_ip[UPF_ACCEL_NUM_BYTES_IPV6]; /* IPV6 address */
+	uint32_t te_id;				 /* TEID */
+	uint8_t qfi;				 /* QFI */
+};
+static_assert(sizeof(struct upf_accel_match_extension) == 24, "Unexpected extension key size");
 
 struct upf_accel_sw_aging_ll {
 	int32_t head; /* Head of the SW aging linked list */
@@ -302,24 +346,37 @@ struct upf_accel_sw_aging_ll_node {
 	uint64_t timestamp; /* Timestamp of the last packet received in this flow */
 };
 
+struct upf_accel_extension_entry_ctx {
+	struct upf_accel_match_extension match; /* Extension entry match */
+	struct doca_flow_pipe_entry *entry;	/* Flow accelerated entry */
+	struct upf_accel_fp_data *fp_data;	/* Pointer to the data of the handling core */
+	struct doca_flow_pipe_entry *del_next;	/* Entry to delete next */
+	hash_sig_t hash;			/* RTE hash (aka signature) */
+	uint32_t md_value;			/* Metadata value to set in the entry */
+	uint32_t ref_cnt;			/* Reference count of entries pointed to by the extension entry */
+	enum upf_accel_entry_state state;	/* Extension entry state */
+};
+
+struct upf_accel_entry_ctx;
+
+struct upf_accel_flow_entry {
+	struct doca_flow_pipe_entry *entry;		 /* Flow accelerated entry */
+	struct upf_accel_entry_ctx *ext_entry;		 /* Extension entry context */
+	struct upf_accel_sw_aging_ll_node sw_aging_node; /* SW Aging linked list node */
+	enum upf_accel_entry_state state;		 /* Entry state */
+};
+
 struct upf_accel_dyn_entry_ctx {
-	struct upf_accel_match_8t match;	 /* Connection match */
-	uint64_t cnt_pkts[PARSER_PKT_TYPE_NUM];	 /* Packets counter */
-	uint64_t cnt_bytes[PARSER_PKT_TYPE_NUM]; /* Bytes counter */
-	union {
-		/* Fields required for accelerated flows */
-		struct {
-			enum doca_flow_entry_status status; /* Flow accelerated entry status */
-			struct doca_flow_pipe_entry *entry; /* Flow accelerated entry */
-		};
-		/* Fields required for unaccelerated flows */
-		struct upf_accel_sw_aging_ll_node sw_aging_node; /* SW Aging linked list node */
-	} entries[PARSER_PKT_TYPE_NUM];	      /* Pipe entries (accelerated) / Linked list entries (unaccelerated) */
-	struct upf_accel_fp_data *fp_data;    /* Pointer to the data of the handling core */
-	uint32_t pdr_id[PARSER_PKT_TYPE_NUM]; /* PDR ID */
-	int32_t conn_idx;		      /* Position of the connection in the hash table */
-	hash_sig_t hash;		      /* RTE hash (aka signature) */
-	enum upf_accel_flow_status flow_status[PARSER_PKT_TYPE_NUM]; /* Status of an accelerated flow */
+	struct upf_accel_match_8t match;			  /* Connection match */
+	uint64_t cnt_pkts[PARSER_PKT_TYPE_NUM];			  /* Packets counter */
+	uint64_t cnt_bytes[PARSER_PKT_TYPE_NUM];		  /* Bytes counter */
+	struct upf_accel_flow_entry entries[PARSER_PKT_TYPE_NUM]; /* Pipe entries (accelerated) / Linked list entries
+								     (unaccelerated) */
+	struct upf_accel_fp_data *fp_data;			  /* Pointer to the data of the handling core */
+	uint32_t pdr_id[PARSER_PKT_TYPE_NUM];			  /* PDR ID */
+	int32_t conn_idx;					  /* Position of the connection in the hash table */
+	hash_sig_t hash;					  /* RTE hash (aka signature) */
+	enum upf_accel_port port_id;				  /* Port ID of the offloaded entry */
 };
 
 struct upf_accel_static_entry_ctx {
@@ -331,6 +388,7 @@ struct upf_accel_entry_ctx {
 	union {
 		struct upf_accel_dyn_entry_ctx dyn_ctx;	      /* Dynamic entry context */
 		struct upf_accel_static_entry_ctx static_ctx; /* Static entry context */
+		struct upf_accel_extension_entry_ctx ext_ctx; /* Extension entry context */
 	};
 } __rte_aligned(RTE_CACHE_LINE_SIZE);
 

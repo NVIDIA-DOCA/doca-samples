@@ -36,6 +36,7 @@
 #include <doca_log.h>
 
 #include <doca_devemu_vfs_type.h>
+#include <doca_devemu_vfs_dev.h>
 #include <doca_devemu_vfs.h>
 
 DOCA_LOG_REGISTER(DPU_DEVEMU_VFS_DEVICE_CREATE);
@@ -95,7 +96,7 @@ static void state_cleanup(struct program_state *state)
 	}
 
 	if (state->rep != NULL) {
-		res = doca_devemu_pci_dev_destroy_rep(state->rep);
+		res = doca_devemu_pci_type_destroy_rep(state->rep);
 		if (res != DOCA_SUCCESS)
 			DOCA_LOG_ERR("Failed to close DOCA Emulated Device representor: %s", doca_error_get_descr(res));
 
@@ -301,7 +302,7 @@ doca_error_t devemu_vfs_device_create(const char *pci_address)
 	}
 
 	/* Prepare emulated device before plugging it towards the host */
-	result = doca_devemu_pci_dev_create_rep(doca_devemu_vfs_type_as_pci_type(state.vfs_type), &state.rep);
+	result = doca_devemu_pci_type_create_rep(doca_devemu_vfs_type_as_pci_type(state.vfs_type), &state.rep);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Unable to create PCI emulated device representor: %s", doca_error_get_descr(result));
 		state_cleanup(&state);

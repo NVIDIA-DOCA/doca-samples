@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -51,6 +51,7 @@ struct telemetry_diag_sample_cfg {
 	uint8_t import_json;				      /**< whether an input data_ids json path was given */
 	uint8_t pci_set;				      /**< whether the user provided a pci address */
 	char pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE];	      /**< PCI address to be used */
+	uint64_t reconfig_sample_period;		      /**< reconfig sample period to be used */
 };
 
 /*

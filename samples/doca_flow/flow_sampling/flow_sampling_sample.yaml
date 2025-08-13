@@ -30,7 +30,7 @@ ports_description:
   port_0: doca_dev
   port_1: doca_rep_dev
 description: "The sample illustrates how to use random match comparisson for traffic sampling.
-              Sample Command Line: ./build/doca_flow_sampling   -- -l 60 -p 08:00.0 -r sf[0]"
+              Sample Command Line: ./build/doca_flow_sampling -- -l 60 -r pci/08:00.0,pf0sf[0]"
 use_cases:
   - name: "Random sampling case #1"
     args: ""

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -27,12 +27,10 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <rte_byteorder.h>
-
 #include <doca_flow.h>
 #include <doca_log.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 DOCA_LOG_REGISTER(FLOW_GENEVE_OPT);
 
@@ -41,6 +39,8 @@ DOCA_LOG_REGISTER(FLOW_GENEVE_OPT);
 #define CHANGEABLE_32 (UINT32_MAX)
 #define CHANGEABLE_16 (UINT16_MAX)
 #define FULL_MASK_32 (UINT32_MAX)
+
+#define BUILD_VNI(uint24_vni) (DOCA_HTOBE32((uint32_t)uint24_vni << 8))
 
 /*
  * Fill list of GENEVE options parser user configuration
@@ -69,7 +69,7 @@ static void fill_parser_geneve_opt_cfg_list(struct doca_flow_parser_geneve_opt_c
 	 * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 	 */
 	list[0].match_on_class_mode = DOCA_FLOW_PARSER_GENEVE_OPT_MODE_FIXED;
-	list[0].option_class = rte_cpu_to_be_16(SAMPLE_CLASS_ID);
+	list[0].option_class = DOCA_HTOBE16(SAMPLE_CLASS_ID);
 	list[0].option_type = 1;
 	list[0].option_len = 5; /* Data length - excluding the option header */
 	list[0].data_mask[0] = 0x0;
@@ -92,7 +92,7 @@ static void fill_parser_geneve_opt_cfg_list(struct doca_flow_parser_geneve_opt_c
 	 * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 	 */
 	list[1].match_on_class_mode = DOCA_FLOW_PARSER_GENEVE_OPT_MODE_FIXED;
-	list[1].option_class = rte_cpu_to_be_16(SAMPLE_CLASS_ID);
+	list[1].option_class = DOCA_HTOBE16(SAMPLE_CLASS_ID);
 	list[1].option_type = 2;
 	list[1].option_len = 2; /* Data length - excluding the option header */
 	list[1].data_mask[0] = FULL_MASK_32;
@@ -116,7 +116,7 @@ static void fill_parser_geneve_opt_cfg_list(struct doca_flow_parser_geneve_opt_c
 	 * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 	 */
 	list[2].match_on_class_mode = DOCA_FLOW_PARSER_GENEVE_OPT_MODE_FIXED;
-	list[2].option_class = rte_cpu_to_be_16(SAMPLE_CLASS_ID);
+	list[2].option_class = DOCA_HTOBE16(SAMPLE_CLASS_ID);
 	list[2].option_type = 3;
 	list[2].option_len = 4; /* Data length - excluding the option header */
 	list[2].data_mask[0] = 0x0;
@@ -161,7 +161,7 @@ static doca_error_t create_geneve_opt_pipe(struct doca_flow_port *port, int port
 	match_mask.tun.geneve.vni = BUILD_VNI(0xffffff);
 
 	/* First option - index 0 describes the option header */
-	match.tun.geneve_options[0].class_id = rte_cpu_to_be_16(SAMPLE_CLASS_ID);
+	match.tun.geneve_options[0].class_id = DOCA_HTOBE16(SAMPLE_CLASS_ID);
 	match.tun.geneve_options[0].type = 1;
 	match.tun.geneve_options[0].length = 5;
 	match_mask.tun.geneve_options[0].class_id = 0xffff;
@@ -183,7 +183,7 @@ static doca_error_t create_geneve_opt_pipe(struct doca_flow_port *port, int port
 	 * The order of options in match structure is regardless to options order in parser creation.
 	 * This pipe will match if the options will be present in any kind of order.
 	 */
-	match.tun.geneve_options[6].class_id = rte_cpu_to_be_16(SAMPLE_CLASS_ID);
+	match.tun.geneve_options[6].class_id = DOCA_HTOBE16(SAMPLE_CLASS_ID);
 	match.tun.geneve_options[6].type = 2;
 	match.tun.geneve_options[6].length = 2;
 	match_mask.tun.geneve_options[6].class_id = 0xffff;
@@ -200,7 +200,7 @@ static doca_error_t create_geneve_opt_pipe(struct doca_flow_port *port, int port
 	match_mask.tun.geneve_options[8].data = FULL_MASK_32;
 
 	/* Third option - index 9 describes the option header */
-	match.tun.geneve_options[9].class_id = rte_cpu_to_be_16(SAMPLE_CLASS_ID);
+	match.tun.geneve_options[9].class_id = DOCA_HTOBE16(SAMPLE_CLASS_ID);
 	match.tun.geneve_options[9].type = 3;
 	match.tun.geneve_options[9].length = 4;
 	match_mask.tun.geneve_options[9].class_id = 0xffff;
@@ -236,7 +236,7 @@ static doca_error_t create_geneve_opt_pipe(struct doca_flow_port *port, int port
 		     mac_addr[3],
 		     mac_addr[4],
 		     mac_addr[5]);
-	actions2.decap_cfg.eth.type = RTE_BE16(CHANGEABLE_16);
+	actions2.decap_cfg.eth.type = DOCA_HTOBE16(CHANGEABLE_16);
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -290,12 +290,12 @@ static doca_error_t add_geneve_opt_pipe_entries(struct doca_flow_pipe *pipe, str
 
 	match.tun.geneve.vni = BUILD_VNI(0xabcdef);
 	/* First option - data example */
-	match.tun.geneve_options[4].data = rte_cpu_to_be_32(0x00abcdef);
+	match.tun.geneve_options[4].data = DOCA_HTOBE32(0x00abcdef);
 	/* Second option - data example */
-	match.tun.geneve_options[7].data = rte_cpu_to_be_32(0x00abcdef);
-	match.tun.geneve_options[8].data = rte_cpu_to_be_32(0x00abcdef);
+	match.tun.geneve_options[7].data = DOCA_HTOBE32(0x00abcdef);
+	match.tun.geneve_options[8].data = DOCA_HTOBE32(0x00abcdef);
 	/* Third option - data example */
-	match.tun.geneve_options[13].data = rte_cpu_to_be_32(0x00abcdef);
+	match.tun.geneve_options[13].data = DOCA_HTOBE32(0x00abcdef);
 	actions.action_idx = 0;
 
 	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
@@ -304,16 +304,16 @@ static doca_error_t add_geneve_opt_pipe_entries(struct doca_flow_pipe *pipe, str
 
 	match.tun.geneve.vni = BUILD_VNI(0x123456);
 	/* First option - data example */
-	match.tun.geneve_options[4].data = rte_cpu_to_be_32(0x00123456);
+	match.tun.geneve_options[4].data = DOCA_HTOBE32(0x00123456);
 	/* Second option - data example */
-	match.tun.geneve_options[7].data = rte_cpu_to_be_32(0x00123456);
-	match.tun.geneve_options[8].data = rte_cpu_to_be_32(0x00123456);
+	match.tun.geneve_options[7].data = DOCA_HTOBE32(0x00123456);
+	match.tun.geneve_options[8].data = DOCA_HTOBE32(0x00123456);
 	/* Third option - data example */
-	match.tun.geneve_options[13].data = rte_cpu_to_be_32(0x00123456);
+	match.tun.geneve_options[13].data = DOCA_HTOBE32(0x00123456);
 	actions.action_idx = 1;
 	SET_MAC_ADDR(actions.decap_cfg.eth.src_mac, mac1[0], mac1[1], mac1[2], mac1[3], mac1[4], mac1[5]);
 	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, mac2[0], mac2[1], mac2[2], mac2[3], mac2[4], mac2[5]);
-	actions.decap_cfg.eth.type = RTE_BE16(DOCA_FLOW_ETHER_TYPE_IPV6);
+	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV6);
 
 	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
@@ -321,16 +321,16 @@ static doca_error_t add_geneve_opt_pipe_entries(struct doca_flow_pipe *pipe, str
 
 	match.tun.geneve.vni = BUILD_VNI(0x778899);
 	/* First option - data example */
-	match.tun.geneve_options[4].data = rte_cpu_to_be_32(0x00778899);
+	match.tun.geneve_options[4].data = DOCA_HTOBE32(0x00778899);
 	/* Second option - data example */
-	match.tun.geneve_options[7].data = rte_cpu_to_be_32(0x00778899);
-	match.tun.geneve_options[8].data = rte_cpu_to_be_32(0x00778899);
+	match.tun.geneve_options[7].data = DOCA_HTOBE32(0x00778899);
+	match.tun.geneve_options[8].data = DOCA_HTOBE32(0x00778899);
 	/* Third option - data example */
-	match.tun.geneve_options[13].data = rte_cpu_to_be_32(0x00778899);
+	match.tun.geneve_options[13].data = DOCA_HTOBE32(0x00778899);
 	actions.action_idx = 1;
 	SET_MAC_ADDR(actions.decap_cfg.eth.src_mac, mac1[5], mac1[4], mac1[3], mac1[2], mac1[1], mac1[0]);
 	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, mac2[5], mac2[4], mac2[3], mac2[2], mac2[1], mac2[0]);
-	actions.decap_cfg.eth.type = RTE_BE16(DOCA_FLOW_ETHER_TYPE_IPV4);
+	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
 
 	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
@@ -354,7 +354,6 @@ doca_error_t flow_geneve_opt(int nb_queues)
 	struct doca_flow_parser_geneve_opt_cfg tlv_list[nb_options];
 	struct doca_flow_parser *parsers[nb_ports];
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *pipes[nb_ports];
 	struct entries_status status;
@@ -368,9 +367,8 @@ doca_error_t flow_geneve_opt(int nb_queues)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, num_of_entries));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

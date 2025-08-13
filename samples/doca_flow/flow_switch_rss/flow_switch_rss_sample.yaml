@@ -30,7 +30,7 @@ ports_description:
   port_1: doca_rep_dev
   port_2: doca_rep_dev
 description: "The sample illustrates how to create a pipe/entry for FDB RSS.
-              Sample Command Line: ./build/doca_flow_switch_rss   -- -l 60 -p 08:00.0 -r sf[0-1]"
+              Sample Command Line: ./build/doca_flow_switch_rss -- -l 60 -r pci/08:00.0,pf0sf[0-1]"
 use_cases:
   - name: "Switch rss use case #1"
     args: ""

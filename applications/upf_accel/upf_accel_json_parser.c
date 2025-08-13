@@ -320,13 +320,75 @@ static doca_error_t upf_accel_json_string_parse(struct json_object *container,
 }
 
 /*
- * Parse IP and netmask
+ * Sets a mask with a given number of ones in MSBs and zeroes after them
  *
- * @str_addr [in]: IP and netmask string in the form of xxx.xxx.xxx.xxx/xx
+ * @prefix [in]: number of bits to set
+ * @mask [out]: mask to set
+ */
+static inline void ipv6_netmask_get(uint8_t prefix, uint8_t mask[UPF_ACCEL_NUM_BYTES_IPV6])
+{
+	uint8_t byte_prefix;
+	int i;
+
+	for (i = 0; prefix && i < UPF_ACCEL_NUM_BYTES_IPV6; ++i) {
+		if (prefix < 8) {
+			byte_prefix = prefix;
+			prefix = 0;
+		} else {
+			prefix -= 8;
+			byte_prefix = 8;
+		}
+
+		mask[i] = ~((1ul << (8 - byte_prefix)) - 1);
+	}
+}
+
+/*
+ * Parse IPv6 and netmask
+ *
+ * @str_addr_mask [in]: IPv6 and netmask string
  * @val [out]: pointer to store the result at
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t upf_accel_str_to_ip_netmask_parse(const char *str_addr, struct upf_accel_ip_addr *val)
+static doca_error_t upf_accel_str_to_ipv6_netmask_parse(const char *str_addr_mask, struct upf_accel_ip_addr *val)
+{
+	uint8_t out[UPF_ACCEL_NUM_BYTES_IPV6];
+	char str_addr[128] = {0};
+	uint8_t netmask = 0;
+
+	if (sscanf(str_addr_mask, "%[^/]/%hhd", str_addr, &netmask) < 1)
+		return DOCA_ERROR_UNEXPECTED;
+	if (inet_pton(AF_INET6, str_addr, out) != 1)
+		return DOCA_ERROR_UNEXPECTED;
+
+	memcpy(val->addr.v6, out, UPF_ACCEL_NUM_BYTES_IPV6);
+
+	netmask = netmask ? netmask : 128;
+	ipv6_netmask_get(netmask, val->mask.v6);
+	val->ip_version = DOCA_FLOW_L3_TYPE_IP6;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Returns a mask with `mask` number of set MSBs
+ *
+ * @mask [in]: number of MSbits to set.
+ * @return: netmask
+ */
+static inline uint32_t ipv4_netmask_get(uint8_t mask)
+{
+	return ~((1ul << (32 - mask)) - 1);
+}
+
+/*
+ * Parse IPv4 and netmask
+ *
+ * @str_addr [in]: IPv4 and netmask string in the form of xxx.xxx.xxx.xxx/xx
+ * @val [out]: pointer to store the result at
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t upf_accel_str_to_ipv4_netmask_parse(const char *str_addr, struct upf_accel_ip_addr *val)
 {
 	uint8_t o1, o2, o3, o4;
 	uint8_t netmask = 0;
@@ -334,8 +396,27 @@ static doca_error_t upf_accel_str_to_ip_netmask_parse(const char *str_addr, stru
 	if (sscanf(str_addr, "%hhd.%hhd.%hhd.%hhd/%hhd", &o1, &o2, &o3, &o4, &netmask) < 4)
 		return DOCA_ERROR_UNEXPECTED;
 
-	val->v4 = ((uint32_t)o1 << 24) | ((uint32_t)o2 << 16) | ((uint32_t)o3 << 8) | (uint32_t)o4;
-	val->netmask = netmask ? netmask : 32;
+	val->addr.v4 = ((uint32_t)o1 << 24) | ((uint32_t)o2 << 16) | ((uint32_t)o3 << 8) | (uint32_t)o4;
+	netmask = netmask ? netmask : 32;
+	val->mask.v4 = ipv4_netmask_get(netmask);
+	val->ip_version = DOCA_FLOW_L3_TYPE_IP4;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Parse IP and netmask
+ *
+ * @str_addr [in]: IP and netmask string
+ * @val [out]: pointer to store the result at
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t upf_accel_str_to_ip_netmask_parse(const char *str_addr, struct upf_accel_ip_addr *val)
+{
+	if (upf_accel_str_to_ipv6_netmask_parse(str_addr, val) != DOCA_SUCCESS) {
+		if (upf_accel_str_to_ipv4_netmask_parse(str_addr, val) != DOCA_SUCCESS)
+			return DOCA_ERROR_UNEXPECTED;
+	}
+
 	return DOCA_SUCCESS;
 }
 
@@ -386,20 +467,31 @@ static doca_error_t upf_accel_json_ip_parse(struct json_object *container,
 		return DOCA_ERROR_UNEXPECTED;
 	}
 
-	if (!json_object_object_get_ex(ip, "v4", &field) || json_object_get_type(field) != json_type_string) {
-		DOCA_LOG_ERR("Failed to parse JSON object IPv4 from object: %s",
+	if (json_object_object_get_ex(ip, "v6", &field) && json_object_get_type(field) == json_type_string) {
+		str_addr = json_object_get_string(field);
+		assert(val);
+		if (upf_accel_str_to_ipv6_netmask_parse(str_addr, val) != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to parse JSON object IPv6 from object: %s",
+				     json_object_to_json_string_ext(container, JSON_C_TO_STRING_PRETTY));
+			return DOCA_ERROR_UNEXPECTED;
+		}
+
+		return DOCA_SUCCESS;
+	} else if (json_object_object_get_ex(ip, "v4", &field) && json_object_get_type(field) == json_type_string) {
+		str_addr = json_object_get_string(field);
+		assert(val);
+		if (upf_accel_str_to_ipv4_netmask_parse(str_addr, val) != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to parse JSON object IPv4 from object: %s",
+				     json_object_to_json_string_ext(container, JSON_C_TO_STRING_PRETTY));
+			return DOCA_ERROR_UNEXPECTED;
+		}
+
+		return DOCA_SUCCESS;
+	} else {
+		DOCA_LOG_ERR("Failed to parse JSON IP object from object: %s",
 			     json_object_to_json_string_ext(container, JSON_C_TO_STRING_PRETTY));
 		return DOCA_ERROR_UNEXPECTED;
 	}
-
-	str_addr = json_object_get_string(field);
-	assert(val);
-	if (upf_accel_str_to_ip_netmask_parse(str_addr, val) != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to parse JSON object IPv4 from object: %s",
-			     json_object_to_json_string_ext(container, JSON_C_TO_STRING_PRETTY));
-	}
-
-	return DOCA_SUCCESS;
 }
 
 /*
@@ -616,6 +708,17 @@ static doca_error_t upf_accel_pdi_parse(struct json_object *pdi, struct upf_acce
 }
 
 /*
+ * Get the IP version print string
+ *
+ * @doca_ip_version [in]: the doca enum for IP version
+ * @return: the IP version printable. (IPv4 or IPv6)
+ */
+static inline uint8_t upf_accel_ip_version_print_string_get(enum doca_flow_l3_type doca_ip_version)
+{
+	return (doca_ip_version == DOCA_FLOW_L3_TYPE_IP6) ? 6 : 4;
+}
+
+/*
  * Parse list of CreatePDR nodes from json
  *
  * @pdr_arr [in]: list of CreaePDR json nodes
@@ -691,7 +794,7 @@ static doca_error_t upf_accel_pdr_parse(struct json_object *pdr_arr, struct upf_
 			goto err_pdr;
 
 		DOCA_LOG_INFO(
-			"Parsed PDR id=%u\n\tfarId=%u first_urrid=%u first_qerid=%u\n\tPDI SI=%u QFI=%hhu teid_start=%u teid_end=%u IP=%x/%hhu UEIP=%x/%hhu\n\t\tSDF proto=%d from=%x/%hhu:%hu-%hu to=%x/%hhu:%hu-%hu",
+			"Parsed PDR id=%u\n\tfarId=%u first_urrid=%u first_qerid=%u\n\tPDI SI=%u QFI=%hhu teid_start=%u teid_end=%u IP=version %d, %x/%hhu UEIP=version %d, %x/%hhu\n\t\tSDF proto=%d from=IP version %d, %x/%hhu:%hu-%hu to= IP version %d, %x/%hhu:%hu-%hu",
 			upf_accel_pdr->id,
 			upf_accel_pdr->farid,
 			upf_accel_pdr->urrids[0],
@@ -700,17 +803,21 @@ static doca_error_t upf_accel_pdr_parse(struct json_object *pdr_arr, struct upf_
 			upf_accel_pdr->pdi_qfi,
 			upf_accel_pdr->pdi_local_teid_start,
 			upf_accel_pdr->pdi_local_teid_end,
-			rte_be_to_cpu_32(upf_accel_pdr->pdi_local_teid_ip.v4),
-			upf_accel_pdr->pdi_local_teid_ip.netmask,
-			rte_be_to_cpu_32(upf_accel_pdr->pdi_ueip.v4),
-			upf_accel_pdr->pdi_ueip.netmask,
+			upf_accel_ip_version_print_string_get(upf_accel_pdr->pdi_local_teid_ip.ip_version),
+			rte_be_to_cpu_32(upf_accel_pdr->pdi_local_teid_ip.addr.v4),
+			upf_accel_pdr->pdi_local_teid_ip.mask.v4,
+			upf_accel_ip_version_print_string_get(upf_accel_pdr->pdi_ueip.ip_version),
+			rte_be_to_cpu_32(upf_accel_pdr->pdi_ueip.addr.v4),
+			upf_accel_pdr->pdi_ueip.mask.v4,
 			upf_accel_pdr->pdi_sdf_proto,
-			rte_be_to_cpu_32(upf_accel_pdr->pdi_sdf_from_ip.v4),
-			upf_accel_pdr->pdi_sdf_from_ip.netmask,
+			upf_accel_ip_version_print_string_get(upf_accel_pdr->pdi_sdf_from_ip.ip_version),
+			rte_be_to_cpu_32(upf_accel_pdr->pdi_sdf_from_ip.addr.v4),
+			upf_accel_pdr->pdi_sdf_from_ip.mask.v4,
 			rte_be_to_cpu_16(upf_accel_pdr->pdi_sdf_from_port_range.from),
 			rte_be_to_cpu_16(upf_accel_pdr->pdi_sdf_from_port_range.to),
-			rte_be_to_cpu_32(upf_accel_pdr->pdi_sdf_to_ip.v4),
-			upf_accel_pdr->pdi_sdf_to_ip.netmask,
+			upf_accel_ip_version_print_string_get(upf_accel_pdr->pdi_sdf_to_ip.ip_version),
+			rte_be_to_cpu_32(upf_accel_pdr->pdi_sdf_to_ip.addr.v4),
+			upf_accel_pdr->pdi_sdf_to_ip.mask.v4,
 			rte_be_to_cpu_16(upf_accel_pdr->pdi_sdf_to_port_range.from),
 			rte_be_to_cpu_16(upf_accel_pdr->pdi_sdf_to_port_range.to));
 	}
@@ -823,8 +930,8 @@ static doca_error_t upf_accel_far_parse(struct json_object *far_arr, struct upf_
 		DOCA_LOG_INFO("Parsed FAR id=%u:\n"
 			      "\tOuter Header ip=%x/%hhu",
 			      upf_accel_far->id,
-			      rte_be_to_cpu_32(upf_accel_far->fp_oh_ip.v4),
-			      upf_accel_far->fp_oh_ip.netmask);
+			      rte_be_to_cpu_32(upf_accel_far->fp_oh_ip.addr.v4),
+			      upf_accel_far->fp_oh_ip.mask.v4);
 	}
 
 	cfg->fars = fars;

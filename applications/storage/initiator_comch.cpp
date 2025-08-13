@@ -64,8 +64,8 @@ namespace {
 
 auto constexpr app_name = "doca_storage_initiator_comch";
 
-auto constexpr run_type_read_throughout_test = "read_throughput_test";
-auto constexpr run_type_write_throughout_test = "write_throughput_test";
+auto constexpr run_type_read_throughput_test = "read_throughput_test";
+auto constexpr run_type_write_throughput_test = "write_throughput_test";
 auto constexpr run_type_read_write_data_validity_test = "read_write_data_validity_test";
 auto constexpr run_type_read_only_data_validity_test = "read_only_data_validity_test";
 
@@ -73,56 +73,184 @@ auto constexpr default_control_timeout_seconds = std::chrono::seconds{5};
 auto constexpr default_task_count = 64;
 auto constexpr default_command_channel_name = "doca_storage_comch";
 auto constexpr default_run_limit_operation_count = 1'000'000;
-auto constexpr default_batch_size = 4;
 
 static_assert(sizeof(void *) == 8, "Expected a pointer to occupy 8 bytes");
 static_assert(sizeof(std::chrono::steady_clock::time_point) == 8,
 	      "Expected std::chrono::steady_clock::time_point to occupy 8 bytes");
 
+template <typename T>
+struct ring_buffer {
+	T *elements;
+	uint32_t write_idx;
+	uint32_t read_idx;
+	uint32_t stored;
+	uint32_t capacity;
+
+	~ring_buffer()
+	{
+		delete[] elements;
+	}
+
+	ring_buffer() : elements{nullptr}, write_idx{0}, read_idx{0}, stored{0}, capacity{0}
+	{
+	}
+	ring_buffer(ring_buffer const &) = delete;
+	ring_buffer(ring_buffer &&) = delete;
+	ring_buffer &operator=(ring_buffer const &) = delete;
+	ring_buffer &operator=(ring_buffer &&) = delete;
+
+	void init_ring(uint32_t capacity_)
+	{
+		elements = new T[capacity_];
+		capacity = capacity_;
+	}
+
+	bool put(T value) noexcept
+	{
+		if (stored == capacity) {
+			return false;
+		}
+
+		elements[write_idx] = value;
+		++stored;
+		write_idx = (write_idx + 1) % capacity;
+		return true;
+	}
+
+	bool get(T &value) noexcept
+	{
+		if (stored == 0) {
+			return false;
+		}
+
+		value = elements[read_idx];
+		--stored;
+		read_idx = (read_idx + 1) % capacity;
+		return true;
+	}
+
+	bool is_full() const noexcept
+	{
+		return stored == capacity;
+	}
+
+	uint32_t stored_count() const noexcept
+	{
+		return stored;
+	}
+
+	uint32_t free_count() const noexcept
+	{
+		return capacity - stored;
+	}
+};
+
+static_assert(sizeof(ring_buffer<uint64_t>) == 24, "Expected size of ring_buffer<uint64_t> to be 24 bytes");
+
 /*
  * User configurable parameters for the initiator_comch_app
  */
 struct initiator_comch_app_configuration {
-	std::vector<uint32_t> core_set = {};
+	/* List of cores ids to use when launching threads. Each thread will have its affinity set to the corresponding
+	 * core id in this list. */
+	std::vector<uint32_t> core_list = {};
+	/* Identifier for the DOCA device to use. One of: PCI address, infiniband name or interface name. */
 	std::string device_id = {};
+	/* Give the name of the ComCh server to connect to. The default (see default_command_channel_name) is usually
+	 * fine, but a value can be provided to distinguish between ComCh servers on the same DPU. */
 	std::string command_channel_name = {};
+	/* Path to a file whose contents can be compared to the data read from the storage target to ensure the correct
+	 * data is present in the storage target. Should only be used for read only validation run mode. */
 	std::string storage_plain_content_file = {};
+	/* Name of the execution strategy to execute. One of: run_type_read_throughput_test,
+	 * run_type_write_throughput_test, run_type_read_write_data_validity_test or
+	 * run_type_read_only_data_validity_test. */
 	std::string run_type = {};
+	/* A timeout value so that if for some reason a control operation takes too long the test can fail instead of
+	 * hanging forever. Typically, nobody needs to modify this. */
 	std::chrono::seconds control_timeout = {};
+	/* Size of the local IO region. 0 means auto (match storage capacity) otherwise allocate a local storage of this
+	 * size. If this value is not a multiple of the storage block size then any part that is less than one block
+	 * will be ignored. */
+	uint64_t local_io_region_size = 0;
+	/* Number of parallel tasks (transactions) that may be in flight (per worker / thread). */
 	uint32_t task_count = 0;
+	/* Number of transactions to execute before finishing (each worker executes this many transactions, it is not
+	 * shared across workers). */
 	uint32_t run_limit_operation_count = 0;
-	uint32_t batch_size = 0;
 };
 
 /*
  * Statistics emitted by the application
  */
 struct initiator_comch_app_stats {
+	/* Timestamp for the start of the data path / hot path operations */
 	std::chrono::steady_clock::time_point start_time = {};
+	/* Timestamp when the last transaction completed (max of the values reported per worker)  */
 	std::chrono::steady_clock::time_point end_time = {};
+	/* Cumulative number of times a progress engine was polled and had one or more completed tasks to report */
 	uint64_t pe_hit_count = 0;
+	/* Cumulative number of times a progress engine was polled and had no completed tasks to report. The higher the
+	 * ratio of misses to hits the more time the application is idle waiting for IO operations to complete. */
 	uint64_t pe_miss_count = 0;
+	/* Cumulative total of operations completed across all workers. Ie if each of 3 workers completed 100
+	 * operations, this value would be 300. */
 	uint64_t operation_count = 0;
+	/* Minimum recorded latency value across all workers .*/
 	uint32_t latency_min = 0;
+	/* Maximum recorded latency value across all workers. */
 	uint32_t latency_max = 0;
+	/* Mean (average) recorded latency value across all workers. */
 	uint32_t latency_mean = 0;
 };
 
 /*
  * Data that needs to be tracked per transaction
  */
-struct transaction_context {
+struct alignas(storage::cache_line_size) transaction_context {
 	/* The initial task that started the transaction */
 	doca_comch_producer_task_send *request = nullptr;
 	/* The start time of the transaction */
 	std::chrono::steady_clock::time_point start_time{};
+	/* The offset within the workers local IO range this transaction is using */
+	uint64_t locaL_offset;
+	/* The offset within the storage IO range this transaction is using */
+	uint64_t storage_offset;
+	/* A bit mask tracking the operations left for this transaction. A simplified state machine */
+	uint32_t pending_actions = 0;
 	/* A reference count, a transaction requires both the send and receive task to have their respective completion
 	 * callbacks triggered before the transaction can be re-used
 	 */
 	uint16_t refcount = 0;
 };
 
-static_assert(sizeof(transaction_context) == 24, "Expected transaction_context to occupy 24 bytes");
+static_assert(sizeof(transaction_context) == storage::cache_line_size,
+	      "Expected transaction_context to occupy one cache line");
+
+enum class transaction_action : uint32_t {
+	/**************************************************************************************************************
+	 * General actions - Actual IO commands
+	 */
+	/* Read data from storage to initiator. */
+	read = uint32_t{1} << 0,
+	/* Write data from initiator to storage. */
+	write = uint32_t{1} << 1,
+
+	/**************************************************************************************************************
+	 * Data manipulations - actions performed on local memory that is not an IO operation
+	 */
+	/* Select the addresses to use for this IO operation. */
+	select_addresses = uint32_t{1} << 27,
+	/* Initialise memory content with the "expected value". Can be from a file or random bytes. */
+	copy_expected_memory_content = uint32_t{1} << 28,
+	/* Clear the memory content so that the current value in initiator memory should NOT match what is in held by
+	 * the storage target */
+	clear_memory_content = uint32_t{1} << 29,
+	/* Verify that the memory content in initiator memory matches the "expected value" */
+	validate_memory_content = uint32_t{1} << 30,
+	/* Finish the transaction */
+	finish_transaction = uint32_t{1} << 31,
+};
 
 /*
  * Data required for a thread worker
@@ -135,81 +263,76 @@ public:
 	 * many cache evictions as possible.
 	 */
 	struct alignas(storage::cache_line_size) hot_data {
-		uint8_t const *storage_plain_content;
-		uint8_t *io_region_begin;
-		uint8_t *io_region_end;
-		uint8_t *io_addr;
-		doca_pe *pe;
-		transaction_context *transactions;
-		uint32_t transactions_size;
-		uint32_t io_block_size;
-		std::chrono::steady_clock::time_point end_time;
-		uint64_t pe_hit_count;
-		uint64_t pe_miss_count;
-		uint64_t completed_transaction_count;
-		uint64_t remaining_tx_ops;
-		uint64_t remaining_rx_ops;
-		uint64_t latency_accumulator;
-		uint32_t latency_min;
-		uint32_t latency_max;
-		uint8_t batch_count;
-		uint8_t batch_size;
-		std::atomic_bool run_flag;
-		bool error_flag;
+		/* A copy of the content that is expected to be stored in the storage target. Used to validate the
+		 * result of a read operation. */
+		uint8_t const *expected_storage_content = nullptr;
+		/* Pointer to the beginning of the local memory region from which data is read / written. */
+		uint8_t *local_io_region_begin = nullptr;
+		/* Virtual offset to the beginning of the storage region from which data is read / written. */
+		uint64_t storage_io_region_begin = 0;
+		/* Per worker progress engine. Used to monitor for task completions. */
+		doca_pe *pe = nullptr;
+		/* An Array of transactions_size transaction objects. */
+		transaction_context *transactions = nullptr;
+		/* A pool of addresses within the local IO region */
+		ring_buffer<uint64_t> local_io_addr_pool;
+		/* A pool of addresses within the storage IO region */
+		ring_buffer<uint64_t> storage_io_addr_pool;
+		/* Number of objects in the transactions array pointed to by transactions */
+		uint32_t transactions_size = 0;
+		/* Size of an IO data transfer */
+		uint32_t io_block_size = 0;
+		/* Timestamp for when the last transaction completes to avoid counting thread destruction time in the
+		 * execution time. */
+		std::chrono::steady_clock::time_point end_time = {};
+		/* Counter of how many times the process engine was invoked and had at least one completed task to
+		 * report */
+		uint64_t pe_hit_count = 0;
+		/* Counter of how many times the process engine was invoked and had no completed tasks to report. The
+		 * higher the ratio of misses to hits the more time the worker is idle waiting for IO operations to
+		 * complete. */
+		uint64_t pe_miss_count = 0;
+		/* Accumulated total latency of all transactions executed. */
+		std::chrono::microseconds latency_accumulator = std::chrono::microseconds{0};
+		/* Smallest recorded latency value. */
+		uint32_t latency_min = std::numeric_limits<uint32_t>::max();
+		/* Maximum recorded latency value. */
+		uint32_t latency_max = 0;
+		/* Target total number of transactions to execute before finishing. */
+		uint32_t target_transaction_count = 0;
+		/* Number of transactions that have been started. */
+		uint32_t started_transaction_count = 0;
+		/* Number of transactions that have completed so far. */
+		uint32_t completed_transaction_count = 0;
+		/* A bitmask to apply to a transactions pending_actions bitmask. Bits are defined by the run type. */
+		uint32_t transaction_initial_ops_value = 0;
+		/* Flag to indicate if the worker thread is currently running. Setting this to false while the thread is
+		 * running will signal the tread to stop. */
+		std::atomic_bool run_flag = false;
+		/* Flag to indicate if the thread encountered any errors during execution */
+		bool error_flag = false;
 
 		/*
-		 * Default constructor
-		 */
-		hot_data();
-
-		/*
-		 * Deleted copy constructor
-		 */
-		hot_data(hot_data const &) = delete;
-
-		/*
-		 * Move constructor
-		 * @other [in]: Object to move from
-		 */
-		hot_data(hot_data &&other) noexcept;
-
-		/*
-		 * Deleted copy assignment operator
-		 */
-		hot_data &operator=(hot_data const &) = delete;
-
-		/*
-		 * Move assignment operator
-		 * @other [in]: Object to move from
-		 * @return: reference to moved assigned object
-		 */
-		hot_data &operator=(hot_data &&other) noexcept;
-
-		/*
-		 * ComCh post recv helper to control batch submission flags
+		 * Perform the next operation as required by the transaction
 		 *
-		 * @task [in]: Task to submit
-		 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+		 * @transaction [in]: Transaction to advance
+		 *
+		 * @return true if the next OP can be started immediately, or false if it's an asynchronous activity
+		 * that will trigger a callback later to make more progress
 		 */
-		doca_error_t submit_recv_task(doca_task *task);
+		bool progress_transaction(transaction_context &transaction);
 
 		/*
-		 * Start a transaction
+		 * Display the data mismatch
 		 *
-		 * @transaction [in]: Transaction to start
-		 * @now [in]: The current time (to measure duration)
+		 * @local_offset [in]: Offset within local IO region
+		 * @storage_offset [in]: Offset within storage IO region
+		 * @io_size [in]: IO size
 		 */
-		void start_transaction(transaction_context &transaction, std::chrono::steady_clock::time_point now);
-
-		/*
-		 * Process transaction completion
-		 *
-		 * @transaction [in]: The completed transaction
-		 */
-		void on_transaction_complete(transaction_context &transaction);
+		void display_memory_mismatch(uint32_t local_offset, uint32_t storage_offset, uint32_t io_size) const;
 	};
-	static_assert(sizeof(initiator_comch_worker::hot_data) == (2 * storage::cache_line_size),
-		      "Expected initiator_comch_worker::hot_data to occupy two cache lines");
+	static_assert(sizeof(initiator_comch_worker::hot_data) == (3 * storage::cache_line_size),
+		      "Expected initiator_comch_worker::hot_data to occupy three cache lines");
 
 	using thread_proc_fn_t = void (*)(initiator_comch_worker::hot_data &hot_data);
 
@@ -219,71 +342,42 @@ public:
 	~initiator_comch_worker();
 
 	/*
-	 * Default constructor
-	 */
-	initiator_comch_worker();
-
-	/*
-	 * Deleted copy constructor
-	 */
-	initiator_comch_worker(initiator_comch_worker const &) = delete;
-
-	/*
-	 * Move constructor
-	 * @other [in]: Object to move from
-	 */
-	[[maybe_unused]] initiator_comch_worker(initiator_comch_worker &&) noexcept;
-
-	/*
-	 * Deleted copy assignment operator
-	 */
-	initiator_comch_worker &operator=(initiator_comch_worker const &) = delete;
-	/*
-	 * Move assignment operator
-	 * @other [in]: Object to move from
-	 * @return: reference to moved assigned object
-	 */
-	[[maybe_unused]] initiator_comch_worker &operator=(initiator_comch_worker &&) noexcept;
-
-	/*
 	 * Allocate and prepare resources for this object
 	 *
 	 * @dev [in]: Device to use
 	 * @comch_conn [in]: Comch control channel to use
-	 * @storage_plain_content [in]: Plain (original) input data, Used to compare against the data retrieved from
-	 * storage
-	 * @task_count [in]: Number of tasks to use (per worker)
-	 * @batch_size [in]: Number of tasks to submit together
-	 * @io_region_begin [in]: Start address of local storage memory
-	 * @io_region_size [in]: Size of local storage memory
+	 * @expected_storage_content [in]: View of the expected storage content storage
+	 * @transaction_count [in]: Number of transactions to use
+	 * @local_io_region_begin [in]: Start address of local IO region this worker will access
+	 * @local_io_region_size [in]: Size of local IO region that this worker will access
+	 * @storage_io_region_begin [in]: Start virtual address of storage remote IO region this worker will access
+	 * @storage_io_region_size [in]: Size of storage IO region that this worker will access
 	 * @io_block_size [in]: Block size to use
 	 */
 	void init(doca_dev *dev,
 		  doca_comch_connection *comch_conn,
-		  uint8_t const *storage_plain_content,
-		  uint32_t task_count,
-		  uint32_t batch_size,
-		  uint8_t *io_region_begin,
-		  uint64_t io_region_size,
+		  uint8_t const *expected_storage_content,
+		  uint32_t transaction_count,
+		  uint8_t *local_io_region_begin,
+		  uint64_t local_io_region_size,
+		  uint64_t storage_io_region_begin,
+		  uint64_t storage_io_region_size,
 		  uint32_t io_block_size);
 
 	/*
 	 * Prepare thread proc
-	 * @fn [in]: Thread function
+	 * @initial_task_op_mask [in]: Initial value for each transactions' pending ops action mask
 	 * @run_limit_op_count [in]: Number of tasks to execute
 	 * @core_id [in]: Core to run on
 	 */
-	void prepare_thread_proc(initiator_comch_worker::thread_proc_fn_t fn,
-				 uint32_t run_limit_op_count,
-				 uint32_t core_id);
+	void prepare_thread_proc(uint32_t initial_task_op_mask, uint32_t run_limit_op_count, uint32_t core_id);
 
 	/*
 	 * Prepare tasks required for the data path
 	 *
-	 * @op_type [in]: Initial operation type (read or write)
 	 * @remote_consumer_id [in]: ID of remote consumer
 	 */
-	void prepare_tasks(storage::io_message_type op_type, uint32_t remote_consumer_id);
+	void prepare_tasks(uint32_t remote_consumer_id);
 
 	/*
 	 * Check that all contexts are ready to run
@@ -324,16 +418,34 @@ public:
 	void destroy_data_path_objects(void);
 
 private:
-	hot_data m_hot_data;
-	uint8_t *m_io_message_region;
-	doca_mmap *m_io_message_mmap;
-	doca_buf_inventory *m_io_message_inv;
-	std::vector<doca_buf *> m_io_message_bufs;
-	doca_comch_consumer *m_consumer;
-	doca_comch_producer *m_producer;
-	std::vector<doca_task *> m_io_responses;
-	std::vector<doca_task *> m_io_requests;
-	std::thread m_thread;
+	/* Hot data - Data which is used on the hot path. This data is positioned first and aligned to cache lines to
+	 * maximise performance
+	 */
+	hot_data m_hot_data = {};
+	/**************************************************************************************************************
+	 * Control data / Ownership data
+	 * The cold path data is used to condifure and prepare for the host path. These objects and data must be
+	 * maintained to allow for teardown / destruction later
+	 */
+
+	/* IO message region. Owning pointer to the memory region used as IO messages */
+	uint8_t *m_io_message_region = nullptr;
+	/* The doca_mmap used to allow the memory referenced by m_io_message_region to be used by doca_buf objects */
+	doca_mmap *m_io_message_mmap = nullptr;
+	/* A pool from which to allocate doca_buf objects */
+	doca_buf_inventory *m_io_message_inv = nullptr;
+	/* A reference to doca_bufs allocated that need to be realeased during teardown / destruction */
+	std::vector<doca_buf *> m_io_message_bufs = {};
+	/* doca_comch_consumer context, used to allocate tasks */
+	doca_comch_consumer *m_consumer = nullptr;
+	/* doca_comch_producer context, used to allocate tasks */
+	doca_comch_producer *m_producer = nullptr;
+	/* Collection of response (doca_comch_producer_task_send) tasks */
+	std::vector<doca_task *> m_io_responses = {};
+	/* Collection of request (doca_comch_consumer_task_post_recv) tasks */
+	std::vector<doca_task *> m_io_requests = {};
+	/* Thread execution object */
+	std::thread m_thread = {};
 
 	/*
 	 * Release all resources held by this object
@@ -485,20 +597,38 @@ public:
 	void shutdown(void);
 
 private:
+	/* Application configuration. */
 	initiator_comch_app_configuration const m_cfg;
-	std::vector<uint8_t> const m_storage_plain_content;
+	/* The data expected to be held in the remote storage target. Used for read only validation. */
+	std::vector<uint8_t> m_expected_storage_content;
+	/* The doca_dev to use. */
 	doca_dev *m_dev;
+	/* A region of memory which will be read from / written to the remote storage target. */
 	uint8_t *m_io_region;
+	/* The doca_mmap used to allow the memory referenced by m_io_region to be used by doca_buf objects. */
 	doca_mmap *m_io_mmap;
+	/* A control channel used to exchange control messages between the initiator and service. */
 	std::unique_ptr<storage::control::comch_channel> m_service_control_channel;
+	/* A collection of received but not yet processed control messages. */
 	std::vector<storage::control::message> m_ctrl_messages;
+	/* A collection of remote consumer IDs. Each worker will use one remote consumer ID to exchange messages on the
+	 * data path between the initiator and the service. */
 	std::vector<uint32_t> m_remote_consumer_ids;
+	/* Collection of worker objects. There is one worker per configured CPU core. */
 	initiator_comch_worker *m_workers;
+	/* The capacity of the local IO region. */
+	uint64_t m_local_capacity;
+	/* The storage capacity of the remote storage target. */
 	uint64_t m_storage_capacity;
+	/* The block size to use when reading to or writing from the storage target. */
 	uint32_t m_storage_block_size;
+	/* Run statistics. */
 	initiator_comch_app_stats m_stats;
+	/* A counter used to give control messages a unique ID. */
 	uint32_t m_message_id_counter;
+	/* A counter used to give control messages a correlation ID. (Used to correlate requests and responses) */
 	uint32_t m_correlation_id_counter;
+	/* Flag to track if an abort has been requested. */
 	bool m_abort_flag;
 
 	/*
@@ -605,9 +735,9 @@ namespace {
 void print_config(initiator_comch_app_configuration const &cfg) noexcept
 {
 	printf("initiator_comch_app_configuration: {\n");
-	printf("\tcore_set : [");
+	printf("\tcore_list : [");
 	bool first = true;
-	for (auto cpu : cfg.core_set) {
+	for (auto cpu : cfg.core_list) {
 		if (first)
 			first = false;
 		else
@@ -620,7 +750,6 @@ void print_config(initiator_comch_app_configuration const &cfg) noexcept
 	printf("\tcommand_channel_name : \"%s\",\n", cfg.command_channel_name.c_str());
 	printf("\tstorage_plain_content : \"%s\",\n", cfg.storage_plain_content_file.c_str());
 	printf("\ttask_count : %u,\n", cfg.task_count);
-	printf("\tbatch_size : %u,\n", cfg.batch_size);
 	printf("\trun_limit_operation_count : %u,\n", cfg.run_limit_operation_count);
 	printf("\tcontrol_timeout : %u,\n", static_cast<uint32_t>(cfg.control_timeout.count()));
 	printf("}\n");
@@ -643,7 +772,7 @@ void validate_initiator_comch_app_configuration(initiator_comch_app_configuratio
 		errors.emplace_back("Invalid initiator_comch_app_configuration: control-timeout must not be zero");
 	}
 
-	if (cfg.run_type == run_type_read_write_data_validity_test && cfg.core_set.size() != 1) {
+	if (cfg.run_type == run_type_read_write_data_validity_test && cfg.core_list.size() != 1) {
 		errors.push_back("Invalid initiator_comch_app_configuration: "s +
 				 run_type_read_write_data_validity_test + " Only supports one thread");
 	}
@@ -651,6 +780,18 @@ void validate_initiator_comch_app_configuration(initiator_comch_app_configuratio
 	if (cfg.run_type == run_type_read_only_data_validity_test && cfg.storage_plain_content_file.empty()) {
 		errors.push_back("Invalid initiator_comch_app_configuration: "s +
 				 run_type_read_only_data_validity_test + " requires plain data file to be provided");
+	}
+
+	if ((cfg.run_type == run_type_read_throughput_test || cfg.run_type == run_type_write_throughput_test) &&
+	    cfg.run_limit_operation_count == 0) {
+		errors.push_back("Invalid initiator_comch_app_configuration: "s + cfg.run_type +
+				 " requires run-limit-operation-count to be greater than 0");
+	}
+
+	if (cfg.run_type != run_type_read_throughput_test && cfg.run_type != run_type_write_throughput_test &&
+	    cfg.run_type != run_type_read_only_data_validity_test &&
+	    cfg.run_type != run_type_read_write_data_validity_test) {
+		errors.push_back("Invalid initiator_comch_app_configuration: "s + cfg.run_type + " is unknown");
 	}
 
 	if (!errors.empty()) {
@@ -678,7 +819,6 @@ initiator_comch_app_configuration parse_cli_args(int argc, char **argv)
 	config.command_channel_name = default_command_channel_name;
 	config.control_timeout = default_control_timeout_seconds;
 	config.run_limit_operation_count = default_run_limit_operation_count;
-	config.batch_size = default_batch_size;
 
 	doca_error_t ret;
 
@@ -706,7 +846,7 @@ initiator_comch_app_configuration parse_cli_args(int argc, char **argv)
 		storage::required_value,
 		storage::multiple_values,
 		[](void *value, void *cfg) noexcept {
-			static_cast<initiator_comch_app_configuration *>(cfg)->core_set.push_back(
+			static_cast<initiator_comch_app_configuration *>(cfg)->core_list.push_back(
 				*static_cast<int *>(value));
 			return DOCA_SUCCESS;
 		});
@@ -782,17 +922,18 @@ initiator_comch_app_configuration parse_cli_args(int argc, char **argv)
 						       std::chrono::seconds{*static_cast<int *>(value)};
 					       return DOCA_SUCCESS;
 				       });
-	storage::register_cli_argument(DOCA_ARGP_TYPE_INT,
-				       nullptr,
-				       "batch-size",
-				       "Batch size: Default: 4",
-				       storage::optional_value,
-				       storage::single_value,
-				       [](void *value, void *cfg) noexcept {
-					       static_cast<initiator_comch_app_configuration *>(cfg)->batch_size =
-						       *static_cast<int *>(value);
-					       return DOCA_SUCCESS;
-				       });
+	storage::register_cli_argument(
+		DOCA_ARGP_TYPE_INT,
+		nullptr,
+		"local-io-region-size",
+		"Size in bytes of the local region. Value can be 0 meaning automatically size to the same size as the storage target. Default: 0",
+		storage::optional_value,
+		storage::single_value,
+		[](void *value, void *cfg) noexcept {
+			static_cast<initiator_comch_app_configuration *>(cfg)->local_io_region_size =
+				*static_cast<int *>(value);
+			return DOCA_SUCCESS;
+		});
 	ret = doca_argp_start(argc, argv);
 	if (ret != DOCA_SUCCESS) {
 		throw storage::runtime_error{ret, "Failed to parse CLI args"};
@@ -800,338 +941,212 @@ initiator_comch_app_configuration parse_cli_args(int argc, char **argv)
 
 	static_cast<void>(doca_argp_destroy());
 
-	if (config.batch_size > config.task_count) {
-		config.batch_size = config.task_count;
-		DOCA_LOG_WARN("Clamping batch size to maximum value: %u", config.batch_size);
-	}
-
 	print_config(config);
 	validate_initiator_comch_app_configuration(config);
 
 	return config;
 }
 
-class thread_proc_catch_wrapper {
-public:
-	~thread_proc_catch_wrapper() = default;
-	thread_proc_catch_wrapper() = delete;
-	explicit thread_proc_catch_wrapper(initiator_comch_worker::hot_data *hot_data) noexcept : m_hot_data{hot_data}
-	{
-	}
-	thread_proc_catch_wrapper(thread_proc_catch_wrapper const &) = delete;
-	thread_proc_catch_wrapper(thread_proc_catch_wrapper &&) noexcept = default;
-	thread_proc_catch_wrapper &operator=(thread_proc_catch_wrapper const &) = delete;
-	thread_proc_catch_wrapper &operator=(thread_proc_catch_wrapper &&) noexcept = default;
-
-	void operator()(initiator_comch_worker::thread_proc_fn_t fn)
-	{
-		try {
-			fn(*m_hot_data);
-		} catch (storage::runtime_error const &ex) {
-			std::stringstream ss;
-			ss << "[Thread: " << std::this_thread::get_id()
-			   << "] Exception: " << doca_error_get_name(ex.get_doca_error()) << ":" << ex.what();
-			DOCA_LOG_ERR("%s", ss.str().c_str());
-			m_hot_data->error_flag = true;
-			m_hot_data->run_flag = false;
-		}
+void worker_thread_proc(initiator_comch_worker::hot_data &hot_data)
+{
+	/* wait to start */
+	while (hot_data.run_flag == false) {
+		std::this_thread::yield();
+		if (hot_data.error_flag)
+			return;
 	}
 
-private:
-	initiator_comch_worker::hot_data *m_hot_data;
+	/* submit initial tasks */
+	auto const initial_task_count = std::min(hot_data.transactions_size, hot_data.target_transaction_count);
+	for (uint32_t ii = 0; ii != initial_task_count; ++ii) {
+		while (hot_data.progress_transaction(hot_data.transactions[ii]))
+			;
+	}
+
+	/* run until the test completes */
+	while (hot_data.completed_transaction_count != hot_data.started_transaction_count) {
+		doca_pe_progress(hot_data.pe) ? ++(hot_data.pe_hit_count) : ++(hot_data.pe_miss_count);
+	}
+}
+
+void thread_proc_wrapper(initiator_comch_worker::hot_data *hot_data) noexcept
+{
+	try {
+		worker_thread_proc(*hot_data);
+	} catch (storage::runtime_error const &ex) {
+		std::stringstream ss;
+		ss << "[Thread: " << std::this_thread::get_id()
+		   << "] Exception: " << doca_error_get_name(ex.get_doca_error()) << ":" << ex.what();
+		DOCA_LOG_ERR("%s", ss.str().c_str());
+		hot_data->error_flag = true;
+		hot_data->run_flag = false;
+	}
+}
+
+uint32_t effective_block_count(uint32_t base_number, uint32_t &remainder)
+{
+	if (remainder == 0)
+		return base_number;
+	--remainder;
+	return base_number + 1;
 };
 
-void throughput_thread_proc(initiator_comch_worker::hot_data &hot_data) noexcept
+bool initiator_comch_worker::hot_data::progress_transaction(transaction_context &transaction)
 {
-	/* wait to start */
-	while (hot_data.run_flag == false) {
-		std::this_thread::yield();
-		if (hot_data.error_flag)
-			return;
-	}
-
-	/* submit initial tasks */
-	auto const initial_task_count =
-		std::min(static_cast<uint64_t>(hot_data.transactions_size), hot_data.remaining_tx_ops);
-	for (uint32_t ii = 0; ii != initial_task_count; ++ii)
-		hot_data.start_transaction(hot_data.transactions[ii], std::chrono::steady_clock::now());
-
-	/* run until the test completes */
-	while (hot_data.run_flag) {
-		doca_pe_progress(hot_data.pe) ? ++(hot_data.pe_hit_count) : ++(hot_data.pe_miss_count);
-	}
-
-	/* exit if anything went wrong */
-	if (hot_data.error_flag) {
-		return;
-	}
-
-	/* wait for any completions that are out-standing in the case of a user abort (control+C) */
-	hot_data.remaining_rx_ops = hot_data.remaining_rx_ops - hot_data.remaining_tx_ops;
-	while (hot_data.remaining_rx_ops != 0) {
-		doca_pe_progress(hot_data.pe) ? ++(hot_data.pe_hit_count) : ++(hot_data.pe_miss_count);
-	}
-}
-
-void write_storage_memory(initiator_comch_worker::hot_data &hot_data, uint8_t const *expected_memory_content) noexcept
-{
-	auto const io_region_size = hot_data.io_region_end - hot_data.io_region_begin;
-
-	/* For validation tests just process the remote storage once */
-	hot_data.remaining_tx_ops = hot_data.remaining_rx_ops = io_region_size / hot_data.io_block_size;
-
-	/* prepare data to be written */
-	hot_data.io_addr = hot_data.io_region_begin;
-	std::copy(expected_memory_content, expected_memory_content + io_region_size, hot_data.io_region_begin);
-
-	/* submit initial tasks */
-	auto const initial_task_count =
-		std::min(static_cast<uint64_t>(hot_data.transactions_size), hot_data.remaining_tx_ops);
-	for (uint32_t ii = 0; ii != initial_task_count; ++ii) {
-		char *io_request;
-		static_cast<void>(
-			doca_buf_get_data(doca_comch_producer_task_send_get_buf(hot_data.transactions[ii].request),
-					  reinterpret_cast<void **>(&io_request)));
-		storage::io_message_view::set_type(storage::io_message_type::write, io_request);
-
-		hot_data.start_transaction(hot_data.transactions[ii], std::chrono::steady_clock::now());
-	}
-
-	/* run until the test completes */
-	while (hot_data.remaining_rx_ops != 0) {
-		doca_pe_progress(hot_data.pe) ? ++(hot_data.pe_hit_count) : ++(hot_data.pe_miss_count);
-	}
-
-	/* exit if anything went wrong */
-	if (hot_data.error_flag) {
-		return;
-	}
-}
-
-void read_and_validate_storage_memory(initiator_comch_worker::hot_data &hot_data,
-				      uint8_t const *expected_memory_content) noexcept
-{
-	size_t const io_region_size = hot_data.io_region_end - hot_data.io_region_begin;
-
-	/* For validation tests just process the remote storage once */
-	hot_data.remaining_tx_ops = hot_data.remaining_rx_ops = io_region_size / hot_data.io_block_size;
-
-	/* submit initial tasks */
-	auto const initial_task_count =
-		std::min(static_cast<uint64_t>(hot_data.transactions_size), hot_data.remaining_tx_ops);
-	for (uint32_t ii = 0; ii != initial_task_count; ++ii) {
-		char *io_request;
-		static_cast<void>(
-			doca_buf_get_data(doca_comch_producer_task_send_get_buf(hot_data.transactions[ii].request),
-					  reinterpret_cast<void **>(&io_request)));
-		storage::io_message_view::set_type(storage::io_message_type::read, io_request);
-
-		hot_data.start_transaction(hot_data.transactions[ii], std::chrono::steady_clock::now());
-	}
-
-	/* run until the test completes */
-	while (hot_data.remaining_rx_ops != 0) {
-		doca_pe_progress(hot_data.pe) ? ++(hot_data.pe_hit_count) : ++(hot_data.pe_miss_count);
-	}
-
-	/* exit if anything went wrong */
-	if (hot_data.error_flag) {
-		return;
-	}
-
-	/* Check the memory contents were as expected */
-	for (size_t offset = 0; offset != io_region_size; ++offset) {
-		if (hot_data.io_region_begin[offset] != expected_memory_content[offset]) {
-			DOCA_LOG_ERR("Data mismatch @ position %zu: %02x != %02x",
-				     offset,
-				     hot_data.io_region_begin[offset],
-				     expected_memory_content[offset]);
-			hot_data.error_flag = true;
-			break;
-		}
-	}
-}
-
-void read_only_data_validity_thread_proc(initiator_comch_worker::hot_data &hot_data) noexcept
-{
-	/* wait to start */
-	while (hot_data.run_flag == false) {
-		std::this_thread::yield();
-		if (hot_data.error_flag)
-			return;
-	}
-
-	read_and_validate_storage_memory(hot_data, hot_data.storage_plain_content);
-}
-
-void read_write_data_validity_thread_proc(initiator_comch_worker::hot_data &hot_data) noexcept
-{
-	/* wait to start */
-	while (hot_data.run_flag == false) {
-		std::this_thread::yield();
-		if (hot_data.error_flag)
-			return;
-	}
-
-	size_t const io_region_size = hot_data.io_region_end - hot_data.io_region_begin;
-	std::vector<uint8_t> write_data;
-	write_data.resize(io_region_size);
-	for (size_t ii = 0; ii != io_region_size; ++ii) {
-		write_data[ii] = static_cast<uint8_t>(ii);
-	}
-
-	write_storage_memory(hot_data, write_data.data());
-	read_and_validate_storage_memory(hot_data, write_data.data());
-}
-
-initiator_comch_worker::hot_data::hot_data()
-	: storage_plain_content{nullptr},
-	  io_region_begin{nullptr},
-	  io_region_end{nullptr},
-	  io_addr{nullptr},
-	  pe{nullptr},
-	  transactions{nullptr},
-	  transactions_size{0},
-	  io_block_size{0},
-	  end_time{},
-	  pe_hit_count{0},
-	  pe_miss_count{0},
-	  completed_transaction_count{0},
-	  remaining_tx_ops{0},
-	  remaining_rx_ops{0},
-	  latency_accumulator{0},
-	  latency_min{std::numeric_limits<uint32_t>::max()},
-	  latency_max{0},
-	  batch_count{0},
-	  batch_size{1},
-	  run_flag{false},
-	  error_flag{false}
-{
-}
-
-initiator_comch_worker::hot_data::hot_data(hot_data &&other) noexcept
-	: storage_plain_content{other.storage_plain_content},
-	  io_region_begin{other.io_region_begin},
-	  io_region_end{other.io_region_end},
-	  io_addr{other.io_addr},
-	  pe{other.pe},
-	  transactions{other.transactions},
-	  transactions_size{other.transactions_size},
-	  io_block_size{other.io_block_size},
-	  end_time{other.end_time},
-	  pe_hit_count{other.pe_hit_count},
-	  pe_miss_count{other.pe_miss_count},
-	  completed_transaction_count{other.completed_transaction_count},
-	  remaining_tx_ops{other.remaining_tx_ops},
-	  remaining_rx_ops{other.remaining_rx_ops},
-	  latency_accumulator{other.latency_accumulator},
-	  latency_min{other.latency_min},
-	  latency_max{other.latency_max},
-	  batch_count{other.batch_count},
-	  batch_size{other.batch_size},
-	  run_flag{other.run_flag.load()},
-	  error_flag{other.error_flag}
-{
-	other.storage_plain_content = nullptr;
-	other.pe = nullptr;
-	other.transactions = nullptr;
-}
-
-initiator_comch_worker::hot_data &initiator_comch_worker::hot_data::operator=(hot_data &&other) noexcept
-{
-	if (std::addressof(other) == this)
-		return *this;
-
-	storage_plain_content = other.storage_plain_content;
-	io_region_begin = other.io_region_begin;
-	io_region_end = other.io_region_end;
-	io_addr = other.io_addr;
-	pe = other.pe;
-	transactions = other.transactions;
-	transactions_size = other.transactions_size;
-	io_block_size = other.io_block_size;
-	end_time = other.end_time;
-	pe_hit_count = other.pe_hit_count;
-	pe_miss_count = other.pe_miss_count;
-	completed_transaction_count = other.completed_transaction_count;
-	remaining_tx_ops = other.remaining_tx_ops;
-	remaining_rx_ops = other.remaining_rx_ops;
-	latency_accumulator = other.latency_accumulator;
-	latency_min = other.latency_min;
-	latency_max = other.latency_max;
-	batch_count = other.batch_count;
-	batch_size = other.batch_size;
-	run_flag = other.run_flag.load();
-	error_flag = other.error_flag;
-
-	other.storage_plain_content = nullptr;
-	other.pe = nullptr;
-	other.transactions = nullptr;
-
-	return *this;
-}
-
-doca_error_t initiator_comch_worker::hot_data::submit_recv_task(doca_task *task)
-{
-	doca_task_submit_flag submit_flag = DOCA_TASK_SUBMIT_FLAG_NONE;
-	if (--batch_count == 0) {
-		submit_flag = DOCA_TASK_SUBMIT_FLAG_FLUSH;
-		batch_count = batch_size;
-	}
-
-	return doca_task_submit_ex(task, submit_flag);
-}
-
-void initiator_comch_worker::hot_data::start_transaction(transaction_context &transaction,
-							 std::chrono::steady_clock::time_point now)
-{
-	/* set the transaction refcount to 2 as the order of completions between the receive callback and the send
-	 * callback are not guaranteed to be ordered. The task cannot be re-used until both callbacks have completed.
-	 */
-	transaction.refcount = 2;
-	transaction.start_time = now;
-	doca_error_t ret;
-
-	// Set the io target to the next block until all the storage memory has been accessed, then go back to the start
 	char *io_request;
 	static_cast<void>(doca_buf_get_data(doca_comch_producer_task_send_get_buf(transaction.request),
 					    reinterpret_cast<void **>(&io_request)));
-	storage::io_message_view::set_io_address(reinterpret_cast<uint64_t>(io_addr), io_request);
-	io_addr += io_block_size;
-	if (io_addr == io_region_end) {
-		io_addr = io_region_begin;
+
+	if (transaction.pending_actions == 0 && started_transaction_count != target_transaction_count) {
+		/* set the transaction refcount to 2 as the order of completions between the receive callback and the
+		 * send callback are not guaranteed to be ordered. The task cannot be re-used until both callbacks have
+		 * completed.
+		 */
+		transaction.pending_actions = transaction_initial_ops_value;
+		transaction.start_time = std::chrono::steady_clock::now();
+
+		++started_transaction_count;
+		return true;
 	}
 
-	do {
-		ret = doca_task_submit(doca_comch_producer_task_send_as_task(transaction.request));
-	} while (ret == DOCA_ERROR_AGAIN);
+	if ((transaction.pending_actions & static_cast<uint32_t>(transaction_action::select_addresses)) != 0) {
+		transaction.pending_actions ^= static_cast<uint32_t>(transaction_action::select_addresses);
 
-	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to submit comch producer send task: %s", doca_error_get_name(ret));
+		uint64_t local_offset;
+		uint64_t storage_offset;
+		if (local_io_addr_pool.get(local_offset) && storage_io_addr_pool.get(storage_offset)) {
+			storage::io_message_view::set_storage_offset(storage_offset, io_request);
+			storage::io_message_view::set_requester_offset(local_offset, io_request);
+
+			return true;
+		}
+
+		DOCA_LOG_ERR("Failed to get IO address from pool. Pool was empty");
 		run_flag = false;
 		error_flag = true;
 	}
 
-	--remaining_tx_ops;
+	if ((transaction.pending_actions & static_cast<uint32_t>(transaction_action::copy_expected_memory_content)) !=
+	    0) {
+		transaction.pending_actions ^= static_cast<uint32_t>(transaction_action::copy_expected_memory_content);
+
+		uint64_t const local_offset = storage::io_message_view::get_requester_offset(io_request);
+		uint64_t const storage_offset = storage::io_message_view::get_storage_offset(io_request);
+		uint64_t const io_size = storage::io_message_view::get_io_size(io_request);
+		::memcpy(local_io_region_begin + local_offset, expected_storage_content + storage_offset, io_size);
+		return true;
+	}
+
+	if ((transaction.pending_actions & static_cast<uint32_t>(transaction_action::write)) != 0) {
+		transaction.pending_actions ^= static_cast<uint32_t>(transaction_action::write);
+
+		transaction.refcount = 2;
+		storage::io_message_view::set_type(storage::io_message_type::write, io_request);
+
+		doca_error_t ret;
+		do {
+			ret = doca_task_submit(doca_comch_producer_task_send_as_task(transaction.request));
+		} while (ret == DOCA_ERROR_AGAIN);
+
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to submit comch producer send task: %s", doca_error_get_name(ret));
+			run_flag = false;
+			error_flag = true;
+		}
+		return false;
+	}
+
+	if ((transaction.pending_actions & static_cast<uint32_t>(transaction_action::clear_memory_content)) != 0) {
+		transaction.pending_actions ^= static_cast<uint32_t>(transaction_action::clear_memory_content);
+
+		uint64_t const local_offset = storage::io_message_view::get_requester_offset(io_request);
+		uint64_t const io_size = storage::io_message_view::get_io_size(io_request);
+		::memset(local_io_region_begin + local_offset, 0, io_size);
+		return true;
+	}
+
+	if ((transaction.pending_actions & static_cast<uint32_t>(transaction_action::read)) != 0) {
+		transaction.pending_actions ^= static_cast<uint32_t>(transaction_action::read);
+
+		transaction.refcount = 2;
+		storage::io_message_view::set_type(storage::io_message_type::read, io_request);
+
+		doca_error_t ret;
+		do {
+			ret = doca_task_submit(doca_comch_producer_task_send_as_task(transaction.request));
+		} while (ret == DOCA_ERROR_AGAIN);
+
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to submit comch producer send task: %s", doca_error_get_name(ret));
+			run_flag = false;
+			error_flag = true;
+		}
+
+		return false;
+	}
+
+	if ((transaction.pending_actions & static_cast<uint32_t>(transaction_action::validate_memory_content)) != 0) {
+		transaction.pending_actions ^= static_cast<uint32_t>(transaction_action::validate_memory_content);
+		uint64_t const local_offset = storage::io_message_view::get_requester_offset(io_request);
+		uint64_t const storage_offset = storage::io_message_view::get_storage_offset(io_request);
+		uint64_t const io_size = storage::io_message_view::get_io_size(io_request);
+
+		auto const result = ::memcmp(local_io_region_begin + local_offset,
+					     expected_storage_content + storage_offset,
+					     io_size);
+		if (result != 0) {
+			display_memory_mismatch(local_offset, storage_offset, io_size);
+			run_flag = false;
+			error_flag = true;
+		}
+
+		return true;
+	}
+
+	if ((transaction.pending_actions & static_cast<uint32_t>(transaction_action::finish_transaction)) != 0) {
+		transaction.pending_actions ^= static_cast<uint32_t>(transaction_action::finish_transaction);
+
+		auto const now = std::chrono::steady_clock::now();
+		auto const usecs = std::chrono::duration_cast<std::chrono::microseconds>(now - transaction.start_time);
+		latency_accumulator += usecs;
+		auto const usecs_u32 = static_cast<uint32_t>(usecs.count());
+		latency_min = std::min(latency_min, usecs_u32);
+		latency_max = std::max(latency_max, usecs_u32);
+
+		local_io_addr_pool.put(storage::io_message_view::get_requester_offset(io_request));
+		storage_io_addr_pool.put(storage::io_message_view::get_storage_offset(io_request));
+
+		++completed_transaction_count;
+		if (started_transaction_count < target_transaction_count) {
+			return true;
+		}
+
+		if (completed_transaction_count == target_transaction_count) {
+			run_flag = false;
+			end_time = std::chrono::steady_clock::now();
+		}
+
+		return false;
+	}
+
+	return false;
 }
 
-void initiator_comch_worker::hot_data::on_transaction_complete(transaction_context &transaction)
+void initiator_comch_worker::hot_data::display_memory_mismatch(uint32_t local_offset,
+							       uint32_t storage_offset,
+							       uint32_t io_size) const
 {
-	auto const now = std::chrono::steady_clock::now();
-	auto const usecs = static_cast<uint32_t>(
-		std::chrono::duration_cast<std::chrono::microseconds>(now - transaction.start_time).count());
-	latency_accumulator += usecs;
-	latency_min = std::min(latency_min, usecs);
-	latency_max = std::max(latency_max, usecs);
-
-	++completed_transaction_count;
-	--remaining_rx_ops;
-	if (remaining_tx_ops) {
-		start_transaction(transaction, now);
-	} else if (remaining_rx_ops == 0) {
-		run_flag = false;
-		end_time = std::chrono::steady_clock::now();
-	}
+	auto const expected_bytes_str =
+		storage::bytes_to_hex_str(reinterpret_cast<char const *>(expected_storage_content) + storage_offset,
+					  io_size);
+	auto const actual_bytes_str =
+		storage::bytes_to_hex_str(reinterpret_cast<char const *>(local_io_region_begin) + local_offset,
+					  io_size);
+	DOCA_LOG_ERR("Memory read from storage target does not match expected value. "
+		     "\n\tExpected: [%s]"
+		     "\n\tActual:   [%s]",
+		     expected_bytes_str.c_str(),
+		     actual_bytes_str.c_str());
 }
 
 initiator_comch_worker::~initiator_comch_worker()
@@ -1139,92 +1154,37 @@ initiator_comch_worker::~initiator_comch_worker()
 	cleanup();
 }
 
-initiator_comch_worker::initiator_comch_worker()
-	: m_hot_data{},
-	  m_io_message_region{nullptr},
-	  m_io_message_mmap{nullptr},
-	  m_io_message_inv{nullptr},
-	  m_io_message_bufs{},
-	  m_consumer{nullptr},
-	  m_producer{nullptr},
-	  m_io_responses{},
-	  m_io_requests{},
-	  m_thread{}
-{
-}
-
-initiator_comch_worker::initiator_comch_worker(initiator_comch_worker &&other) noexcept
-	: m_hot_data{std::move(other.m_hot_data)},
-	  m_io_message_region{other.m_io_message_region},
-	  m_io_message_mmap{other.m_io_message_mmap},
-	  m_io_message_inv{other.m_io_message_inv},
-	  m_io_message_bufs{std::move(other.m_io_message_bufs)},
-	  m_consumer{other.m_consumer},
-	  m_producer{other.m_producer},
-	  m_io_responses{std::move(other.m_io_responses)},
-	  m_io_requests{std::move(other.m_io_requests)},
-	  m_thread{std::move(other.m_thread)}
-{
-	other.m_io_message_region = nullptr;
-	other.m_io_message_mmap = nullptr;
-	other.m_io_message_inv = nullptr;
-	other.m_consumer = nullptr;
-	other.m_producer = nullptr;
-}
-
-initiator_comch_worker &initiator_comch_worker::operator=(initiator_comch_worker &&other) noexcept
-{
-	if (std::addressof(other) == this)
-		return *this;
-
-	m_hot_data = std::move(other.m_hot_data);
-	m_io_message_region = other.m_io_message_region;
-	m_io_message_mmap = other.m_io_message_mmap;
-	m_io_message_inv = other.m_io_message_inv;
-	m_io_message_bufs = std::move(other.m_io_message_bufs);
-	m_consumer = other.m_consumer;
-	m_producer = other.m_producer;
-	m_io_responses = std::move(other.m_io_responses);
-	m_io_requests = std::move(other.m_io_requests);
-	m_thread = std::move(other.m_thread);
-
-	other.m_io_message_region = nullptr;
-	other.m_io_message_mmap = nullptr;
-	other.m_io_message_inv = nullptr;
-	other.m_consumer = nullptr;
-	other.m_producer = nullptr;
-
-	return *this;
-}
-
 void initiator_comch_worker::init(doca_dev *dev,
 				  doca_comch_connection *comch_conn,
-				  uint8_t const *storage_plain_content,
-				  uint32_t task_count,
-				  uint32_t batch_size,
-				  uint8_t *io_region_begin,
-				  uint64_t io_region_size,
+				  uint8_t const *expected_storage_content,
+				  uint32_t transaction_count,
+				  uint8_t *local_io_region_begin,
+				  uint64_t local_io_region_size,
+				  uint64_t storage_io_region_begin,
+				  uint64_t storage_io_region_size,
 				  uint32_t io_block_size)
 {
 	doca_error_t ret;
 	auto const page_size = storage::get_system_page_size();
 
-	m_hot_data.storage_plain_content = storage_plain_content;
-	m_hot_data.io_addr = io_region_begin;
-	m_hot_data.io_region_begin = io_region_begin;
-	m_hot_data.io_region_end = io_region_begin + io_region_size;
+	m_hot_data.expected_storage_content = expected_storage_content;
+	m_hot_data.local_io_region_begin = local_io_region_begin;
+	m_hot_data.storage_io_region_begin = storage_io_region_begin;
 	m_hot_data.io_block_size = io_block_size;
-	/*
-	 * Allocate enough memory for at N tasks + cfg.batch_size where N is the smaller value of:
-	 * cfg.buffer_count or cfg.run_limit_operation_count. cfg.batch_size tasks are over-allocated due to how
-	 * batched receive tasks work. The requirement is to always be able to have N tasks in flight. While
-	 * also lowering the cost of task submission by batching. So because upto cfg.batch_size -1 tasks could
-	 * be submitted but not yet flushed means that a surplus of cfg.batch_size tasks are required to
-	 * maintain always having N active tasks.
-	 */
-	m_hot_data.transactions_size = task_count;
-	m_hot_data.batch_size = batch_size;
-	auto const raw_io_messages_size = (task_count + batch_size) * storage::size_of_io_message * 2;
+
+	auto const local_io_block_count = local_io_region_size / io_block_size;
+	m_hot_data.local_io_addr_pool.init_ring(local_io_block_count);
+	for (uint32_t ii = 0; ii != local_io_block_count; ++ii) {
+		static_cast<void>(m_hot_data.local_io_addr_pool.put(ii * io_block_size));
+	}
+
+	auto const storage_io_block_count = storage_io_region_size / io_block_size;
+	m_hot_data.storage_io_addr_pool.init_ring(storage_io_block_count);
+	for (uint32_t ii = 0; ii != local_io_block_count; ++ii) {
+		static_cast<void>(m_hot_data.storage_io_addr_pool.put(ii * io_block_size));
+	}
+
+	auto const raw_io_messages_size = transaction_count * storage::size_of_io_message * 2;
 
 	DOCA_LOG_DBG("Allocate comch buffers memory (%zu bytes, aligned to %u byte pages)",
 		     raw_io_messages_size,
@@ -1236,6 +1196,7 @@ void initiator_comch_worker::init(doca_dev *dev,
 	}
 
 	try {
+		m_hot_data.transactions_size = transaction_count;
 		m_hot_data.transactions =
 			storage::make_aligned<transaction_context>{}.object_array(m_hot_data.transactions_size);
 	} catch (std::exception const &ex) {
@@ -1248,7 +1209,7 @@ void initiator_comch_worker::init(doca_dev *dev,
 					       raw_io_messages_size,
 					       DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_PCI_READ_WRITE);
 
-	ret = doca_buf_inventory_create((task_count * 2) + batch_size, &m_io_message_inv);
+	ret = doca_buf_inventory_create(transaction_count * 2, &m_io_message_inv);
 	if (ret != DOCA_SUCCESS) {
 		throw storage::runtime_error{ret, "Failed to create comch fast path doca_buf_inventory"};
 	}
@@ -1266,50 +1227,46 @@ void initiator_comch_worker::init(doca_dev *dev,
 
 	m_producer = storage::make_comch_producer(comch_conn,
 						  m_hot_data.pe,
-						  task_count,
+						  transaction_count,
 						  doca_data{.ptr = std::addressof(m_hot_data)},
 						  doca_comch_producer_task_send_cb,
 						  doca_comch_producer_task_send_error_cb);
-	m_io_requests.reserve(task_count);
+	m_io_requests.reserve(transaction_count);
 
 	m_consumer = storage::make_comch_consumer(comch_conn,
 						  m_io_message_mmap,
 						  m_hot_data.pe,
-						  task_count + batch_size,
+						  transaction_count,
 						  doca_data{.ptr = std::addressof(m_hot_data)},
 						  doca_comch_consumer_task_post_recv_cb,
 						  doca_comch_consumer_task_post_recv_error_cb);
-	m_io_responses.reserve(task_count + batch_size);
+	m_io_responses.reserve(transaction_count);
 }
 
-void initiator_comch_worker::prepare_thread_proc(initiator_comch_worker::thread_proc_fn_t fn,
-
+void initiator_comch_worker::prepare_thread_proc(uint32_t initial_task_op_mask,
 						 uint32_t run_limit_op_count,
-						 uint32_t cpu_idx)
+						 uint32_t core_id)
 {
 	m_hot_data.run_flag = false;
 	m_hot_data.error_flag = false;
 	m_hot_data.pe_hit_count = 0;
 	m_hot_data.pe_miss_count = 0;
+	m_hot_data.transaction_initial_ops_value = initial_task_op_mask;
+	m_hot_data.target_transaction_count = run_limit_op_count;
+	m_hot_data.started_transaction_count = 0;
 	m_hot_data.completed_transaction_count = 0;
-	m_hot_data.remaining_tx_ops = run_limit_op_count;
-	m_hot_data.remaining_rx_ops = run_limit_op_count;
 
-	m_thread = std::thread{thread_proc_catch_wrapper{std::addressof(m_hot_data)}, fn};
-	storage::set_thread_affinity(m_thread, cpu_idx);
+	m_thread = std::thread{thread_proc_wrapper, std::addressof(m_hot_data)};
+	storage::set_thread_affinity(m_thread, core_id);
 }
 
-void initiator_comch_worker::prepare_tasks(storage::io_message_type op_type, uint32_t remote_consumer_id)
+void initiator_comch_worker::prepare_tasks(uint32_t remote_consumer_id)
 {
 	doca_error_t ret;
-	uint8_t *io_addr = m_hot_data.io_region_begin;
+	uint64_t io_offset = 0;
 	uint8_t *msg_addr = m_io_message_region;
 
-	/*
-	 * Over allocate receive tasks so all while waiting for a full batch of tasks to submit there is always
-	 * hot_context.transactions_size active tasks
-	 */
-	for (uint32_t ii = 0; ii != m_hot_data.transactions_size + m_hot_data.batch_size; ++ii) {
+	for (uint32_t ii = 0; ii != m_hot_data.transactions_size; ++ii) {
 		doca_buf *consumer_buf;
 		doca_comch_consumer_task_post_recv *consumer_task;
 
@@ -1332,6 +1289,11 @@ void initiator_comch_worker::prepare_tasks(storage::io_message_type op_type, uin
 
 		m_io_responses.push_back(doca_comch_consumer_task_post_recv_as_task(consumer_task));
 	}
+
+	auto const op_type =
+		(m_hot_data.transaction_initial_ops_value & static_cast<uint32_t>(transaction_action::write)) ?
+			storage::io_message_type::write :
+			storage::io_message_type::read;
 
 	for (uint32_t ii = 0; ii != m_hot_data.transactions_size; ++ii) {
 		doca_buf *producer_buf;
@@ -1370,11 +1332,11 @@ void initiator_comch_worker::prepare_tasks(storage::io_message_type op_type, uin
 		storage::io_message_view::set_type(op_type, io_message);
 		storage::io_message_view::set_user_data(doca_data{.u64 = remote_consumer_id}, io_message);
 		storage::io_message_view::set_correlation_id(ii, io_message);
-		storage::io_message_view::set_io_address(reinterpret_cast<uint64_t>(io_addr), io_message);
+		storage::io_message_view::set_storage_offset(io_offset, io_message);
+		storage::io_message_view::set_requester_offset(io_offset, io_message);
 		storage::io_message_view::set_io_size(m_hot_data.io_block_size, io_message);
-		storage::io_message_view::set_remote_offset(0, io_message);
 
-		io_addr += m_hot_data.io_block_size;
+		io_offset += m_hot_data.io_block_size;
 	}
 
 	for (auto *task : m_io_responses) {
@@ -1528,11 +1490,13 @@ void initiator_comch_worker::doca_comch_consumer_task_post_recv_cb(doca_comch_co
 		return;
 	}
 
-	if (--(hot_data->transactions[correlation_id].refcount) == 0)
-		hot_data->on_transaction_complete(hot_data->transactions[correlation_id]);
+	if (--(hot_data->transactions[correlation_id].refcount) == 0) {
+		while (hot_data->progress_transaction(hot_data->transactions[correlation_id]))
+			;
+	}
 
 	doca_buf_reset_data_len(doca_comch_consumer_task_post_recv_get_buf(task));
-	auto const ret = hot_data->submit_recv_task(doca_comch_consumer_task_post_recv_as_task(task));
+	auto const ret = doca_task_submit(doca_comch_consumer_task_post_recv_as_task(task));
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to resubmit doca_comch_consumer_task_post_recv: %s", doca_error_get_name(ret));
 		hot_data->run_flag = false;
@@ -1562,9 +1526,12 @@ void initiator_comch_worker::doca_comch_producer_task_send_cb(doca_comch_produce
 {
 	static_cast<void>(task);
 
+	auto *const hot_data = static_cast<initiator_comch_worker::hot_data *>(ctx_user_data.ptr);
 	auto &transaction = *static_cast<transaction_context *>(task_user_data.ptr);
-	if (--(transaction.refcount) == 0)
-		static_cast<initiator_comch_worker::hot_data *>(ctx_user_data.ptr)->on_transaction_complete(transaction);
+	if (--(transaction.refcount) == 0) {
+		while (hot_data->progress_transaction(transaction))
+			;
+	}
 }
 
 void initiator_comch_worker::doca_comch_producer_task_send_error_cb(doca_comch_producer_task_send *task,
@@ -1585,7 +1552,7 @@ initiator_comch_app::~initiator_comch_app()
 	doca_error_t ret;
 
 	if (m_workers != nullptr) {
-		for (uint32_t ii = 0; ii != m_cfg.core_set.size(); ++ii) {
+		for (uint32_t ii = 0; ii != m_cfg.core_list.size(); ++ii) {
 			m_workers[ii].~initiator_comch_worker();
 		}
 		storage::aligned_free(m_workers);
@@ -1615,23 +1582,9 @@ initiator_comch_app::~initiator_comch_app()
 	}
 }
 
-std::vector<uint8_t> try_load_file(std::string const &file_name, bool empty_file_is_disallowed)
-{
-	std::vector<uint8_t> result;
-	try {
-		result = storage::load_file_bytes(file_name);
-	} catch (std::exception const &) {
-		if (empty_file_is_disallowed)
-			throw;
-	}
-
-	return result;
-}
-
 initiator_comch_app::initiator_comch_app(initiator_comch_app_configuration const &cfg)
 	: m_cfg{cfg},
-	  m_storage_plain_content{
-		  try_load_file(cfg.storage_plain_content_file, cfg.run_type == run_type_read_only_data_validity_test)},
+	  m_expected_storage_content{},
 	  m_dev{nullptr},
 	  m_io_region{nullptr},
 	  m_io_mmap{nullptr},
@@ -1639,6 +1592,7 @@ initiator_comch_app::initiator_comch_app(initiator_comch_app_configuration const
 	  m_ctrl_messages{},
 	  m_remote_consumer_ids{},
 	  m_workers{nullptr},
+	  m_local_capacity{0},
 	  m_storage_capacity{0},
 	  m_storage_block_size{0},
 	  m_stats{},
@@ -1646,6 +1600,10 @@ initiator_comch_app::initiator_comch_app(initiator_comch_app_configuration const
 	  m_correlation_id_counter{0},
 	  m_abort_flag{false}
 {
+	if (cfg.run_type == run_type_read_only_data_validity_test) {
+		m_expected_storage_content = storage::load_file_bytes(cfg.storage_plain_content_file);
+	}
+
 	DOCA_LOG_INFO("Open doca_dev: %s", m_cfg.device_id.c_str());
 	m_dev = storage::open_device(m_cfg.device_id);
 	m_service_control_channel =
@@ -1709,10 +1667,15 @@ void initiator_comch_app::query_storage(void)
 		      m_storage_block_size);
 
 	if (m_cfg.run_type == run_type_read_only_data_validity_test) {
-		if (m_storage_capacity != m_storage_plain_content.size()) {
+		if (m_storage_capacity != m_expected_storage_content.size()) {
 			throw storage::runtime_error{
 				DOCA_ERROR_INVALID_VALUE,
 				"Read only validation test requires that the provided plain data is the same size as the storage capacity"};
+		}
+	} else if (m_cfg.run_type == run_type_read_write_data_validity_test) {
+		m_expected_storage_content.resize(m_storage_capacity);
+		for (size_t ii = 0; ii != m_storage_capacity; ++ii) {
+			m_expected_storage_content[ii] = static_cast<uint8_t>(ii);
 		}
 	}
 }
@@ -1720,18 +1683,30 @@ void initiator_comch_app::query_storage(void)
 void initiator_comch_app::init_storage(void)
 {
 	DOCA_LOG_INFO("Init storage...");
-	auto const core_count = static_cast<uint32_t>(m_cfg.core_set.size());
-	uint8_t const *plain_content = m_storage_plain_content.empty() ? nullptr : m_storage_plain_content.data();
-	auto const storage_block_count = static_cast<uint32_t>(m_storage_capacity / m_storage_block_size);
-	auto const per_thread_block_count = storage_block_count / core_count;
-	auto per_thread_block_count_remainder = storage_block_count % core_count;
+	auto const core_count = static_cast<uint32_t>(m_cfg.core_list.size());
+	uint8_t const *plain_content = m_expected_storage_content.empty() ? nullptr : m_expected_storage_content.data();
+	auto const per_worker_task_count = std::min(m_cfg.task_count, m_cfg.run_limit_operation_count);
 
 	m_remote_consumer_ids.reserve(core_count);
-	m_io_region =
-		static_cast<uint8_t *>(storage::aligned_alloc(storage::get_system_page_size(), m_storage_capacity));
+	if (m_cfg.local_io_region_size != 0) {
+		m_local_capacity = m_cfg.local_io_region_size;
+	} else {
+		m_local_capacity = m_storage_capacity;
+	}
+
+	if (!m_expected_storage_content.empty()) {
+		if (m_expected_storage_content.size() != m_storage_capacity) {
+			throw storage::runtime_error{
+				DOCA_ERROR_INVALID_VALUE,
+				"Expected content size: "s + std::to_string(m_expected_storage_content.size()) +
+					" MUST match storage capacity: " + std::to_string(m_storage_capacity)};
+		}
+	}
+
+	m_io_region = static_cast<uint8_t *>(storage::aligned_alloc(storage::get_system_page_size(), m_local_capacity));
 	m_io_mmap = storage::make_mmap(m_dev,
 				       reinterpret_cast<char *>(m_io_region),
-				       m_storage_capacity,
+				       m_local_capacity,
 				       DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_PCI_READ_WRITE |
 					       DOCA_ACCESS_FLAG_RDMA_WRITE | DOCA_ACCESS_FLAG_RDMA_READ);
 
@@ -1750,49 +1725,73 @@ void initiator_comch_app::init_storage(void)
 	auto const correlation_id = storage::control::correlation_id{m_correlation_id_counter++};
 	auto const message_id = storage::control::message_id{m_message_id_counter++};
 
+	/* Over allocate transactions in the back end. This helps to prevent a race condition where the initiator wants
+	 * to send a message to the service, but the service has not got its consumer task submitted before the
+	 * initiator send data to an empty remote comch queue, this hurts performance, so we prefer to allocate extra
+	 * tasks to prevent it from happening too often without wasting too much memory
+	 */
 	auto const remote_per_thread_block_count =
-		std::min(m_cfg.task_count,
-			 per_thread_block_count_remainder == 0 ? per_thread_block_count : per_thread_block_count + 1);
+		per_worker_task_count + std::min(uint32_t{2}, (per_worker_task_count / 4));
 	m_service_control_channel->send_message({
 		storage::control::message_type::init_storage_request,
 		message_id,
 		correlation_id,
 		std::make_unique<storage::control::init_storage_payload>(remote_per_thread_block_count,
-									 m_cfg.batch_size,
 									 core_count,
 									 std::move(mmap_details)),
 	});
 
-	DOCA_LOG_INFO("Init storage to use using %u cores with %u tasks each",
-		      core_count,
-		      remote_per_thread_block_count);
+	DOCA_LOG_INFO("Init storage to use using %u cores with %u tasks each", core_count, per_worker_task_count);
 
 	static_cast<void>(wait_for_control_response(storage::control::message_type::init_storage_response,
 						    message_id,
 						    default_control_timeout_seconds));
 
-	m_workers = storage::make_aligned<initiator_comch_worker>{}.object_array(m_cfg.core_set.size());
+	m_workers = storage::make_aligned<initiator_comch_worker>{}.object_array(m_cfg.core_list.size());
+	uint32_t const local_complete_blocks_count = m_local_capacity / m_storage_block_size;
+	uint32_t const per_worker_local_block_count = local_complete_blocks_count / m_cfg.core_list.size();
+	uint32_t per_worker_local_block_count_remainder = local_complete_blocks_count % m_cfg.core_list.size();
+	if (per_worker_local_block_count == 0) {
+		throw storage::runtime_error{DOCA_ERROR_INVALID_VALUE,
+					     "Local IO region is to small to give each worker at least one block each"};
+	}
 
-	auto *this_thread_io_region_begin = m_io_region;
-	for (uint32_t ii = 0; ii != m_cfg.core_set.size(); ++ii) {
-		auto this_thread_block_count = per_thread_block_count;
-		if (per_thread_block_count_remainder != 0) {
-			++this_thread_block_count;
-			--per_thread_block_count_remainder;
-		}
-		auto const this_thread_task_count = std::min(m_cfg.task_count, this_thread_block_count);
-		auto const this_thread_storage_capacity = this_thread_block_count * m_storage_block_size;
+	uint32_t const storage_complete_blocks_count = m_storage_capacity / m_storage_block_size;
+	uint32_t const per_worker_storage_block_count = storage_complete_blocks_count / m_cfg.core_list.size();
+	uint32_t per_worker_storage_block_count_remainder = storage_complete_blocks_count % m_cfg.core_list.size();
+	if (per_worker_storage_block_count == 0) {
+		throw storage::runtime_error{
+			DOCA_ERROR_INVALID_VALUE,
+			"Storage IO region is to small to give each worker at least one block each"};
+	}
 
+	auto *worker_local_start_addr = m_io_region;
+	auto worker_storage_io_begin_addr = uint64_t{0};
+
+	for (uint32_t ii = 0; ii != m_cfg.core_list.size(); ++ii) {
+		auto const this_worker_local_block_count =
+			effective_block_count(per_worker_local_block_count, per_worker_local_block_count_remainder);
+		auto const this_worker_storage_block_count =
+			effective_block_count(per_worker_storage_block_count, per_worker_storage_block_count_remainder);
+
+		auto const this_worker_task_count =
+			std::min(per_worker_task_count,
+				 std::min(this_worker_local_block_count, this_worker_storage_block_count));
+
+		auto const this_worker_local_io_size = this_worker_local_block_count * m_storage_block_size;
+		auto const this_worker_storage_io_size = this_worker_storage_block_count * m_storage_block_size;
 		m_workers[ii].init(m_dev,
 				   m_service_control_channel->get_comch_connection(),
 				   plain_content,
-				   this_thread_task_count,
-				   m_cfg.batch_size,
-				   this_thread_io_region_begin,
-				   this_thread_storage_capacity,
+				   this_worker_task_count,
+				   worker_local_start_addr,
+				   this_worker_local_io_size,
+				   worker_storage_io_begin_addr,
+				   this_worker_storage_io_size,
 				   m_storage_block_size);
 
-		this_thread_io_region_begin += this_thread_storage_capacity;
+		worker_local_start_addr += this_worker_local_io_size;
+		worker_storage_io_begin_addr += this_worker_storage_io_size;
 	}
 
 	DOCA_LOG_INFO("Wait for remote objects to be finish async init...");
@@ -1811,13 +1810,14 @@ void initiator_comch_app::init_storage(void)
 		}
 
 		auto const ready_ctx_count = std::accumulate(m_workers,
-							     m_workers + m_cfg.core_set.size(),
+							     m_workers + m_cfg.core_list.size(),
 							     uint32_t{0},
 							     [](uint32_t total, initiator_comch_worker &worker) {
 								     return total + worker.are_contexts_ready();
 							     });
 
-		if (m_remote_consumer_ids.size() == m_cfg.core_set.size() && ready_ctx_count == m_cfg.core_set.size()) {
+		if (m_remote_consumer_ids.size() == m_cfg.core_list.size() &&
+		    ready_ctx_count == m_cfg.core_list.size()) {
 			DOCA_LOG_INFO("Async init complete");
 			return;
 		}
@@ -1826,35 +1826,31 @@ void initiator_comch_app::init_storage(void)
 
 void initiator_comch_app::prepare_threads(void)
 {
-	for (uint32_t ii = 0; ii != m_cfg.core_set.size(); ++ii) {
-		storage::io_message_type initial_op_type;
-		auto &tctx = m_workers[ii];
+	uint32_t op_mask = static_cast<uint32_t>(transaction_action::select_addresses) |
+			   static_cast<uint32_t>(transaction_action::finish_transaction);
 
-		if (m_cfg.run_type == run_type_read_throughout_test) {
-			initial_op_type = storage::io_message_type::read;
-			tctx.prepare_thread_proc(throughput_thread_proc,
-						 m_cfg.run_limit_operation_count,
-						 m_cfg.core_set[ii]);
-		} else if (m_cfg.run_type == run_type_write_throughout_test) {
-			initial_op_type = storage::io_message_type::write;
-			tctx.prepare_thread_proc(throughput_thread_proc,
-						 m_cfg.run_limit_operation_count,
-						 m_cfg.core_set[ii]);
-		} else if (m_cfg.run_type == run_type_read_only_data_validity_test) {
-			initial_op_type = storage::io_message_type::read;
-			tctx.prepare_thread_proc(read_only_data_validity_thread_proc,
-						 m_cfg.run_limit_operation_count,
-						 m_cfg.core_set[ii]);
-		} else if (m_cfg.run_type == run_type_read_write_data_validity_test) {
-			initial_op_type = storage::io_message_type::write;
-			tctx.prepare_thread_proc(read_write_data_validity_thread_proc,
-						 m_cfg.run_limit_operation_count,
-						 m_cfg.core_set[ii]);
-		} else {
-			throw storage::runtime_error{DOCA_ERROR_NOT_SUPPORTED, "Unhandled run mode: " + m_cfg.run_type};
-		}
+	if (m_cfg.run_type == run_type_read_throughput_test) {
+		op_mask |= static_cast<uint32_t>(transaction_action::read);
+	} else if (m_cfg.run_type == run_type_write_throughput_test) {
+		op_mask |= static_cast<uint32_t>(transaction_action::write);
+	} else if (m_cfg.run_type == run_type_read_only_data_validity_test) {
+		op_mask |= static_cast<uint32_t>(transaction_action::clear_memory_content);
+		op_mask |= static_cast<uint32_t>(transaction_action::read);
+		op_mask |= static_cast<uint32_t>(transaction_action::validate_memory_content);
+	} else if (m_cfg.run_type == run_type_read_write_data_validity_test) {
+		op_mask |= static_cast<uint32_t>(transaction_action::copy_expected_memory_content);
+		op_mask |= static_cast<uint32_t>(transaction_action::write);
+		op_mask |= static_cast<uint32_t>(transaction_action::clear_memory_content);
+		op_mask |= static_cast<uint32_t>(transaction_action::read);
+		op_mask |= static_cast<uint32_t>(transaction_action::validate_memory_content);
+	} else {
+		throw storage::runtime_error{DOCA_ERROR_NOT_SUPPORTED, "Unhandled run mode: " + m_cfg.run_type};
+	}
 
-		tctx.prepare_tasks(initial_op_type, m_remote_consumer_ids[ii]);
+	for (uint32_t ii = 0; ii != m_cfg.core_list.size(); ++ii) {
+		m_workers[ii].prepare_thread_proc(op_mask, m_cfg.run_limit_operation_count, m_cfg.core_list[ii]);
+
+		m_workers[ii].prepare_tasks(m_remote_consumer_ids[ii]);
 	}
 }
 
@@ -1875,7 +1871,7 @@ bool initiator_comch_app::run(void)
 {
 	// Start threads
 	m_stats.start_time = std::chrono::steady_clock::now();
-	for (uint32_t ii = 0; ii != m_cfg.core_set.size(); ++ii) {
+	for (uint32_t ii = 0; ii != m_cfg.core_list.size(); ++ii) {
 		auto &tctx = m_workers[ii];
 		tctx.start_thread_proc();
 	}
@@ -1884,7 +1880,7 @@ bool initiator_comch_app::run(void)
 	for (;;) {
 		std::this_thread::sleep_for(std::chrono::milliseconds{200});
 		auto const running_workers = std::accumulate(m_workers,
-							     m_workers + m_cfg.core_set.size(),
+							     m_workers + m_cfg.core_list.size(),
 							     uint32_t{0},
 							     [](uint32_t total, auto const &tctx) {
 								     return total + tctx.is_thread_proc_running();
@@ -1901,7 +1897,7 @@ bool initiator_comch_app::run(void)
 	m_stats.latency_max = 0;
 	m_stats.latency_min = std::numeric_limits<uint32_t>::max();
 	bool any_error = false;
-	for (uint32_t ii = 0; ii != m_cfg.core_set.size(); ++ii) {
+	for (uint32_t ii = 0; ii != m_cfg.core_list.size(); ++ii) {
 		auto const &hot_data = m_workers[ii].get_hot_data();
 		if (hot_data.error_flag)
 			any_error = true;
@@ -1913,7 +1909,7 @@ bool initiator_comch_app::run(void)
 		m_stats.pe_hit_count += hot_data.pe_hit_count;
 		m_stats.pe_miss_count += hot_data.pe_miss_count;
 
-		latency_acc += hot_data.latency_accumulator;
+		latency_acc += hot_data.latency_accumulator.count();
 	}
 
 	if (m_stats.operation_count != 0) {
@@ -1927,7 +1923,7 @@ bool initiator_comch_app::run(void)
 
 void initiator_comch_app::join_threads(void)
 {
-	for (uint32_t ii = 0; ii != m_cfg.core_set.size(); ++ii) {
+	for (uint32_t ii = 0; ii != m_cfg.core_list.size(); ++ii) {
 		m_workers[ii].join_thread_proc();
 	}
 }
@@ -1978,7 +1974,7 @@ void initiator_comch_app::shutdown(void)
 	DOCA_LOG_INFO("Shutdown storage...");
 
 	// destroy local comch objects
-	for (uint32_t ii = 0; ii != m_cfg.core_set.size(); ++ii) {
+	for (uint32_t ii = 0; ii != m_cfg.core_list.size(); ++ii) {
 		m_workers[ii].destroy_data_path_objects();
 	}
 

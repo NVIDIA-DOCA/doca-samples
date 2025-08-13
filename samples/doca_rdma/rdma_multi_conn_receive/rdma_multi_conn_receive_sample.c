@@ -239,7 +239,7 @@ static doca_error_t rdma_multi_conn_receive_prepare_and_submit_task(struct rdma_
 	struct doca_rdma_task_receive *rdma_receive_tasks[MAX_NUM_CONNECTIONS] = {0};
 	struct doca_buf *dst_bufs[MAX_NUM_CONNECTIONS] = {0};
 	union doca_data task_user_data = {0};
-	doca_error_t result, tmp_result;
+	doca_error_t result = DOCA_SUCCESS, tmp_result;
 	uint32_t i = 0;
 
 	for (i = 0; i < resources->cfg->num_connections; i++) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -41,7 +41,7 @@ doca_error_t dpa_ping_pong(struct dpa_resources *resources);
  */
 int main(int argc, char **argv)
 {
-	struct dpa_config cfg;
+	struct dpa_config cfg = {0};
 	struct dpa_resources resources = {0};
 	doca_error_t result = DOCA_SUCCESS;
 	struct doca_log_backend *sdk_log = NULL;

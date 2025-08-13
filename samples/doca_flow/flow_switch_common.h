@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,60 +26,32 @@
 #ifndef FLOW_SWITCH_COMMON_H_
 #define FLOW_SWITCH_COMMON_H_
 
-#include <rte_byteorder.h>
-
 #include <doca_flow.h>
 #include <doca_dev.h>
+
 #include <common.h>
+
+#include "flow_common.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define FLOW_SWITCH_PORTS_MAX (128)
+#define FLOW_SWITCH_DEV_ARGS "dv_flow_en=2,fdb_def_rule_en=0,vport_match=1,repr_matching_en=0,dv_xmeta_en=4"
 
 /* doca flow switch context */
 struct flow_switch_ctx {
-	bool is_expert;					  /* switch expert mode */
-	uint16_t nb_ports;				  /* switch port number */
-	uint16_t nb_reps;				  /* switch port number */
-	const char *dev_arg[FLOW_SWITCH_PORTS_MAX];	  /* dpdk dev_arg */
-	const char *rep_arg[FLOW_SWITCH_PORTS_MAX];	  /* dpdk rep_arg */
-	struct doca_dev *doca_dev[FLOW_SWITCH_PORTS_MAX]; /* port doca_dev */
-	tasks_check port_cap;				  /* Optional port capability callback */
-	void *usr_ctx;					  /* user context */
+	struct flow_dev_ctx devs_ctx; /* Context for all device/port related data */
+	bool is_expert;		      /* switch expert mode */
+	void *usr_ctx;		      /* user context */
 };
 
 /*
- * Init DOCA Flow switch
- *
- * @argc [in]: dpdk argc
- * @dpdk_argv [in]: dpdk argv
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
- */
-doca_error_t init_flow_switch_dpdk(int argc, char **dpdk_argv);
-
-/*
- * Register DOCA Flow switch parameter
+ * Register DOCA Flow switch parameters
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t register_doca_flow_switch_param(void);
-
-/*
- * Init DOCA Flow switch
- *
- * @ctx [in]: flow switch context
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
- */
-doca_error_t init_doca_flow_switch_common(struct flow_switch_ctx *ctx);
-
-/*
- * Destroy dOCA Flow switch context
- *
- * @ctx [in]: flow switch context
- */
-void destroy_doca_flow_switch_common(struct flow_switch_ctx *ctx);
+doca_error_t register_doca_flow_switch_params(void);
 
 /*
  * Get number of DPDK ports created during EAL init according to user arguments.
@@ -87,6 +59,22 @@ void destroy_doca_flow_switch_common(struct flow_switch_ctx *ctx);
  * @return: number of created DPDK ports.
  */
 uint8_t get_dpdk_nb_ports(void);
+
+/*
+ * Initialize DOCA Flow ports
+ *
+ * @devs_manager [in]: array of device bundles (doca device and representor devices)
+ * @nb_managers [in]: number of managers to create ports for
+ * @ports [in]: array of ports to create
+ * @nb_ports [in]: number of ports to create
+ * @actions_mem_size[in]: actions memory size
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t init_doca_flow_switch_ports(struct flow_devs_manager devs_manager[],
+					 int nb_managers,
+					 struct doca_flow_port *ports[],
+					 int nb_ports,
+					 uint32_t actions_mem_size[]);
 
 #ifdef __cplusplus
 }

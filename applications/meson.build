@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2021-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -257,17 +257,23 @@ add_project_arguments('-Wno-format-zero-length', language: languages)
 
 base_app_dependencies = []
 base_app_dependencies += dependency('threads')
-dependency_libbsd = dependency('libbsd', required: false)
-if dependency_libbsd.found()
-	base_app_dependencies += dependency_libbsd
-	add_project_arguments('-D DOCA_USE_LIBBSD', language: languages)
-	# Ensure mlnx-dpdk will manage to find our libbsd if exists
-	add_project_arguments('-D RTE_USE_LIBBSD', language: languages)
+
+# In old distributions it was in libbsd, in newer ones it is part of libc
+c_compiler = meson.get_compiler('c')
+if c_compiler.has_function('strlcpy', prefix: '#include <string.h>', args: ['-D_GNU_SOURCE'])
+	add_project_arguments('-D DOCA_USE_LIBC_STRING_L_FUNC', language: languages)
+else
+	dependency_libbsd = dependency('libbsd', required: false)
+	if dependency_libbsd.found()
+		base_app_dependencies += dependency_libbsd
+		add_project_arguments('-D DOCA_USE_LIBBSD', language: languages)
+		# Ensure mlnx-dpdk will manage to find our libbsd if exists
+		add_project_arguments('-D RTE_USE_LIBBSD', language: languages)
+	endif
 endif
 
 # Learn from our own config file if we are installed on the DPU or the Host
 dependency_doca = dependency('doca-common')
-c_compiler = meson.get_compiler('c')
 if c_compiler.has_header_symbol('doca_build_config.h', 'DOCA_ARCH_DPU', dependencies: dependency_doca)
         is_dpu = true
 else
@@ -304,6 +310,7 @@ app_list = [
 	    'switch',
 	    'upf_accel',
 	    'urom_rdmo',
+	    'virtiofs',
 	    'yara_inspection',
 ]
 

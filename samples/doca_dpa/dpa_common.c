@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -123,11 +123,37 @@ static doca_error_t rdma_device_name_param_callback(void *param, void *config)
 }
 #endif
 
+/*
+ * ARGP Callback - Handle gid_index parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t gid_index_param_callback(void *param, void *config)
+{
+	struct dpa_config *dpa_cfg = (struct dpa_config *)config;
+	const int gid_index = *(uint32_t *)param;
+
+	if (gid_index < 0) {
+		DOCA_LOG_ERR("GID index for DOCA RDMA must be non-negative");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	dpa_cfg->is_gid_index_set = true;
+	dpa_cfg->gid_index = (uint32_t)gid_index;
+
+	return DOCA_SUCCESS;
+}
+
 doca_error_t register_dpa_params(void)
 {
 	doca_error_t result;
-
 	struct doca_argp_param *pf_device_param;
+	struct doca_argp_param *dpa_resources_file_param;
+	struct doca_argp_param *dpa_app_key_param;
+	struct doca_argp_param *gid_index_param;
+
 	result = doca_argp_param_create(&pf_device_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
@@ -147,7 +173,6 @@ doca_error_t register_dpa_params(void)
 		return result;
 	}
 
-	struct doca_argp_param *dpa_resources_file_param;
 	result = doca_argp_param_create(&dpa_resources_file_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
@@ -164,7 +189,6 @@ doca_error_t register_dpa_params(void)
 		return result;
 	}
 
-	struct doca_argp_param *dpa_app_key_param;
 	result = doca_argp_param_create(&dpa_app_key_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
@@ -202,6 +226,22 @@ doca_error_t register_dpa_params(void)
 		return result;
 	}
 #endif
+
+	result = doca_argp_param_create(&gid_index_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(gid_index_param, "g");
+	doca_argp_param_set_long_name(gid_index_param, "gid-index");
+	doca_argp_param_set_description(gid_index_param, "GID index for DOCA RDMA (optional)");
+	doca_argp_param_set_callback(gid_index_param, gid_index_param_callback);
+	doca_argp_param_set_type(gid_index_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(gid_index_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	return DOCA_SUCCESS;
 }
@@ -609,7 +649,7 @@ static doca_error_t get_eu_ids_from_resources_file(struct dpa_config *cfg,
 	/* Get the file size first */
 	doca_error_t result = get_file_size(cfg->dpa_resources_file, &bytes_read);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Error: Failed to get DPA resources file size: %s", doca_error_get_descr(result));
+		DOCA_LOG_DBG("DPA resources file not found: %s", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -663,6 +703,9 @@ doca_error_t allocate_dpa_resources(struct dpa_config *cfg, struct dpa_resources
 	uint32_t threads_list[DPA_THREADS_MAX] = {0};
 	uint32_t threads_num = 0;
 	doca_error_t get_execution_ids_status;
+
+	resources->gid_index = cfg->gid_index;
+	resources->is_gid_index_set = cfg->is_gid_index_set;
 
 	result = open_dpa_device(cfg->pf_device_name,
 				 cfg->rdma_device_name,
@@ -1026,7 +1069,7 @@ doca_error_t dpa_rdma_obj_init(struct dpa_rdma_obj *dpa_rdma_obj)
 		}
 	}
 
-	if (dpa_rdma_obj->gid_index) {
+	if (dpa_rdma_obj->is_gid_index_set) {
 		doca_err = doca_rdma_set_gid_index(dpa_rdma_obj->rdma, dpa_rdma_obj->gid_index);
 		if (doca_err != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function doca_rdma_set_gid_index failed (%s)\n", doca_error_get_descr(doca_err));

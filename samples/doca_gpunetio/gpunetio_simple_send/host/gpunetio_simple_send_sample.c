@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -25,7 +25,9 @@
 
 #include <arpa/inet.h>
 #include <doca_flow.h>
+#include <doca_dpdk.h>
 #include <doca_log.h>
+#include <rte_ethdev.h>
 
 #include "gpunetio_common.h"
 
@@ -58,22 +60,38 @@ static void signal_handler(int signum)
  * Initialize a DOCA network device.
  *
  * @nic_pcie_addr [in]: Network card PCIe address
+ * @dpdk_port_id [in]: DPDK Port id of the DOCA device
  * @ddev [out]: DOCA device
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t init_doca_device(char *nic_pcie_addr, struct doca_dev **ddev)
+doca_error_t init_doca_device(char *nic_pcie_addr, struct doca_dev **ddev)
 {
 	doca_error_t result;
+	int ret;
+	char *eal_param[3] = {"", "-a", "00:00.0"};
 
 	if (nic_pcie_addr == NULL || ddev == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
 
-	if (strnlen(nic_pcie_addr, DOCA_DEVINFO_PCI_ADDR_SIZE) >= DOCA_DEVINFO_PCI_ADDR_SIZE)
+	if (strlen(nic_pcie_addr) >= DOCA_DEVINFO_PCI_ADDR_SIZE)
 		return DOCA_ERROR_INVALID_VALUE;
 
 	result = open_doca_device_with_pci(nic_pcie_addr, NULL, ddev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to open NIC device based on PCI address");
+		return result;
+	}
+
+	ret = rte_eal_init(3, eal_param);
+	if (ret < 0) {
+		DOCA_LOG_ERR("DPDK init failed: %d", ret);
+		return DOCA_ERROR_DRIVER;
+	}
+
+	// /* Enable DOCA Flow HWS mode */
+	result = doca_dpdk_port_probe(*ddev, "dv_flow_en=2");
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Function doca_dpdk_port_probe returned %s", doca_error_get_descr(result));
 		return result;
 	}
 

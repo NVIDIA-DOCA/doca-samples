@@ -36,8 +36,7 @@
 
 DOCA_LOG_REGISTER(GPU_SANITY::KernelReceiveTcp);
 
-static
-__device__ void report_http_info(struct info_http *http_global, struct eth_ip_tcp_hdr *hdr, uint8_t *payload)
+static __device__ void report_http_info(struct info_http *http_global, struct eth_ip_tcp_hdr *hdr, uint8_t *payload)
 {
 	/* Ethernet info */
 	((uint16_t *)http_global->eth_src_addr_bytes)[0] = ((uint16_t *)hdr->l2_hdr.s_addr_bytes)[0];
@@ -61,26 +60,35 @@ __device__ void report_http_info(struct info_http *http_global, struct eth_ip_tc
 	http_global->tcp_recv_ack = hdr->l4_hdr.recv_ack;
 }
 
-static
-__device__ enum http_page_get get_http_page_type(const uint8_t *payload)
+static __device__ enum http_page_get get_http_page_type(const uint8_t *payload)
 {
 	/* index */
-	if (payload[5] == 'i' && payload[6] == 'n' && payload[7] == 'd' && payload[8] == 'e' && payload[9] == 'x' && payload[10] == '.')
+	if (payload[5] == 'i' && payload[6] == 'n' && payload[7] == 'd' && payload[8] == 'e' && payload[9] == 'x' &&
+	    payload[10] == '.')
 		return HTTP_GET_INDEX;
 	/* contacts */
-	if (payload[5] == 'c' && payload[6] == 'o' && payload[7] == 'n' && payload[8] == 't' && payload[9] == 'a' && payload[10] == 'c' && payload[11] == 't' && payload[12] == 's' && payload[13] == '.')
+	if (payload[5] == 'c' && payload[6] == 'o' && payload[7] == 'n' && payload[8] == 't' && payload[9] == 'a' &&
+	    payload[10] == 'c' && payload[11] == 't' && payload[12] == 's' && payload[13] == '.')
 		return HTTP_GET_CONTACTS;
 	/* 404 not found */
 	return HTTP_GET_NOT_FOUND;
 }
 
 __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
-					struct doca_gpu_eth_rxq *rxq0, struct doca_gpu_eth_rxq *rxq1, struct doca_gpu_eth_rxq *rxq2, struct doca_gpu_eth_rxq *rxq3,
+					struct doca_gpu_eth_rxq *rxq0,
+					struct doca_gpu_eth_rxq *rxq1,
+					struct doca_gpu_eth_rxq *rxq2,
+					struct doca_gpu_eth_rxq *rxq3,
 					int sem_num,
-					struct doca_gpu_semaphore_gpu *sem_stats0, struct doca_gpu_semaphore_gpu *sem_stats1, struct doca_gpu_semaphore_gpu *sem_stats2, struct doca_gpu_semaphore_gpu *sem_stats3,
-					struct doca_gpu_semaphore_gpu *sem_http0, struct doca_gpu_semaphore_gpu *sem_http1, struct doca_gpu_semaphore_gpu *sem_http2, struct doca_gpu_semaphore_gpu *sem_http3,
-					bool http_server
-				)
+					struct doca_gpu_semaphore_gpu *sem_stats0,
+					struct doca_gpu_semaphore_gpu *sem_stats1,
+					struct doca_gpu_semaphore_gpu *sem_stats2,
+					struct doca_gpu_semaphore_gpu *sem_stats3,
+					struct doca_gpu_semaphore_gpu *sem_http0,
+					struct doca_gpu_semaphore_gpu *sem_http1,
+					struct doca_gpu_semaphore_gpu *sem_http2,
+					struct doca_gpu_semaphore_gpu *sem_http3,
+					bool http_server)
 {
 	__shared__ uint32_t rx_pkt_num;
 	__shared__ uint64_t rx_buf_idx;
@@ -128,8 +136,7 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 		rxq = rxq3;
 		sem_stats = sem_stats3;
 		sem_http = sem_http3;
-	}
-	else
+	} else
 		return;
 
 	if (threadIdx.x == 0) {
@@ -164,7 +171,11 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 				 * If application prints this message on the console, something bad happened and
 				 * applications needs to exit
 				 */
-				printf("Receive TCP kernel error %d Block %d rxpkts %d error %d\n", ret, blockIdx.x, rx_pkt_num, ret);
+				printf("Receive TCP kernel error %d Block %d rxpkts %d error %d\n",
+				       ret,
+				       blockIdx.x,
+				       rx_pkt_num,
+				       ret);
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 			}
 			break;
@@ -186,9 +197,14 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 				if (http_server) {
 					int idx_tmp = atomicAdd(&sem_http_idx, 1);
 					idx_tmp = idx_tmp % sem_num;
-					ret = doca_gpu_dev_semaphore_get_custom_info_addr(sem_http, idx_tmp, (void **)&http_global);
+					ret = doca_gpu_dev_semaphore_get_custom_info_addr(sem_http,
+											  idx_tmp,
+											  (void **)&http_global);
 					if (ret != DOCA_SUCCESS) {
-						printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n", ret, blockIdx.x, threadIdx.x);
+						printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n",
+						       ret,
+						       blockIdx.x,
+						       threadIdx.x);
 						DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 						break;
 					}
@@ -197,21 +213,22 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 					/* Use proper value here */
 					http_global->page = get_http_page_type(payload);
 					__threadfence();
-					doca_gpu_dev_semaphore_set_status(sem_http, idx_tmp, DOCA_GPU_SEMAPHORE_STATUS_READY);
+					doca_gpu_dev_semaphore_set_status(sem_http,
+									  idx_tmp,
+									  DOCA_GPU_SEMAPHORE_STATUS_READY);
 				}
 				stats_thread.http_get++;
-			}
-			else if (filter_is_http_head(payload))
+			} else if (filter_is_http_head(payload))
 				stats_thread.http_head++;
 			else if (filter_is_http_post(payload))
 				stats_thread.http_post++;
 			else if (filter_is_http(payload))
 				stats_thread.http++;
-			else if(filter_is_tcp_fin(&(hdr->l4_hdr)))
+			else if (filter_is_tcp_fin(&(hdr->l4_hdr)))
 				stats_thread.tcp_fin++;
-			else if(filter_is_tcp_syn(&(hdr->l4_hdr)))
+			else if (filter_is_tcp_syn(&(hdr->l4_hdr)))
 				stats_thread.tcp_syn++;
-			else if(filter_is_tcp_ack(&(hdr->l4_hdr)))
+			else if (filter_is_tcp_ack(&(hdr->l4_hdr)))
 				stats_thread.tcp_ack++;
 			else
 				stats_thread.others++;
@@ -248,9 +265,14 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 		__syncthreads();
 
 		if (threadIdx.x == 0 && rx_pkt_num > 0) {
-			ret = doca_gpu_dev_semaphore_get_custom_info_addr(sem_stats, sem_stats_idx, (void **)&stats_global);
+			ret = doca_gpu_dev_semaphore_get_custom_info_addr(sem_stats,
+									  sem_stats_idx,
+									  (void **)&stats_global);
 			if (ret != DOCA_SUCCESS) {
-				printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n", ret, blockIdx.x, threadIdx.x);
+				printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n",
+				       ret,
+				       blockIdx.x,
+				       threadIdx.x);
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 				break;
 			}
@@ -286,7 +308,10 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 
 extern "C" {
 
-doca_error_t kernel_receive_tcp(cudaStream_t stream, uint32_t *exit_cond, struct rxq_tcp_queues *tcp_queues, bool http_server)
+doca_error_t kernel_receive_tcp(cudaStream_t stream,
+				uint32_t *exit_cond,
+				struct rxq_tcp_queues *tcp_queues,
+				bool http_server)
 {
 	cudaError_t result = cudaSuccess;
 
@@ -304,12 +329,20 @@ doca_error_t kernel_receive_tcp(cudaStream_t stream, uint32_t *exit_cond, struct
 
 	/* Assume MAX_QUEUES == 4 */
 	cuda_kernel_receive_tcp<<<tcp_queues->numq, CUDA_THREADS, 0, stream>>>(exit_cond,
-										tcp_queues->eth_rxq_gpu[0], tcp_queues->eth_rxq_gpu[1], tcp_queues->eth_rxq_gpu[2], tcp_queues->eth_rxq_gpu[3],
-										tcp_queues->nums,
-										tcp_queues->sem_gpu[0], tcp_queues->sem_gpu[1], tcp_queues->sem_gpu[2], tcp_queues->sem_gpu[3],
-										tcp_queues->sem_http_gpu[0], tcp_queues->sem_http_gpu[1], tcp_queues->sem_http_gpu[2], tcp_queues->sem_http_gpu[3],
-										http_server
-										);
+									       tcp_queues->eth_rxq_gpu[0],
+									       tcp_queues->eth_rxq_gpu[1],
+									       tcp_queues->eth_rxq_gpu[2],
+									       tcp_queues->eth_rxq_gpu[3],
+									       tcp_queues->nums,
+									       tcp_queues->sem_gpu[0],
+									       tcp_queues->sem_gpu[1],
+									       tcp_queues->sem_gpu[2],
+									       tcp_queues->sem_gpu[3],
+									       tcp_queues->sem_http_gpu[0],
+									       tcp_queues->sem_http_gpu[1],
+									       tcp_queues->sem_http_gpu[2],
+									       tcp_queues->sem_http_gpu[3],
+									       http_server);
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
 		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -24,13 +24,17 @@
  */
 #include <string.h>
 
-#include <rte_byteorder.h>
-
 #include <doca_log.h>
+#include <doca_dpdk.h>
+
+#include <rte_eal.h>
 
 #include "flow_common.h"
 
 DOCA_LOG_REGISTER(flow_common);
+
+/* Hold the converter function for the flow_param_dev_callback (if exists) */
+static flow_dev_ctx_from_user_ctx_t global_user_ctx_converter = NULL;
 
 /*
  * Entry processing callback
@@ -174,24 +178,62 @@ destroy_cfg:
 }
 
 /*
+ * Create DOCA Flow port cfg and fill the fields common between master and rpresentors.
+ *
+ * @port_id [in]: port ID
+ * @actions_mem_size [in]: action memory size
+ * @cfg [out]: the port configuration structure
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t create_doca_flow_port_cfg(int port_id, uint32_t actions_mem_size, struct doca_flow_port_cfg **cfg)
+{
+	struct doca_flow_port_cfg *port_cfg;
+	doca_error_t result;
+
+	result = doca_flow_port_cfg_create(&port_cfg);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create doca_flow_port_cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_port_id(port_cfg, port_id);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg port_id: %s", doca_error_get_descr(result));
+		doca_flow_port_cfg_destroy(port_cfg);
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_actions_mem_size(port_cfg, actions_mem_size);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set actions memory size: %s", doca_error_get_descr(result));
+		doca_flow_port_cfg_destroy(port_cfg);
+		return result;
+	}
+
+	*cfg = port_cfg;
+	return DOCA_SUCCESS;
+}
+
+/*
  * Create DOCA Flow port by port id
  *
  * @port_id [in]: port ID
+ * @actions_mem_size [in]: action memory size
  * @dev [in]: doca device to attach
  * @state [in]: port operation initial state
  * @port [out]: port handler on success
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t create_doca_flow_port(int port_id,
+					  uint32_t actions_mem_size,
 					  struct doca_dev *dev,
 					  enum doca_flow_port_operation_state state,
-					  struct doca_flow_port **port,
-					  uint32_t actions_mem_size)
+					  struct doca_flow_port **port)
 {
 	struct doca_flow_port_cfg *port_cfg;
 	doca_error_t result, tmp_result;
 
-	result = doca_flow_port_cfg_create(&port_cfg);
+	result = create_doca_flow_port_cfg(port_id, actions_mem_size, &port_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca_flow_port_cfg: %s", doca_error_get_descr(result));
 		return result;
@@ -203,21 +245,54 @@ static doca_error_t create_doca_flow_port(int port_id,
 		goto destroy_port_cfg;
 	}
 
-	result = doca_flow_port_cfg_set_port_id(port_cfg, port_id);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg port_id: %s", doca_error_get_descr(result));
-		goto destroy_port_cfg;
-	}
-
 	result = doca_flow_port_cfg_set_operation_state(port_cfg, state);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg operation state: %s", doca_error_get_descr(result));
 		goto destroy_port_cfg;
 	}
 
-	result = doca_flow_port_cfg_set_actions_mem_size(port_cfg, actions_mem_size);
+	result = doca_flow_port_start(port_cfg, port);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set actions memory size: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to start doca_flow port: %s", doca_error_get_descr(result));
+		goto destroy_port_cfg;
+	}
+
+destroy_port_cfg:
+	tmp_result = doca_flow_port_cfg_destroy(port_cfg);
+	if (tmp_result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to destroy doca_flow port: %s", doca_error_get_descr(tmp_result));
+		DOCA_ERROR_PROPAGATE(result, tmp_result);
+	}
+
+	return result;
+}
+
+/*
+ * Create DOCA Flow port representor by port id
+ *
+ * @port_id [in]: port ID
+ * @actions_mem_size [in]: action memory size
+ * @dev_rep [in]: doca reprtesentor device to attach
+ * @port [out]: port handler on success
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t create_doca_flow_port_representor(int port_id,
+						      uint32_t actions_mem_size,
+						      struct doca_dev_rep *dev_rep,
+						      struct doca_flow_port **port)
+{
+	struct doca_flow_port_cfg *port_cfg;
+	doca_error_t result, tmp_result;
+
+	result = create_doca_flow_port_cfg(port_id, actions_mem_size, &port_cfg);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create doca_flow_port_cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_dev_rep(port_cfg, dev_rep);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg dev: %s", doca_error_get_descr(result));
 		goto destroy_port_cfg;
 	}
 
@@ -242,6 +317,9 @@ doca_error_t stop_doca_flow_ports(int nb_ports, struct doca_flow_port *ports[])
 	int portid;
 	doca_error_t ret, doca_error = DOCA_SUCCESS;
 
+	for (portid = nb_ports - 1; portid >= 0; portid--)
+		doca_flow_port_pipes_flush(ports[portid]);
+
 	/*
 	 * Stop the ports in reverse order, since in switch mode port 0
 	 * is proxy port, and proxy port should stop as last.
@@ -259,8 +337,9 @@ doca_error_t stop_doca_flow_ports(int nb_ports, struct doca_flow_port *ports[])
 
 doca_error_t init_doca_flow_ports_with_op_state(int nb_ports,
 						struct doca_flow_port *ports[],
-						bool is_hairpin,
+						bool is_port_fwd,
 						struct doca_dev *dev_arr[],
+						struct doca_dev_rep *dev_rep_arr[],
 						enum doca_flow_port_operation_state *states,
 						uint32_t actions_mem_size[])
 {
@@ -269,21 +348,44 @@ doca_error_t init_doca_flow_ports_with_op_state(int nb_ports,
 	enum doca_flow_port_operation_state state;
 
 	for (portid = 0; portid < nb_ports; portid++) {
-		state = states ? states[portid] : DOCA_FLOW_PORT_OPERATION_STATE_ACTIVE;
-		/* Create doca flow port */
-		result =
-			create_doca_flow_port(portid, dev_arr[portid], state, &ports[portid], actions_mem_size[portid]);
+		if (dev_rep_arr && dev_rep_arr[portid]) {
+			/* Create doca flow port */
+			result = create_doca_flow_port_representor(portid,
+								   actions_mem_size[portid],
+								   dev_rep_arr[portid],
+								   &ports[portid]);
+		} else {
+			state = states ? states[portid] : DOCA_FLOW_PORT_OPERATION_STATE_ACTIVE;
+			/* Create doca flow port */
+			result = create_doca_flow_port(portid,
+						       actions_mem_size[portid],
+						       dev_arr[portid],
+						       state,
+						       &ports[portid]);
+		}
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to start port: %s", doca_error_get_descr(result));
 			if (portid != 0)
 				stop_doca_flow_ports(portid, ports);
 			return result;
 		}
-		/* Pair ports should be done in the following order: port0 with port1, port2 with port3 etc */
-		if (!is_hairpin || !portid || !(portid % 2))
+	}
+
+	/* Pair ports should be done in the following order: port0 with port1, port2 with port3 etc */
+	if (!is_port_fwd)
+		return DOCA_SUCCESS;
+
+	for (portid = 0; portid < nb_ports; portid++) {
+		if (!portid || !(portid % 2))
 			continue;
 		/* pair odd port with previous port */
 		result = doca_flow_port_pair(ports[portid], ports[portid ^ 1]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to pair ports %u - %u", portid, portid ^ 1);
+			stop_doca_flow_ports(portid + 1, ports);
+			return result;
+		}
+		result = doca_flow_port_pair(ports[portid ^ 1], ports[portid]);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to pair ports %u - %u", portid, portid ^ 1);
 			stop_doca_flow_ports(portid + 1, ports);
@@ -295,11 +397,29 @@ doca_error_t init_doca_flow_ports_with_op_state(int nb_ports,
 
 doca_error_t init_doca_flow_ports(int nb_ports,
 				  struct doca_flow_port *ports[],
-				  bool is_hairpin,
+				  bool is_port_fwd,
 				  struct doca_dev *dev_arr[],
 				  uint32_t actions_mem_size[])
 {
-	return init_doca_flow_ports_with_op_state(nb_ports, ports, is_hairpin, dev_arr, NULL, actions_mem_size);
+	return init_doca_flow_ports_with_op_state(nb_ports, ports, is_port_fwd, dev_arr, NULL, NULL, actions_mem_size);
+}
+
+doca_error_t init_doca_flow_vnf_ports(int nb_ports, struct doca_flow_port *ports[], uint32_t actions_mem_size[])
+{
+	struct doca_dev *dev_arr[nb_ports];
+	doca_error_t result;
+	int i;
+
+	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
+	for (i = 0; i < nb_ports; i++) {
+		result = doca_dpdk_port_as_dev(i, &dev_arr[i]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get device for port %d: %s", i, doca_error_get_descr(result));
+			return result;
+		}
+	}
+
+	return init_doca_flow_ports_with_op_state(nb_ports, ports, true, dev_arr, NULL, NULL, actions_mem_size);
 }
 
 doca_error_t set_flow_pipe_cfg(struct doca_flow_pipe_cfg *cfg,
@@ -356,4 +476,263 @@ doca_error_t flow_process_entries(struct doca_flow_port *port, struct entries_st
 	}
 
 	return DOCA_SUCCESS;
+}
+
+doca_error_t flow_param_dev_callback(void *param, void *config)
+{
+	struct flow_dev_ctx *ctx = (struct flow_dev_ctx *)config;
+	struct doca_argp_device_ctx *dev_ctx = (struct doca_argp_device_ctx *)param;
+
+	if (FLOW_COMMON_PORTS_MAX <= ctx->nb_ports) {
+		DOCA_LOG_ERR("Encountered too many ports, maximal number of ports is: %d", FLOW_COMMON_PORTS_MAX);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (ctx->nb_devs == FLOW_COMMON_DEV_MAX) {
+		DOCA_LOG_ERR("Encountered too many devices, maximal number of devices is: %d", FLOW_COMMON_DEV_MAX);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	ctx->devs_manager[ctx->nb_devs].doca_dev = dev_ctx->dev;
+	if (dev_ctx->devargs != NULL)
+		ctx->devs_manager[ctx->nb_devs].dev_arg = dev_ctx->devargs;
+	else
+		ctx->devs_manager[ctx->nb_devs].dev_arg = ctx->default_dev_args;
+
+	ctx->nb_devs++;
+	ctx->nb_ports++;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Wrapper for the flow_param_dev_callback function
+ *
+ * @param [in]: input parameter
+ * @config [out]: configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t wrapped_flow_param_dev_callback(void *param, void *config)
+{
+	return flow_param_dev_callback(param, global_user_ctx_converter(config));
+}
+
+doca_error_t flow_param_rep_callback(void *param, void *config)
+{
+	struct flow_dev_ctx *ctx = (struct flow_dev_ctx *)config;
+	struct doca_argp_device_rep_ctx *rep_ctx = (struct doca_argp_device_rep_ctx *)param;
+	uint32_t dev_idx = 0;
+	bool found_dev = false;
+
+	if (FLOW_COMMON_PORTS_MAX <= ctx->nb_ports) {
+		DOCA_LOG_ERR("Encountered too many ports, maximal number of ports is: %d", FLOW_COMMON_PORTS_MAX);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	/* Store the information under the correct device index */
+	for (int i = 0; i < ctx->nb_devs && !found_dev; i++) {
+		if (ctx->devs_manager[i].doca_dev == rep_ctx->dev_ctx.dev) {
+			found_dev = true;
+			dev_idx = i;
+			break;
+		}
+	}
+
+	/* If this is the first representor for this device, we need to count the device */
+	if (!found_dev) {
+		if (ctx->nb_devs == FLOW_COMMON_DEV_MAX) {
+			DOCA_LOG_ERR("Encountered too many devices, maximal number of devices is: %d",
+				     FLOW_COMMON_DEV_MAX);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+		dev_idx = ctx->nb_devs++;
+		ctx->devs_manager[dev_idx].doca_dev = rep_ctx->dev_ctx.dev;
+		if (rep_ctx->dev_ctx.devargs != NULL)
+			ctx->devs_manager[dev_idx].dev_arg = rep_ctx->dev_ctx.devargs;
+		else
+			ctx->devs_manager[dev_idx].dev_arg = ctx->default_dev_args;
+	} else {
+		if (ctx->devs_manager[dev_idx].nb_reps == FLOW_COMMON_REPS_MAX) {
+			DOCA_LOG_ERR("Encountered too many representors for device %p, maximal number of reps is: %d",
+				     ctx->devs_manager[dev_idx].doca_dev,
+				     FLOW_COMMON_REPS_MAX);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+	}
+
+	ctx->devs_manager[dev_idx].doca_dev_rep[ctx->devs_manager[dev_idx].nb_reps++] = rep_ctx->dev_rep;
+	ctx->nb_ports++;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Wrapper for the flow_param_rep_callback function
+ *
+ * @param [in]: input parameter
+ * @config [out]: configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t wrapped_flow_param_rep_callback(void *param, void *config)
+{
+	return flow_param_rep_callback(param, global_user_ctx_converter(config));
+}
+
+doca_error_t register_flow_switch_device_params(flow_dev_ctx_from_user_ctx_t converter)
+{
+	doca_error_t result;
+	struct doca_argp_param *rep_param;
+
+	/* Start by setting the global user context converter */
+	global_user_ctx_converter = converter;
+
+	/* Create the representor parameter */
+	result = doca_argp_param_create(&rep_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create flow ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(rep_param, "r");
+	doca_argp_param_set_long_name(rep_param, "rep");
+	doca_argp_param_set_description(rep_param, "device representor");
+	doca_argp_param_set_callback(rep_param,
+				     converter == NULL ? flow_param_rep_callback : wrapped_flow_param_rep_callback);
+	doca_argp_param_set_type(rep_param, DOCA_ARGP_TYPE_DEVICE_REP);
+	doca_argp_param_set_multiplicity(rep_param);
+	result = doca_argp_register_param(rep_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register flow ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+doca_error_t register_flow_device_params(flow_dev_ctx_from_user_ctx_t converter)
+{
+	doca_error_t result;
+	struct doca_argp_param *dev_param;
+
+	/* Start by setting the global user context converter */
+	global_user_ctx_converter = converter;
+
+	/* Create the device parameter */
+	result = doca_argp_param_create(&dev_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create flow ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(dev_param, "a");
+	doca_argp_param_set_long_name(dev_param, "device");
+	doca_argp_param_set_description(dev_param, "device");
+	doca_argp_param_set_callback(dev_param,
+				     converter == NULL ? flow_param_dev_callback : wrapped_flow_param_dev_callback);
+	doca_argp_param_set_type(dev_param, DOCA_ARGP_TYPE_DEVICE);
+	doca_argp_param_set_multiplicity(dev_param);
+	result = doca_argp_register_param(dev_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register flow ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return register_flow_switch_device_params(converter);
+}
+
+doca_error_t flow_init_dpdk(int argc, char **dpdk_argv)
+{
+	char *argv[argc + 2];
+	doca_error_t result;
+
+	memcpy(argv, dpdk_argv, sizeof(argv[0]) * argc);
+	argv[argc++] = "-a";
+	argv[argc++] = "pci:00:00.0";
+
+	result = rte_eal_init(argc, argv);
+	if (result < 0) {
+		DOCA_LOG_ERR("EAL initialization failed");
+		return DOCA_ERROR_DRIVER;
+	}
+	return DOCA_SUCCESS;
+}
+
+doca_error_t init_doca_flow_devs(struct flow_dev_ctx *ctx)
+{
+	doca_error_t result;
+	int i;
+
+	for (i = 0; i < ctx->nb_devs; i++) {
+		/* If we have a required capability callback, we need to check if the device supports it */
+		if (ctx->port_cap != NULL) {
+			result = ctx->port_cap(doca_dev_as_devinfo(ctx->devs_manager[i].doca_dev));
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Device %p does not support the required capability: %s",
+					     ctx->devs_manager[i].doca_dev,
+					     doca_error_get_descr(result));
+				goto quit;
+			}
+		}
+
+		/* We need a different probing based on the existence of representors */
+		if (ctx->devs_manager[i].nb_reps > 0) {
+			result = doca_dpdk_port_probe_with_representors(ctx->devs_manager[i].doca_dev,
+									ctx->devs_manager[i].dev_arg,
+									ctx->devs_manager[i].doca_dev_rep,
+									ctx->devs_manager[i].nb_reps);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to probe DOCA device and representors: %s",
+					     doca_error_get_descr(result));
+				goto quit;
+			}
+			continue;
+		} else if (ctx->devs_manager[i].dev_arg != NULL) {
+			result = doca_dpdk_port_probe(ctx->devs_manager[i].doca_dev, ctx->devs_manager[i].dev_arg);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to probe DOCA device: %s", doca_error_get_descr(result));
+				goto quit;
+			}
+			/* Fallthrough*/
+		} else {
+			result = doca_dpdk_port_probe(ctx->devs_manager[i].doca_dev, "");
+			/* Fallthrough*/
+		}
+
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to probe DOCA device: %s", doca_error_get_descr(result));
+			goto quit;
+		}
+	}
+
+quit:
+	if (result != DOCA_SUCCESS)
+		destroy_doca_flow_devs(ctx);
+	return result;
+}
+
+doca_error_t close_doca_dev_reps(struct doca_dev_rep *dev_reps[], uint16_t nb_reps)
+{
+	doca_error_t result, retval = DOCA_SUCCESS;
+
+	for (int i = 0; i < nb_reps; i++) {
+		result = doca_dev_rep_close(dev_reps[i]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to close doca dev rep: %p: %s", dev_reps[i], doca_error_get_descr(result));
+			DOCA_ERROR_PROPAGATE(retval, result);
+		}
+	}
+
+	return retval;
+}
+
+void destroy_doca_flow_devs(struct flow_dev_ctx *ctx)
+{
+	int i;
+
+	for (i = 0; i < ctx->nb_devs; i++) {
+		if (ctx->devs_manager[i].doca_dev) {
+			close_doca_dev_reps(ctx->devs_manager[i].doca_dev_rep, ctx->devs_manager[i].nb_reps);
+			ctx->devs_manager[i].nb_reps = 0;
+			doca_dev_close(ctx->devs_manager[i].doca_dev);
+			ctx->devs_manager[i].doca_dev = NULL;
+		}
+	}
 }

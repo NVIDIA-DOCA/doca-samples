@@ -1,0 +1,74 @@
+#
+# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+number_of_ports: 6
+mode_args:
+  - switch
+ports_description:
+  port_0: doca_dev
+  port_1: doca_rep_dev
+  port_2: doca_rep_dev
+  port_3: doca_dev
+  port_4: doca_rep_dev
+  port_5: doca_rep_dev
+description: "
+      This sample demonstrates how to use the port operation state mechanism for a hot upgrade use case. It shows how to configure the state of a port during initialization and how to modify the state after the port has already been started.
+      Command-line Arguments
+      The sample allows users to specify the operation state of the instance using the --state <value> argument.
+      The relevant values are:
+      0 for DOCA_FLOW_PORT_OPERATION_STATE_ACTIVE
+      1 for DOCA_FLOW_PORT_OPERATION_STATE_ACTIVE_READY_TO_SWAP
+      2 for DOCA_FLOW_PORT_OPERATION_STATE_STANDBY
+      - Sample Logic -
+      1. Initialize DOCA Flow
+        Indicate mode_args='switch' in the doca_flow_cfg structure.
+      2. Start DOCA Flow ports
+        Two physical ports and two representors each (totaling six ports) are started.
+        Both switch ports are configured with DOCA_FLOW_PORT_OPERATION_STATE_UNCONNECTED state.
+      3. Configure each switch port
+        Build a basic pipe with a miss counter matching on outer L3 type (specific IPv4) and outer L4 type (changeable).
+        Add two entries to the created pipe with counters, each forwarding packets to a different port representor.
+        Modify the port operation state from DOCA_FLOW_PORT_OPERATION_STATE_UNCONNECTED to the required state.
+      4. Traffic handling
+        Wait for traffic until a SIGQUIT signal (Ctrl+) is received.
+        While traffic is being received, traffic statistics are printed to stdout.
+
+      - Hot Upgrade Use Case -
+      1. Create two different instances in separate windows with different states.
+      --------------------------------------------------------------------------------------------------------------------------------------------------
+      DPDK prevents users from creating two primary instances. To avoid this limitation, use the --file-prefix EAL argument.
+      - Example for the 'active' instance
+          /tmp/build/samples/doca_flow_switch_hot_upgrade -- -r pci/08:00.0,pf0vf[0-1] -r pci/08:00.1,pf1vf[0-1] -l 70
+      - Example for the 'stand-by' instance
+          /tmp/build/samples/doca_flow_switch_hot_upgrade --file-prefix standby -- -r pci/08:00.0,pf0vf[0-1] -r pci/08:00.1,pf1vf[0-1] -l 70 --state 2
+      ---------------------------------------------------------------------------------------------------------------------------------------------------
+      2. Close the active process by typing Ctrl+\ while traffic is being received. The traffic statistics will start printing in the standby instance.
+      3. Restart the first instance. The traffic statistics will stop printing in the standby instance and start printing in the active instance again.
+
+      - Swap Use Case -
+      When both instances are running, the swap use case can be demonstrated by typing Ctrl+C
+        Typing Ctrl+C in the active instance changes its state to DOCA_FLOW_PORT_OPERATION_STATE_ACTIVE_READY_TO_SWAP
+        Typing Ctrl+C in the standby instance changes its state to DOCA_FLOW_PORT_OPERATION_STATE_ACTIVE
+        Typing Ctrl+C in the active instance again changes its state to DOCA_FLOW_PORT_OPERATION_STATE_STANDBY
+"

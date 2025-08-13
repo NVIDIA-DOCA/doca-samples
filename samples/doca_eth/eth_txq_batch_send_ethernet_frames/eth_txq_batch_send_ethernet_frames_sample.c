@@ -48,7 +48,7 @@ DOCA_LOG_REGISTER(ETH_TXQ_BATCH_SEND_ETHERNET_FRAMES);
 #define TASK_BATCHES_NUM 1		  /* Task batches number */
 #define REGULAR_PKT_SIZE 1500		  /* Size of the packets in send task batch */
 #define SEND_TASK_BATCH_USER_DATA 0x43210 /* User data for send task batch */
-#define ETHER_TYPE_IPV4 0x0800		  /* IPV4 type */
+#define UNKNOWN_ETHER_TYPE_IPV4 0x88b5	  /* Unknown IPV4 type */
 
 struct eth_txq_batch_send_sample_objects {
 	struct eth_core_resources core_resources;	  /* A struct to hold ETH core resources */
@@ -302,7 +302,8 @@ static doca_error_t create_eth_txq_packet_buffers(uint8_t *dest_mac_addr,
 		payload = (uint8_t *)(eth_hdr + 1);
 		memcpy(&(eth_hdr->src_addr), state->src_mac_addr, DOCA_DEVINFO_MAC_ADDR_SIZE);
 		memcpy(&(eth_hdr->dst_addr), dest_mac_addr, DOCA_DEVINFO_MAC_ADDR_SIZE);
-		eth_hdr->ether_type = htobe16(ETHER_TYPE_IPV4);
+		/* Set unknown ether type to allow a packet with only ethernet header */
+		eth_hdr->ether_type = htobe16(UNKNOWN_ETHER_TYPE_IPV4);
 		memset(payload, i, REGULAR_PKT_SIZE - sizeof(struct ether_hdr));
 	}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -63,9 +63,9 @@ std::string io_message_to_string(char const *buf)
 		break;
 	case io_message_type::read:
 	case io_message_type::write:
-		s += ", address: " + to_string(io_message_view::get_io_address(buf)) +
-		     ", length: " + to_string(io_message_view::get_io_size(buf)) +
-		     ", remote_offset: " + to_string(io_message_view::get_remote_offset(buf));
+		s += ", storage_offset: " + to_string(io_message_view::get_storage_offset(buf)) +
+		     ", requester_offset: " + to_string(io_message_view::get_requester_offset(buf)) +
+		     ", length: " + to_string(io_message_view::get_io_size(buf));
 		break;
 	default:
 		break;

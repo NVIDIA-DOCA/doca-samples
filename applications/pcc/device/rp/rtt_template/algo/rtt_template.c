@@ -196,15 +196,7 @@ static inline uint32_t algorithm_core(cc_ctxt_rtt_template_t *ccctx,
 		if (rtt > param[RTT_TEMPLATE_BASE_RTT])
 			cur_rate = doca_pcc_dev_fxp_mult(is_high_util ? HIGH_UTIL_DEC_FACTOR : DEC_FACTOR, cur_rate);
 		else {
-#ifdef DOCA_PCC_NP_RX_RATE
-			if (norm_np_rx_rate < NP_RX_RATE_TH) {
-				uint32_t inc_factor = doca_pcc_dev_fxp_recip(norm_np_rx_rate);
-				cur_rate = doca_pcc_dev_fxp_mult(inc_factor, cur_rate);
-			} else
-				cur_rate += param[RTT_TEMPLATE_AI];
-#else
 			cur_rate += param[RTT_TEMPLATE_AI];
-#endif
 		}
 	}
 
@@ -303,12 +295,7 @@ static inline void rtt_template_handle_roce_rtt(doca_pcc_dev_event_t *event,
 	ccctx->abort_cnt = 0;
 
 	/* RTT calculation */
-#ifdef DOCA_PCC_NP_RX_RATE
-	unsigned char *rtt_raw_data = doca_pcc_dev_get_rtt_raw_data(event);
-	uint32_t start_rtt = *((uint32_t *)(rtt_raw_data));
-#else
 	uint32_t start_rtt = doca_pcc_dev_get_rtt_req_send_timestamp(event);
-#endif
 #ifdef TIME_SYNC
 	/* if there is a time sync between the nodes we can get one way delay */
 	uint32_t end_rtt = doca_pcc_dev_get_rtt_req_recv_timestamp(event);
@@ -330,33 +317,7 @@ static inline void rtt_template_handle_roce_rtt(doca_pcc_dev_event_t *event,
 	uint8_t is_high_tx_util = 0;
 #endif
 
-#ifdef DOCA_PCC_NP_RX_RATE
 	uint32_t norm_np_rx_rate = (1 << 16);
-	uint32_t np_rx_bytes = *((uint32_t *)(rtt_raw_data + 4));
-	uint32_t delta_np_rx_bytes = np_rx_bytes - ccctx->last_np_rx_bytes;
-	if (ccctx->last_np_rx_bytes > np_rx_bytes) {
-		delta_np_rx_bytes += FF32BIT;
-	}
-	ccctx->last_np_rx_bytes = np_rx_bytes;
-	uint32_t delta_np_rx_256bytes = delta_np_rx_bytes >> 8;
-
-	uint32_t np_rx_bytes_timestamp_us = *((uint32_t *)(rtt_raw_data + 8));
-	uint32_t delta_np_rx_bytes_timestamp_us = np_rx_bytes_timestamp_us - ccctx->last_np_rx_bytes_timestamp_us;
-	if (ccctx->last_np_rx_bytes_timestamp_us > np_rx_bytes_timestamp_us) {
-		delta_np_rx_bytes_timestamp_us += FF32BIT;
-	}
-	ccctx->last_np_rx_bytes_timestamp_us = np_rx_bytes_timestamp_us;
-
-	// np_rate unit is MBps
-	uint32_t np_rx_rate =
-		doca_pcc_dev_mult(delta_np_rx_256bytes, doca_pcc_dev_fxp_recip(delta_np_rx_bytes_timestamp_us)) >>
-		8; // fxp16 Gbps
-
-	if (np_rx_rate < BW_MB_DEFAULT_FXP16)
-		norm_np_rx_rate = doca_pcc_dev_mult(np_rx_rate, doca_pcc_dev_fxp_recip(BW_MB_DEFAULT)) >> 32;
-#else
-	uint32_t norm_np_rx_rate = (1 << 16);
-#endif
 
 	cur_rate = algorithm_core(ccctx, rtt, cur_rate, param, is_high_tx_util, norm_np_rx_rate);
 

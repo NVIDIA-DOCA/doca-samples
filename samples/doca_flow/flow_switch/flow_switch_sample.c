@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,12 +26,11 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <rte_byteorder.h>
-
 #include <doca_log.h>
 #include <doca_flow.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
+#include <flow_switch_common.h>
 
 DOCA_LOG_REGISTER(FLOW_SWITCH);
 
@@ -146,8 +145,8 @@ static doca_error_t add_switch_pipe_entries(int switch_num, struct doca_flow_pip
 	for (entry_index = 0; entry_index < NB_ENTRIES; entry_index++) {
 		dst_ip_addr = BE_IPV4_ADDR(8, 8, 8, 8 + entry_base + entry_index);
 		src_ip_addr = BE_IPV4_ADDR(1, 2, 3, 4 + entry_base + entry_index);
-		dst_port = rte_cpu_to_be_16(80);
-		src_port = rte_cpu_to_be_16(1234);
+		dst_port = DOCA_HTOBE16(80);
+		src_port = DOCA_HTOBE16(1234);
 
 		match.outer.ip4.dst_ip = dst_ip_addr;
 		match.outer.ip4.src_ip = src_ip_addr;
@@ -180,21 +179,21 @@ static doca_error_t add_switch_pipe_entries(int switch_num, struct doca_flow_pip
 
 	return DOCA_SUCCESS;
 }
+
 /*
  * Run flow_switch sample
  *
  * @nb_queues [in]: number of queues the sample will use
  * @nb_ports [in]: number of ports the sample will use
- * @dev_main [in]: the main doca proxy port
- * @dev_sec [in]: the second doca proxy port
+ * @devs_manager [in]: Array of DOCA devices for the switch ports
+ * @nb_devs [in]: Amount of eswtich manager dev bundles in the switch_manager_devs array
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t flow_switch(int nb_queues, int nb_ports, struct doca_dev *dev_main, struct doca_dev *dev_sec)
+doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_devs_manager devs_manager[], uint16_t nb_devs)
 {
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *pipe1;
 	struct doca_flow_pipe *pipe2;
@@ -212,11 +211,8 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct doca_dev *dev_main,
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = dev_main;
-	dev_arr[3] = dev_sec;
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, NB_ENTRIES));
-	result = init_doca_flow_ports(nb_ports, ports, false /* is_hairpin */, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(NB_ENTRIES));
+	result = init_doca_flow_switch_ports(devs_manager, nb_devs, ports, nb_ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

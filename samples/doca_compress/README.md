@@ -2,7 +2,7 @@
 
 The following samples illustrate how to use the DOCA Compress API to compress and decompress files.
 
-> **Note:**  
+> **Note:**
 > DOCA Compress handles payload only unless the `zc` flag is used (available only for deflate samples). In that case, a zlib header and trailer are added in compression, and it is considered part of the input when decompressing.
 
 ### Info
@@ -24,7 +24,7 @@ meson /tmp/build
 ninja -C /tmp/build
 ```
 
-> **Note:**  
+> **Note:**
 > The binary `doca_<sample_name>` is created under `/tmp/build/`.
 
 3. Sample Usage (e.g., `doca_compress_deflate`):
@@ -39,7 +39,6 @@ DOCA Flags:
   -v, --version                     Print program version information
   -l, --log-level                   Set the (numeric) log level for the program <10=DISABLE, 20=CRITICAL, 30=ERROR, 40=WARNING, 50=INFO, 60=DEBUG, 70=TRACE>
   --sdk-log-level                   Set the SDK (numeric) log level for the program <10=DISABLE, 20=CRITICAL, 30=ERROR, 40=WARNING, 50=INFO, 60=DEBUG, 70=TRACE>
-  -j, --json <path>                 Parse all command flags from an input JSON file
 
 Program Flags:
   -p, --pci-addr                    DOCA device PCI device address

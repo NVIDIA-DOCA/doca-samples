@@ -114,47 +114,22 @@ public:
 	 * many cache evictions as possible.
 	 */
 	struct alignas(storage::cache_line_size) hot_data {
-		doca_pe *pe;
-		uint64_t pe_hit_count;
-		uint64_t pe_miss_count;
-		char *remote_memory_start_addr;
-		char *local_memory_start_addr;
-		uint64_t completed_transaction_count;
-		uint32_t in_flight_transaction_count;
-		uint32_t core_idx;
-		std::atomic_bool run_flag;
-		bool error_flag;
-
-		/*
-		 * Default constructor
-		 */
-		hot_data();
-
-		/*
-		 * Deleted copy constructor
-		 */
-		hot_data(hot_data const &) = delete;
-
-		/*
-		 * Move constructor
-		 * @other [in]: Object to move from
-		 */
-		hot_data(hot_data &&other) noexcept;
-
-		/*
-		 * Deleted copy assignment operator
-		 */
-		hot_data &operator=(hot_data const &) = delete;
-
-		/*
-		 * Move assignment operator
-		 * @other [in]: Object to move from
-		 * @return: reference to moved assigned object
-		 */
-		hot_data &operator=(hot_data &&other) noexcept;
+		doca_pe *pe = nullptr;
+		doca_buf_inventory *buf_inv = nullptr;
+		doca_mmap *local_mmap = nullptr;
+		doca_mmap *remote_mmap = nullptr;
+		uint64_t pe_hit_count = 0;
+		uint64_t pe_miss_count = 0;
+		char *remote_memory_start_addr = nullptr;
+		char *local_memory_start_addr = nullptr;
+		uint64_t completed_transaction_count = 0;
+		uint32_t in_flight_transaction_count = 0;
+		uint32_t core_idx = 0;
+		std::atomic_bool run_flag = false;
+		bool error_flag = false;
 	};
-	static_assert(sizeof(target_rdma_worker::hot_data) == storage::cache_line_size,
-		      "Expected target_rdma_worker::hot_data to occupy one cache line");
+	static_assert(sizeof(target_rdma_worker::hot_data) == storage::cache_line_size * 2,
+		      "Expected target_rdma_worker::hot_data to occupy two cache lines");
 
 	/*
 	 * Destructor
@@ -162,40 +137,14 @@ public:
 	~target_rdma_worker();
 
 	/*
-	 * Deleted default constructor
-	 */
-	target_rdma_worker() = delete;
-	/*
-	 * Constructor
+	 * Allocate and prepare resources for this object
+	 *
 	 * @dev [in]: Device to use
 	 * @task_count [in]: Number of tasks to use
-	 * @remote_mmap [in]: Reference to remote (client) mmap
-	 * @local_mmap [in]: Reference to local (storage) mmap
+	 * @remote_mmap [in]: Remote memory mmap
+	 * @local_mmap [in]: Local memory mmap
 	 */
-	target_rdma_worker(doca_dev *dev, uint32_t task_count, doca_mmap *remote_mmap, doca_mmap *local_mmap);
-
-	/*
-	 * Deleted copy constructor
-	 */
-	target_rdma_worker(target_rdma_worker const &) = delete;
-
-	/*
-	 * Move constructor
-	 * @other [in]: Object to move from
-	 */
-	[[maybe_unused]] target_rdma_worker(target_rdma_worker &&other) noexcept;
-
-	/*
-	 * Deleted copy assignment operator
-	 */
-	target_rdma_worker &operator=(target_rdma_worker const &) = delete;
-
-	/*
-	 * Move assignment operator
-	 * @other [in]: Object to move from
-	 * @return: reference to moved assigned object
-	 */
-	[[maybe_unused]] target_rdma_worker &operator=(target_rdma_worker &&other) noexcept;
+	void init(doca_dev *dev, uint32_t task_count, doca_mmap *remote_mmap, doca_mmap *local_mmap);
 
 	/*
 	 * Create a RDMA connection
@@ -248,28 +197,21 @@ public:
 	[[nodiscard]] hot_data const &get_hot_data() const noexcept;
 
 private:
-	hot_data m_hot_data;
-	uint8_t *m_io_message_region;
-	doca_mmap *m_io_message_mmap;
-	doca_buf_inventory *m_buf_inv;
-	std::vector<doca_buf *> m_bufs;
-	storage::rdma_conn_pair m_rdma_ctrl_ctx;
-	storage::rdma_conn_pair m_rdma_data_ctx;
-	doca_mmap *m_local_mmap;
-	doca_mmap *m_remote_mmap;
-	uint32_t m_task_count;
-	uint32_t m_transfer_contexts_size;
-	transfer_context *m_transfer_contexts;
-	std::vector<doca_task *> m_ctrl_tasks;
-	std::vector<doca_task *> m_data_tasks;
-	std::thread m_thread;
-
-	/*
-	 * Allocate and prepare resources for this object
-	 *
-	 * @dev [in]: Device to use
-	 */
-	void init(doca_dev *dev);
+	hot_data m_hot_data = {};
+	uint8_t *m_io_message_region = nullptr;
+	doca_mmap *m_io_message_mmap = nullptr;
+	doca_buf_inventory *m_buf_inv = nullptr;
+	std::vector<doca_buf *> m_bufs = {};
+	storage::rdma_conn_pair m_rdma_ctrl_ctx = {};
+	storage::rdma_conn_pair m_rdma_data_ctx = {};
+	doca_mmap *m_local_mmap = nullptr;
+	doca_mmap *m_remote_mmap = nullptr;
+	uint32_t m_task_count = 0;
+	uint32_t m_transfer_contexts_size = 0;
+	transfer_context *m_transfer_contexts = nullptr;
+	std::vector<doca_task *> m_ctrl_tasks = {};
+	std::vector<doca_task *> m_data_tasks = {};
+	std::thread m_thread = {};
 
 	/*
 	 * Release all resources held by this object
@@ -697,56 +639,6 @@ target_rdma_app_configuration parse_target_rdma_app_cli_args(int argc, char **ar
 	return config;
 }
 
-target_rdma_worker::hot_data::hot_data()
-	: pe{nullptr},
-	  pe_hit_count{0},
-	  pe_miss_count{0},
-	  remote_memory_start_addr{nullptr},
-	  local_memory_start_addr{nullptr},
-	  completed_transaction_count{0},
-	  in_flight_transaction_count{0},
-	  core_idx{0},
-	  run_flag{false},
-	  error_flag{false}
-{
-}
-
-target_rdma_worker::hot_data::hot_data(hot_data &&other) noexcept
-	: pe{other.pe},
-	  pe_hit_count{other.pe_hit_count},
-	  pe_miss_count{other.pe_miss_count},
-	  remote_memory_start_addr{other.remote_memory_start_addr},
-	  local_memory_start_addr{other.local_memory_start_addr},
-	  completed_transaction_count{other.completed_transaction_count},
-	  in_flight_transaction_count{other.in_flight_transaction_count},
-	  core_idx{other.core_idx},
-	  run_flag{other.run_flag.load()},
-	  error_flag{other.error_flag}
-{
-	other.pe = nullptr;
-}
-
-target_rdma_worker::hot_data &target_rdma_worker::hot_data::operator=(hot_data &&other) noexcept
-{
-	if (std::addressof(other) == this)
-		return *this;
-
-	pe = other.pe;
-	pe_hit_count = other.pe_hit_count;
-	pe_miss_count = other.pe_miss_count;
-	remote_memory_start_addr = other.remote_memory_start_addr;
-	local_memory_start_addr = other.local_memory_start_addr;
-	completed_transaction_count = other.completed_transaction_count;
-	in_flight_transaction_count = other.in_flight_transaction_count;
-	core_idx = other.core_idx;
-	run_flag = other.run_flag.load();
-	error_flag = other.error_flag;
-
-	other.pe = nullptr;
-
-	return *this;
-}
-
 target_rdma_worker::~target_rdma_worker()
 {
 	if (m_thread.joinable()) {
@@ -758,309 +650,16 @@ target_rdma_worker::~target_rdma_worker()
 	cleanup();
 }
 
-target_rdma_worker::target_rdma_worker(doca_dev *dev, uint32_t task_count, doca_mmap *remote_mmap, doca_mmap *local_mmap)
-	: m_hot_data{},
-	  m_io_message_region{nullptr},
-	  m_io_message_mmap{nullptr},
-	  m_buf_inv{nullptr},
-	  m_bufs{},
-	  m_rdma_ctrl_ctx{},
-	  m_rdma_data_ctx{},
-	  m_local_mmap{local_mmap},
-	  m_remote_mmap{remote_mmap},
-	  m_task_count{task_count},
-	  m_transfer_contexts_size{0},
-	  m_transfer_contexts{nullptr},
-	  m_ctrl_tasks{},
-	  m_data_tasks{},
-	  m_thread{}
-{
-	try {
-		init(dev);
-	} catch (storage::runtime_error const &) {
-		cleanup();
-		throw;
-	}
-}
-
-target_rdma_worker::target_rdma_worker(target_rdma_worker &&other) noexcept
-	: m_hot_data{std::move(other.m_hot_data)},
-	  m_io_message_region{other.m_io_message_region},
-	  m_io_message_mmap{other.m_io_message_mmap},
-	  m_buf_inv{other.m_buf_inv},
-	  m_bufs{std::move(other.m_bufs)},
-	  m_rdma_ctrl_ctx{other.m_rdma_ctrl_ctx},
-	  m_rdma_data_ctx{other.m_rdma_data_ctx},
-	  m_local_mmap{other.m_local_mmap},
-	  m_remote_mmap{other.m_remote_mmap},
-	  m_task_count{other.m_task_count},
-	  m_transfer_contexts_size{other.m_transfer_contexts_size},
-	  m_transfer_contexts{other.m_transfer_contexts},
-	  m_ctrl_tasks{std::move(other.m_ctrl_tasks)},
-	  m_data_tasks{std::move(other.m_data_tasks)},
-	  m_thread{std::move(other.m_thread)}
-{
-	other.m_io_message_region = nullptr;
-	other.m_io_message_mmap = nullptr;
-	other.m_buf_inv = nullptr;
-	other.m_rdma_ctrl_ctx = {};
-	other.m_rdma_data_ctx = {};
-	other.m_transfer_contexts = nullptr;
-}
-
-target_rdma_worker &target_rdma_worker::operator=(target_rdma_worker &&other) noexcept
-{
-	if (std::addressof(other) == this)
-		return *this;
-
-	m_hot_data = std::move(other.m_hot_data);
-	m_io_message_region = other.m_io_message_region;
-	m_io_message_mmap = other.m_io_message_mmap;
-	m_buf_inv = other.m_buf_inv;
-	m_bufs = std::move(other.m_bufs);
-	m_rdma_ctrl_ctx = other.m_rdma_ctrl_ctx;
-	m_rdma_data_ctx = other.m_rdma_data_ctx;
-	m_local_mmap = other.m_local_mmap;
-	m_remote_mmap = other.m_remote_mmap;
-	m_task_count = other.m_task_count;
-	m_transfer_contexts_size = other.m_transfer_contexts_size;
-	m_transfer_contexts = other.m_transfer_contexts;
-	m_ctrl_tasks = std::move(other.m_ctrl_tasks);
-	m_data_tasks = std::move(other.m_data_tasks);
-	m_thread = std::move(other.m_thread);
-
-	other.m_io_message_region = nullptr;
-	other.m_io_message_mmap = nullptr;
-	other.m_buf_inv = nullptr;
-	other.m_rdma_ctrl_ctx = {};
-	other.m_rdma_data_ctx = {};
-	other.m_transfer_contexts = nullptr;
-
-	return *this;
-}
-
-std::vector<uint8_t> target_rdma_worker::create_rdma_connection(storage::control::rdma_connection_role role,
-								std::vector<uint8_t> const &remote_conn_details)
-{
-	auto &rdma_pair = role == storage::control::rdma_connection_role::io_data ? m_rdma_data_ctx : m_rdma_ctrl_ctx;
-
-	auto local_connection_details = [this, &rdma_pair]() {
-		uint8_t const *blob = nullptr;
-		size_t blob_size = 0;
-
-		auto const ret = doca_rdma_export(rdma_pair.rdma,
-						  reinterpret_cast<void const **>(&blob),
-						  &blob_size,
-						  std::addressof(rdma_pair.conn));
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Core: %u RDMA export failed: %s", m_hot_data.core_idx, doca_error_get_name(ret));
-			throw storage::runtime_error{ret, "Failed to export rdma connection"};
-		}
-		return std::vector<uint8_t>{blob, blob + blob_size};
-	}();
-
-	auto const ret = doca_rdma_connect(rdma_pair.rdma,
-					   remote_conn_details.data(),
-					   remote_conn_details.size(),
-					   rdma_pair.conn);
-	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Core: %u RDMA connect failed: %s", m_hot_data.core_idx, doca_error_get_name(ret));
-		throw storage::runtime_error{ret, "Failed to connect to rdma"};
-	}
-
-	return local_connection_details;
-}
-
-doca_error_t target_rdma_worker::get_rdma_connection_state() const noexcept
-{
-	doca_error_t ret;
-	doca_ctx_states rdma_state;
-	bool ctrl_connected = false;
-	bool data_connected = false;
-
-	ret = doca_ctx_get_state(doca_rdma_as_ctx(m_rdma_ctrl_ctx.rdma), &rdma_state);
-	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query rdma context state: %s", doca_error_get_name(ret));
-		return ret;
-	} else if (rdma_state == DOCA_CTX_STATE_RUNNING) {
-		ctrl_connected = true;
-	} else {
-		static_cast<void>(doca_pe_progress(m_hot_data.pe));
-	}
-
-	ret = doca_ctx_get_state(doca_rdma_as_ctx(m_rdma_data_ctx.rdma), &rdma_state);
-	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query rdma context state: %s", doca_error_get_name(ret));
-		return ret;
-	} else if (rdma_state == DOCA_CTX_STATE_RUNNING) {
-		data_connected = true;
-	} else {
-		static_cast<void>(doca_pe_progress(m_hot_data.pe));
-	}
-
-	return ctrl_connected && data_connected ? DOCA_SUCCESS : DOCA_ERROR_IN_PROGRESS;
-}
-
-void target_rdma_worker::stop_processing(void) noexcept
-{
-	m_hot_data.run_flag = false;
-	if (m_thread.joinable()) {
-		m_thread.join();
-	}
-}
-
-void target_rdma_worker::prepare_and_submit_tasks(void)
-{
-	doca_error_t ret;
-	uint8_t *message_buffer_addr = m_io_message_region;
-	size_t local_memory_size = 0;
-	size_t remote_memory_size = 0;
-	static_cast<void>(doca_mmap_get_memrange(m_local_mmap,
-						 reinterpret_cast<void **>(&m_hot_data.local_memory_start_addr),
-						 &local_memory_size));
-	static_cast<void>(doca_mmap_get_memrange(m_remote_mmap,
-						 reinterpret_cast<void **>(&m_hot_data.remote_memory_start_addr),
-						 &remote_memory_size));
-
-	if (remote_memory_size < local_memory_size) {
-		throw storage::runtime_error{DOCA_ERROR_INVALID_VALUE,
-					     "Unable to start storage, remote memory region is to small(" +
-						     std::to_string(remote_memory_size) +
-						     " bytes) This storage instance requires it to be at least: " +
-						     std::to_string(local_memory_size) + " bytes"};
-	}
-	if (local_memory_size != remote_memory_size) {}
-
-	std::vector<doca_task *> request_tasks;
-	request_tasks.reserve(m_task_count);
-	m_ctrl_tasks.reserve(m_task_count * 2);
-	m_data_tasks.reserve(m_task_count * 2);
-	m_bufs.reserve(m_task_count * 3);
-
-	m_transfer_contexts = storage::make_aligned<transfer_context>{}.object_array(m_task_count);
-
-	for (uint32_t ii = 0; ii != m_task_count; ++ii) {
-		doca_buf *message_buf;
-
-		ret = doca_buf_inventory_buf_get_by_addr(m_buf_inv,
-							 m_io_message_mmap,
-							 message_buffer_addr,
-							 storage::size_of_io_message,
-							 &message_buf);
-		if (ret != DOCA_SUCCESS) {
-			throw storage::runtime_error{ret, "Failed to allocate io_message doca_buf"};
-		}
-
-		m_bufs.push_back(message_buf);
-		message_buffer_addr += storage::size_of_io_message;
-
-		ret = doca_buf_inventory_buf_get_by_addr(m_buf_inv,
-							 m_local_mmap,
-							 m_hot_data.local_memory_start_addr,
-							 local_memory_size,
-							 std::addressof(m_transfer_contexts[ii].storage_buf));
-		if (ret != DOCA_SUCCESS) {
-			throw storage::runtime_error{ret, "Failed to allocate local storage doca_buf"};
-		}
-
-		m_bufs.push_back(m_transfer_contexts[ii].storage_buf);
-
-		ret = doca_buf_inventory_buf_get_by_addr(m_buf_inv,
-							 m_remote_mmap,
-							 m_hot_data.remote_memory_start_addr,
-							 remote_memory_size,
-							 std::addressof(m_transfer_contexts[ii].host_buf));
-		if (ret != DOCA_SUCCESS) {
-			throw storage::runtime_error{ret, "Failed to allocate remote storage doca_buf"};
-		}
-
-		m_bufs.push_back(m_transfer_contexts[ii].host_buf);
-
-		doca_rdma_task_receive *request_task = nullptr;
-		ret = doca_rdma_task_receive_allocate_init(m_rdma_ctrl_ctx.rdma,
-							   message_buf,
-							   doca_data{.ptr = std::addressof(m_transfer_contexts[ii])},
-							   &request_task);
-		if (ret != DOCA_SUCCESS) {
-			throw storage::runtime_error{ret, "Failed to allocate doca_rdma_task_receive"};
-		}
-		m_ctrl_tasks.push_back(doca_rdma_task_receive_as_task(request_task));
-		request_tasks.push_back(doca_rdma_task_receive_as_task(request_task));
-
-		doca_rdma_task_send *response_task = nullptr;
-		ret = doca_rdma_task_send_allocate_init(m_rdma_ctrl_ctx.rdma,
-							m_rdma_ctrl_ctx.conn,
-							message_buf,
-							doca_data{.ptr = request_task},
-							&response_task);
-		if (ret != DOCA_SUCCESS) {
-			throw storage::runtime_error{ret, "Failed to allocate doca_rdma_task_send"};
-		}
-		m_ctrl_tasks.push_back(doca_rdma_task_send_as_task(response_task));
-
-		ret = doca_rdma_task_write_allocate_init(m_rdma_data_ctx.rdma,
-							 m_rdma_data_ctx.conn,
-							 m_transfer_contexts[ii].storage_buf,
-							 m_transfer_contexts[ii].host_buf,
-							 doca_data{.ptr = response_task},
-							 std::addressof(m_transfer_contexts[ii].write_task));
-		if (ret != DOCA_SUCCESS) {
-			throw storage::runtime_error{ret, "Failed to allocate doca_rdma_task_write"};
-		}
-		m_data_tasks.push_back(doca_rdma_task_write_as_task(m_transfer_contexts[ii].write_task));
-
-		ret = doca_rdma_task_read_allocate_init(m_rdma_data_ctx.rdma,
-							m_rdma_data_ctx.conn,
-							m_transfer_contexts[ii].host_buf,
-							m_transfer_contexts[ii].storage_buf,
-							doca_data{.ptr = response_task},
-							std::addressof(m_transfer_contexts[ii].read_task));
-		if (ret != DOCA_SUCCESS) {
-			throw storage::runtime_error{ret, "Failed to allocate doca_rdma_task_read"};
-		}
-		m_data_tasks.push_back(doca_rdma_task_read_as_task(m_transfer_contexts[ii].read_task));
-	}
-
-	for (auto *task : request_tasks) {
-		ret = doca_task_submit(task);
-		if (ret != DOCA_SUCCESS) {
-			throw storage::runtime_error{ret, "Failed to allocate doca_rdma_task_read"};
-		}
-	}
-}
-
-void target_rdma_worker::prepare_thread_proc(uint32_t core_id)
-{
-	m_thread = std::thread{[this]() {
-		try {
-			thread_proc();
-		} catch (std::exception const &ex) {
-			DOCA_LOG_ERR("Core: %u Exception: %s", m_hot_data.core_idx, ex.what());
-			m_hot_data.error_flag = true;
-			m_hot_data.run_flag = false;
-		}
-	}};
-	m_hot_data.core_idx = core_id;
-	storage::set_thread_affinity(m_thread, m_hot_data.core_idx);
-}
-
-void target_rdma_worker::start_thread_proc()
-{
-	m_hot_data.run_flag = true;
-}
-
-target_rdma_worker::hot_data const &target_rdma_worker::get_hot_data(void) const noexcept
-{
-	return m_hot_data;
-}
-
-void target_rdma_worker::init(doca_dev *dev)
+void target_rdma_worker::init(doca_dev *dev, uint32_t task_count, doca_mmap *remote_mmap, doca_mmap *local_mmap)
 {
 	doca_error_t ret;
 	auto const page_size = storage::get_system_page_size();
 
-	auto const raw_io_messages_size = m_task_count * storage::size_of_io_message * 2;
+	m_task_count = task_count;
+	m_remote_mmap = remote_mmap;
+	m_local_mmap = local_mmap;
 
+	auto const raw_io_messages_size = m_task_count * storage::size_of_io_message * 2;
 	m_io_message_region = static_cast<uint8_t *>(
 		storage::aligned_alloc(page_size, storage::aligned_size(page_size, raw_io_messages_size)));
 	if (m_io_message_region == nullptr) {
@@ -1144,6 +743,211 @@ void target_rdma_worker::init(doca_dev *dev)
 	}
 }
 
+std::vector<uint8_t> target_rdma_worker::create_rdma_connection(storage::control::rdma_connection_role role,
+								std::vector<uint8_t> const &remote_conn_details)
+{
+	auto &rdma_pair = role == storage::control::rdma_connection_role::io_data ? m_rdma_data_ctx : m_rdma_ctrl_ctx;
+
+	auto local_connection_details = [this, &rdma_pair]() {
+		uint8_t const *blob = nullptr;
+		size_t blob_size = 0;
+
+		auto const ret = doca_rdma_export(rdma_pair.rdma,
+						  reinterpret_cast<void const **>(&blob),
+						  &blob_size,
+						  std::addressof(rdma_pair.conn));
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Core: %u RDMA export failed: %s", m_hot_data.core_idx, doca_error_get_name(ret));
+			throw storage::runtime_error{ret, "Failed to export rdma connection"};
+		}
+		return std::vector<uint8_t>{blob, blob + blob_size};
+	}();
+
+	auto const ret = doca_rdma_connect(rdma_pair.rdma,
+					   remote_conn_details.data(),
+					   remote_conn_details.size(),
+					   rdma_pair.conn);
+	if (ret != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Core: %u RDMA connect failed: %s", m_hot_data.core_idx, doca_error_get_name(ret));
+		throw storage::runtime_error{ret, "Failed to connect to rdma"};
+	}
+
+	return local_connection_details;
+}
+
+doca_error_t target_rdma_worker::get_rdma_connection_state() const noexcept
+{
+	doca_error_t ret;
+	doca_ctx_states rdma_state;
+	bool ctrl_connected = false;
+	bool data_connected = false;
+
+	ret = doca_ctx_get_state(doca_rdma_as_ctx(m_rdma_ctrl_ctx.rdma), &rdma_state);
+	if (ret != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query rdma context state: %s", doca_error_get_name(ret));
+		return ret;
+	} else if (rdma_state == DOCA_CTX_STATE_RUNNING) {
+		ctrl_connected = true;
+	} else {
+		static_cast<void>(doca_pe_progress(m_hot_data.pe));
+	}
+
+	ret = doca_ctx_get_state(doca_rdma_as_ctx(m_rdma_data_ctx.rdma), &rdma_state);
+	if (ret != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query rdma context state: %s", doca_error_get_name(ret));
+		return ret;
+	} else if (rdma_state == DOCA_CTX_STATE_RUNNING) {
+		data_connected = true;
+	} else {
+		static_cast<void>(doca_pe_progress(m_hot_data.pe));
+	}
+
+	return ctrl_connected && data_connected ? DOCA_SUCCESS : DOCA_ERROR_IN_PROGRESS;
+}
+
+void target_rdma_worker::stop_processing(void) noexcept
+{
+	m_hot_data.run_flag = false;
+	if (m_thread.joinable()) {
+		m_thread.join();
+	}
+}
+
+void target_rdma_worker::prepare_and_submit_tasks(void)
+{
+	doca_error_t ret;
+	uint8_t *message_buffer_addr = m_io_message_region;
+	size_t local_memory_size = 0;
+	size_t remote_memory_size = 0;
+	m_hot_data.buf_inv = m_buf_inv;
+	m_hot_data.local_mmap = m_local_mmap;
+	m_hot_data.remote_mmap = m_remote_mmap;
+	static_cast<void>(doca_mmap_get_memrange(m_local_mmap,
+						 reinterpret_cast<void **>(&m_hot_data.local_memory_start_addr),
+						 &local_memory_size));
+	static_cast<void>(doca_mmap_get_memrange(m_remote_mmap,
+						 reinterpret_cast<void **>(&m_hot_data.remote_memory_start_addr),
+						 &remote_memory_size));
+
+	std::vector<doca_task *> request_tasks;
+	request_tasks.reserve(m_task_count);
+	m_ctrl_tasks.reserve(m_task_count * 2);
+	m_data_tasks.reserve(m_task_count * 2);
+	m_bufs.reserve(m_task_count * 3);
+
+	m_transfer_contexts = storage::make_aligned<transfer_context>{}.object_array(m_task_count);
+
+	for (uint32_t ii = 0; ii != m_task_count; ++ii) {
+		doca_buf *message_buf;
+
+		ret = doca_buf_inventory_buf_get_by_addr(m_buf_inv,
+							 m_io_message_mmap,
+							 message_buffer_addr,
+							 storage::size_of_io_message,
+							 &message_buf);
+		if (ret != DOCA_SUCCESS) {
+			throw storage::runtime_error{ret, "Failed to allocate io_message doca_buf"};
+		}
+
+		m_bufs.push_back(message_buf);
+		message_buffer_addr += storage::size_of_io_message;
+
+		ret = doca_buf_inventory_buf_get_by_addr(m_buf_inv,
+							 m_local_mmap,
+							 m_hot_data.local_memory_start_addr,
+							 local_memory_size,
+							 std::addressof(m_transfer_contexts[ii].storage_buf));
+		if (ret != DOCA_SUCCESS) {
+			throw storage::runtime_error{ret, "Failed to allocate local storage doca_buf"};
+		}
+
+		ret = doca_buf_inventory_buf_get_by_addr(m_buf_inv,
+							 m_remote_mmap,
+							 m_hot_data.remote_memory_start_addr,
+							 remote_memory_size,
+							 std::addressof(m_transfer_contexts[ii].host_buf));
+		if (ret != DOCA_SUCCESS) {
+			throw storage::runtime_error{ret, "Failed to allocate remote storage doca_buf"};
+		}
+
+		doca_rdma_task_receive *request_task = nullptr;
+		ret = doca_rdma_task_receive_allocate_init(m_rdma_ctrl_ctx.rdma,
+							   message_buf,
+							   doca_data{.ptr = std::addressof(m_transfer_contexts[ii])},
+							   &request_task);
+		if (ret != DOCA_SUCCESS) {
+			throw storage::runtime_error{ret, "Failed to allocate doca_rdma_task_receive"};
+		}
+		m_ctrl_tasks.push_back(doca_rdma_task_receive_as_task(request_task));
+		request_tasks.push_back(doca_rdma_task_receive_as_task(request_task));
+
+		doca_rdma_task_send *response_task = nullptr;
+		ret = doca_rdma_task_send_allocate_init(m_rdma_ctrl_ctx.rdma,
+							m_rdma_ctrl_ctx.conn,
+							message_buf,
+							doca_data{.ptr = request_task},
+							&response_task);
+		if (ret != DOCA_SUCCESS) {
+			throw storage::runtime_error{ret, "Failed to allocate doca_rdma_task_send"};
+		}
+		m_ctrl_tasks.push_back(doca_rdma_task_send_as_task(response_task));
+
+		ret = doca_rdma_task_write_allocate_init(m_rdma_data_ctx.rdma,
+							 m_rdma_data_ctx.conn,
+							 m_transfer_contexts[ii].storage_buf,
+							 m_transfer_contexts[ii].host_buf,
+							 doca_data{.ptr = response_task},
+							 std::addressof(m_transfer_contexts[ii].write_task));
+		if (ret != DOCA_SUCCESS) {
+			throw storage::runtime_error{ret, "Failed to allocate doca_rdma_task_write"};
+		}
+		m_data_tasks.push_back(doca_rdma_task_write_as_task(m_transfer_contexts[ii].write_task));
+
+		ret = doca_rdma_task_read_allocate_init(m_rdma_data_ctx.rdma,
+							m_rdma_data_ctx.conn,
+							m_transfer_contexts[ii].host_buf,
+							m_transfer_contexts[ii].storage_buf,
+							doca_data{.ptr = response_task},
+							std::addressof(m_transfer_contexts[ii].read_task));
+		if (ret != DOCA_SUCCESS) {
+			throw storage::runtime_error{ret, "Failed to allocate doca_rdma_task_read"};
+		}
+		m_data_tasks.push_back(doca_rdma_task_read_as_task(m_transfer_contexts[ii].read_task));
+	}
+
+	for (auto *task : request_tasks) {
+		ret = doca_task_submit(task);
+		if (ret != DOCA_SUCCESS) {
+			throw storage::runtime_error{ret, "Failed to allocate doca_rdma_task_read"};
+		}
+	}
+}
+
+void target_rdma_worker::prepare_thread_proc(uint32_t core_id)
+{
+	m_thread = std::thread{[this]() {
+		try {
+			thread_proc();
+		} catch (std::exception const &ex) {
+			DOCA_LOG_ERR("Core: %u Exception: %s", m_hot_data.core_idx, ex.what());
+			m_hot_data.error_flag = true;
+			m_hot_data.run_flag = false;
+		}
+	}};
+	m_hot_data.core_idx = core_id;
+	storage::set_thread_affinity(m_thread, m_hot_data.core_idx);
+}
+
+void target_rdma_worker::start_thread_proc()
+{
+	m_hot_data.run_flag = true;
+}
+
+target_rdma_worker::hot_data const &target_rdma_worker::get_hot_data(void) const noexcept
+{
+	return m_hot_data;
+}
+
 void target_rdma_worker::cleanup() noexcept
 {
 	doca_error_t ret;
@@ -1192,6 +996,11 @@ void target_rdma_worker::cleanup() noexcept
 	}
 
 	if (m_transfer_contexts != nullptr) {
+		for (uint32_t ii = 0; ii != m_transfer_contexts_size; ++ii) {
+			static_cast<void>(doca_buf_dec_refcount(m_transfer_contexts[ii].storage_buf, nullptr));
+			static_cast<void>(doca_buf_dec_refcount(m_transfer_contexts[ii].host_buf, nullptr));
+		}
+
 		storage::aligned_free(m_transfer_contexts);
 		m_transfer_contexts = nullptr;
 	}
@@ -1277,27 +1086,28 @@ void target_rdma_worker::doca_rdma_task_receive_cb(doca_rdma_task_receive *task,
 
 	auto *const transfer_ctx = static_cast<transfer_context *>(task_user_data.ptr);
 
+	static_cast<void>(doca_buf_dec_refcount(transfer_ctx->host_buf, nullptr));
+	static_cast<void>(doca_buf_dec_refcount(transfer_ctx->storage_buf, nullptr));
+
+	char *const remote_addr =
+		hot_data->remote_memory_start_addr + storage::io_message_view::get_requester_offset(io_message);
+	char *const local_addr =
+		hot_data->local_memory_start_addr + storage::io_message_view::get_storage_offset(io_message);
+	uint32_t const transfer_size = storage::io_message_view::get_io_size(io_message);
+
 	switch (message_type) {
 	case storage::io_message_type::read: {
-		size_t const offset = reinterpret_cast<char *>(storage::io_message_view::get_io_address(io_message)) -
-				      hot_data->remote_memory_start_addr;
+		static_cast<void>(doca_buf_inventory_buf_get_by_addr(hot_data->buf_inv,
+								     hot_data->remote_mmap,
+								     remote_addr,
+								     transfer_size,
+								     &transfer_ctx->host_buf));
+		static_cast<void>(doca_buf_inventory_buf_get_by_data(hot_data->buf_inv,
+								     hot_data->local_mmap,
+								     local_addr,
+								     transfer_size,
+								     &transfer_ctx->storage_buf));
 
-		char *const remote_addr = hot_data->remote_memory_start_addr + offset +
-					  storage::io_message_view::get_remote_offset(io_message);
-		char *const local_addr = hot_data->local_memory_start_addr + offset;
-		uint32_t const transfer_size = storage::io_message_view::get_io_size(io_message);
-
-		ret = doca_buf_set_data(transfer_ctx->host_buf, remote_addr, 0);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set transfer host memory range: %s", doca_error_get_name(ret));
-			break;
-		}
-
-		ret = doca_buf_set_data(transfer_ctx->storage_buf, local_addr, transfer_size);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set transfer storage memory range: %s", doca_error_get_name(ret));
-			break;
-		}
 		doca_rdma_task_write_set_dst_buf(transfer_ctx->write_task, transfer_ctx->host_buf);
 		doca_rdma_task_write_set_src_buf(transfer_ctx->write_task, transfer_ctx->storage_buf);
 
@@ -1317,25 +1127,17 @@ void target_rdma_worker::doca_rdma_task_receive_cb(doca_rdma_task_receive *task,
 			hot_data->in_flight_transaction_count);
 	} break;
 	case storage::io_message_type::write: {
-		size_t const offset = reinterpret_cast<char *>(storage::io_message_view::get_io_address(io_message)) -
-				      hot_data->remote_memory_start_addr;
+		static_cast<void>(doca_buf_inventory_buf_get_by_data(hot_data->buf_inv,
+								     hot_data->remote_mmap,
+								     remote_addr,
+								     transfer_size,
+								     &transfer_ctx->host_buf));
+		static_cast<void>(doca_buf_inventory_buf_get_by_addr(hot_data->buf_inv,
+								     hot_data->local_mmap,
+								     local_addr,
+								     transfer_size,
+								     &transfer_ctx->storage_buf));
 
-		char *const remote_addr = hot_data->remote_memory_start_addr + offset +
-					  storage::io_message_view::get_remote_offset(io_message);
-		char *const local_addr = hot_data->local_memory_start_addr + offset;
-		uint32_t const transfer_size = storage::io_message_view::get_io_size(io_message);
-
-		ret = doca_buf_set_data(transfer_ctx->host_buf, remote_addr, transfer_size);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set transfer host memory range: %s", doca_error_get_name(ret));
-			break;
-		}
-
-		ret = doca_buf_set_data(transfer_ctx->storage_buf, local_addr, 0);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set transfer storage memory range: %s", doca_error_get_name(ret));
-			break;
-		}
 		doca_rdma_task_read_set_dst_buf(transfer_ctx->read_task, transfer_ctx->storage_buf);
 		doca_rdma_task_read_set_src_buf(transfer_ctx->read_task, transfer_ctx->host_buf);
 
@@ -1898,11 +1700,10 @@ void target_rdma_app::prepare_workers()
 						     std::to_string(m_cfg.core_set.size()) + " cores were defined"};
 	}
 
-	m_workers = storage::make_aligned<target_rdma_worker>{}.object_array(m_core_count,
-									     m_dev,
-									     m_task_count,
-									     m_remote_io_mmap,
-									     m_local_io_mmap);
+	m_workers = storage::make_aligned<target_rdma_worker>{}.object_array(m_core_count);
+	for (uint32_t ii = 0; ii != m_core_count; ++ii) {
+		m_workers[ii].init(m_dev, m_task_count, m_remote_io_mmap, m_local_io_mmap);
+	}
 }
 
 void target_rdma_app::destroy_workers(void) noexcept

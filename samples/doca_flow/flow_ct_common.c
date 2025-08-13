@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -25,41 +25,14 @@
 
 #include <doca_log.h>
 #include <doca_bitfield.h>
+#include <doca_dpdk.h>
 
 #include <dpdk_utils.h>
 
+#include "flow_common.h"
 #include "flow_ct_common.h"
 
-#define DPDK_ADDITIONAL_ARG 2
-
 DOCA_LOG_REGISTER(FLOW_CT_COMMON);
-
-/*
- * ARGP Callback - Handle DOCA Flow CT device PCI address parameter
- *
- * @param [in]: Input parameter
- * @config [in/out]: Program configuration context
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t pci_addr_callback(void *param, void *config)
-{
-	struct ct_config *cfg = (struct ct_config *)config;
-	const char *dev_pci_addr = (char *)param;
-	int len;
-
-	len = strnlen(dev_pci_addr, DOCA_DEVINFO_PCI_ADDR_SIZE);
-	/* Check using >= to make static code analysis satisfied */
-	if (len >= DOCA_DEVINFO_PCI_ADDR_SIZE) {
-		DOCA_LOG_ERR("Entered device PCI address exceeding the maximum size of %d",
-			     DOCA_DEVINFO_PCI_ADDR_SIZE - 1);
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-
-	/* The string will be '\0' terminated due to the strnlen check above */
-	strncpy(cfg->ct_dev_pci_addr[cfg->n_ports++], dev_pci_addr, len + 1);
-
-	return DOCA_SUCCESS;
-}
 
 #define FNV1A_32_OFFSET (uint32_t)2166136261
 #define FNV1A_32_PRIME (uint32_t)16777619
@@ -86,30 +59,7 @@ static uint32_t fnv1a_32bit_hash(const void *buf, size_t len, uint32_t hash)
 
 doca_error_t flow_ct_register_params(void)
 {
-	doca_error_t result;
-
-	struct doca_argp_param *dev_pci_addr_param;
-
-	/* Create and register DOCA Flow CT device PCI address */
-	result = doca_argp_param_create(&dev_pci_addr_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
-		return result;
-	}
-	doca_argp_param_set_short_name(dev_pci_addr_param, "p");
-	doca_argp_param_set_long_name(dev_pci_addr_param, "pci");
-	doca_argp_param_set_description(dev_pci_addr_param, "DOCA Flow CT device PCI address");
-	doca_argp_param_set_callback(dev_pci_addr_param, pci_addr_callback);
-	doca_argp_param_set_type(dev_pci_addr_param, DOCA_ARGP_TYPE_STRING);
-	doca_argp_param_set_mandatory(dev_pci_addr_param);
-	doca_argp_param_set_multiplicity(dev_pci_addr_param);
-	result = doca_argp_register_param(dev_pci_addr_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	return DOCA_SUCCESS;
+	return register_flow_switch_device_params(NULL);
 }
 
 doca_error_t init_doca_flow_ct(uint32_t flags,
@@ -119,13 +69,14 @@ doca_error_t init_doca_flow_ct(uint32_t flags,
 			       doca_flow_ct_entry_finalize_cb entry_finalize_cb,
 			       uint32_t nb_ipv4_sessions,
 			       uint32_t nb_ipv6_sessions,
+			       uint32_t nb_asym_counter,
 			       uint32_t dup_filter_sz,
 			       bool o_match_inner,
 			       struct doca_flow_meta *o_zone_mask,
-			       struct doca_flow_meta *o_modify_mask,
+			       struct doca_flow_ct_meta *o_modify_mask,
 			       bool r_match_inner,
 			       struct doca_flow_meta *r_zone_mask,
-			       struct doca_flow_meta *r_modify_mask)
+			       struct doca_flow_ct_meta *r_modify_mask)
 {
 	struct doca_flow_ct_cfg *ct_cfg;
 	doca_error_t result;
@@ -151,6 +102,7 @@ doca_error_t init_doca_flow_ct(uint32_t flags,
 	doca_flow_ct_cfg_set_aging_core(ct_cfg, nb_arm_queues + 1);
 	doca_flow_ct_cfg_set_entry_finalize_cb(ct_cfg, entry_finalize_cb);
 	doca_flow_ct_cfg_set_connections(ct_cfg, nb_ipv4_sessions, nb_ipv6_sessions, 0);
+	doca_flow_ct_cfg_set_counter_asymmetric(ct_cfg, nb_asym_counter);
 	doca_flow_ct_cfg_set_dup_filter_size(ct_cfg, dup_filter_sz);
 	doca_flow_ct_cfg_set_direction(ct_cfg, false, o_match_inner, o_zone_mask, o_modify_mask);
 	doca_flow_ct_cfg_set_direction(ct_cfg, true, r_match_inner, r_zone_mask, r_modify_mask);
@@ -162,17 +114,6 @@ doca_error_t init_doca_flow_ct(uint32_t flags,
 	doca_flow_ct_cfg_destroy(ct_cfg);
 
 	return result;
-}
-
-doca_error_t flow_ct_dpdk_init(int argc, char **dpdk_argv)
-{
-	char *argv[argc + DPDK_ADDITIONAL_ARG];
-
-	memcpy(argv, dpdk_argv, sizeof(argv[0]) * argc);
-	argv[argc++] = "-a";
-	argv[argc++] = "pci:00:00.0";
-
-	return dpdk_init(argc, argv);
 }
 
 doca_error_t flow_ct_capable(struct doca_devinfo *dev_info)
@@ -385,6 +326,72 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 destroy_pipe_cfg:
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 	return result;
+}
+
+doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
+				  uint16_t ct_queue,
+				  struct doca_flow_pipe *pipe,
+				  uint32_t prepare_flags,
+				  uint32_t entry_flags,
+				  struct doca_flow_ct_match *match_origin,
+				  struct doca_flow_ct_match *match_reply,
+				  uint32_t hash_origin,
+				  uint32_t hash_reply,
+				  const struct doca_flow_ct_actions *actions_origin,
+				  const struct doca_flow_ct_actions *actions_reply,
+				  uint32_t fwd_handle_origin,
+				  uint32_t fwd_handle_reply,
+				  uint32_t timeout_s,
+				  struct entries_status *ct_status,
+				  struct doca_flow_pipe_entry **entry)
+{
+	doca_error_t result;
+	bool conn_found = false;
+
+	/* Allocate CT entry */
+	result = doca_flow_ct_entry_prepare(ct_queue,
+					    pipe,
+					    prepare_flags,
+					    match_origin,
+					    hash_origin,
+					    match_reply,
+					    hash_reply,
+					    entry,
+					    &conn_found);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to prepare CT entry\n");
+		return result;
+	}
+
+	if (conn_found) {
+		return DOCA_SUCCESS;
+	}
+
+	/* Add CT entry */
+	result = doca_flow_ct_add_entry(ct_queue,
+					pipe,
+					entry_flags,
+					match_origin,
+					match_reply,
+					actions_origin,
+					actions_reply,
+					fwd_handle_origin,
+					fwd_handle_reply,
+					timeout_s,
+					ct_status,
+					*entry);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add CT pipe an entry: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/*process entries*/
+	result = flow_ct_queue_reserve(port, ct_queue, ct_status, 0);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
+		return result;
+	}
+	return DOCA_SUCCESS;
 }
 
 doca_error_t flow_ct_queue_reserve(struct doca_flow_port *port,

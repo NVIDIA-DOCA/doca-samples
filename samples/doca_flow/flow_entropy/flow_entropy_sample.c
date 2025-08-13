@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,13 +26,11 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <rte_byteorder.h>
-
 #include <doca_log.h>
 #include <doca_flow.h>
 
-#include "flow_common.h"
-#include "flow_switch_common.h"
+#include <flow_common.h>
+#include <flow_switch_common.h>
 
 DOCA_LOG_REGISTER(FLOW_ENTROPY);
 
@@ -56,7 +54,6 @@ doca_error_t flow_entropy(struct flow_switch_ctx *ctx)
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	struct doca_flow_entropy_format header;
 	uint16_t entropy;
 	doca_error_t result;
@@ -67,10 +64,12 @@ doca_error_t flow_entropy(struct flow_switch_ctx *ctx)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = ctx->doca_dev[0];
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(DOCA_SAMPLE_ENTROPY_QUEUES_NUM, DOCA_SAMPLE_ENTROPY_ENTRIES_NUM));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(DOCA_SAMPLE_ENTROPY_ENTRIES_NUM));
+	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+					     ctx->devs_ctx.nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -81,13 +80,13 @@ doca_error_t flow_entropy(struct flow_switch_ctx *ctx)
 	header.ip4.src_ip = BE_IPV4_ADDR(8, 8, 8, 8);
 	header.ip4.dst_ip = BE_IPV4_ADDR(7, 7, 7, 7);
 	header.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-	header.transport.src_port = rte_cpu_to_be_16(1234);
-	header.transport.dst_port = rte_cpu_to_be_16(5678);
+	header.transport.src_port = DOCA_HTOBE16(1234);
+	header.transport.dst_port = DOCA_HTOBE16(5678);
 
 	/* The entropy result should be equal to 0xdb9e */
 	result = doca_flow_port_calc_entropy(ports[0], &header, &entropy);
 	if (result == DOCA_SUCCESS)
-		DOCA_LOG_INFO("The entropy for the given packet header is:0x%x", rte_be_to_cpu_16(entropy));
+		DOCA_LOG_INFO("The entropy for the given packet header is:0x%x", DOCA_BETOH16(entropy));
 	else
 		DOCA_LOG_ERR("Failed to retrieve entropy: %s", doca_error_get_descr(result));
 

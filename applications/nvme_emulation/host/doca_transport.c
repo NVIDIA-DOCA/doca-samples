@@ -2953,7 +2953,7 @@ static void nvmf_doca_poll_group_create_io_cq(void *args)
 
 	TAILQ_INSERT_TAIL(&pci_dev_pg->io_cqs, io_cq, pci_dev_pg_link);
 
-respond_to_admin:
+respond_to_admin:;
 	struct spdk_thread *admin_qp_thread = pci_dev_admin->admin_qp_pg->pg.group->thread;
 	spdk_thread_exec_msg(admin_qp_thread, nvmf_doca_poll_group_create_io_cq_done, args);
 }
@@ -3194,7 +3194,7 @@ static void nvmf_doca_on_fetch_sqe_complete(struct nvmf_doca_sq *sq, struct nvmf
 	case SPDK_NVME_OPC_IDENTIFY:
 		request->request.length = IDENTIFY_CMD_DATA_BUFFER_SIZE;
 		break;
-	case SPDK_NVME_OPC_GET_LOG_PAGE:
+	case SPDK_NVME_OPC_GET_LOG_PAGE:;
 		uint32_t num_dword =
 			((((uint32_t)cmd->cdw11_bits.get_log_page.numdu << 16) | cmd->cdw10_bits.get_log_page.numdl) +
 			 1);
@@ -3205,7 +3205,7 @@ static void nvmf_doca_on_fetch_sqe_complete(struct nvmf_doca_sq *sq, struct nvmf
 		request->request.length = num_dword * 4;
 		break;
 	case SPDK_NVME_OPC_GET_FEATURES:
-	case SPDK_NVME_OPC_SET_FEATURES:
+	case SPDK_NVME_OPC_SET_FEATURES:;
 		uint8_t fid = cmd->cdw10_bits.set_features.fid;
 		DOCA_LOG_DBG("Received feature: opcode %u", fid);
 		switch (fid) {

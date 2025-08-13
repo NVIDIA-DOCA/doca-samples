@@ -135,7 +135,7 @@ static void rpc_nvmf_doca_create_function(struct spdk_jsonrpc_request *request, 
 		goto cleanup;
 	}
 
-	ret = doca_devemu_pci_dev_create_rep(pci_type, &dev_rep);
+	ret = doca_devemu_pci_type_create_rep(pci_type, &dev_rep);
 	if (ret != DOCA_SUCCESS) {
 		spdk_jsonrpc_send_error_response(request,
 						 SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -168,7 +168,7 @@ static void rpc_nvmf_doca_create_function(struct spdk_jsonrpc_request *request, 
 	goto destroy_pci_resources;
 
 destroy_dev_rep:
-	doca_devemu_pci_dev_destroy_rep(dev_rep);
+	doca_devemu_pci_type_destroy_rep(dev_rep);
 destroy_pci_resources:
 	cleanup_pci_resources(pci_type, dev);
 cleanup:
@@ -250,7 +250,7 @@ static void rpc_nvmf_doca_destroy_function(struct spdk_jsonrpc_request *request,
 				cleanup_pci_resources(pci_type, dev);
 			}
 
-			ret = doca_devemu_pci_dev_destroy_rep(dev_rep);
+			ret = doca_devemu_pci_type_destroy_rep(dev_rep);
 			if (ret != DOCA_SUCCESS) {
 				spdk_jsonrpc_send_error_response(request,
 								 SPDK_JSONRPC_ERROR_INTERNAL_ERROR,

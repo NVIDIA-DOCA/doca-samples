@@ -89,9 +89,7 @@ int main(int argc, char **argv)
 	app_config.dpdk_config.port_config.nb_queues = 2;
 	app_config.dpdk_config.port_config.switch_mode = true;
 	app_config.dpdk_config.port_config.enable_mbuf_metadata = true;
-	app_config.dpdk_config.port_config.isolated_mode = true;
 	app_config.dpdk_config.reserve_main_thread = true;
-	app_config.pf_repr_indices = "[0]";
 	app_config.core_mask = "0x3";
 	app_config.max_tunnels = 256;
 	app_config.net_config.vc_enabled = false;
@@ -109,6 +107,7 @@ int main(int argc, char **argv)
 	app_config.mode = PSP_GW_MODE_TUNNEL;
 
 	struct psp_pf_dev pf_dev = {};
+	struct doca_dev_rep *vf_dev;
 	uint16_t vf_port_id;
 	std::string dev_probe_str;
 
@@ -172,32 +171,26 @@ int main(int argc, char **argv)
 	}
 
 	// init devices
-	result = open_doca_device_with_pci(app_config.pf_pcie_addr.c_str(), nullptr, &pf_dev.dev);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to open device %s: %s",
-			     app_config.pf_pcie_addr.c_str(),
-			     doca_error_get_descr(result));
-		exit_status = EXIT_FAILURE;
-		goto dpdk_destroy;
-	}
-
 	dev_probe_str = std::string("dv_flow_en=2,"	 // hardware steering
 				    "dv_xmeta_en=4,"	 // extended flow metadata support
 				    "fdb_def_rule_en=0," // disable default root flow table rule
 				    "vport_match=1,"
-				    "repr_matching_en=0,"
-				    "representor=") +
-			app_config.pf_repr_indices; // indicate which representors to probe
+				    "repr_matching_en=0");
 
-	result = doca_dpdk_port_probe(pf_dev.dev, dev_probe_str.c_str());
+	result = doca_dpdk_port_probe_with_representors(app_config.pf_dev,
+							dev_probe_str.c_str(),
+							&app_config.vf_dev_rep,
+							1);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to probe dpdk port for secured port: %s", doca_error_get_descr(result));
 		exit_status = EXIT_FAILURE;
 		goto dev_close;
 	}
-	DOCA_LOG_INFO("Probed %s,%s", app_config.pf_pcie_addr.c_str(), dev_probe_str.c_str());
 
+	pf_dev.dev = app_config.pf_dev;
 	pf_dev.port_id = 0;
+	vf_dev = app_config.vf_dev_rep;
+	vf_port_id = pf_dev.port_id + 1;
 
 	app_config.dpdk_config.port_config.nb_ports = rte_eth_dev_count_avail();
 
@@ -233,18 +226,20 @@ int main(int argc, char **argv)
 		      pf_dev.src_pip_str.c_str(),
 		      app_config.dpdk_config.port_config.nb_ports);
 
-	vf_port_id = pf_dev.port_id + 1;
-
 	// Update queues and ports
 	result = dpdk_queues_and_ports_init(&app_config.dpdk_config);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to update application ports and queues: %s", doca_error_get_descr(result));
 		exit_status = EXIT_FAILURE;
-		goto dev_close;
+		goto dev_rep_close;
 	}
 
+	/* add one more queue for the grpc requests */
+	app_config.grpc_queue_id = app_config.dpdk_config.port_config.nb_queues;
+	app_config.dpdk_config.port_config.nb_queues++;
+
 	{
-		PSP_GatewayFlows psp_flows(&pf_dev, vf_port_id, &app_config);
+		PSP_GatewayFlows psp_flows(&pf_dev, vf_dev, vf_port_id, &app_config);
 		std::vector<psp_gw_peer> remotes_to_connect;
 		uint32_t lcore_id;
 
@@ -328,6 +323,8 @@ workers_cleanup:
 
 dpdk_cleanup:
 	dpdk_queues_and_ports_fini(&app_config.dpdk_config);
+dev_rep_close:
+	doca_dev_rep_close(vf_dev);
 dev_close:
 	doca_dev_close(pf_dev.dev);
 dpdk_destroy:

@@ -30,7 +30,11 @@
 
 DOCA_LOG_REGISTER(GPU_SIMPLE_SEND::KERNEL);
 
-__global__ void send_packets(struct doca_gpu_eth_txq *eth_txq_gpu, struct doca_gpu_buf_arr *buf_arr_gpu, const uint32_t pkt_size, const uint32_t inflight_sends, uint32_t *exit_cond)
+__global__ void send_packets(struct doca_gpu_eth_txq *eth_txq_gpu,
+			     struct doca_gpu_buf_arr *buf_arr_gpu,
+			     const uint32_t pkt_size,
+			     const uint32_t inflight_sends,
+			     uint32_t *exit_cond)
 {
 	struct doca_gpu_buf *buf_ptr = NULL;
 	uint64_t doca_gpu_buf_idx = threadIdx.x;
@@ -51,9 +55,12 @@ __global__ void send_packets(struct doca_gpu_eth_txq *eth_txq_gpu, struct doca_g
 		if ((position % (inflight_sends - 1)) == 0) {
 			/* Just re-use a variable to avoid wasting registers memory */
 			num_completed = 1;
-			doca_gpu_dev_eth_txq_send_enqueue_weak(eth_txq_gpu, buf_ptr, pkt_size, position, DOCA_GPU_SEND_FLAG_NOTIFY);
-		}
-		else
+			doca_gpu_dev_eth_txq_send_enqueue_weak(eth_txq_gpu,
+							       buf_ptr,
+							       pkt_size,
+							       position,
+							       DOCA_GPU_SEND_FLAG_NOTIFY);
+		} else
 			doca_gpu_dev_eth_txq_send_enqueue_weak(eth_txq_gpu, buf_ptr, pkt_size, position, 0);
 		__syncthreads();
 
@@ -62,7 +69,10 @@ __global__ void send_packets(struct doca_gpu_eth_txq *eth_txq_gpu, struct doca_g
 			doca_gpu_dev_eth_txq_commit_weak(eth_txq_gpu, blockDim.x);
 			doca_gpu_dev_eth_txq_push(eth_txq_gpu);
 			if (num_completed == 1)
-				doca_gpu_dev_eth_txq_wait_completion(eth_txq_gpu, 1, DOCA_GPU_ETH_TXQ_WAIT_FLAG_B, &num_completed);
+				doca_gpu_dev_eth_txq_wait_completion(eth_txq_gpu,
+								     1,
+								     DOCA_GPU_ETH_TXQ_WAIT_FLAG_B,
+								     &num_completed);
 			num_completed = 0;
 		}
 		__syncthreads();
@@ -88,7 +98,11 @@ doca_error_t kernel_send_packets(cudaStream_t stream, struct txq_queue *txq, uin
 	}
 
 	/* For simplicity launch 1 CUDA block with 32 CUDA threads */
-	send_packets<<<1, txq->cuda_threads, 0, stream>>>(txq->eth_txq_gpu, txq->buf_arr_gpu, txq->pkt_size, txq->inflight_sends, gpu_exit_condition);
+	send_packets<<<1, txq->cuda_threads, 0, stream>>>(txq->eth_txq_gpu,
+							  txq->buf_arr_gpu,
+							  txq->pkt_size,
+							  txq->inflight_sends,
+							  gpu_exit_condition);
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
 		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));

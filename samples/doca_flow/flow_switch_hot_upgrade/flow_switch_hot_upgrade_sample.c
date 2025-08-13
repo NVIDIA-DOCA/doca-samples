@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -35,7 +35,8 @@
 #include <doca_flow.h>
 #include "doca_error.h"
 
-#include "flow_common.h"
+#include <flow_common.h>
+#include <flow_switch_common.h>
 
 DOCA_LOG_REGISTER(FLOW_SWITCH_HOT_UPGRADE);
 
@@ -441,27 +442,68 @@ static doca_error_t port_control_query(struct port_control *control)
 }
 
 /*
+ * Initialize DOCA Flow ports
+ *
+ * @devs_manager [in]: array of switch manager device bundles (doca device and representor devices)
+ *			      for each switch manager
+ * @nb_devs [in]: number of managers to create ports for
+ * @ports [in]: array of ports to create
+ * @nb_ports [in]: number of ports the sample will use.
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t init_hot_upgrade_ports(struct flow_devs_manager devs_manager[],
+					   int nb_devs,
+					   struct doca_flow_port *ports[],
+					   int nb_ports)
+{
+	struct doca_dev *dev_arr[nb_ports];
+	struct doca_dev_rep *rep_arr[nb_ports];
+	enum doca_flow_port_operation_state states[nb_ports];
+	uint32_t actions_mem_size[nb_ports];
+	int nb_mapped_devs = 0;
+
+	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
+	memset(rep_arr, 0, sizeof(struct doca_dev_rep *) * nb_ports);
+	memset(states, 0, sizeof(enum doca_flow_port_operation_state) * nb_ports);
+
+	for (int i = 0; i < nb_devs; i++) {
+		dev_arr[nb_mapped_devs] = devs_manager[i].doca_dev;
+		states[nb_mapped_devs++] = DOCA_FLOW_PORT_OPERATION_STATE_UNCONNECTED;
+
+		for (int j = 0; j < devs_manager[i].nb_reps; j++)
+			rep_arr[nb_mapped_devs++] = devs_manager[i].doca_dev_rep[j];
+	}
+
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(DEFAULT_CTRL_PIPE_SIZE));
+
+	return init_doca_flow_ports_with_op_state(nb_mapped_devs,
+						  ports,
+						  false,
+						  dev_arr,
+						  rep_arr,
+						  states,
+						  actions_mem_size);
+}
+
+/*
  * Run flow_switch_hot_upgrade sample
  *
  * @nb_queues [in]: number of queues the sample will use.
  * @nb_ports [in]: number of ports the sample will use.
- * @dev_main [in]: the main doca proxy port.
- * @dev_sec [in]: the second doca proxy port.
+ * @devs_manager [in]: Array of DOCA devices for the switch ports
+ * @nb_devs [in]: Amount of eswtich manager dev bundles in the switch_manager_devs array
  * @state [in]: the operation state of this instance.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t flow_switch_hot_upgrade(int nb_queues,
 				     int nb_ports,
-				     struct doca_dev *dev_main,
-				     struct doca_dev *dev_sec,
+				     struct flow_devs_manager devs_manager[],
+				     uint16_t nb_devs,
 				     enum doca_flow_port_operation_state state)
 {
 	struct flow_resources resource = {.nr_counters = 6};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
-	uint32_t actions_mem_size[nb_ports];
-	enum doca_flow_port_operation_state states[nb_ports];
 	struct port_control port_control_list[FLOW_SWITCH_PROXY_PORT_NB];
 	struct entries_status status;
 	struct timeval start, end;
@@ -475,30 +517,18 @@ doca_error_t flow_switch_hot_upgrade(int nb_queues,
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = dev_main;
-	dev_arr[3] = dev_sec;
-	memset(states, 0, sizeof(enum doca_flow_port_operation_state) * nb_ports);
-	states[0] = DOCA_FLOW_PORT_OPERATION_STATE_UNCONNECTED;
-	states[3] = DOCA_FLOW_PORT_OPERATION_STATE_UNCONNECTED;
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, DEFAULT_CTRL_PIPE_SIZE));
-	result = init_doca_flow_ports_with_op_state(nb_ports,
-						    ports,
-						    false /* is_hairpin */,
-						    dev_arr,
-						    states,
-						    actions_mem_size);
+	result = init_hot_upgrade_ports(devs_manager, nb_devs, ports, nb_ports);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
 		return result;
 	}
 
-	for (switch_port_idx = 0; switch_port_idx < FLOW_SWITCH_PROXY_PORT_NB; ++switch_port_idx) {
+	for (switch_port_idx = 0; switch_port_idx < nb_devs; ++switch_port_idx) {
 		uint8_t port_id = switch_port_idx * 3;
 
 		result = port_control_init(ports[port_id],
-					   dev_arr[port_id],
+					   devs_manager[switch_port_idx].doca_dev,
 					   switch_port_idx,
 					   state,
 					   &status,
@@ -533,7 +563,7 @@ doca_error_t flow_switch_hot_upgrade(int nb_queues,
 
 		gettimeofday(&start, NULL);
 
-		for (switch_port_idx = 0; switch_port_idx < FLOW_SWITCH_PROXY_PORT_NB; ++switch_port_idx) {
+		for (switch_port_idx = 0; switch_port_idx < nb_devs; ++switch_port_idx) {
 			result = port_control_query(&port_control_list[switch_port_idx]);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to query port control %u", switch_port_idx);

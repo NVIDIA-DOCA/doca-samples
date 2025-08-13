@@ -1,0 +1,96 @@
+#
+# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+number_of_ports: 3
+mode_args:
+  - switch
+ports_description:
+  port_0: doca_dev
+  port_1: doca_rep_dev
+  port_2: doca_rep_dev
+description: "This sample shows how the DOCA Flow pipe resize feature behaves as pipe size increases. Once the pipe reaches 80% of
+              its size, a callback is called that preforms the resize of the pipe. The initial max pipe size is configured to 10. Then 80 entries are added
+              which will cause pipe resizing 4 times: 10 -> 16 -> 32 -> 64 -> 128. Each of the following packets are related to different resize cycle.
+              In the sample odd queue numbers are excluded. For those queues it is optional to call doca_flow_entries_process to get RESIZED event, specifically,
+              queue number 1 is skipped during entries processing while the remaining odd queues are not.
+              Sample Command Line: ./build/doca_flow_pipe_resize -- -l 60 -r pci/08:00.0,pf0sf[0-1]"
+use_cases:
+  - name: "Flow pipe resize use case #1 >> ptype basic"
+    args: "-ptype basic"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(src="1.2.3.4", dst="6.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, dropped')
+              - Ether()/IP(src="1.2.3.4", dst="9.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+              - Ether()/IP(src="1.2.3.4", dst="20.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+              - Ether()/IP(src="1.2.3.4", dst="30.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+              - Ether()/IP(src="1.2.3.4", dst="60.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+              - Ether()/IP(src="1.2.3.4", dst="88.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether()/IP(src="1.2.3.4", dst="9.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+                  - Ether()/IP(src="1.2.3.4", dst="20.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+                  - Ether()/IP(src="1.2.3.4", dst="30.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+                  - Ether()/IP(src="1.2.3.4", dst="60.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+                  - Ether()/IP(src="1.2.3.4", dst="88.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+          - type: dump
+            expected_text:
+              - "entries increased to 16"
+              - "entries increased to 32"
+              - "entries increased to 64"
+              - "entries increased to 128"
+  - name: "Flow pipe resize use case #2 >> ptype control"
+    args: "-ptype control"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(src="1.2.3.4", dst="6.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, dropped')
+              - Ether()/IP(src="1.2.3.4", dst="9.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+              - Ether()/IP(src="1.2.3.4", dst="20.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+              - Ether()/IP(src="1.2.3.4", dst="30.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+              - Ether()/IP(src="1.2.3.4", dst="60.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+              - Ether()/IP(src="1.2.3.4", dst="88.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether()/IP(src="1.2.3.4", dst="9.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+                  - Ether()/IP(src="1.2.3.4", dst="20.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+                  - Ether()/IP(src="1.2.3.4", dst="30.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+                  - Ether()/IP(src="1.2.3.4", dst="60.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+                  - Ether()/IP(src="1.2.3.4", dst="88.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, forwarded from port 1')
+          - type: dump
+            expected_text:
+              - "entries increased to 16"
+              - "entries increased to 32"
+              - "entries increased to 64"
+              - "entries increased to 128"

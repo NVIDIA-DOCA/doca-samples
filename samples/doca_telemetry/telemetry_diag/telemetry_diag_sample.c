@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -653,6 +653,41 @@ static doca_error_t telemetry_diag_sample_run_query_counters_by_max_samples(
 	return DOCA_SUCCESS;
 }
 
+/*
+ * Reconfigure the sample period
+ *
+ * @diag [in]: the telemetry diag object
+ * @reconfig_sample_period [in]: the reconfig sample period in nanoseconds
+ * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
+ */
+static doca_error_t telemetry_diag_sample_reconfig_sample_period(struct doca_telemetry_diag *diag,
+								 uint64_t reconfig_sample_period)
+{
+	uint64_t actual_sample_period;
+	doca_error_t result;
+
+	result = doca_telemetry_diag_reconfig_sample_period(diag, reconfig_sample_period);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to reconfig sample period with error=%s", doca_error_get_name(result));
+		return result;
+	}
+
+	/* Value may differ if the device cannot support the requested sample period */
+	result = doca_telemetry_diag_get_sample_period(diag, &actual_sample_period);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get actual reconfigured sample period with error=%s",
+			     doca_error_get_name(result));
+		return result;
+	}
+	if (actual_sample_period != reconfig_sample_period) {
+		DOCA_LOG_WARN("Actual sample period %lu is different from requested reconfig sample period %lu",
+			      actual_sample_period,
+			      reconfig_sample_period);
+	}
+
+	return DOCA_SUCCESS;
+}
+
 doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *cfg)
 {
 	doca_error_t result = DOCA_SUCCESS, teardown_result = DOCA_SUCCESS;
@@ -679,6 +714,7 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 	DOCA_LOG_DBG("	force_ownership=%u", cfg->force_ownership);
 	DOCA_LOG_DBG("	data_ids='%s'", cfg->data_ids_input_path);
 	DOCA_LOG_DBG("	num_data_id=%u", cfg->num_data_ids);
+	DOCA_LOG_DBG("	reconfig_sample_period=%lu", cfg->reconfig_sample_period);
 	for (uint32_t i = 0; i < cfg->num_data_ids; i++) {
 		DOCA_LOG_DBG("	entry %u: data_id=%llx, name='%s'",
 			     i,
@@ -766,6 +802,33 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 										 cfg->max_num_samples_per_read,
 										 size_of_sample,
 										 cfg->output_format);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to run query counters with error=%s", doca_error_get_name(result));
+			goto teardown;
+		}
+
+		if ((cfg->reconfig_sample_period == 0 &&
+		     cfg->sample_mode == DOCA_TELEMETRY_DIAG_SAMPLE_MODE_ON_DEMAND) ||
+		    (cfg->reconfig_sample_period != 0 && cfg->sample_mode == DOCA_TELEMETRY_DIAG_SAMPLE_MODE_SINGLE)) {
+			result = telemetry_diag_sample_reconfig_sample_period(sample_objects.telemetry_diag_obj,
+									      cfg->reconfig_sample_period);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to reconfig sample period with error=%s",
+					     doca_error_get_name(result));
+				goto teardown;
+			}
+			result = telemetry_diag_sample_run_query_counters_by_max_samples(&sample_objects,
+											 (1U
+											  << cfg->log_max_num_samples),
+											 cfg->max_num_samples_per_read,
+											 size_of_sample,
+											 cfg->output_format);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR(
+					"Failed to run query counters after reconfig new sample period with error=%s",
+					doca_error_get_name(result));
+			}
+		}
 		break;
 	case DOCA_TELEMETRY_DIAG_SAMPLE_MODE_REPETITIVE:
 		poll_interval = actual_sample_period * (cfg->max_num_samples_per_read - 1); /* Average time between
@@ -776,15 +839,35 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 									     size_of_sample,
 									     poll_interval,
 									     cfg->output_format);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to run query counters with error=%s", doca_error_get_name(result));
+			goto teardown;
+		}
+
+		if (cfg->reconfig_sample_period != 0) {
+			result = telemetry_diag_sample_reconfig_sample_period(sample_objects.telemetry_diag_obj,
+									      cfg->reconfig_sample_period);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to reconfig sample period with error=%s",
+					     doca_error_get_name(result));
+				goto teardown;
+			}
+			result = telemetry_diag_sample_run_query_counters_repetitive(&sample_objects,
+										     cfg->max_num_samples_per_read,
+										     total_run_time_nsec,
+										     size_of_sample,
+										     poll_interval,
+										     cfg->output_format);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR(
+					"Failed to run query counters after reconfig new sample period with error=%s",
+					doca_error_get_name(result));
+			}
+		}
 		break;
 	default:
 		DOCA_LOG_ERR("Failed to run query counters: unknown sample mode %d", cfg->sample_mode);
 		break;
-	}
-
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to run query counters with error=%s", doca_error_get_name(result));
-		goto teardown;
 	}
 
 teardown:

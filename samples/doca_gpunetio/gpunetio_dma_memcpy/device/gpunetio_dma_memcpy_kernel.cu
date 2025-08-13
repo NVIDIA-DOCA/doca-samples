@@ -33,17 +33,16 @@
 
 DOCA_LOG_REGISTER(GPU_DMA_MEMCPY::KERNEL);
 
-__global__ void
-cuda_kernel_print_gpu_buffer(uintptr_t gpu_buffer_addr,
-							struct doca_gpu_dma *dma_gpu,
-							struct doca_gpu_buf_arr *src_gpu_buf_arr,
-							struct doca_gpu_buf_arr *dst_gpu_buf_arr)
+__global__ void cuda_kernel_print_gpu_buffer(uintptr_t gpu_buffer_addr,
+					     struct doca_gpu_dma *dma_gpu,
+					     struct doca_gpu_buf_arr *src_gpu_buf_arr,
+					     struct doca_gpu_buf_arr *dst_gpu_buf_arr)
 {
 	doca_error_t result;
 	struct doca_gpu_buf *src_buf;
 	struct doca_gpu_buf *dst_buf;
 
-	printf("CUDA KERNEL INFO: The GPU destination buffer value after the memcpy: %s \n", (char*)gpu_buffer_addr);
+	printf("CUDA KERNEL INFO: The GPU destination buffer value after the memcpy: %s \n", (char *)gpu_buffer_addr);
 
 	doca_gpu_dev_buf_get_buf(src_gpu_buf_arr, threadIdx.x, &src_buf);
 	doca_gpu_dev_buf_get_buf(dst_gpu_buf_arr, threadIdx.x, &dst_buf);
@@ -62,11 +61,11 @@ cuda_kernel_print_gpu_buffer(uintptr_t gpu_buffer_addr,
 
 extern "C" {
 
-doca_error_t
-gpunetio_dma_memcpy_common_launch_kernel(cudaStream_t stream, uintptr_t gpu_buffer_addr,
-										struct doca_gpu_dma *dma_gpu,
-										struct doca_gpu_buf_arr *src_gpu_buf_arr,
-										struct doca_gpu_buf_arr *dst_gpu_buf_arr)
+doca_error_t gpunetio_dma_memcpy_common_launch_kernel(cudaStream_t stream,
+						      uintptr_t gpu_buffer_addr,
+						      struct doca_gpu_dma *dma_gpu,
+						      struct doca_gpu_buf_arr *src_gpu_buf_arr,
+						      struct doca_gpu_buf_arr *dst_gpu_buf_arr)
 {
 	cudaError_t result = cudaSuccess;
 

@@ -427,7 +427,7 @@ void devemu_resources_cleanup(struct devemu_resources *resources, bool destroy_r
 	}
 
 	if (resources->rep != NULL) {
-		res = destroy_rep ? doca_devemu_pci_dev_destroy_rep(resources->rep) :
+		res = destroy_rep ? doca_devemu_pci_type_destroy_rep(resources->rep) :
 				    doca_dev_rep_close(resources->rep);
 		if (res != DOCA_SUCCESS)
 			DOCA_LOG_ERR("Failed to close DOCA Emulated Device representor: %s", doca_error_get_descr(res));

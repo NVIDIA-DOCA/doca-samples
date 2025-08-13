@@ -132,18 +132,13 @@ struct storage_details_payload : public storage::control::message::payload {
  */
 struct init_storage_payload : public storage::control::message::payload {
 	uint32_t task_count;		       /* Number of tasks to use */
-	uint32_t batch_size;		       /* Batch size to use */
 	uint32_t core_count;		       /* Number of cores to use */
 	std::vector<uint8_t> mmap_export_blob; /* Remote memory the storage will read from / write to */
 
 	~init_storage_payload() override = default;
 	init_storage_payload() = default;
-	init_storage_payload(uint32_t task_count_,
-			     uint32_t batch_size_,
-			     uint32_t core_count_,
-			     std::vector<uint8_t> mmap_export_blob_)
+	init_storage_payload(uint32_t task_count_, uint32_t core_count_, std::vector<uint8_t> mmap_export_blob_)
 		: task_count{task_count_},
-		  batch_size{batch_size_},
 		  core_count{core_count_},
 		  mmap_export_blob{std::move(mmap_export_blob_)}
 	{

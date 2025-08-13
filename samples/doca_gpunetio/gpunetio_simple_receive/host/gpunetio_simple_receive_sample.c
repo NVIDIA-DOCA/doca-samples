@@ -184,7 +184,6 @@ static doca_error_t create_udp_pipe(struct rxq_queue *rxq)
 	struct doca_flow_fwd miss_fwd = {0};
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	struct doca_flow_pipe_entry *entry;
-	uint16_t flow_queue_id;
 	uint16_t rss_queues[1];
 	struct doca_flow_monitor monitor = {
 		.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED,
@@ -197,8 +196,8 @@ static doca_error_t create_udp_pipe(struct rxq_queue *rxq)
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
 
-	doca_eth_rxq_get_flow_queue_id(rxq->eth_rxq_cpu, &flow_queue_id);
-	rss_queues[0] = flow_queue_id;
+	doca_eth_rxq_apply_queue_id(rxq->eth_rxq_cpu, 0);
+	rss_queues[0] = 0;
 
 	fwd.type = DOCA_FLOW_FWD_RSS;
 	fwd.rss_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;

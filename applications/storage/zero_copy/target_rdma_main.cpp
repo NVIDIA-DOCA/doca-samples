@@ -31,7 +31,7 @@
 #include <doca_error.h>
 #include <doca_version.h>
 
-#include <storage_common/posix_utils.hpp>
+#include <storage_common/os_utils.hpp>
 #include <storage_common/doca_utils.hpp>
 #include <zero_copy/target_rdma_application.hpp>
 
@@ -76,30 +76,30 @@ storage::zero_copy::target_rdma_application::configuration parse_cli_args(int ar
 	storage::zero_copy::target_rdma_application::configuration config{};
 	doca_error_t ret;
 
-	ret = doca_argp_init("doca_storage_zero_copy_initiator_comch", &config);
+	ret = doca_argp_init(NULL, &config);
 	if (ret != DOCA_SUCCESS) {
 		throw std::runtime_error{"Failed to parse CLI args: "s + doca_error_get_name(ret)};
 	}
 
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_STRING,
 		"d",
 		"device",
 		"Device identifier",
-		storage::common::required_value,
-		storage::common::single_value,
+		storage::required_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::target_rdma_application::configuration *>(cfg)->device_id =
 				static_cast<char const *>(value);
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_INT,
 		nullptr,
 		"listen-port",
 		"TCP Port on which to listen for incoming connections",
-		storage::common::required_value,
-		storage::common::single_value,
+		storage::required_value,
+		storage::single_value,
 		[](void *value, void *cfg) noexcept {
 			auto port = *static_cast<int *>(value);
 			if (port > UINT16_MAX || port <= 0)
@@ -108,13 +108,13 @@ storage::zero_copy::target_rdma_application::configuration parse_cli_args(int ar
 				static_cast<uint16_t>(port);
 			return DOCA_SUCCESS;
 		});
-	storage::common::register_cli_argument(
+	storage::register_cli_argument(
 		DOCA_ARGP_TYPE_INT,
 		nullptr,
 		"cpu",
 		"CPU core to which the process affinity can be set",
-		storage::common::required_value,
-		storage::common::multiple_values,
+		storage::required_value,
+		storage::multiple_values,
 		[](void *value, void *cfg) noexcept {
 			static_cast<storage::zero_copy::target_rdma_application::configuration *>(cfg)
 				->cpu_set.push_back(*static_cast<int *>(value));
@@ -158,7 +158,7 @@ bool register_signal_handlers() noexcept
 	sigemptyset(&new_sigaction.sa_mask);
 
 	if (sigaction(SIGINT, &new_sigaction, nullptr) != 0) {
-		printf("failed to set SIGINT signal handler: %s\n", storage::common::strerror_r(errno).c_str());
+		printf("failed to set SIGINT signal handler: %s\n", storage::strerror_r(errno).c_str());
 		return false;
 	}
 
@@ -177,7 +177,7 @@ bool register_signal_handlers() noexcept
 int main(int argc, char **argv)
 {
 	int rc = EXIT_SUCCESS;
-	storage::common::create_doca_logger_backend();
+	storage::create_doca_logger_backend();
 	if (!register_signal_handlers()) {
 		return EXIT_FAILURE;
 	}

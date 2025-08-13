@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,7 +26,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <rte_byteorder.h>
 #include <rte_ethdev.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
@@ -36,7 +35,7 @@
 #include <doca_flow.h>
 #include <doca_dev.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 #include "flow_switch_common.h"
 
 DOCA_LOG_REGISTER(FLOW_SWITCH_TO_WIRE);
@@ -475,8 +474,8 @@ static doca_error_t add_switch_egress_pipe_entries(struct doca_flow_pipe *pipe, 
 
 	for (entry_index = 0; entry_index < NB_EGRESS_ENTRIES; entry_index++) {
 		dst_ip_addr = BE_IPV4_ADDR(8, 8, 8, 8 + entry_index);
-		dst_port = rte_cpu_to_be_16(80);
-		src_port = rte_cpu_to_be_16(1234);
+		dst_port = DOCA_HTOBE16(80);
+		src_port = DOCA_HTOBE16(1234);
 
 		match.outer.ip4.dst_ip = dst_ip_addr;
 		match.outer.tcp.l4_port.dst_port = dst_port;
@@ -533,8 +532,8 @@ static doca_error_t add_switch_ingress_pipe_entries(struct doca_flow_pipe *pipe,
 
 	for (entry_index = 0; entry_index < NB_INGRESS_ENTRIES; entry_index++) {
 		src_ip_addr = BE_IPV4_ADDR(1, 2, 3, 4 + entry_index);
-		dst_port = rte_cpu_to_be_16(80);
-		src_port = rte_cpu_to_be_16(1234);
+		dst_port = DOCA_HTOBE16(80);
+		src_port = DOCA_HTOBE16(1234);
 
 		match.outer.ip4.src_ip = src_ip_addr;
 		match.outer.tcp.l4_port.dst_port = dst_port;
@@ -586,7 +585,7 @@ static doca_error_t add_switch_vport_pipe_entries(struct doca_flow_pipe *pipe, s
 
 	for (entry_index = 0; entry_index < NB_VPORT_ENTRIES; entry_index++) {
 		dst_ip_addr = BE_IPV4_ADDR(8, 8, 8, 8 + entry_index);
-		src_port = rte_cpu_to_be_16(1234);
+		src_port = DOCA_HTOBE16(1234);
 
 		match.outer.ip4.dst_ip = dst_ip_addr;
 		match.outer.tcp.l4_port.src_port = src_port;
@@ -627,7 +626,6 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_resource_query query_stats;
 	struct entries_status status;
@@ -637,7 +635,6 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	struct doca_flow_mirror_target target = {0};
 	struct doca_flow_shared_resource_cfg cfg = {0};
 	struct doca_flow_resource_mirror_cfg mirror_cfg = {0};
-	struct doca_dev *doca_dev = ctx->doca_dev[0];
 	const char *start_str;
 	bool is_expert = ctx->is_expert;
 
@@ -655,11 +652,12 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 		return result;
 	}
 
-	/* Doca_dev is opened for proxy_port only */
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = doca_dev;
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, NB_TOTAL_ENTRIES));
-	result = init_doca_flow_ports(nb_ports, ports, false /* is_hairpin */, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(NB_TOTAL_ENTRIES));
+	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+					     ctx->devs_ctx.nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

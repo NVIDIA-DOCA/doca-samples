@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -54,14 +54,11 @@ struct doca_buf;
 struct application_port_config {
 	int nb_ports;	      /* Set on init to 0 for don't care, required ports otherwise */
 	uint16_t nb_queues;   /* Set on init to 0 for don't care, required minimum cores otherwise */
-	int nb_hairpin_q;     /* Set on init to 0 to disable, hairpin queues otherwise */
 	uint16_t mbuf_size;   /* Set on init to 0 for don't care, packet mbuf size (including headroom) otherwise */
 	uint64_t tx_offloads; /* Set on init to 0 for don't care, port tx offload flags otherwise */
 	uint16_t enable_mbuf_metadata : 1; /* Set on init to 0 to disable, otherwise it will add meta to each mbuf */
-	uint16_t self_hairpin : 1;	   /* Set on init to 1 enable both self and peer hairpin */
 	uint16_t rss_support : 1;	   /* Set on init to 0 for no RSS support, RSS support otherwise */
 	uint16_t lpbk_support : 1;	   /* Enable loopback support */
-	uint16_t isolated_mode : 1;	   /* Set on init to 0 for no isolation, isolated mode otherwise */
 	uint16_t switch_mode : 1;	   /* Set on init to 1 for switch mode */
 };
 
@@ -74,6 +71,13 @@ struct application_dpdk_config {
 						     * for allocating rte_pktmbuf
 						     */
 };
+
+/*
+ * Destroy DPDK environment end close all opened devices.
+ *
+ * @nb_devs [in]: number of opened devices to close in this function.
+ */
+void dpdk_fini_with_devs(uint16_t nb_devs);
 
 /*
  * Initialize DPDK environment

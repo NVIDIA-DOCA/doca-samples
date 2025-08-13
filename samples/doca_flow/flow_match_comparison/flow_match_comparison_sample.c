@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -30,7 +30,7 @@
 #include <doca_flow.h>
 #include <doca_bitfield.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 #define META_U32_BIT_OFFSET(idx) (offsetof(struct doca_flow_meta, u32[(idx)]) << 3)
 #define NB_ACTION_DESC (3)
@@ -314,8 +314,8 @@ static doca_error_t add_sum_to_meta_pipe_entry(struct doca_flow_pipe *pipe, stru
 
 	doca_be32_t dst_ip_addr = BE_IPV4_ADDR(8, 8, 8, 8);
 	doca_be32_t src_ip_addr = BE_IPV4_ADDR(1, 2, 3, 4);
-	doca_be16_t dst_port = rte_cpu_to_be_16(80);
-	doca_be16_t src_port = rte_cpu_to_be_16(1234);
+	doca_be16_t dst_port = DOCA_HTOBE16(80);
+	doca_be16_t src_port = DOCA_HTOBE16(1234);
 
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
@@ -347,7 +347,6 @@ doca_error_t flow_match_comparison(int nb_queues)
 	struct doca_flow_pipe *comparison_pipe;
 	struct doca_flow_pipe *match_meta_pipe;
 	struct doca_flow_pipe *sum_pipe;
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status status;
 	int num_of_entries = 3;
@@ -360,9 +359,8 @@ doca_error_t flow_match_comparison(int nb_queues)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, num_of_entries));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

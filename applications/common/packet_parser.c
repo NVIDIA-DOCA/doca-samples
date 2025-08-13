@@ -74,7 +74,7 @@ static inline doca_error_t ipv6_hdr_parse(const uint8_t *data, const uint8_t *da
 	struct rte_ipv6_hdr *ipv6_hdr = (struct rte_ipv6_hdr *)data;
 	struct rte_ipv6_fragment_ext *ipv6_frag_ext = NULL;
 	size_t total_len = sizeof(*ipv6_hdr);
-	uint8_t next_proto;
+	uint8_t next_proto = IPPROTO_NONE;
 	size_t ext_len;
 	int proto;
 

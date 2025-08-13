@@ -46,7 +46,7 @@
 
 #include <storage_common/aligned_new.hpp>
 #include <storage_common/doca_utils.hpp>
-#include <storage_common/posix_utils.hpp>
+#include <storage_common/os_utils.hpp>
 
 #include <zero_copy/control_message.hpp>
 #include <zero_copy/io_message.hpp>
@@ -82,7 +82,7 @@ static_assert(sizeof(transaction_context) == 24, "Expected transaction_context t
  * callbacks. This is done to keep the maximum amount of useful data resident in the cache while avoiding as many cache
  * evictions as possible.
  */
-struct alignas(storage::common::cache_line_size) thread_hot_data {
+struct alignas(storage::cache_line_size) thread_hot_data {
 	uint32_t remaining_rx_ops;
 	uint32_t remaining_tx_ops;
 	uint32_t latency_min;
@@ -230,9 +230,8 @@ std::array<uint8_t, 4> fixed_data_patterns{
 };
 
 static_assert(sizeof(std::atomic_bool) == 1, "Expected atomic bool to occupy 1 byte");
-static_assert(sizeof(thread_hot_data) == storage::common::cache_line_size,
-	      "Expected hot_data_context to occupy 1 cache line");
-static_assert(std::alignment_of<thread_hot_data>::value == storage::common::cache_line_size,
+static_assert(sizeof(thread_hot_data) == storage::cache_line_size, "Expected hot_data_context to occupy 1 cache line");
+static_assert(std::alignment_of<thread_hot_data>::value == storage::cache_line_size,
 	      "Expected hot_data_context to be cache aligned");
 
 struct thread_context {
@@ -877,8 +876,8 @@ void thread_hot_data::set_initial_data_content(uint32_t iteration)
 	auto const pattern = fixed_data_patterns[iteration % fixed_data_patterns.size()];
 
 	for (uint32_t ii = 0; ii != transactions_size; ++ii) {
-		auto *io_message = storage::common::get_buffer_bytes(
-			doca_comch_producer_task_send_get_buf(transactions[ii].request));
+		auto *io_message =
+			storage::get_buffer_bytes(doca_comch_producer_task_send_get_buf(transactions[ii].request));
 		auto *data_addr = reinterpret_cast<uint8_t *>(io_message_view::get_io_address(io_message));
 		auto data_size = io_message_view::get_io_size(io_message);
 		auto *const data_end = data_addr + data_size;
@@ -896,8 +895,8 @@ void thread_hot_data::set_initial_data_content(uint32_t iteration)
 void thread_hot_data::set_operation(io_message_type operation)
 {
 	for (uint32_t ii = 0; ii != transactions_size; ++ii) {
-		auto *io_message = const_cast<char *>(storage::common::get_buffer_bytes(
-			doca_comch_producer_task_send_get_buf(transactions[ii].request)));
+		auto *io_message = const_cast<char *>(
+			storage::get_buffer_bytes(doca_comch_producer_task_send_get_buf(transactions[ii].request)));
 		io_message_view::set_type(operation, io_message);
 	}
 }
@@ -915,8 +914,8 @@ void thread_hot_data::modify_data_content(uint32_t iteration)
 	auto const pattern = fixed_data_patterns[(iteration + 1) % fixed_data_patterns.size()];
 
 	for (uint32_t ii = 0; ii != transactions_size; ++ii) {
-		auto *io_message = storage::common::get_buffer_bytes(
-			doca_comch_producer_task_send_get_buf(transactions[ii].request));
+		auto *io_message =
+			storage::get_buffer_bytes(doca_comch_producer_task_send_get_buf(transactions[ii].request));
 		auto *data_addr = reinterpret_cast<uint8_t *>(io_message_view::get_io_address(io_message));
 		auto data_size = io_message_view::get_io_size(io_message);
 		auto *const data_end = data_addr + data_size;
@@ -940,8 +939,8 @@ bool thread_hot_data::validate_data(uint32_t iteration, uint32_t valid_task_coun
 	bool is_valid_data = true;
 
 	for (uint32_t ii = 0; ii != valid_task_count; ++ii) {
-		auto *io_message = storage::common::get_buffer_bytes(
-			doca_comch_producer_task_send_get_buf(transactions[ii].request));
+		auto *io_message =
+			storage::get_buffer_bytes(doca_comch_producer_task_send_get_buf(transactions[ii].request));
 		auto *data_addr = reinterpret_cast<uint8_t *>(io_message_view::get_io_address(io_message));
 		auto data_size = io_message_view::get_io_size(io_message);
 		auto *const data_end = data_addr + data_size;
@@ -962,9 +961,7 @@ void thread_context::destroy_consumer_and_producer(void)
 
 	if (producer) {
 		DOCA_LOG_DBG("Stop doca_comch_producer(%p)", producer);
-		ret = storage::common::stop_context(doca_comch_producer_as_ctx(producer),
-						    hot_context.data_pe,
-						    io_requests);
+		ret = storage::stop_context(doca_comch_producer_as_ctx(producer), hot_context.data_pe, io_requests);
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to stop doca_comch_producer: %s", doca_error_get_name(ret));
 		}
@@ -981,9 +978,7 @@ void thread_context::destroy_consumer_and_producer(void)
 
 	if (consumer) {
 		DOCA_LOG_DBG("Stop doca_comch_consumer(%p)", consumer);
-		ret = storage::common::stop_context(doca_comch_consumer_as_ctx(consumer),
-						    hot_context.data_pe,
-						    io_responses);
+		ret = storage::stop_context(doca_comch_consumer_as_ctx(consumer), hot_context.data_pe, io_responses);
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to stop doca_comch_consumer: %s", doca_error_get_name(ret));
 		}
@@ -1062,7 +1057,7 @@ thread_context::thread_context(initiator_comch_application::configuration const 
 {
 	doca_error_t ret;
 
-	auto const page_size = storage::common::get_system_page_size();
+	auto const page_size = storage::get_system_page_size();
 	/*
 	 * Allocate enough memory for at N tasks + cfg.batch_size where N is the smaller value of:
 	 * cfg.buffer_count or cfg.run_limit_operation_count. cfg.batch_size tasks are over-allocated due to how
@@ -1079,15 +1074,15 @@ thread_context::thread_context(initiator_comch_application::configuration const 
 		     raw_io_messages_size,
 		     page_size);
 
-	raw_io_messages = static_cast<char *>(
-		aligned_alloc(page_size, storage::common::aligned_size(page_size, raw_io_messages_size)));
+	raw_io_messages =
+		static_cast<char *>(aligned_alloc(page_size, storage::aligned_size(page_size, raw_io_messages_size)));
 	if (raw_io_messages == nullptr) {
 		throw std::runtime_error{"Failed to allocate comch fast path buffers memory"};
 	}
 
 	try {
-		hot_context.transactions = storage::common::make_aligned<transaction_context>{}.object_array(
-			hot_context.transactions_size);
+		hot_context.transactions =
+			storage::make_aligned<transaction_context>{}.object_array(hot_context.transactions_size);
 	} catch (std::exception const &ex) {
 		throw std::runtime_error{"Failed to allocate transaction contexts memory: "s + ex.what()};
 	}
@@ -1098,27 +1093,26 @@ thread_context::thread_context(initiator_comch_application::configuration const 
 		throw std::runtime_error{"Failed to create doca_pe: "s + doca_error_get_name(ret)};
 	}
 
-	io_message_mmap =
-		storage::common::make_mmap(dev,
-					   raw_io_messages,
-					   raw_io_messages_size,
-					   DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_PCI_READ_WRITE);
+	io_message_mmap = storage::make_mmap(dev,
+					     raw_io_messages,
+					     raw_io_messages_size,
+					     DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_PCI_READ_WRITE);
 
-	producer = storage::common::make_comch_producer(comch_conn,
-							hot_context.data_pe,
-							tasks_per_thread,
-							doca_data{.ptr = std::addressof(hot_context)},
-							doca_comch_producer_task_send_cb,
-							doca_comch_producer_task_send_error_cb);
+	producer = storage::make_comch_producer(comch_conn,
+						hot_context.data_pe,
+						tasks_per_thread,
+						doca_data{.ptr = std::addressof(hot_context)},
+						doca_comch_producer_task_send_cb,
+						doca_comch_producer_task_send_error_cb);
 	io_requests.reserve(tasks_per_thread);
 
-	consumer = storage::common::make_comch_consumer(comch_conn,
-							io_message_mmap,
-							hot_context.data_pe,
-							tasks_per_thread + cfg.batch_size,
-							doca_data{.ptr = std::addressof(hot_context)},
-							doca_comch_consumer_task_post_recv_cb,
-							doca_comch_consumer_task_post_recv_error_cb);
+	consumer = storage::make_comch_consumer(comch_conn,
+						io_message_mmap,
+						hot_context.data_pe,
+						tasks_per_thread + cfg.batch_size,
+						doca_data{.ptr = std::addressof(hot_context)},
+						doca_comch_consumer_task_post_recv_cb,
+						doca_comch_consumer_task_post_recv_error_cb);
 	io_responses.reserve(tasks_per_thread + cfg.batch_size);
 
 	ret = doca_buf_inventory_create((tasks_per_thread * 2) + cfg.batch_size, &io_message_inv);
@@ -1262,7 +1256,7 @@ initiator_comch_application_impl::~initiator_comch_application_impl()
 
 	if (m_comch_client) {
 		DOCA_LOG_DBG("Stop doca_comch_client(%p)", m_comch_client);
-		ret = storage::common::stop_context(doca_comch_client_as_ctx(m_comch_client), m_ctrl_pe);
+		ret = storage::stop_context(doca_comch_client_as_ctx(m_comch_client), m_ctrl_pe);
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to stop doca_comch_client: %s", doca_error_get_name(ret));
 		}
@@ -1340,7 +1334,7 @@ bool initiator_comch_application_impl::run(void)
 	doca_error_t ret;
 
 	DOCA_LOG_INFO("Open doca_dev: %s", m_cfg.device_id.c_str());
-	m_dev = storage::common::open_device(m_cfg.device_id);
+	m_dev = storage::open_device(m_cfg.device_id);
 
 	DOCA_LOG_DBG("Create control progress engine");
 	ret = doca_pe_create(&m_ctrl_pe);
@@ -1397,7 +1391,7 @@ bool initiator_comch_application_impl::run(void)
 		}
 
 		try {
-			storage::common::set_thread_affinity(m_thread_contexts[ii].thread, m_cfg.cpu_set[ii]);
+			storage::set_thread_affinity(m_thread_contexts[ii].thread, m_cfg.cpu_set[ii]);
 		} catch (std::exception const &) {
 			m_thread_contexts[ii].hot_context.abort("Failed to set affinity for thread to core: "s +
 								std::to_string(m_cfg.cpu_set[ii]));
@@ -1643,7 +1637,7 @@ void initiator_comch_application_impl::create_comch_control(void)
 	ret = doca_comch_client_task_send_set_conf(m_comch_client,
 						   doca_comch_task_send_cb,
 						   doca_comch_task_send_error_cb,
-						   storage::common::max_concurrent_control_messages);
+						   storage::max_concurrent_control_messages);
 	if (ret != DOCA_SUCCESS) {
 		throw std::runtime_error{"Failed to configure doca_comch_client send task pool: "s +
 					 doca_error_get_name(ret)};
@@ -1726,14 +1720,14 @@ void initiator_comch_application_impl::connect_comch_control(void)
  */
 void initiator_comch_application_impl::configure_storage(void)
 {
-	auto const page_size = storage::common::get_system_page_size();
+	auto const page_size = storage::get_system_page_size();
 	auto const memory_region_size = m_cfg.buffer_count * m_cfg.buffer_size * m_cfg.cpu_set.size();
 	DOCA_LOG_DBG("Allocate buffers memory (%u bytes, aligned to %u byte pages)",
 		     m_cfg.buffer_count * m_cfg.buffer_size,
 		     page_size);
 
-	m_raw_io_data = static_cast<char *>(
-		aligned_alloc(page_size, storage::common::aligned_size(page_size, memory_region_size)));
+	m_raw_io_data =
+		static_cast<char *>(aligned_alloc(page_size, storage::aligned_size(page_size, memory_region_size)));
 	if (m_raw_io_data == nullptr) {
 		throw std::runtime_error{"Failed to allocate buffers memory"};
 	}
@@ -1741,7 +1735,7 @@ void initiator_comch_application_impl::configure_storage(void)
 	auto constexpr io_data_mmap_flags = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_PCI_READ_WRITE |
 					    DOCA_ACCESS_FLAG_RDMA_WRITE | DOCA_ACCESS_FLAG_RDMA_READ;
 
-	m_io_data_mmap = storage::common::make_mmap(m_dev, m_raw_io_data, memory_region_size, io_data_mmap_flags);
+	m_io_data_mmap = storage::make_mmap(m_dev, m_raw_io_data, memory_region_size, io_data_mmap_flags);
 
 	DOCA_LOG_INFO("Configuring storage using: %u buffers of %u bytes", m_cfg.buffer_count, m_cfg.buffer_size);
 	auto const request = make_configure_data_path_control_message(
@@ -1780,10 +1774,10 @@ void initiator_comch_application_impl::configure_storage(void)
 void initiator_comch_application_impl::prepare_data_path(void)
 {
 	try {
-		m_thread_contexts = storage::common::make_aligned<thread_context>{}.object_array(m_cfg.cpu_set.size(),
-												 m_cfg,
-												 m_dev,
-												 m_comch_conn);
+		m_thread_contexts = storage::make_aligned<thread_context>{}.object_array(m_cfg.cpu_set.size(),
+											 m_cfg,
+											 m_dev,
+											 m_comch_conn);
 	} catch (std::exception const &ex) {
 		throw std::runtime_error{"Failed to allocate thread contexts: "s + ex.what()};
 	}
@@ -1813,10 +1807,10 @@ void initiator_comch_application_impl::prepare_data_path(void)
 		uint32_t num_ready_producers = 0;
 		for (uint32_t ii = 0; ii != m_cfg.cpu_set.size(); ++ii) {
 			static_cast<void>(doca_pe_progress(m_thread_contexts[ii].hot_context.data_pe));
-			num_ready_consumers += storage::common::is_ctx_running(
-				doca_comch_consumer_as_ctx(m_thread_contexts[ii].consumer));
-			num_ready_producers += storage::common::is_ctx_running(
-				doca_comch_producer_as_ctx(m_thread_contexts[ii].producer));
+			num_ready_consumers +=
+				storage::is_ctx_running(doca_comch_consumer_as_ctx(m_thread_contexts[ii].consumer));
+			num_ready_producers +=
+				storage::is_ctx_running(doca_comch_producer_as_ctx(m_thread_contexts[ii].producer));
 		}
 
 		if (m_remote_consumer_ids.size() == m_cfg.cpu_set.size() &&
@@ -1851,7 +1845,7 @@ void initiator_comch_application_impl::stop_storage(void)
 
 	auto &transaction = thread_context.hot_context.transactions[0];
 	transaction.refcount = 2;
-	auto *const io_message = storage::common::get_buffer_bytes(
+	auto *const io_message = storage::get_buffer_bytes(
 		const_cast<doca_buf *>(doca_comch_producer_task_send_get_buf(transaction.request)));
 	io_message_view::set_type(io_message_type::stop, io_message);
 

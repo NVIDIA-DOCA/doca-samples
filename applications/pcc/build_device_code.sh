@@ -47,8 +47,7 @@ DOCA_LIB_DIR=$3
 PCC_APP_NAME=$4
 PCC_DEV_STUBS_KEEP_DIR=$5
 ENABLE_TX_COUNTER_SAMPLING=$6
-ENABLE_NP_RX_RATE=$7
-DPACC_MCPU_FLAG=$8
+DPACC_MCPU_FLAG=$7
 
 # Tools location - DPACC, DPA compiler
 MLNX_INSTALL_PATH="/opt/mellanox"
@@ -86,16 +85,6 @@ then
         if [ ${AMALGAMATION_BUILD_MODE} = "true" ]; then
                 APP_INC_LIST="${APP_INC_LIST} -I${DOCA_PCC_DIR}/device/include/rp -I${DOCA_PCC_DIR}/device/adb_gen/"
         fi
-elif [ ${PCC_APP_NAME} = "pcc_np_nic_telemetry_app" ]
-then
-        DOCA_PCC_DEV_LIB_NAME="doca_pcc_np_dev"
-        PCC_DEV_NP_NIC_TELEM_DIR=${PCC_APP_DEVICE_SRC_DIR}/np/nic_telemetry
-        PCC_APP_DEVICE_SRCS=${PCC_DEV_NP_NIC_TELEM_DIR}/np_nic_telemetry_dev_main.c
-        PCC_DEVICE_SRC_FILES="${PCC_APP_DEVICE_SRCS}"
-        APP_INC_LIST="${DOCA_INC_LIST}"
-        if [ ${AMALGAMATION_BUILD_MODE} = "true" ]; then
-                APP_INC_LIST="${APP_INC_LIST} -I${DOCA_PCC_DIR}/device/include/np"
-        fi
 elif [ ${PCC_APP_NAME} = "pcc_np_switch_telemetry_app" ]
 then
         DOCA_PCC_DEV_LIB_NAME="doca_pcc_np_dev"
@@ -123,13 +112,7 @@ then
 	DOCA_PCC_SAMPLE_TX_BYTES="-DDOCA_PCC_SAMPLE_TX_BYTES"
 fi
 
-DOCA_PCC_NP_RX_RATE=""
-if [ ${ENABLE_NP_RX_RATE} = "true" ]
-then
-	DOCA_PCC_NP_RX_RATE="-DDOCA_PCC_NP_RX_RATE"
-fi
-
-APP_FLAGS="${DOCA_PCC_SAMPLE_TX_BYTES}, ${DOCA_PCC_NP_RX_RATE}"
+APP_FLAGS="${DOCA_PCC_SAMPLE_TX_BYTES}"
 
 function generate_prog_from_stubs()
 {

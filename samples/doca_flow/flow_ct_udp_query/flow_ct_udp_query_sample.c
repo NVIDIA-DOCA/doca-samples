@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,12 +32,14 @@
 #include <doca_flow_ct.h>
 
 #include "flow_ct_common.h"
-#include "flow_common.h"
+#include <flow_common.h>
+#include "flow_switch_common.h"
 
 #define PACKET_BURST 128
 
 #define DEFAULT_UDP_DELAY_S 2
 #define DEFAULT_CNT_QUERY_INTERVAL 1
+#define CT_SHARED_COUNTERS 1
 
 DOCA_LOG_REGISTER(FLOW_CT_UDP);
 
@@ -203,7 +205,7 @@ static doca_error_t create_vxlan_encap_pipe(struct doca_flow_port *port,
 	actions.encap_cfg.encap.outer.ip4.dst_ip = 0xffffffff;
 	actions.encap_cfg.encap.outer.ip4.ttl = 0xff;
 	actions.encap_cfg.encap.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-	actions.encap_cfg.encap.outer.udp.l4_port.dst_port = RTE_BE16(DOCA_FLOW_VXLAN_DEFAULT_PORT);
+	actions.encap_cfg.encap.outer.udp.l4_port.dst_port = DOCA_HTOBE16(DOCA_FLOW_VXLAN_DEFAULT_PORT);
 	actions.encap_cfg.encap.tun.type = DOCA_FLOW_TUN_VXLAN;
 	actions.encap_cfg.encap.tun.vxlan_tun_id = 0xffffffff;
 	actions.encap_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
@@ -360,8 +362,8 @@ static doca_error_t create_count_pipe(struct doca_flow_port *port,
 	memset(&match, 0, sizeof(match));
 	match.outer.ip4.dst_ip = BE_IPV4_ADDR(8, 8, 8, 8);
 	match.outer.ip4.src_ip = BE_IPV4_ADDR(1, 2, 3, 4);
-	match.outer.udp.l4_port.dst_port = rte_cpu_to_be_16(80);
-	match.outer.udp.l4_port.src_port = rte_cpu_to_be_16(1234);
+	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(80);
+	match.outer.udp.l4_port.src_port = DOCA_HTOBE16(1234);
 
 	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
@@ -429,15 +431,16 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 				    struct doca_flow_pipe_entry **entry)
 {
 	struct rte_mbuf *packets[PACKET_BURST];
-	struct doca_flow_ct_match match_o;
-	struct doca_flow_ct_match match_r;
-	uint32_t flags;
+	struct doca_flow_ct_match match_o_asym;
+	struct doca_flow_ct_match match_r_asym;
+	struct doca_flow_ct_match match_o_shared;
+	struct doca_flow_ct_match match_r_shared;
+	uint32_t entry_flags, prepare_flags;
 	doca_error_t result;
-	int i, entries, nb_packets = 0;
-	bool conn_found = false;
+	int i, nb_packets = 0;
 
-	memset(&match_o, 0, sizeof(match_o));
-	memset(&match_r, 0, sizeof(match_r));
+	memset(&match_o_asym, 0, sizeof(match_o_asym));
+	memset(&match_r_asym, 0, sizeof(match_r_asym));
 
 	nb_packets = rte_eth_rx_burst(0, 0, packets, PACKET_BURST);
 	if (nb_packets == 0) {
@@ -445,63 +448,72 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	entries = 0;
 	DOCA_LOG_INFO("Sample received %d packets", nb_packets);
 	for (i = 0; i < PACKET_BURST && i < nb_packets; i++) {
-		parse_packet(packets[i], &match_o, &match_r);
-		flags = DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS | DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN |
-			DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_REPLY;
-		/* Allocate CT entry */
-		result = doca_flow_ct_entry_prepare(ct_queue,
-						    NULL,
-						    flags,
-						    &match_o,
-						    packets[i]->hash.rss,
-						    &match_r,
-						    packets[i]->hash.rss,
-						    entry,
-						    &conn_found);
+		parse_packet(packets[i], &match_o_asym, &match_r_asym);
+		match_o_shared = match_o_asym; /* Copy all values */
+		match_r_shared = match_r_asym; /* Copy all values */
+		match_o_shared.ipv4.l4_port.src_port =
+			DOCA_BETOH16(DOCA_HTOBE16(match_o_asym.ipv4.l4_port.src_port) + 1);
+		match_o_shared.ipv4.l4_port.dst_port =
+			DOCA_BETOH16(DOCA_HTOBE16(match_o_asym.ipv4.l4_port.dst_port) + 1);
+		match_r_shared.ipv4.l4_port.src_port = match_o_shared.ipv4.l4_port.dst_port;
+		match_r_shared.ipv4.l4_port.dst_port = match_o_shared.ipv4.l4_port.src_port;
+
+		prepare_flags = DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS | DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN |
+				DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_REPLY;
+
+		/* First entry with asymmetric counter */
+		entry_flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
+			      DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN |
+			      DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY;
+		result = flow_ct_create_entry(port,
+					      ct_queue,
+					      NULL,
+					      prepare_flags,
+					      entry_flags,
+					      &match_o_asym,
+					      &match_r_asym,
+					      packets[i]->hash.rss,
+					      packets[i]->hash.rss,
+					      NULL,
+					      NULL,
+					      0,
+					      0,
+					      0,
+					      ct_status,
+					      &entry[0]);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to prepare CT entry\n");
+			DOCA_LOG_ERR("Failed to handle CT entry\n");
 			return result;
 		}
 
-		if (!conn_found) {
-			flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
-				DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY;
-			result = doca_flow_ct_add_entry(ct_queue,
-							NULL,
-							flags,
-							&match_o,
-							&match_r,
-							NULL,
-							NULL,
-							0,
-							0,
-							0,
-							ct_status,
-							*entry);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to add CT pipe an entry: %s", doca_error_get_descr(result));
-				return result;
-			}
-			entries++;
-		}
-	}
+		/* Second entry with shared counter */
+		entry_flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
+			      DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN |
+			      DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_SHARED;
+		result = flow_ct_create_entry(port,
+					      ct_queue,
+					      NULL,
+					      prepare_flags,
+					      entry_flags,
+					      &match_o_shared,
+					      &match_r_shared,
+					      packets[i]->hash.rss,
+					      packets[i]->hash.rss,
+					      NULL,
+					      NULL,
+					      0,
+					      0,
+					      0,
+					      ct_status,
+					      &entry[1]);
 
-	while (ct_status->nb_processed != entries) {
-		result = doca_flow_ct_entries_process(port, ct_queue, 0, 0, NULL);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to process Flow CT entries: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed to handle CT entry\n");
 			return result;
 		}
-
-		if (ct_status->failure) {
-			DOCA_LOG_ERR("Flow CT entries process returned with a failure");
-			return DOCA_ERROR_BAD_STATE;
-		}
 	}
-
 	return DOCA_SUCCESS;
 }
 
@@ -509,28 +521,28 @@ static doca_error_t process_packets(struct doca_flow_port *port,
  * Run flow_ct_udp_query sample
  *
  * @nb_queues [in]: number of queues the sample will use
- * @ct_dev [in]: Flow CT device
+ * @ctx [in]: flow switch context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t flow_ct_udp_query(uint16_t nb_queues, struct doca_dev *ct_dev)
+doca_error_t flow_ct_udp_query(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 {
 	const int nb_ports = 2, nb_entries = 6;
 	struct flow_resources resource;
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
-	struct doca_flow_pipe_entry *ct_entry;
+	struct doca_flow_pipe_entry *ct_entry[2];
 	struct doca_flow_pipe *rss_pipe, *encap_pipe, *count_pipe, *ct_pipe = NULL, *udp_pipe;
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_flow_meta o_zone_mask, o_modify_mask, r_zone_mask, r_modify_mask;
-	struct doca_flow_resource_query query_o, query_r;
-	struct doca_dev *dev_arr[nb_ports];
+	struct doca_flow_meta o_zone_mask, r_zone_mask;
+	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
+	struct doca_flow_resource_query query_o_asym, query_r_asym, query_o_shared, query_r_shared;
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ctrl_status, ct_status;
-	uint64_t last_hit_s = 0;
-	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 0, nb_ipv4_sessions = 1024,
-			   nb_ipv6_sessions = 0; /* On BF2 should always be 0 */
+	uint64_t last_hit_s_asym, last_hit_s_shared;
+	uint32_t ct_flags, num_total_sessions, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 0,
+					       nb_ipv4_sessions = 1024, nb_ipv6_sessions = 0; /* On BF2 should always be
+												 0 */
 	uint16_t ct_queue = nb_queues;
 	doca_error_t result;
-	FILE *fd;
 
 	memset(&ctrl_status, 0, sizeof(ctrl_status));
 	memset(&ct_status, 0, sizeof(ct_status));
@@ -538,7 +550,7 @@ doca_error_t flow_ct_udp_query(uint16_t nb_queues, struct doca_dev *ct_dev)
 
 	resource.nr_counters = 1;
 
-	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws,isolated", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -550,6 +562,7 @@ doca_error_t flow_ct_udp_query(uint16_t nb_queues, struct doca_dev *ct_dev)
 	memset(&r_zone_mask, 0, sizeof(r_zone_mask));
 	memset(&r_modify_mask, 0, sizeof(r_modify_mask));
 
+	num_total_sessions = nb_ipv4_sessions + nb_ipv6_sessions;
 	ct_flags = DOCA_FLOW_CT_FLAG_NO_AGING;
 	result = init_doca_flow_ct(ct_flags,
 				   nb_arm_queues,
@@ -558,6 +571,7 @@ doca_error_t flow_ct_udp_query(uint16_t nb_queues, struct doca_dev *ct_dev)
 				   NULL,
 				   nb_ipv4_sessions,
 				   nb_ipv6_sessions,
+				   num_total_sessions - CT_SHARED_COUNTERS, /*num of asymmetric counters*/
 				   DUP_FILTER_CONN_NUM,
 				   false,
 				   &o_zone_mask,
@@ -570,10 +584,12 @@ doca_error_t flow_ct_udp_query(uint16_t nb_queues, struct doca_dev *ct_dev)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	dev_arr[0] = ct_dev;
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, nb_entries));
-	result = init_doca_flow_ports(nb_ports, ports, false, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_entries));
+	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+					     ctx->devs_ctx.nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_ct_destroy();
@@ -610,44 +626,53 @@ doca_error_t flow_ct_udp_query(uint16_t nb_queues, struct doca_dev *ct_dev)
 	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
 	sleep(5);
 
-	result = process_packets(ports[0], ct_queue, &ct_status, &ct_entry);
+	result = process_packets(ports[0], ct_queue, &ct_status, ct_entry);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
 	sleep(DEFAULT_UDP_DELAY_S + DEFAULT_CNT_QUERY_INTERVAL);
 
-	DOCA_LOG_INFO("Same UDP packet should be resent");
+	DOCA_LOG_INFO("Same UDP packet should be resent. wait for packet to arrive");
 	sleep(5);
-
-	fd = fopen("port_0_info.txt", "w");
-	if (fd == NULL) {
-		DOCA_LOG_ERR("Failed to open the file");
-		result = DOCA_ERROR_IO_FAILED;
-		goto cleanup;
-	}
-
-	/* dump port 0 info to a file */
-	doca_flow_port_pipes_dump(ports[0], fd);
-	fclose(fd);
-
+	/* Query asymmetric counter */
 	result = doca_flow_ct_query_entry(ct_queue,
 					  ct_pipe,
 					  DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT,
-					  ct_entry,
-					  &query_o,
-					  &query_r,
-					  &last_hit_s);
+					  ct_entry[0],
+					  &query_o_asym,
+					  &query_r_asym,
+					  &last_hit_s_asym);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to query CT entry: %s", doca_error_get_descr(result));
 		goto cleanup;
 	}
 
+	/* Query shared counter */
+	result = doca_flow_ct_query_entry(ct_queue,
+					  ct_pipe,
+					  DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT,
+					  ct_entry[1],
+					  &query_o_shared,
+					  &query_r_shared,
+					  &last_hit_s_shared);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query CT entry: %s", doca_error_get_descr(result));
+		goto cleanup;
+	}
 	DOCA_LOG_INFO("Port 0:");
-	DOCA_LOG_INFO("Origin Total bytes: %ld", query_o.counter.total_bytes);
-	DOCA_LOG_INFO("Origin Total packets: %ld", query_o.counter.total_pkts);
-	DOCA_LOG_INFO("Reply Total bytes: %ld", query_r.counter.total_bytes);
-	DOCA_LOG_INFO("Reply Total packets: %ld", query_r.counter.total_pkts);
-	DOCA_LOG_INFO("Last hit since Epoch (sec) : %ld", last_hit_s);
+	DOCA_LOG_INFO("Asymmetric counter:");
+	DOCA_LOG_INFO("Origin Total bytes: %ld", query_o_asym.counter.total_bytes);
+	DOCA_LOG_INFO("Origin Total packets: %ld", query_o_asym.counter.total_pkts);
+	DOCA_LOG_INFO("Reply Total bytes: %ld", query_r_asym.counter.total_bytes);
+	DOCA_LOG_INFO("Reply Total packets: %ld", query_r_asym.counter.total_pkts);
+	DOCA_LOG_INFO("Last hit since Epoch (sec) : %ld", last_hit_s_asym);
+
+	DOCA_LOG_INFO("Shared counter:");
+	DOCA_LOG_INFO("Origin Total bytes: %ld", query_o_shared.counter.total_bytes);
+	DOCA_LOG_INFO("Origin Total packets: %ld", query_o_shared.counter.total_pkts);
+	DOCA_LOG_INFO("Reply Total bytes: %ld", query_r_shared.counter.total_bytes);
+	DOCA_LOG_INFO("Reply Total packets: %ld", query_r_shared.counter.total_pkts);
+	DOCA_LOG_INFO("Last hit since Epoch (sec) : %ld", last_hit_s_shared);
 
 cleanup:
 	cleanup_procedure(ct_pipe, nb_ports, ports);

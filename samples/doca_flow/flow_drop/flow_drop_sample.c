@@ -26,17 +26,15 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <rte_byteorder.h>
-
 #include <doca_log.h>
 #include <doca_flow.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 typedef enum {
 	CLASSIFIER_PIPE_ENTRY = 0,
 	DROP_PIPE_ENTRY = 1,
-	HAIRPIN_PIPE_ENTRY = 2,
+	PORT_FWD_PIPE_ENTRY = 2,
 } pipe_entry_index;
 
 DOCA_LOG_REGISTER(FLOW_DROP);
@@ -49,7 +47,7 @@ DOCA_LOG_REGISTER(FLOW_DROP);
  * @pipe [out]: created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t create_hairpin_pipe(struct doca_flow_port *port, int port_id, struct doca_flow_pipe **pipe)
+static doca_error_t create_port_fwd_pipe(struct doca_flow_port *port, int port_id, struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
 	struct doca_flow_monitor monitor;
@@ -73,7 +71,7 @@ static doca_error_t create_hairpin_pipe(struct doca_flow_port *port, int port_id
 		return result;
 	}
 
-	result = set_flow_pipe_cfg(pipe_cfg, "HAIRPIN_PIPE", DOCA_FLOW_PIPE_BASIC, false);
+	result = set_flow_pipe_cfg(pipe_cfg, "PORT_FWD_PIPE", DOCA_FLOW_PIPE_BASIC, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -178,7 +176,7 @@ destroy_pipe_cfg:
 }
 
 /*
- * Add DOCA Flow pipe entry to the classifier or hairpin pipe
+ * Add DOCA Flow pipe entry to the classifier or port forwarding pipe
  *
  * @pipe [in]: pipe of the entry
  * @status [in]: user context for adding entry
@@ -201,15 +199,15 @@ static doca_error_t add_pipe_entry(struct doca_flow_pipe *pipe,
 }
 
 /*
- * Create DOCA Flow pipe with match and fwd drop action. miss fwd to hairpin pipe
+ * Create DOCA Flow pipe with match and fwd drop action. miss fwd to port forwarding pipe
  *
  * @port [in]: port of the pipe
- * @hairpin_pipe [in]: pipe to forward the traffic that didn't hit the pipe rules
+ * @port_fwd_pipe [in]: pipe to forward the traffic that didn't hit the pipe rules
  * @pipe [out]: created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t create_drop_pipe(struct doca_flow_port *port,
-				     struct doca_flow_pipe *hairpin_pipe,
+				     struct doca_flow_pipe *port_fwd_pipe,
 				     struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
@@ -280,7 +278,7 @@ static doca_error_t create_drop_pipe(struct doca_flow_port *port,
 	fwd.type = DOCA_FLOW_FWD_DROP;
 
 	fwd_miss.type = DOCA_FLOW_FWD_PIPE;
-	fwd_miss.next_pipe = hairpin_pipe;
+	fwd_miss.next_pipe = port_fwd_pipe;
 
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, &fwd_miss, pipe);
 destroy_pipe_cfg:
@@ -307,8 +305,8 @@ static doca_error_t add_drop_pipe_entry(struct doca_flow_pipe *pipe,
 	/* example 5-tuple to drop explicitly */
 	doca_be32_t dst_ip_addr = BE_IPV4_ADDR(8, 8, 8, 8);
 	doca_be32_t src_ip_addr = BE_IPV4_ADDR(1, 2, 3, 4);
-	doca_be16_t dst_port = rte_cpu_to_be_16(80);
-	doca_be16_t src_port = rte_cpu_to_be_16(1234);
+	doca_be16_t dst_port = DOCA_HTOBE16(80);
+	doca_be16_t src_port = DOCA_HTOBE16(1234);
 
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
@@ -338,15 +336,14 @@ doca_error_t flow_drop(int nb_queues)
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	struct doca_flow_pipe *classifier_pipe;
 	struct doca_flow_pipe *drop_pipe;
-	struct doca_flow_pipe *hairpin_pipe;
+	struct doca_flow_pipe *port_fwd_pipe;
 	/*
 	 * Total numbe of entries - 3.
 	 * - 1 entry for classifier pipe
 	 * - 1 entry for drop pipe
-	 * - 1 entry for hairpin pipe
+	 * - 1 entry for port forwarding pipe
 	 */
 	const int nb_entries = 3;
 	struct doca_flow_pipe_entry *entry[nb_ports][nb_entries];
@@ -354,8 +351,6 @@ doca_error_t flow_drop(int nb_queues)
 	struct entries_status status;
 	doca_error_t result;
 	int port_id;
-	FILE *fd;
-	char file_name[128];
 
 	resource.nr_counters = nb_ports * nb_entries;
 
@@ -365,9 +360,8 @@ doca_error_t flow_drop(int nb_queues)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, nb_entries));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_entries));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -377,23 +371,23 @@ doca_error_t flow_drop(int nb_queues)
 	for (port_id = 0; port_id < nb_ports; port_id++) {
 		memset(&status, 0, sizeof(status));
 
-		result = create_hairpin_pipe(ports[port_id], port_id, &hairpin_pipe);
+		result = create_port_fwd_pipe(ports[port_id], port_id, &port_fwd_pipe);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to add hairpin pipe: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed to add port forwarding pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;
 		}
 
-		result = add_pipe_entry(hairpin_pipe, &status, &entry[port_id][HAIRPIN_PIPE_ENTRY]);
+		result = add_pipe_entry(port_fwd_pipe, &status, &entry[port_id][PORT_FWD_PIPE_ENTRY]);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to add hairpin entry: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed to add port forwarding entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;
 		}
 
-		result = create_drop_pipe(ports[port_id], hairpin_pipe, &drop_pipe);
+		result = create_drop_pipe(ports[port_id], port_fwd_pipe, &drop_pipe);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create drop pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
@@ -447,20 +441,6 @@ doca_error_t flow_drop(int nb_queues)
 	DOCA_LOG_INFO("===================================================");
 
 	for (port_id = 0; port_id < nb_ports; port_id++) {
-		snprintf(file_name, sizeof(file_name) - 1, "port_%d_info.txt", port_id);
-
-		fd = fopen(file_name, "w");
-		if (fd == NULL) {
-			DOCA_LOG_ERR("Failed to open the file %s", file_name);
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return DOCA_ERROR_IO_FAILED;
-		}
-
-		/* dump port info to a file */
-		doca_flow_port_pipes_dump(ports[port_id], fd);
-		fclose(fd);
-
 		result = doca_flow_resource_query_entry(entry[port_id][CLASSIFIER_PIPE_ENTRY], &query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
@@ -486,14 +466,14 @@ doca_error_t flow_drop(int nb_queues)
 		DOCA_LOG_INFO("\tTotal packets: %ld", query_stats.counter.total_pkts);
 		DOCA_LOG_INFO("--------------");
 
-		result = doca_flow_resource_query_entry(entry[port_id][HAIRPIN_PIPE_ENTRY], &query_stats);
+		result = doca_flow_resource_query_entry(entry[port_id][PORT_FWD_PIPE_ENTRY], &query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;
 		}
-		DOCA_LOG_INFO("Hairpin pipe:");
+		DOCA_LOG_INFO("Port forwarding pipe:");
 		DOCA_LOG_INFO("\tTotal bytes: %ld", query_stats.counter.total_bytes);
 		DOCA_LOG_INFO("\tTotal packets: %ld", query_stats.counter.total_pkts);
 		DOCA_LOG_INFO("===================================================");

@@ -41,13 +41,7 @@ typedef struct {
 	uint8_t rtt_meas_psn;	     /* RTT request sequence number */
 	uint8_t rtt_req_to_rtt_sent; /* Set between the algorithm's RTT request until the time at which the RTT packet
 					was sent */
-#ifdef DOCA_PCC_NP_RX_RATE
-	uint32_t last_np_rx_bytes;		/* Last received NP RX bytes */
-	uint32_t last_np_rx_bytes_timestamp_us; /* Last received NP RX timestamp (usec) */
-	uint32_t reserved[6];			/* Reserved bits */
-#else
-	uint32_t reserved[8]; /* Reserved bits */
-#endif
+	uint32_t reserved[8];	     /* Reserved bits */
 } cc_ctxt_rtt_template_t;
 
 #endif /* RTT_TEMPLATE_CTXT_H_ */

@@ -58,7 +58,7 @@ DOCA_LOG_REGISTER(FLOW_PARSER);
 #define PRIORITY_STR_LEN 9		     /* Priority string size */
 #define FILE_STR_LEN 5			     /* File string size */
 #define TYPE_STR_LEN 5			     /* Type enable string size */
-#define HEXADECIMAL_BASE 1		     /* Hex base */
+#define HEXADECIMAL_BASE 16		     /* Hex base */
 #define UINT32_CHANGEABLE_FIELD "0xffffffff" /* DOCA flow masking for 32 bits value */
 
 #define BE_IPV4_ADDR(a, b, c, d) (RTE_BE32((a << 24) + (b << 16) + (c << 8) + d)) /* Big endian conversion */
@@ -77,7 +77,6 @@ static void (*remove_entry_func)(uint16_t, uint64_t, uint32_t);		/* Callback for
 static void (*remove_fw_entry_func)(uint64_t);				/* Callback for FW remove entry command */
 static void (*port_pipes_flush_func)(uint16_t);				/* Callback for port pipes flush command */
 static void (*query_func)(uint64_t, struct doca_flow_resource_query *); /* Callback query command */
-static void (*port_pipes_dump_func)(uint16_t, FILE *);			/* Callback for port pipes dump command */
 static void (*create_pipe_func)(struct doca_flow_pipe_cfg *,
 				uint16_t,
 				struct doca_flow_fwd *,
@@ -163,14 +162,6 @@ struct cmd_query_result {
 	cmdline_fixed_string_t params; /* Command second segment */
 };
 
-/* Dump pipe command result */
-struct cmd_dump_pipe_result {
-	cmdline_fixed_string_t port;   /* Command first segment */
-	cmdline_fixed_string_t pipes;  /* Command second segment */
-	cmdline_fixed_string_t dump;   /* Command third segment */
-	cmdline_fixed_string_t params; /* Command last segment */
-};
-
 /* Create flow structure command result */
 struct cmd_create_struct_result {
 	cmdline_fixed_string_t create;		  /* Command first segment */
@@ -244,11 +235,6 @@ void set_port_pipes_flush(void (*action)(uint16_t))
 void set_query(void (*action)(uint64_t, struct doca_flow_resource_query *))
 {
 	query_func = action;
-}
-
-void set_port_pipes_dump(void (*action)(uint16_t, FILE *))
-{
-	port_pipes_dump_func = action;
 }
 
 /*
@@ -865,10 +851,7 @@ static doca_error_t parse_match_field(char *field_name, char *value, void *struc
 	doca_error_t result;
 	struct doca_flow_match *match = (struct doca_flow_match *)struct_ptr;
 
-	if (strcmp(field_name, "flags") == 0)
-		match->flags = (uint32_t)strtol(value, NULL, HEXADECIMAL_BASE);
-
-	else if (strcmp(field_name, "port_meta") == 0)
+	if (strcmp(field_name, "port_meta") == 0)
 		match->parser_meta.port_id = (uint32_t)strtol(value, NULL, 0);
 
 	else if (strcmp(field_name, "outer.eth.src_mac") == 0) {
@@ -1529,73 +1512,6 @@ static doca_error_t parse_fw_entry_params(char *params, uint64_t *entry_id)
 }
 
 /*
- * Parse dump pipe parameters
- *
- * @params [in]: String to parse
- * @port_id [out]: Port ID
- * @file [out]: File to dump information into
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t parse_dump_pipe_params(char *params, uint16_t *port_id, FILE **file)
-{
-	char tmp_char;
-	char *name;
-	char ptr[MAX_CMDLINE_INPUT_LEN];
-	char *param_str_name;
-	char *tmp;
-	bool has_port_id = false;
-	bool has_file = false;
-
-	do {
-		if (strncmp(params, "port_id=", PORT_ID_STR_LEN) == 0) {
-			params += PORT_ID_STR_LEN;
-			tmp = params;
-			*port_id = strtol(tmp, &params, 0);
-			has_port_id = true;
-		} else if (strncmp(params, "file=", FILE_STR_LEN) == 0) {
-			if (has_file) {
-				DOCA_LOG_ERR("File should be provided only once");
-				fclose(*file);
-				*file = NULL;
-				return DOCA_ERROR_INVALID_VALUE;
-			}
-			params += FILE_STR_LEN;
-			strlcpy(ptr, params, MAX_CMDLINE_INPUT_LEN);
-			name = strtok(ptr, ",");
-			params += strlen(name);
-			*file = fopen(name, "w");
-			if (*file == NULL) {
-				DOCA_LOG_ERR("Failed opening the file %s", name);
-				return DOCA_ERROR_INVALID_VALUE;
-			}
-			has_file = true;
-		} else {
-			param_str_name = strtok(params, "=");
-			DOCA_LOG_ERR("The param %s is not a valid parameter for port pipes dump command",
-				     param_str_name);
-			return DOCA_ERROR_INVALID_VALUE;
-		}
-		tmp_char = params[0];
-		params++;
-	} while (tmp_char == ',');
-
-	if (!has_port_id) {
-		DOCA_LOG_ERR("The param port_id is a mandatory input and was not given");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-
-	if (!has_file) {
-		DOCA_LOG_DBG("The param file name was not given, default name is port_info.txt");
-		*file = fopen("port_info.txt", "w");
-		if (*file == NULL) {
-			DOCA_LOG_ERR("Failed opening the file port_info.txt");
-			return DOCA_ERROR_IO_FAILED;
-		}
-	}
-	return DOCA_SUCCESS;
-}
-
-/*
  * Parse create pipe command and call command's callback
  *
  * @parsed_result [in]: Command line interface input with user input
@@ -2115,67 +2031,6 @@ static cmdline_parse_inst_t cmd_query = {
 };
 
 /*
- * Parse dump pipe command and call command's callback
- *
- * @parsed_result [in]: Command line interface input with user input
- */
-static void cmd_dump_pipe_parsed(void *parsed_result, __rte_unused struct cmdline *cl, __rte_unused void *data)
-{
-	struct cmd_dump_pipe_result *dump_pipe_data = (struct cmd_dump_pipe_result *)parsed_result;
-	uint16_t port_id = 0;
-	FILE *fd = NULL;
-	doca_error_t result;
-
-	if (port_pipes_dump_func == NULL) {
-		DOCA_LOG_ERR("Pipe dumping action was not inserted");
-		return;
-	}
-
-	result = parse_dump_pipe_params(dump_pipe_data->params, &port_id, &fd);
-	if (result != DOCA_SUCCESS) {
-		if (fd)
-			fclose(fd);
-		return;
-	}
-
-	(*port_pipes_dump_func)(port_id, fd);
-
-	fclose(fd);
-}
-
-/* Define the token of port */
-static cmdline_parse_token_string_t cmd_port_pipes_dump_port_tok =
-	TOKEN_STRING_INITIALIZER(struct cmd_dump_pipe_result, port, "port");
-
-/* Define the token of pipes */
-static cmdline_parse_token_string_t cmd_port_pipes_dump_pipes_tok =
-	TOKEN_STRING_INITIALIZER(struct cmd_dump_pipe_result, pipes, "pipes");
-
-/* Define the token of dump */
-static cmdline_parse_token_string_t cmd_port_pipes_dump_dump_tok =
-	TOKEN_STRING_INITIALIZER(struct cmd_dump_pipe_result, dump, "dump");
-
-/* Define the token of optional params */
-static cmdline_parse_token_string_t cmd_dump_pipe_params_tok =
-	TOKEN_STRING_INITIALIZER(struct cmd_dump_pipe_result, params, NULL);
-
-/* Define dump pipe command structure for parsing */
-static cmdline_parse_inst_t cmd_dump_pipe = {
-	.f = cmd_dump_pipe_parsed,					  /* Function to call */
-	.data = NULL,							  /* 2nd arg of func */
-	.help_str = "port pipes dump port_id=[port_id],file=[file name]", /* Command print usage */
-	.tokens =
-		{
-			/* Token list, NULL terminated */
-			(void *)&cmd_port_pipes_dump_port_tok,
-			(void *)&cmd_port_pipes_dump_pipes_tok,
-			(void *)&cmd_port_pipes_dump_dump_tok,
-			(void *)&cmd_dump_pipe_params_tok,
-			NULL,
-		},
-};
-
-/*
  * Parse create DOCA Flow struct command
  *
  * @parsed_result [in]: Command line interface input with user input
@@ -2309,7 +2164,6 @@ static cmdline_parse_ctx_t main_ctx[] = {
 	(cmdline_parse_inst_t *)&cmd_destroy_pipe,
 	(cmdline_parse_inst_t *)&cmd_rm_entry,
 	(cmdline_parse_inst_t *)&cmd_flush_pipe,
-	(cmdline_parse_inst_t *)&cmd_dump_pipe,
 	(cmdline_parse_inst_t *)&cmd_query,
 	NULL,
 };
@@ -2321,7 +2175,6 @@ static cmdline_parse_ctx_t fw_subset_ctx[] = {
 	(cmdline_parse_inst_t *)&cmd_fw_add_entry,
 	(cmdline_parse_inst_t *)&cmd_fw_rm_entry,
 	(cmdline_parse_inst_t *)&cmd_flush_pipe,
-	(cmdline_parse_inst_t *)&cmd_dump_pipe,
 	NULL,
 };
 

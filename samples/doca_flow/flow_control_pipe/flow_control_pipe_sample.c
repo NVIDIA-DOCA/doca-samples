@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,13 +26,11 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <rte_byteorder.h>
-
 #include <doca_flow.h>
 #include <doca_log.h>
 #include <doca_bitfield.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 DOCA_LOG_REGISTER(FLOW_CONTROL_PIPE);
 
@@ -181,7 +179,7 @@ static doca_error_t create_vxlan_gpe_pipe(struct doca_flow_port *port, int port_
 		     dst_mac[3],
 		     dst_mac[4],
 		     dst_mac[5]);
-	actions.decap_cfg.eth.type = RTE_BE16(DOCA_FLOW_ETHER_TYPE_IPV4);
+	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
 	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
@@ -286,11 +284,11 @@ static doca_error_t create_mpls_pipe(struct doca_flow_port *port, int port_id, s
 		     dst_mac[3],
 		     dst_mac[4],
 		     dst_mac[5]);
-	actions.decap_cfg.eth.type = RTE_BE16(DOCA_FLOW_ETHER_TYPE_IPV4);
+	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
 	actions_arr[0] = &actions;
 
 	match.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-	match.outer.udp.l4_port.dst_port = rte_cpu_to_be_16(DOCA_FLOW_MPLS_DEFAULT_PORT);
+	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(DOCA_FLOW_MPLS_DEFAULT_PORT);
 	match.tun.type = DOCA_FLOW_TUN_MPLS_O_UDP;
 	match.tun.mpls[2].label = 0xffffffff;
 
@@ -411,7 +409,7 @@ static doca_error_t create_gre_pipe(struct doca_flow_port *port, int port_id, st
 		     dst_mac[3],
 		     dst_mac[4],
 		     dst_mac[5]);
-	actions.decap_cfg.eth.type = RTE_BE16(DOCA_FLOW_ETHER_TYPE_IPV4);
+	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
 	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
@@ -457,7 +455,7 @@ static doca_error_t add_gre_pipe_entry(struct doca_flow_pipe *pipe, struct entri
 	struct doca_flow_match match;
 	struct doca_flow_actions actions;
 	struct doca_flow_pipe_entry *entry;
-	doca_be32_t gre_key = RTE_BE32(900);
+	doca_be32_t gre_key = DOCA_HTOBE32(900);
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
@@ -474,8 +472,8 @@ static doca_error_t add_gre_pipe_entry(struct doca_flow_pipe *pipe, struct entri
 }
 
 /*
- * Create DOCA Flow pipe and entry that match NVGRE traffic with changeable vs_id/flow_id and
- * do hairpin action
+ * Creates a DOCA Flow pipe and entry that matches NVGRE traffic with changeable vs_id/flow_id,
+ * and forwards packets to the other port.
  *
  * @port [in]: port of the pipe
  * @port_id [in]: port ID of the pipe
@@ -503,14 +501,14 @@ static doca_error_t create_nvgre_pipe_and_entry(struct doca_flow_port *port,
 
 	match.tun.type = DOCA_FLOW_TUN_GRE;
 	match.tun.gre_type = DOCA_FLOW_TUN_EXT_GRE_NVGRE;
-	match.tun.protocol = RTE_BE16(DOCA_FLOW_ETHER_TYPE_TEB);
+	match.tun.protocol = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_TEB);
 	match.tun.nvgre_vs_id = 0xffffffff;
 	match.tun.nvgre_flow_id = 0xff;
-	match.inner.eth.type = RTE_BE16(DOCA_FLOW_ETHER_TYPE_IPV4);
+	match.inner.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
 	match.inner.ip4.next_proto = DOCA_FLOW_PROTO_UDP;
 	match.inner.l3_type = DOCA_FLOW_L3_TYPE_IP4;
 	match.inner.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-	match.inner.udp.l4_port.src_port = RTE_BE16(1111);
+	match.inner.udp.l4_port.src_port = DOCA_HTOBE16(1111);
 
 	actions_arr[0] = &actions;
 
@@ -548,7 +546,7 @@ static doca_error_t create_nvgre_pipe_and_entry(struct doca_flow_port *port,
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
 
-	match.tun.nvgre_vs_id = RTE_BE32((uint32_t)0x123456 << 8);
+	match.tun.nvgre_vs_id = DOCA_HTOBE32((uint32_t)0x123456 << 8);
 	match.tun.nvgre_flow_id = 0x78;
 	actions.action_idx = 0;
 
@@ -616,7 +614,7 @@ static doca_error_t control_add_nvgre_entry(struct doca_flow_pipe *control_pipe,
 	match.outer.ip4.next_proto = DOCA_FLOW_PROTO_GRE;
 	match.tun.type = DOCA_FLOW_TUN_GRE;
 	match.tun.gre_type = DOCA_FLOW_TUN_EXT_GRE_STANDARD;
-	match.tun.protocol = RTE_BE16(DOCA_FLOW_ETHER_TYPE_TEB);
+	match.tun.protocol = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_TEB);
 
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = nvgre_pipe;
@@ -681,7 +679,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
 	match.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-	match.outer.udp.l4_port.dst_port = rte_cpu_to_be_16(DOCA_FLOW_VXLAN_GPE_DEFAULT_PORT);
+	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(DOCA_FLOW_VXLAN_GPE_DEFAULT_PORT);
 
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = vxlan_gpe_pipe;
@@ -711,7 +709,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
 	match.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-	match.outer.udp.l4_port.dst_port = rte_cpu_to_be_16(DOCA_FLOW_VXLAN_DEFAULT_PORT);
+	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(DOCA_FLOW_VXLAN_DEFAULT_PORT);
 
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = vxlan_pipe;
@@ -741,7 +739,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
 	match.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-	match.outer.udp.l4_port.dst_port = rte_cpu_to_be_16(DOCA_FLOW_MPLS_DEFAULT_PORT);
+	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(DOCA_FLOW_MPLS_DEFAULT_PORT);
 
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = mpls_pipe;
@@ -817,7 +815,6 @@ doca_error_t flow_control_pipe(int nb_queues)
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *vxlan_pipe;
 	struct doca_flow_pipe *vxlan_gpe_pipe;
@@ -840,9 +837,8 @@ doca_error_t flow_control_pipe(int nb_queues)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, DEFAULT_CTRL_PIPE_SIZE));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(DEFAULT_CTRL_PIPE_SIZE));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

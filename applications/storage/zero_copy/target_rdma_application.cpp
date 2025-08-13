@@ -45,7 +45,7 @@
 #include <storage_common/buffer_utils.hpp>
 #include <storage_common/definitions.hpp>
 #include <storage_common/doca_utils.hpp>
-#include <storage_common/posix_utils.hpp>
+#include <storage_common/os_utils.hpp>
 #include <storage_common/tcp_socket.hpp>
 
 #include <zero_copy/control_message.hpp>
@@ -58,19 +58,19 @@ using namespace std::string_literals;
 namespace storage::zero_copy {
 namespace {
 
-struct alignas(storage::common::cache_line_size / 2) transfer_context {
+struct alignas(storage::cache_line_size / 2) transfer_context {
 	doca_rdma_task_write *write_task = nullptr;
 	doca_rdma_task_read *read_task = nullptr;
 	doca_buf *host_buf = nullptr;
 	doca_buf *storage_buf = nullptr;
 };
 
-static_assert(sizeof(transfer_context) == storage::common::cache_line_size / 2,
+static_assert(sizeof(transfer_context) == storage::cache_line_size / 2,
 	      "Expected transfer_context to occupy half a cache line");
 
 class target_rdma_application_impl;
 
-struct alignas(storage::common::cache_line_size) thread_hot_data {
+struct alignas(storage::cache_line_size) thread_hot_data {
 	uint64_t pe_hit_count = 0;
 	uint64_t pe_miss_count = 0;
 	char *host_memory_start_addr = nullptr;
@@ -92,8 +92,7 @@ struct alignas(storage::common::cache_line_size) thread_hot_data {
 	void abort(std::string const &reason);
 };
 
-static_assert(sizeof(thread_hot_data) == storage::common::cache_line_size,
-	      "Expected thread_hot_data to occupy one cache line");
+static_assert(sizeof(thread_hot_data) == storage::cache_line_size, "Expected thread_hot_data to occupy one cache line");
 
 struct thread_context {
 	doca_dev *dev;
@@ -108,8 +107,8 @@ struct thread_context {
 	doca_mmap *storage_mmap;
 	doca_mmap *host_mmap;
 	doca_buf_inventory *buf_inv;
-	storage::common::rdma_conn_pair ctrl_rdma;
-	storage::common::rdma_conn_pair data_rdma;
+	storage::rdma_conn_pair ctrl_rdma;
+	storage::rdma_conn_pair data_rdma;
 	std::vector<doca_buf *> bufs;
 	std::vector<doca_task *> ctrl_tasks;
 	std::vector<doca_task *> data_tasks;
@@ -260,8 +259,8 @@ public:
 private:
 	configuration m_cfg;
 	doca_dev *m_dev;
-	storage::common::tcp_socket m_listen_socket;
-	storage::common::tcp_socket m_client_connection;
+	storage::tcp_socket m_listen_socket;
+	storage::tcp_socket m_client_connection;
 	std::array<char, control_message_buffer_size> m_tcp_rx_buffer;
 	storage::zero_copy::control_message_reassembler m_control_message_reassembler;
 	std::vector<storage::zero_copy::control_message> m_ctrl_msgs;
@@ -344,7 +343,7 @@ void doca_rdma_task_receive_cb(doca_rdma_task_receive *task, doca_data task_user
 	doca_error_t ret;
 	auto *const hot_data = static_cast<thread_hot_data *>(ctx_user_data.ptr);
 
-	auto *const io_message = storage::common::get_buffer_bytes(doca_rdma_task_receive_get_dst_buf(task));
+	auto *const io_message = storage::get_buffer_bytes(doca_rdma_task_receive_get_dst_buf(task));
 	auto const message_type = io_message_view::get_type(io_message);
 
 	auto *const transfer_ctx = static_cast<transfer_context *>(task_user_data.ptr);
@@ -528,8 +527,8 @@ void on_transfer_complete(doca_task *task, doca_data task_user_data, doca_data c
 
 	auto *const response_task = static_cast<doca_rdma_task_send *>(task_user_data.ptr);
 
-	auto *const io_message = storage::common::get_buffer_bytes(
-		const_cast<doca_buf *>(doca_rdma_task_send_get_src_buf(response_task)));
+	auto *const io_message =
+		storage::get_buffer_bytes(const_cast<doca_buf *>(doca_rdma_task_send_get_src_buf(response_task)));
 
 	io_message_view::set_type(io_message_type::result, io_message);
 	io_message_view::set_result(DOCA_SUCCESS, io_message);
@@ -557,8 +556,8 @@ void on_transfer_error(doca_task *task, doca_data task_user_data, doca_data ctx_
 
 	auto *const response_task = static_cast<doca_rdma_task_send *>(task_user_data.ptr);
 
-	auto *const io_message = storage::common::get_buffer_bytes(
-		const_cast<doca_buf *>(doca_rdma_task_send_get_src_buf(response_task)));
+	auto *const io_message =
+		storage::get_buffer_bytes(const_cast<doca_buf *>(doca_rdma_task_send_get_src_buf(response_task)));
 
 	io_message_view::set_type(io_message_type::result, io_message);
 	io_message_view::set_result(DOCA_ERROR_IO_FAILED, io_message);
@@ -597,7 +596,7 @@ thread_context::~thread_context()
 	doca_error_t ret;
 
 	if (data_rdma.rdma) {
-		ret = storage::common::stop_context(doca_rdma_as_ctx(data_rdma.rdma), pe, data_tasks);
+		ret = storage::stop_context(doca_rdma_as_ctx(data_rdma.rdma), pe, data_tasks);
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to stop doca_rdma(%p): %s", data_rdma.rdma, doca_error_get_name(ret));
 		}
@@ -609,7 +608,7 @@ thread_context::~thread_context()
 	}
 
 	if (ctrl_rdma.rdma) {
-		ret = storage::common::stop_context(doca_rdma_as_ctx(ctrl_rdma.rdma), pe, ctrl_tasks);
+		ret = storage::stop_context(doca_rdma_as_ctx(ctrl_rdma.rdma), pe, ctrl_tasks);
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to stop doca_rdma(%p): %s", ctrl_rdma.rdma, doca_error_get_name(ret));
 		}
@@ -730,7 +729,7 @@ thread_context::thread_context(target_rdma_application_impl *app_impl_,
 	  thread{}
 {
 	try {
-		hot_data = storage::common::make_aligned<thread_hot_data>{}.object();
+		hot_data = storage::make_aligned<thread_hot_data>{}.object();
 	} catch (std::exception const &ex) {
 		throw std::runtime_error{"Failed to allocate thread context hot data: "s + ex.what()};
 	}
@@ -740,7 +739,7 @@ thread_context::thread_context(target_rdma_application_impl *app_impl_,
 
 	try {
 		hot_data->transfer_contexts =
-			storage::common::make_aligned<transfer_context>{}.object_array(runtime_task_count_);
+			storage::make_aligned<transfer_context>{}.object_array(runtime_task_count_);
 	} catch (std::exception const &ex) {
 		throw std::runtime_error{"Failed to allocate thread context transfer contexts: "s + ex.what()};
 	}
@@ -756,37 +755,37 @@ thread_context::thread_context(target_rdma_application_impl *app_impl_,
  */
 void thread_context::configure_storage(std::vector<uint8_t> const &mmap_export)
 {
-	auto const page_size = storage::common::get_system_page_size();
+	auto const page_size = storage::get_system_page_size();
 	auto const message_memory_size = runtime_task_count * io_message_buffer_size;
 
-	host_mmap = storage::common::make_mmap(dev, mmap_export.data(), mmap_export.size());
+	host_mmap = storage::make_mmap(dev, mmap_export.data(), mmap_export.size());
 
 	size_t remote_mmap_size = 0;
 	hot_data->host_memory_start_addr = get_mmap_memrange_start(host_mmap, remote_mmap_size);
 
-	io_messages_memory = static_cast<char *>(
-		aligned_alloc(page_size, storage::common::aligned_size(page_size, message_memory_size)));
+	io_messages_memory =
+		static_cast<char *>(aligned_alloc(page_size, storage::aligned_size(page_size, message_memory_size)));
 	if (io_messages_memory == nullptr) {
 		throw std::runtime_error{"Failed to allocate buffers memory"};
 	}
 
-	storage_memory = static_cast<char *>(
-		aligned_alloc(page_size, storage::common::aligned_size(page_size, remote_mmap_size)));
+	storage_memory =
+		static_cast<char *>(aligned_alloc(page_size, storage::aligned_size(page_size, remote_mmap_size)));
 	if (storage_memory == nullptr) {
 		throw std::runtime_error{"Failed to allocate buffers memory"};
 	}
 
-	io_message_mmap = storage::common::make_mmap(dev,
-						     io_messages_memory,
-						     message_memory_size,
-						     DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
-							     DOCA_ACCESS_FLAG_RDMA_READ);
+	io_message_mmap = storage::make_mmap(dev,
+					     io_messages_memory,
+					     message_memory_size,
+					     DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
+						     DOCA_ACCESS_FLAG_RDMA_READ);
 
-	storage_mmap = storage::common::make_mmap(dev,
-						  storage_memory,
-						  remote_mmap_size,
-						  DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
-							  DOCA_ACCESS_FLAG_RDMA_READ);
+	storage_mmap = storage::make_mmap(dev,
+					  storage_memory,
+					  remote_mmap_size,
+					  DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
+						  DOCA_ACCESS_FLAG_RDMA_READ);
 
 	/*
 	 * Create 3x the number of doca_buf as we have tasks, one buf for the command memory (shared between read and
@@ -795,7 +794,7 @@ void thread_context::configure_storage(std::vector<uint8_t> const &mmap_export)
 	auto const doca_buf_count = runtime_task_count * 3;
 	bufs.reserve(doca_buf_count);
 
-	buf_inv = storage::common::make_buf_inventory(doca_buf_count);
+	buf_inv = storage::make_buf_inventory(doca_buf_count);
 
 	hot_data->storage_memory_start_addr = storage_memory;
 }
@@ -813,12 +812,12 @@ std::vector<uint8_t> thread_context::create_rdma_connection(
 
 	auto unq_rdma = std::unique_ptr<doca_rdma, void (*)(doca_rdma *)>{
 		[this]() {
-			return storage::common::make_rdma_context(dev,
-								  pe,
-								  doca_data{.ptr = hot_data},
-								  DOCA_ACCESS_FLAG_LOCAL_READ_WRITE |
-									  DOCA_ACCESS_FLAG_RDMA_READ |
-									  DOCA_ACCESS_FLAG_RDMA_WRITE);
+			return storage::make_rdma_context(dev,
+							  pe,
+							  doca_data{.ptr = hot_data},
+							  DOCA_ACCESS_FLAG_LOCAL_READ_WRITE |
+								  DOCA_ACCESS_FLAG_RDMA_READ |
+								  DOCA_ACCESS_FLAG_RDMA_WRITE);
 		}(),
 		[](doca_rdma *obj) {
 			static_cast<void>(doca_rdma_destroy(obj));
@@ -1152,7 +1151,7 @@ void target_rdma_application_impl::run(void)
 	uint32_t err_correlation_id = 0;
 
 	DOCA_LOG_DBG("Open doca_dev: %s", m_cfg.device_id.c_str());
-	m_dev = storage::common::open_device(m_cfg.device_id);
+	m_dev = storage::open_device(m_cfg.device_id);
 
 	start_listening();
 
@@ -1245,8 +1244,8 @@ void target_rdma_application_impl::run(void)
 			thread_context->create_and_submit_tasks();
 			thread_context->thread = std::thread{thread_proc_catch_wrapper, std::weak_ptr{thread_context}};
 			try {
-				storage::common::set_thread_affinity(thread_context->thread,
-								     m_cfg.cpu_set[thread_context->thread_id]);
+				storage::set_thread_affinity(thread_context->thread,
+							     m_cfg.cpu_set[thread_context->thread_id]);
 			} catch (std::exception const &) {
 				thread_context->abort("Failed to set affinity for thread to core: "s +
 						      std::to_string(m_cfg.cpu_set[thread_context->thread_id]));

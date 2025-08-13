@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -27,12 +27,10 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <rte_byteorder.h>
-
 #include <doca_log.h>
 #include <doca_flow.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 DOCA_LOG_REGISTER(FLOW_FWD_MISS);
 
@@ -269,8 +267,8 @@ static doca_error_t create_push_pipe(struct doca_flow_port *port,
 
 	actions.has_push = true;
 	actions.push.type = DOCA_FLOW_PUSH_ACTION_VLAN;
-	actions.push.vlan.eth_type = rte_cpu_to_be_16(DOCA_FLOW_ETHER_TYPE_VLAN);
-	actions.push.vlan.vlan_hdr.tci = rte_cpu_to_be_16(0x1234);
+	actions.push.vlan.eth_type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_VLAN);
+	actions.push.vlan.vlan_hdr.tci = DOCA_HTOBE16(0x1234);
 
 	result = create_basic_pipe(port, "PUSH_PIPE", &match, actions_arr, NULL, fwd, NULL, 1, 1, false, false, &pipe);
 	if (result != DOCA_SUCCESS) {
@@ -384,7 +382,7 @@ static doca_error_t create_ip_selector_pipe(struct doca_flow_port *port,
 }
 
 /*
- * Create DOCA Flow pipe that modify IP field and goes to the hairpin pipe.
+ * Create DOCA Flow root pipe that modify IP field and directs packets to the next_pipe (IP selector pipe).
  *
  * @port [in]: port of the pipe.
  * @next_pipe [in]: IP selector pipe to forward to.
@@ -509,7 +507,6 @@ doca_error_t flow_fwd_miss(int nb_queues)
 	struct flow_resources resource = {.nr_counters = 4};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *port, *ports[nb_ports];
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe **pipes, *pipes_array[nb_ports][NUMBER_OF_PIPES];
 	struct doca_flow_fwd fwd_port = {.type = DOCA_FLOW_FWD_PORT};
@@ -524,9 +521,8 @@ doca_error_t flow_fwd_miss(int nb_queues)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, num_of_entries));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

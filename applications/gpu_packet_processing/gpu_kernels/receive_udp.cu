@@ -39,10 +39,15 @@
 DOCA_LOG_REGISTER(GPU_SANITY::KernelReceiveUdp);
 
 __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
-					struct doca_gpu_eth_rxq *rxq0, struct doca_gpu_eth_rxq *rxq1, struct doca_gpu_eth_rxq *rxq2, struct doca_gpu_eth_rxq *rxq3,
+					struct doca_gpu_eth_rxq *rxq0,
+					struct doca_gpu_eth_rxq *rxq1,
+					struct doca_gpu_eth_rxq *rxq2,
+					struct doca_gpu_eth_rxq *rxq3,
 					int sem_num,
-					struct doca_gpu_semaphore_gpu *sem0, struct doca_gpu_semaphore_gpu *sem1, struct doca_gpu_semaphore_gpu *sem2, struct doca_gpu_semaphore_gpu *sem3
-				)
+					struct doca_gpu_semaphore_gpu *sem0,
+					struct doca_gpu_semaphore_gpu *sem1,
+					struct doca_gpu_semaphore_gpu *sem2,
+					struct doca_gpu_semaphore_gpu *sem3)
 {
 	__shared__ uint32_t rx_pkt_num;
 	__shared__ uint64_t rx_buf_idx;
@@ -73,8 +78,7 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 	} else if (blockIdx.x == 3) {
 		rxq = rxq3;
 		sem = sem3;
-	}
-	else
+	} else
 		return;
 
 	if (threadIdx.x == 0) {
@@ -97,7 +101,11 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 				 * If application prints this message on the console, something bad happened and
 				 * applications needs to exit
 				 */
-				printf("Receive UDP kernel error %d Block %d rxpkts %d error %d\n", ret, blockIdx.x, rx_pkt_num, ret);
+				printf("Receive UDP kernel error %d Block %d rxpkts %d error %d\n",
+				       ret,
+				       blockIdx.x,
+				       rx_pkt_num,
+				       ret);
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 			}
 			break;
@@ -118,7 +126,7 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 				stats_thread.others++;
 
 			/* Double-proof it's not reading old packets */
-			wipe_packet_32b((uint8_t*)&(hdr->l4_hdr));
+			wipe_packet_32b((uint8_t *)&(hdr->l4_hdr));
 			buf_idx += blockDim.x;
 		}
 		__syncthreads();
@@ -139,7 +147,10 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 		if (threadIdx.x == 0 && rx_pkt_num > 0) {
 			ret = doca_gpu_dev_semaphore_get_custom_info_addr(sem, sem_idx, (void **)&stats_global);
 			if (ret != DOCA_SUCCESS) {
-				printf("UDP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n", ret, blockIdx.x, threadIdx.x);
+				printf("UDP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n",
+				       ret,
+				       blockIdx.x,
+				       threadIdx.x);
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 				break;
 			}
@@ -180,10 +191,15 @@ doca_error_t kernel_receive_udp(cudaStream_t stream, uint32_t *exit_cond, struct
 
 	/* Assume MAX_QUEUES == 4 */
 	cuda_kernel_receive_udp<<<udp_queues->numq, CUDA_THREADS, 0, stream>>>(exit_cond,
-									udp_queues->eth_rxq_gpu[0], udp_queues->eth_rxq_gpu[1], udp_queues->eth_rxq_gpu[2], udp_queues->eth_rxq_gpu[3],
-									udp_queues->nums,
-									udp_queues->sem_gpu[0], udp_queues->sem_gpu[1], udp_queues->sem_gpu[2], udp_queues->sem_gpu[3]
-									);
+									       udp_queues->eth_rxq_gpu[0],
+									       udp_queues->eth_rxq_gpu[1],
+									       udp_queues->eth_rxq_gpu[2],
+									       udp_queues->eth_rxq_gpu[3],
+									       udp_queues->nums,
+									       udp_queues->sem_gpu[0],
+									       udp_queues->sem_gpu[1],
+									       udp_queues->sem_gpu[2],
+									       udp_queues->sem_gpu[3]);
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
 		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));

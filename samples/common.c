@@ -40,12 +40,16 @@
 
 DOCA_LOG_REGISTER(COMMON);
 
-doca_error_t open_doca_device_with_pci(const char *pci_addr, tasks_check func, struct doca_dev **retval)
+doca_error_t open_doca_device_with_pci_and_callback(const char *pci_addr,
+						    tasks_check func,
+						    open_dev_cb open_dev_cb,
+						    void *usr_ctx,
+						    struct doca_dev **retval)
 {
 	struct doca_devinfo **dev_list;
 	uint32_t nb_devs;
 	uint8_t is_addr_equal = 0;
-	int res;
+	doca_error_t res;
 	size_t i;
 
 	/* Set default return value */
@@ -66,6 +70,13 @@ doca_error_t open_doca_device_with_pci(const char *pci_addr, tasks_check func, s
 				continue;
 
 			/* if device can be opened */
+			if (open_dev_cb != NULL) {
+				res = open_dev_cb(dev_list[i], usr_ctx, retval);
+				if (res == DOCA_SUCCESS) {
+					doca_devinfo_destroy_list(dev_list);
+					return res;
+				}
+			}
 			res = doca_dev_open(dev_list[i], retval);
 			if (res == DOCA_SUCCESS) {
 				doca_devinfo_destroy_list(dev_list);
@@ -81,6 +92,11 @@ doca_error_t open_doca_device_with_pci(const char *pci_addr, tasks_check func, s
 	return res;
 }
 
+doca_error_t open_doca_device_with_pci(const char *pci_addr, tasks_check func, struct doca_dev **retval)
+{
+	return open_doca_device_with_pci_and_callback(pci_addr, func, NULL, NULL, retval);
+}
+
 doca_error_t open_doca_device_with_ibdev_name(const uint8_t *value,
 					      size_t val_size,
 					      tasks_check func,
@@ -90,7 +106,7 @@ doca_error_t open_doca_device_with_ibdev_name(const uint8_t *value,
 	uint32_t nb_devs;
 	char buf[DOCA_DEVINFO_IBDEV_NAME_SIZE] = {};
 	char val_copy[DOCA_DEVINFO_IBDEV_NAME_SIZE] = {};
-	int res;
+	doca_error_t res;
 	size_t i;
 
 	/* Set default return value */
@@ -142,7 +158,7 @@ doca_error_t open_doca_device_with_iface_name(const uint8_t *value,
 	uint32_t nb_devs;
 	char buf[DOCA_DEVINFO_IFACE_NAME_SIZE] = {};
 	char val_copy[DOCA_DEVINFO_IFACE_NAME_SIZE] = {};
-	int res;
+	doca_error_t res;
 	size_t i;
 
 	/* Set default return value */
@@ -181,6 +197,57 @@ doca_error_t open_doca_device_with_iface_name(const uint8_t *value,
 	DOCA_LOG_WARN("Matching device not found");
 	res = DOCA_ERROR_NOT_FOUND;
 
+	doca_devinfo_destroy_list(dev_list);
+	return res;
+}
+
+doca_error_t open_doca_device_with_sf_index(uint32_t sf_index, tasks_check func, struct doca_dev **retval)
+{
+	enum doca_pci_func_type pci_func_type;
+	struct doca_devinfo **dev_list;
+	uint32_t nb_devs;
+	uint32_t sf_idx;
+	doca_error_t res;
+	size_t i;
+
+	/* Set default return value */
+	*retval = NULL;
+
+	res = doca_devinfo_create_list(&dev_list, &nb_devs);
+	if (res != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to load doca devices list: %s", doca_error_get_descr(res));
+		return res;
+	}
+
+	/* Search */
+	for (i = 0; i < nb_devs; i++) {
+		res = doca_devinfo_get_pci_func_type(dev_list[i], &pci_func_type);
+		if (res == DOCA_SUCCESS && pci_func_type != DOCA_PCI_FUNC_TYPE_SF)
+			continue;
+
+		res = doca_devinfo_get_sf_index(dev_list[i], &sf_idx);
+		if (res == DOCA_SUCCESS && sf_idx == sf_index) {
+			/* If any special capabilities are needed */
+			if (func != NULL) {
+				res = func(dev_list[i]);
+				if (res != DOCA_SUCCESS)
+					goto end;
+			}
+
+			/* if device can be opened */
+			res = doca_dev_open(dev_list[i], retval);
+			if (res != DOCA_SUCCESS)
+				DOCA_LOG_WARN("Failed open device with SF index %u: %s",
+					      sf_index,
+					      doca_error_get_descr(res));
+			goto end;
+		}
+	}
+
+	DOCA_LOG_WARN("Matching device not found");
+	res = DOCA_ERROR_NOT_FOUND;
+
+end:
 	doca_devinfo_destroy_list(dev_list);
 	return res;
 }
@@ -522,6 +589,26 @@ uint64_t align_up_uint64(uint64_t value, uint64_t alignment)
 uint64_t align_down_uint64(uint64_t value, uint64_t alignment)
 {
 	return value - (value % alignment);
+}
+
+uint32_t align_up_uint32(uint32_t value, uint32_t alignment)
+{
+	uint64_t remainder = (value % alignment);
+	if (remainder == 0)
+		return value;
+	return (uint32_t)(value + (alignment - remainder));
+}
+
+uint64_t next_power_of_two(uint64_t x)
+{
+	x--;
+	x |= x >> 1;
+	x |= x >> 2;
+	x |= x >> 4;
+	x |= x >> 8;
+	x |= x >> 16;
+	x |= x >> 32;
+	return x + 1;
 }
 
 doca_error_t allocat_doca_buf_list(struct doca_buf_inventory *buf_inv,

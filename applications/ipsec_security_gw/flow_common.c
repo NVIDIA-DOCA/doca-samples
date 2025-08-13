@@ -99,12 +99,14 @@ doca_error_t process_entries(struct doca_flow_port *port,
  *
  * @port_id [in]: port ID
  * @dev [in]: DOCA device pointer
+ * @dev_rep [in]: DOCA device representor pointer
  * @sn_offload_disable [in]: disable SN offload
  * @port [out]: pointer to port handler
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t create_doca_flow_port(int port_id,
 					  struct doca_dev *dev,
+					  struct doca_dev_rep *dev_rep,
 					  bool sn_offload_disable,
 					  struct doca_flow_port **port)
 {
@@ -126,6 +128,12 @@ static doca_error_t create_doca_flow_port(int port_id,
 	result = doca_flow_port_cfg_set_dev(port_cfg, dev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg device: %s", doca_error_get_descr(result));
+		goto destroy_port_cfg;
+	}
+
+	result = doca_flow_port_cfg_set_dev_rep(port_cfg, dev_rep);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg device representor: %s", doca_error_get_descr(result));
 		goto destroy_port_cfg;
 	}
 
@@ -160,6 +168,41 @@ destroy_port_cfg:
 	return result;
 }
 
+static doca_error_t configure_tune_server(struct doca_flow_cfg *flow_cfg, enum doca_flow_tune_profile profile)
+{
+	doca_error_t result = DOCA_SUCCESS;
+	struct doca_flow_tune_cfg *tune_cfg;
+
+	result = doca_flow_tune_cfg_create(&tune_cfg);
+	if (result != DOCA_SUCCESS) {
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_INFO("DOCA Flow Tune Server isn't supported in this runtime version");
+			DOCA_LOG_INFO("Program will continue execution without activating the DOCA Flow Tune Server");
+			return DOCA_SUCCESS;
+		}
+
+		DOCA_LOG_ERR("Failed to create doca_flow_tune_cfg: %s", doca_error_get_descr(result));
+		goto out;
+	}
+
+	result = doca_flow_tune_cfg_set_profile(tune_cfg, profile);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_tune_cfg profile: %s", doca_error_get_descr(result));
+		goto cfg_destroy;
+	}
+
+	result = doca_flow_cfg_set_tune_cfg(flow_cfg, tune_cfg);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg tune_cfg: %s", doca_error_get_descr(result));
+		goto cfg_destroy;
+	}
+
+cfg_destroy:
+	doca_flow_tune_cfg_destroy(tune_cfg);
+out:
+	return result;
+}
+
 doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_config *app_cfg,
 					      int nb_queues,
 					      struct ipsec_security_gw_ports_map *ports[])
@@ -168,6 +211,7 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 	int port_idx = 0;
 	int nb_ports = 0;
 	struct doca_dev *dev;
+	struct doca_dev_rep *rep;
 	struct doca_flow_cfg *flow_cfg;
 	struct doca_flow_tune_server_cfg *server_cfg;
 	struct doca_flow_resource_rss_cfg rss = {0};
@@ -220,9 +264,19 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 		return result;
 	}
 
-	result = doca_flow_cfg_set_nr_shared_resource(flow_cfg,
-						      MAX_NB_RULES * 2, /* for both encrypt and decrypt */
-						      DOCA_FLOW_SHARED_RESOURCE_IPSEC_SA);
+	result = configure_tune_server(flow_cfg, DOCA_FLOW_TUNE_PROFILE_FULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to configure tune server: %s", doca_error_get_descr(result));
+		doca_flow_cfg_destroy(flow_cfg);
+		return result;
+	}
+
+	uint32_t nb_of_rules = app_cfg->app_rules.nb_decrypt_rules + app_cfg->app_rules.nb_encrypt_rules;
+	uint32_t nr_shared_resources = app_cfg->socket_ctx.socket_conf ? MAX_NB_RULES * 2 : nb_of_rules; /* for both
+													    encrypt and
+													    decrypt */
+	result =
+		doca_flow_cfg_set_nr_shared_resource(flow_cfg, nr_shared_resources, DOCA_FLOW_SHARED_RESOURCE_IPSEC_SA);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_shared_resources: %s", doca_error_get_descr(result));
 		doca_flow_cfg_destroy(flow_cfg);
@@ -252,14 +306,23 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 		if (!rte_eth_dev_is_valid_port(port_id))
 			continue;
 		/* get device idx for ports array - secured or unsecured */
-		if (app_cfg->flow_mode == IPSEC_SECURITY_GW_VNF)
+		if (app_cfg->flow_mode == IPSEC_SECURITY_GW_VNF) {
+			rep = NULL;
 			result = find_port_action_type_vnf(app_cfg, port_id, &dev, &port_idx);
-		else {
-			dev = app_cfg->objects.secured_dev.doca_dev;
+			if (result != DOCA_SUCCESS)
+				return result;
+		} else {
 			result = find_port_action_type_switch(port_id, &port_idx);
+			if (result != DOCA_SUCCESS)
+				return result;
+			if (port_idx == SECURED_IDX) {
+				dev = app_cfg->objects.secured_dev.doca_dev;
+				rep = NULL;
+			} else {
+				dev = NULL;
+				rep = app_cfg->objects.unsecured_dev.doca_dev_rep;
+			}
 		}
-		if (result != DOCA_SUCCESS)
-			return result;
 
 		ports[port_idx] = malloc(sizeof(struct ipsec_security_gw_ports_map));
 		if (ports[port_idx] == NULL) {
@@ -267,7 +330,7 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 			doca_flow_cleanup(nb_ports, ports);
 			return DOCA_ERROR_NO_MEMORY;
 		}
-		result = create_doca_flow_port(port_id, dev, sn_offload_disable, &ports[port_idx]->port);
+		result = create_doca_flow_port(port_id, dev, rep, sn_offload_disable, &ports[port_idx]->port);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to init DOCA Flow port: %s", doca_error_get_descr(result));
 			free(ports[port_idx]);
@@ -284,6 +347,13 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 	}
 	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_VNF) {
 		result = doca_flow_port_pair(ports[SECURED_IDX]->port, ports[UNSECURED_IDX]->port);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to pair ports");
+			doca_flow_cleanup(nb_ports, ports);
+			return DOCA_ERROR_INITIALIZATION;
+		}
+
+		result = doca_flow_port_pair(ports[UNSECURED_IDX]->port, ports[SECURED_IDX]->port);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to pair ports");
 			doca_flow_cleanup(nb_ports, ports);
@@ -390,8 +460,8 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 	struct doca_flow_match match_mask;
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
-	int num_of_entries = 2;
-	uint16_t *rss_queues = NULL;
+	int num_of_entries = 4;
+	uint16_t rss_queues[nb_queues - 1];
 	int i;
 	doca_error_t result;
 	union security_gateway_pkt_meta meta = {0};
@@ -406,18 +476,12 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 	meta.decrypt = 1;
 	match_mask.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
 
+	match.parser_meta.outer_l3_type = (enum doca_flow_l3_meta)UINT32_MAX;
+	match_mask.parser_meta.outer_l3_type = (enum doca_flow_l3_meta)UINT32_MAX;
+
 	fwd.type = DOCA_FLOW_FWD_RSS;
 	fwd.rss_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
-	rss_queues = (uint16_t *)calloc(nb_queues - 1, sizeof(uint16_t));
-	if (rss_queues == NULL) {
-		DOCA_LOG_ERR("Failed to allocate memory for RSS queues");
-		return DOCA_ERROR_NO_MEMORY;
-	}
-
-	for (i = 0; i < nb_queues - 1; i++)
-		rss_queues[i] = i + 1;
-	fwd.rss.queues_array = rss_queues;
-	fwd.rss.nr_queues = nb_queues - 1;
+	fwd.rss.nr_queues = -1; /* changeable RSS */
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -449,25 +513,28 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, rss_pipe);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create RSS pipe: %s", doca_error_get_descr(result));
-		if (rss_queues != NULL)
-			free(rss_queues);
 		goto destroy_pipe_cfg;
 	}
 
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
-	if (rss_queues != NULL)
-		free(rss_queues);
+	for (i = 0; i < nb_queues - 1; i++)
+		rss_queues[i] = i + 1;
+	fwd.rss.queues_array = rss_queues;
+	fwd.rss.nr_queues = nb_queues - 1;
 
+	/* encrypt IPv4 */
 	meta.encrypt = 1;
 	meta.decrypt = 0;
 	match.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
+	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
+	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV4;
 	result = doca_flow_pipe_add_entry(0,
 					  *rss_pipe,
 					  &match,
 					  NULL,
 					  NULL,
-					  NULL,
+					  &fwd,
 					  DOCA_FLOW_WAIT_FOR_BATCH,
 					  &app_cfg->secured_status[0],
 					  NULL);
@@ -476,15 +543,52 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 		return result;
 	}
 
-	meta.encrypt = 0;
-	meta.decrypt = 1;
-	match.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
+	/* encrypt IPv6 */
+	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV6;
+	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV6;
 	result = doca_flow_pipe_add_entry(0,
 					  *rss_pipe,
 					  &match,
 					  NULL,
 					  NULL,
+					  &fwd,
+					  DOCA_FLOW_WAIT_FOR_BATCH,
+					  &app_cfg->secured_status[0],
+					  NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add entry to RSS pipe: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* decrypt IPv4 */
+	meta.encrypt = 0;
+	meta.decrypt = 1;
+	match.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
+	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
+	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV4;
+	result = doca_flow_pipe_add_entry(0,
+					  *rss_pipe,
+					  &match,
 					  NULL,
+					  NULL,
+					  &fwd,
+					  DOCA_FLOW_WAIT_FOR_BATCH,
+					  &app_cfg->secured_status[0],
+					  NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add entry to RSS pipe: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* decrypt IPv6 */
+	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV6;
+	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV6;
+	result = doca_flow_pipe_add_entry(0,
+					  *rss_pipe,
+					  &match,
+					  NULL,
+					  NULL,
+					  &fwd,
 					  DOCA_FLOW_NO_WAIT,
 					  &app_cfg->secured_status[0],
 					  NULL);
@@ -529,23 +633,30 @@ void create_hairpin_pipe_fwd(struct ipsec_security_gw_config *app_cfg,
 			fwd->type = DOCA_FLOW_FWD_PIPE;
 			fwd->next_pipe = app_cfg->switch_pipes.rss_pipe.pipe;
 		} else {
-			for (i = 0; i < nb_queues - 1; i++)
-				rss_queues[i] = i + 1;
-
 			fwd->type = DOCA_FLOW_FWD_RSS;
 			fwd->rss_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
+			if (rss_queues == NULL) {
+				fwd->rss.nr_queues = -1; /* changeable RSS */
+				return;
+			}
+
+			fwd->rss.nr_queues = nb_queues - 1;
 			if (!encrypt && app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL)
 				fwd->rss.inner_flags = rss_flags;
 			else
 				fwd->rss.outer_flags = rss_flags;
 
 			fwd->rss.queues_array = rss_queues;
-			fwd->rss.nr_queues = nb_queues - 1;
+			for (i = 0; i < nb_queues - 1; i++)
+				rss_queues[i] = i + 1;
 		}
 	} else {
 		if (app_cfg->flow_mode == IPSEC_SECURITY_GW_SWITCH) {
 			fwd->type = DOCA_FLOW_FWD_PIPE;
 			fwd->next_pipe = app_cfg->switch_pipes.pkt_meta_pipe.pipe;
+		} else if (encrypt) {
+			fwd->type = DOCA_FLOW_FWD_PIPE;
+			fwd->next_pipe = app_cfg->encrypt_pipes.egress_ip_classifier.pipe;
 		} else {
 			fwd->type = DOCA_FLOW_FWD_PORT;
 			fwd->port_id = port_id ^ 1;
@@ -683,17 +794,19 @@ static doca_error_t add_switch_port_meta_entries(struct ipsec_security_gw_ports_
  * @pipe [out]: the created pipe
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t create_switch_pkt_meta_pipe(struct doca_flow_pipe **pipe)
+static doca_error_t create_switch_pkt_meta_pipe(struct ipsec_security_gw_config *app_cfg, struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	struct doca_flow_match match;
 	struct doca_flow_match match_mask;
+	struct doca_flow_monitor monitor;
 	doca_error_t result;
 	struct doca_flow_fwd fwd = {.type = DOCA_FLOW_FWD_CHANGEABLE};
 	union security_gateway_pkt_meta meta = {0};
 
 	memset(&match, 0, sizeof(match));
 	memset(&match_mask, 0, sizeof(match_mask));
+	memset(&monitor, 0, sizeof(monitor));
 
 	meta.decrypt = 1;
 	meta.encrypt = 1;
@@ -725,15 +838,30 @@ static doca_error_t create_switch_pkt_meta_pipe(struct doca_flow_pipe **pipe)
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg domain: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_dir_info(pipe_cfg, DOCA_FLOW_DIRECTION_HOST_TO_NETWORK);
+
+	if (app_cfg->debug_mode) {
+		monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
+		result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
+			goto destroy_pipe_cfg;
+		}
+	}
+	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg dir_info: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to create pkt meta pipe: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 
-	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
-	if (result != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to create pkt meta pipe: %s", doca_error_get_descr(result));
+	if (app_cfg->debug_mode) {
+		app_cfg->switch_pipes.pkt_meta_pipe.entries_info =
+			(struct security_gateway_entry_info *)calloc(2, sizeof(struct security_gateway_entry_info));
+		if (app_cfg->switch_pipes.pkt_meta_pipe.entries_info == NULL) {
+			DOCA_LOG_ERR("Failed to allocate entries array");
+			result = DOCA_ERROR_NO_MEMORY;
+			goto destroy_pipe_cfg;
+		}
+	}
 
 destroy_pipe_cfg:
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
@@ -759,6 +887,8 @@ static doca_error_t add_switch_pkt_meta_entries(struct ipsec_security_gw_ports_m
 	int num_of_entries = 2;
 	doca_error_t result;
 	union security_gateway_pkt_meta meta = {0};
+	struct doca_flow_pipe_entry **entry = NULL;
+	struct security_gateway_pipe_info *pipe_info = &app_cfg->switch_pipes.pkt_meta_pipe;
 
 	memset(&match, 0, sizeof(match));
 	memset(&app_cfg->secured_status[0], 0, sizeof(app_cfg->secured_status[0]));
@@ -769,6 +899,11 @@ static doca_error_t add_switch_pkt_meta_entries(struct ipsec_security_gw_ports_m
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = encrypt_pipe;
 
+	if (app_cfg->debug_mode) {
+		snprintf(pipe_info->entries_info[pipe_info->nb_entries].name, MAX_NAME_LEN, "encrypt");
+		entry = &(pipe_info->entries_info[pipe_info->nb_entries++].entry);
+	}
+
 	result = doca_flow_pipe_add_entry(0,
 					  pipe,
 					  &match,
@@ -777,7 +912,7 @@ static doca_error_t add_switch_pkt_meta_entries(struct ipsec_security_gw_ports_m
 					  &fwd,
 					  DOCA_FLOW_WAIT_FOR_BATCH,
 					  &app_cfg->secured_status[0],
-					  NULL);
+					  entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry to pkt meta pipe: %s", doca_error_get_descr(result));
 		return result;
@@ -789,6 +924,11 @@ static doca_error_t add_switch_pkt_meta_entries(struct ipsec_security_gw_ports_m
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = ports[UNSECURED_IDX]->port_id;
 
+	if (app_cfg->debug_mode) {
+		snprintf(pipe_info->entries_info[pipe_info->nb_entries].name, MAX_NAME_LEN, "decrypt");
+		entry = &pipe_info->entries_info[pipe_info->nb_entries++].entry;
+	}
+
 	result = doca_flow_pipe_add_entry(0,
 					  pipe,
 					  &match,
@@ -797,7 +937,7 @@ static doca_error_t add_switch_pkt_meta_entries(struct ipsec_security_gw_ports_m
 					  &fwd,
 					  DOCA_FLOW_NO_WAIT,
 					  &app_cfg->secured_status[0],
-					  NULL);
+					  entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry to pkt meta pipe: %s", doca_error_get_descr(result));
 		return result;
@@ -842,7 +982,8 @@ doca_error_t create_switch_egress_root_pipes(struct ipsec_security_gw_ports_map 
 {
 	doca_error_t result;
 
-	result = create_switch_pkt_meta_pipe(&app_cfg->switch_pipes.pkt_meta_pipe.pipe);
+	snprintf(app_cfg->switch_pipes.pkt_meta_pipe.name, MAX_NAME_LEN, "egress_root");
+	result = create_switch_pkt_meta_pipe(app_cfg, &app_cfg->switch_pipes.pkt_meta_pipe.pipe);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create pkt meta pipe: %s", doca_error_get_descr(result));
 		return result;

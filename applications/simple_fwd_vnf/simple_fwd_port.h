@@ -42,9 +42,8 @@ struct simple_fwd_port_cfg {
  * Dump port stats
  *
  * @port_id [in]: Port identifier
- * @port [in]: DOCA flow port to dump the stats for
  * @return: 0 on success and non-zero value on failure
  */
-int simple_fwd_dump_port_stats(uint16_t port_id, struct doca_flow_port *port);
+int simple_fwd_dump_port_stats(uint16_t port_id);
 
 #endif /* SIMPLE_FWD_PORT_H_ */

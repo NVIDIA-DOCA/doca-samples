@@ -98,29 +98,24 @@ static doca_error_t create_ip6_table(psp_gw_app_config *app_config)
 }
 
 /**
- * @brief Configures the dst-mac to apply on decap
+ * @brief Configures the device identifier
  *
- * @param [in]: the dst mac addr
+ * @param [in]: the device identifier
  * @config [in/out]: A void pointer to the application config struct
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t handle_pci_addr_param(void *param, void *config)
+static doca_error_t handle_device_param(void *param, void *config)
 {
 	auto *app_config = (struct psp_gw_app_config *)config;
-	const char *pci_addr = (const char *)param;
+	struct doca_argp_device_ctx *dev = (struct doca_argp_device_ctx *)param;
 
-	int pci_addr_len = strlen(pci_addr);
-	if (pci_addr_len + 1 != DOCA_DEVINFO_PCI_ADDR_SIZE && pci_addr_len + 1 != DOCA_DEVINFO_PCI_BDF_SIZE) {
-		DOCA_LOG_ERR("Expected PCI addr in DDDD:BB:DD.F or BB:DD.F formats, instead received: %s", pci_addr);
-		return DOCA_ERROR_INVALID_VALUE;
+	if (dev->devargs != NULL) {
+		DOCA_LOG_WARN("Passed device args are not needed, and will be overriden by the application");
+		/* Fallthrough */
 	}
 
-	app_config->pf_pcie_addr = pci_addr;
-	for (char &c : app_config->pf_pcie_addr) {
-		c = tolower(c);
-	}
+	app_config->pf_dev = dev->dev;
 
-	DOCA_LOG_INFO("Using %s for PF PCIe Addr", app_config->pf_pcie_addr.c_str());
 	return DOCA_SUCCESS;
 }
 
@@ -134,10 +129,21 @@ static doca_error_t handle_pci_addr_param(void *param, void *config)
 static doca_error_t handle_repr_param(void *param, void *config)
 {
 	auto *app_config = (struct psp_gw_app_config *)config;
+	struct doca_argp_device_rep_ctx *dev_rep = (struct doca_argp_device_rep_ctx *)param;
 
-	app_config->pf_repr_indices = (char *)param;
+	if (app_config->vf_dev_rep != NULL) {
+		DOCA_LOG_ERR("More than a single representor was passed, yet only one representor is supported");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
-	DOCA_LOG_INFO("Device representor list: %s", app_config->pf_repr_indices.c_str());
+	if (dev_rep->dev_ctx.devargs != NULL) {
+		DOCA_LOG_WARN(
+			"Passed representor device args are not needed, and will be overriden by the application");
+		/* Fallthrough */
+	}
+
+	app_config->vf_dev_rep = dev_rep->dev_rep;
+
 	return DOCA_SUCCESS;
 }
 
@@ -1201,11 +1207,11 @@ static doca_error_t psp_gw_register_params(void)
 {
 	doca_error_t result;
 
-	result = psp_gw_register_single_param("p",
-					      "pci-addr",
-					      "PCI BDF of the device in BB:DD.F format (required)",
-					      handle_pci_addr_param,
-					      DOCA_ARGP_TYPE_STRING,
+	result = psp_gw_register_single_param("s",
+					      "device",
+					      "Device identifier (required)",
+					      handle_device_param,
+					      DOCA_ARGP_TYPE_DEVICE,
 					      true,
 					      false);
 	if (result != DOCA_SUCCESS)
@@ -1213,9 +1219,9 @@ static doca_error_t psp_gw_register_params(void)
 
 	result = psp_gw_register_single_param("r",
 					      "repr",
-					      "Device representor list in vf[x-y]pf[x-y] format (required)",
+					      "Device representor (required)",
 					      handle_repr_param,
-					      DOCA_ARGP_TYPE_STRING,
+					      DOCA_ARGP_TYPE_DEVICE_REP,
 					      true,
 					      false);
 	if (result != DOCA_SUCCESS)

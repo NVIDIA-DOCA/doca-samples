@@ -74,7 +74,7 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
 		goto sample_exit;
 	}
-	doca_argp_set_dpdk_program(dpdk_init);
+	doca_argp_set_dpdk_program(dpdk_init_with_devs);
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(result));
@@ -100,7 +100,7 @@ int main(int argc, char **argv)
 dpdk_ports_queues_cleanup:
 	dpdk_queues_and_ports_fini(&dpdk_config);
 dpdk_cleanup:
-	dpdk_fini();
+	dpdk_fini_with_devs(dpdk_config.port_config.nb_ports);
 argp_cleanup:
 	doca_argp_destroy();
 sample_exit:

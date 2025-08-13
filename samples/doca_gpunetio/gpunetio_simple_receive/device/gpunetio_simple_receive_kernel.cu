@@ -41,7 +41,11 @@ __global__ void receive_packets(struct doca_gpu_eth_rxq *eth_rxq_gpu, uint32_t *
 	__shared__ uint64_t rx_buf_idx;
 
 	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
-		ret = doca_gpu_dev_eth_rxq_receive_block(eth_rxq_gpu, MAX_RX_NUM_PKTS, MAX_RX_TIMEOUT_NS, &rx_pkt_num, &rx_buf_idx);
+		ret = doca_gpu_dev_eth_rxq_receive_block(eth_rxq_gpu,
+							 MAX_RX_NUM_PKTS,
+							 MAX_RX_TIMEOUT_NS,
+							 &rx_pkt_num,
+							 &rx_buf_idx);
 		/* If any thread returns receive error, the whole execution stops */
 		if (ret != DOCA_SUCCESS) {
 			if (threadIdx.x == 0) {
@@ -65,11 +69,20 @@ __global__ void receive_packets(struct doca_gpu_eth_rxq *eth_rxq_gpu, uint32_t *
 			doca_gpu_dev_buf_get_addr(buf_ptr, &buf_addr);
 
 			printf("Thread %d received UDP packet with Eth src %02x:%02x:%02x:%02x:%02x:%02x - Eth dst %02x:%02x:%02x:%02x:%02x:%02x\n",
-				threadIdx.x,
-				((uint8_t *)buf_addr)[0], ((uint8_t *)buf_addr)[1], ((uint8_t *)buf_addr)[2], ((uint8_t *)buf_addr)[3], ((uint8_t *)buf_addr)[4], ((uint8_t *)buf_addr)[5],
-				((uint8_t *)buf_addr)[6], ((uint8_t *)buf_addr)[7], ((uint8_t *)buf_addr)[8], ((uint8_t *)buf_addr)[9], ((uint8_t *)buf_addr)[10], ((uint8_t *)buf_addr)[11]
-			);
-			
+			       threadIdx.x,
+			       ((uint8_t *)buf_addr)[0],
+			       ((uint8_t *)buf_addr)[1],
+			       ((uint8_t *)buf_addr)[2],
+			       ((uint8_t *)buf_addr)[3],
+			       ((uint8_t *)buf_addr)[4],
+			       ((uint8_t *)buf_addr)[5],
+			       ((uint8_t *)buf_addr)[6],
+			       ((uint8_t *)buf_addr)[7],
+			       ((uint8_t *)buf_addr)[8],
+			       ((uint8_t *)buf_addr)[9],
+			       ((uint8_t *)buf_addr)[10],
+			       ((uint8_t *)buf_addr)[11]);
+
 			/* Add packet processing function here. */
 
 			buf_idx += blockDim.x;

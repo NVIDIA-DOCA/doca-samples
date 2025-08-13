@@ -41,6 +41,8 @@ sample_dependencies = []
 sample_dependencies += dependency('doca-common')
 # The DOCA library of the sample itself
 sample_dependencies += dependency('doca-flow')
+# Additional DOCA library that is relevant for this sample
+sample_dependencies += dependency('doca-dpdk-bridge')
 # Utility DOCA library for executables
 sample_dependencies += dependency('doca-argp')
 # Required DOCA Driver

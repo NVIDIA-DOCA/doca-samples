@@ -39,8 +39,8 @@ DOCA_LOG_REGISTER(SWITCH::Core);
 #define DEFAULT_TIMEOUT_US (10000) /* Timeout for processing pipe entries */
 
 static struct flow_pipes_manager *pipes_manager;
-static struct doca_flow_port *ports[FLOW_SWITCH_PORTS_MAX];
-static uint32_t actions_mem_size[FLOW_SWITCH_PORTS_MAX];
+static struct doca_flow_port *ports[FLOW_COMMON_PORTS_MAX];
+static uint32_t actions_mem_size[FLOW_COMMON_PORTS_MAX];
 static int nb_ports;
 
 /*
@@ -345,26 +345,6 @@ static void flow_query(uint64_t entry_id, struct doca_flow_resource_query *stats
 }
 
 /*
- * DOCA Flow port pipes dump
- *
- * @port_id [in]: Port ID to dump
- * @fd [in]: File to dump information into
- */
-static void port_pipes_dump(uint16_t port_id, FILE *fd)
-{
-	uint16_t switch_mode_port_id = 0;
-
-	DOCA_LOG_DBG("Pipes dump is being called");
-
-	if (port_id != switch_mode_port_id) {
-		DOCA_LOG_ERR("Switch mode port id is 0 only");
-		return;
-	}
-
-	doca_flow_port_pipes_dump(doca_flow_port_switch_get(NULL), fd);
-}
-
-/*
  * Register all application's relevant function to flow parser module
  */
 static void register_actions_on_flow_parser(void)
@@ -376,7 +356,6 @@ static void register_actions_on_flow_parser(void)
 	set_pipe_rm_entry(pipe_rm_entry);
 	set_port_pipes_flush(port_pipes_flush);
 	set_query(flow_query);
-	set_port_pipes_dump(port_pipes_dump);
 }
 
 doca_error_t switch_init(struct application_dpdk_config *app_dpdk_config, struct flow_switch_ctx *ctx)
@@ -391,7 +370,7 @@ doca_error_t switch_init(struct application_dpdk_config *app_dpdk_config, struct
 	memset(&ports, 0, sizeof(ports));
 	memset(&actions_mem_size, 0, sizeof(actions_mem_size));
 
-	if (ctx->nb_ports != nr_switch_manager_ports) {
+	if (ctx->devs_ctx.nb_devs != nr_switch_manager_ports) {
 		DOCA_LOG_ERR("Switch is allowed to run with one PF only");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
@@ -409,9 +388,12 @@ doca_error_t switch_init(struct application_dpdk_config *app_dpdk_config, struct
 		return result;
 	}
 
-	/* Doca_dev is opened for proxy_port only */
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(app_dpdk_config->port_config.nb_queues, nr_entries));
-	result = init_doca_flow_ports(nb_ports, ports, false /* is_hairpin */, ctx->doca_dev, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nr_entries));
+	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+					     ctx->devs_ctx.nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

@@ -27,6 +27,7 @@
 #include <doca_log.h>
 
 #include "dpdk_utils.h"
+#include "flow_common.h"
 #include "flow_switch_common.h"
 
 #include "switch_core.h"
@@ -68,20 +69,21 @@ int main(int argc, char **argv)
 		return exit_status;
 	}
 
-	result = register_doca_flow_switch_param();
+	result = register_doca_flow_switch_params();
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register application param: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 
-	doca_argp_set_dpdk_program(init_flow_switch_dpdk);
+	doca_argp_set_dpdk_program(flow_init_dpdk);
+	ctx.devs_ctx.default_dev_args = FLOW_SWITCH_DEV_ARGS;
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse application input: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 
-	result = init_doca_flow_switch_common(&ctx);
+	result = init_doca_flow_devs(&ctx.devs_ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init application param: %s", doca_error_get_descr(result));
 		goto dpdk_destroy;
@@ -89,7 +91,6 @@ int main(int argc, char **argv)
 
 	dpdk_config.port_config.nb_ports = get_dpdk_nb_ports();
 	dpdk_config.port_config.switch_mode = 1;
-	dpdk_config.port_config.isolated_mode = 1;
 
 	/* Update queues and ports */
 	result = dpdk_queues_and_ports_init(&dpdk_config);
@@ -127,7 +128,7 @@ dpdk_cleanup:
 dpdk_destroy:
 	/* DPDK cleanup + device closure */
 	dpdk_fini();
-	destroy_doca_flow_switch_common(&ctx);
+	destroy_doca_flow_devs(&ctx.devs_ctx);
 argp_cleanup:
 	doca_argp_destroy();
 

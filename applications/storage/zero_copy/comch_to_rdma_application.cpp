@@ -48,7 +48,7 @@
 #include <storage_common/definitions.hpp>
 #include <storage_common/doca_utils.hpp>
 #include <storage_common/ip_address.hpp>
-#include <storage_common/posix_utils.hpp>
+#include <storage_common/os_utils.hpp>
 #include <storage_common/tcp_socket.hpp>
 
 #include <zero_copy/control_message.hpp>
@@ -63,7 +63,7 @@ namespace storage::zero_copy {
 namespace {
 
 class comch_to_rdma_application_impl;
-struct alignas(storage::common::cache_line_size) thread_hot_data {
+struct alignas(storage::cache_line_size) thread_hot_data {
 	uint64_t pe_hit_count = 0;
 	uint64_t pe_miss_count = 0;
 	comch_to_rdma_application_impl *app_impl;
@@ -92,8 +92,7 @@ struct alignas(storage::common::cache_line_size) thread_hot_data {
 };
 
 static_assert(sizeof(std::atomic_bool) == 1, "Expected atomic bool to occupy 1 byte");
-static_assert(sizeof(thread_hot_data) == storage::common::cache_line_size,
-	      "Expected cache_line_size to occupy one cache line");
+static_assert(sizeof(thread_hot_data) == storage::cache_line_size, "Expected cache_line_size to occupy one cache line");
 
 struct thread_context {
 	thread_hot_data *hot_data;
@@ -109,8 +108,8 @@ struct thread_context {
 	std::vector<doca_buf *> doca_bufs;
 	doca_comch_consumer *consumer;
 	doca_comch_producer *producer;
-	storage::common::rdma_conn_pair rdma_ctrl_ctx;
-	storage::common::rdma_conn_pair rdma_data_ctx;
+	storage::rdma_conn_pair rdma_ctrl_ctx;
+	storage::rdma_conn_pair rdma_data_ctx;
 	std::vector<doca_comch_consumer_task_post_recv *> host_request_tasks;
 	std::vector<doca_comch_producer_task_send *> host_response_tasks;
 	std::vector<doca_rdma_task_send *> storage_request_tasks;
@@ -305,7 +304,7 @@ private:
 	doca_dev *m_dev;
 	doca_dev_rep *m_dev_rep;
 	doca_pe *m_ctrl_pe;
-	storage::common::tcp_socket m_storage_connection;
+	storage::tcp_socket m_storage_connection;
 	doca_comch_server *m_comch_server;
 	doca_comch_connection *m_client_connection;
 	doca_mmap *m_host_mmap;
@@ -390,7 +389,7 @@ private:
 	void connect_rdma(uint32_t thread_id,
 			  rdma_connection_role role,
 			  uint32_t correlation_id,
-			  storage::common::rdma_conn_pair &rdma_conn_pair);
+			  storage::rdma_conn_pair &rdma_conn_pair);
 
 	/*
 	 * Wait for all RDMA and ComCh connections to be fully connected and ready for data path operations
@@ -607,7 +606,7 @@ void doca_rdma_task_receive_cb(doca_rdma_task_receive *task, doca_data task_user
 	auto *const hot_data = static_cast<thread_hot_data *>(ctx_user_data.ptr);
 	doca_error_t ret;
 
-	auto *const io_message = storage::common::get_buffer_bytes(doca_rdma_task_receive_get_dst_buf(task));
+	auto *const io_message = storage::get_buffer_bytes(doca_rdma_task_receive_get_dst_buf(task));
 
 	if (io_message_view::get_type(io_message) != io_message_type::stop) {
 		io_message_view::set_type(io_message_type::result, io_message);
@@ -797,7 +796,7 @@ thread_context::~thread_context()
 			       doca_rdma_task_receive_as_task);
 
 		/* stop context with tasks list (tasks must be destroyed to finish stopping process) */
-		ret = storage::common::stop_context(doca_rdma_as_ctx(rdma_ctrl_ctx.rdma), data_pe, rdma_tasks);
+		ret = storage::stop_context(doca_rdma_as_ctx(rdma_ctrl_ctx.rdma), data_pe, rdma_tasks);
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("T[%u] Failed to stop rdma control context: %s",
 				     thread_id,
@@ -813,7 +812,7 @@ thread_context::~thread_context()
 	}
 
 	if (rdma_data_ctx.rdma != nullptr) {
-		ret = storage::common::stop_context(doca_rdma_as_ctx(rdma_data_ctx.rdma), data_pe);
+		ret = storage::stop_context(doca_rdma_as_ctx(rdma_data_ctx.rdma), data_pe);
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("T[%u] Failed to stop rdma data context: %s", thread_id, doca_error_get_name(ret));
 		}
@@ -834,7 +833,7 @@ thread_context::~thread_context()
 			       std::back_inserter(consumer_tasks),
 			       doca_comch_consumer_task_post_recv_as_task);
 
-		ret = storage::common::stop_context(doca_comch_consumer_as_ctx(consumer), data_pe, consumer_tasks);
+		ret = storage::stop_context(doca_comch_consumer_as_ctx(consumer), data_pe, consumer_tasks);
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("T[%u] Failed to stop comch consumer: %s", thread_id, doca_error_get_name(ret));
 		}
@@ -853,7 +852,7 @@ thread_context::~thread_context()
 			       std::back_inserter(producer_tasks),
 			       doca_comch_producer_task_send_as_task);
 
-		ret = storage::common::stop_context(doca_comch_producer_as_ctx(producer), data_pe, producer_tasks);
+		ret = storage::stop_context(doca_comch_producer_as_ctx(producer), data_pe, producer_tasks);
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("T[%u] Failed to stop comch producer: %s", thread_id, doca_error_get_name(ret));
 		}
@@ -933,7 +932,7 @@ thread_context::thread_context(comch_to_rdma_application_impl *app_impl_,
 	  thread{}
 {
 	try {
-		hot_data = storage::common::make_aligned<thread_hot_data>{}.object();
+		hot_data = storage::make_aligned<thread_hot_data>{}.object();
 	} catch (std::exception const &ex) {
 		throw std::runtime_error{"Failed to allocate thread hot data: "s + ex.what()};
 	}
@@ -958,7 +957,7 @@ void thread_context::create_objects(doca_dev *dev, doca_comch_connection *comch_
 	 * cfg.batch_size -1 tasks could be submitted but not yet flushed means that a surplus of cfg.batch_size tasks
 	 * are required to maintain always having N active tasks.
 	 */
-	auto const page_size = storage::common::get_system_page_size();
+	auto const page_size = storage::get_system_page_size();
 	auto const message_qty = (datapath_buffer_count * 2) + batch_size;
 	auto const memory_qty = message_qty * io_message_buffer_size;
 
@@ -974,16 +973,15 @@ void thread_context::create_objects(doca_dev *dev, doca_comch_connection *comch_
 		     memory_qty,
 		     page_size);
 	io_messages_memory =
-		static_cast<char *>(aligned_alloc(page_size, storage::common::aligned_size(page_size, memory_qty)));
+		static_cast<char *>(aligned_alloc(page_size, storage::aligned_size(page_size, memory_qty)));
 	if (io_messages_memory == nullptr) {
 		throw std::runtime_error{"Failed to allocate message buffer memory"};
 	}
 
-	io_messages_mmap =
-		storage::common::make_mmap(dev,
-					   io_messages_memory,
-					   memory_qty,
-					   DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_PCI_READ_WRITE);
+	io_messages_mmap = storage::make_mmap(dev,
+					      io_messages_memory,
+					      memory_qty,
+					      DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_PCI_READ_WRITE);
 
 	ret = doca_buf_inventory_create(message_qty, &(buf_inv));
 	if (ret != DOCA_SUCCESS) {
@@ -995,21 +993,21 @@ void thread_context::create_objects(doca_dev *dev, doca_comch_connection *comch_
 		throw std::runtime_error{"Failed to start messages doca_buf_inventory: "s + doca_error_get_name(ret)};
 	}
 
-	consumer = storage::common::make_comch_consumer(comch_conn,
-							io_messages_mmap,
-							data_pe,
-							datapath_buffer_count + batch_size,
-							doca_data{.ptr = hot_data},
-							doca_comch_consumer_task_post_recv_cb,
-							doca_comch_consumer_task_post_recv_error_cb);
+	consumer = storage::make_comch_consumer(comch_conn,
+						io_messages_mmap,
+						data_pe,
+						datapath_buffer_count + batch_size,
+						doca_data{.ptr = hot_data},
+						doca_comch_consumer_task_post_recv_cb,
+						doca_comch_consumer_task_post_recv_error_cb);
 	DOCA_LOG_DBG("T[%u] Created consumer %p", thread_id, consumer);
 
-	producer = storage::common::make_comch_producer(comch_conn,
-							data_pe,
-							datapath_buffer_count,
-							doca_data{.ptr = hot_data},
-							doca_comch_producer_task_send_cb,
-							doca_comch_producer_task_send_error_cb);
+	producer = storage::make_comch_producer(comch_conn,
+						data_pe,
+						datapath_buffer_count,
+						doca_data{.ptr = hot_data},
+						doca_comch_producer_task_send_cb,
+						doca_comch_producer_task_send_error_cb);
 	DOCA_LOG_DBG("T[%u] Created producer %p", thread_id, producer);
 
 	rdma_ctrl_ctx.rdma = create_rdma_context(dev, rdma_connection_role::ctrl, data_pe);
@@ -1212,11 +1210,11 @@ void thread_context::join(void)
 doca_rdma *thread_context::create_rdma_context(doca_dev *dev, rdma_connection_role role, doca_pe *pe)
 {
 	doca_error_t ret;
-	auto *const rdma = storage::common::make_rdma_context(
-		dev,
-		pe,
-		doca_data{.ptr = hot_data},
-		DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_READ | DOCA_ACCESS_FLAG_RDMA_WRITE);
+	auto *const rdma = storage::make_rdma_context(dev,
+						      pe,
+						      doca_data{.ptr = hot_data},
+						      DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_READ |
+							      DOCA_ACCESS_FLAG_RDMA_WRITE);
 
 	if (role == rdma_connection_role::ctrl) {
 		ret = doca_rdma_task_receive_set_conf(rdma,
@@ -1319,7 +1317,7 @@ comch_to_rdma_application_impl::~comch_to_rdma_application_impl()
 	}
 
 	if (m_comch_server != nullptr) {
-		ret = storage::common::stop_context(doca_comch_server_as_ctx(m_comch_server), m_ctrl_pe);
+		ret = storage::stop_context(doca_comch_server_as_ctx(m_comch_server), m_ctrl_pe);
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to stop doca_comch_server: %s", doca_error_get_name(ret));
 		}
@@ -1385,7 +1383,7 @@ comch_to_rdma_application_impl::comch_to_rdma_application_impl(
 	  m_datapath_batch_size{0},
 	  m_abort_flag{false}
 {
-	m_ctrl_msgs.reserve(storage::common::max_concurrent_control_messages);
+	m_ctrl_msgs.reserve(storage::max_concurrent_control_messages);
 }
 
 /*
@@ -1397,10 +1395,10 @@ void comch_to_rdma_application_impl::run(void)
 	uint32_t err_correlation_id = 0;
 
 	DOCA_LOG_INFO("Open doca_dev: %s", m_cfg.device_id.c_str());
-	m_dev = storage::common::open_device(m_cfg.device_id);
+	m_dev = storage::open_device(m_cfg.device_id);
 
 	DOCA_LOG_INFO("Open doca_dev_rep: %s", m_cfg.representor_id.c_str());
-	m_dev_rep = storage::common::open_representor(m_dev, m_cfg.representor_id);
+	m_dev_rep = storage::open_representor(m_dev, m_cfg.representor_id);
 
 	DOCA_LOG_DBG("Create control progress engine");
 	ret = doca_pe_create(&m_ctrl_pe);
@@ -1524,8 +1522,8 @@ void comch_to_rdma_application_impl::run(void)
 		for (uint32_t ii = 0; ii != m_thread_contexts.size(); ++ii) {
 			m_thread_contexts[ii]->thread = std::thread{&thread_proc_catch_wrapper, m_thread_contexts[ii]};
 			try {
-				storage::common::set_thread_affinity(m_thread_contexts[ii]->thread,
-								     m_cfg.cpu_set[m_thread_contexts[ii]->thread_id]);
+				storage::set_thread_affinity(m_thread_contexts[ii]->thread,
+							     m_cfg.cpu_set[m_thread_contexts[ii]->thread_id]);
 			} catch (std::exception const &) {
 				m_thread_contexts[ii]->hot_data->abort(
 					"Failed to set affinity for thread to core: "s +
@@ -1813,8 +1811,7 @@ void comch_to_rdma_application_impl::configure_storage(
 	m_datapath_buffer_count = request.buffer_count;
 	m_datapath_buffer_size = request.buffer_size;
 	m_datapath_batch_size = request.batch_size;
-	m_host_mmap =
-		storage::common::make_mmap(m_dev, request.mmap_export_blob.data(), request.mmap_export_blob.size());
+	m_host_mmap = storage::make_mmap(m_dev, request.mmap_export_blob.data(), request.mmap_export_blob.size());
 	m_mmap_export_blob = [this]() {
 		uint8_t const *reexport_blob = nullptr;
 		size_t reexport_blob_size = 0;
@@ -1841,23 +1838,23 @@ void comch_to_rdma_application_impl::connect_storage_server(void)
 		     m_cfg.storage_server_address.get_address().c_str(),
 		     m_cfg.storage_server_address.get_port());
 	auto const expiry_time = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-	storage::common::tcp_socket socket;
+	storage::tcp_socket socket;
 	socket.connect(m_cfg.storage_server_address);
 	while (!m_abort_flag) {
 		switch (socket.poll_is_connected()) {
-		case storage::common::tcp_socket::connection_status::connected:
+		case storage::tcp_socket::connection_status::connected:
 			DOCA_LOG_INFO("Connected to storage service %s:%u",
 				      m_cfg.storage_server_address.get_address().c_str(),
 				      m_cfg.storage_server_address.get_port());
 			m_storage_connection = std::move(socket);
 			return;
-		case storage::common::tcp_socket::connection_status::establishing:
+		case storage::tcp_socket::connection_status::establishing:
 			break;
-		case storage::common::tcp_socket::connection_status::refused:
-			socket = storage::common::tcp_socket{}; /* reset the socket */
+		case storage::tcp_socket::connection_status::refused:
+			socket = storage::tcp_socket{}; /* reset the socket */
 			socket.connect(m_cfg.storage_server_address);
 			break;
-		case storage::common::tcp_socket::connection_status::failed:
+		case storage::tcp_socket::connection_status::failed:
 			throw std::runtime_error{"Unable to connect via TCP to \"" +
 						 m_cfg.storage_server_address.get_address() +
 						 "\":" + std::to_string(m_cfg.storage_server_address.get_port())};
@@ -1897,7 +1894,7 @@ void comch_to_rdma_application_impl::create_comch_server(void)
 	ret = doca_comch_server_task_send_set_conf(m_comch_server,
 						   doca_comch_task_send_cb,
 						   doca_comch_task_send_error_cb,
-						   storage::common::max_concurrent_control_messages);
+						   storage::max_concurrent_control_messages);
 	if (ret != DOCA_SUCCESS) {
 		throw std::runtime_error{"Failed to configure doca_comch_server send task pool: "s +
 					 doca_error_get_name(ret)};
@@ -1969,7 +1966,7 @@ void comch_to_rdma_application_impl::prepare_storage_context(uint32_t thread_id,
 void comch_to_rdma_application_impl::connect_rdma(uint32_t thread_id,
 						  rdma_connection_role role,
 						  uint32_t correlation_id,
-						  storage::common::rdma_conn_pair &rdma_conn_pair)
+						  storage::rdma_conn_pair &rdma_conn_pair)
 {
 	doca_error_t ret;
 	uint8_t const *blob = nullptr;

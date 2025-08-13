@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -59,7 +59,8 @@ static doca_error_t rdma_objs_init(struct dpa_resources *resources,
 	ping_dpa_rdma_obj->permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
 					 DOCA_ACCESS_FLAG_RDMA_READ;
 	ping_dpa_rdma_obj->buf_list_len = RDMA_DEFAULT_BUF_LIST_LEN;
-	ping_dpa_rdma_obj->gid_index = RDMA_DEVICE_DEFAULT_GID_INDEX;
+	ping_dpa_rdma_obj->gid_index = resources->gid_index;
+	ping_dpa_rdma_obj->is_gid_index_set = resources->is_gid_index_set;
 	ping_dpa_rdma_obj->recv_queue_size = 1;
 	ping_dpa_rdma_obj->dpa_comp = ping_dpa_completion_obj->dpa_comp;
 	doca_err = dpa_rdma_obj_init(ping_dpa_rdma_obj);
@@ -71,7 +72,8 @@ static doca_error_t rdma_objs_init(struct dpa_resources *resources,
 	pong_dpa_rdma_obj->doca_device = resources->rdma_doca_device;
 	pong_dpa_rdma_obj->doca_dpa = resources->rdma_dpa_ctx;
 	pong_dpa_rdma_obj->buf_list_len = RDMA_DEFAULT_BUF_LIST_LEN;
-	pong_dpa_rdma_obj->gid_index = RDMA_DEVICE_DEFAULT_GID_INDEX;
+	pong_dpa_rdma_obj->gid_index = resources->gid_index;
+	pong_dpa_rdma_obj->is_gid_index_set = resources->is_gid_index_set;
 	pong_dpa_rdma_obj->recv_queue_size = 1;
 	pong_dpa_rdma_obj->permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
 					 DOCA_ACCESS_FLAG_RDMA_READ;

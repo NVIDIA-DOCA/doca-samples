@@ -4,7 +4,7 @@ This section describes DOCA Flow CT samples based on the DOCA Flow CT pipe.
 The samples illustrate how to use the library API to manage TCP/UDP connections.
 
 **Info**
-  
+
     All the DOCA samples described in this section are governed under the BSD-3 software license agreement.
 
 # Running the Samples
@@ -36,13 +36,12 @@ Usage: doca_<sample_name> [DOCA Flags] [Program Flags]
 
 ### DOCA Flags:
 - `-h, --help`                              Print a help synopsis
-- `-v, --version`                           Print program version information    
+- `-v, --version`                           Print program version information
 - `-l, --log-level`                         Set the (numeric) log level for the program <10=DISABLE, 20=CRITICAL, 30=ERROR, 40=WARNING, 50=INFO, 60=DEBUG, 70=TRACE>
 - `--sdk-log-level`                         Set the SDK (numeric) log level for the program <10=DISABLE, 20=CRITICAL, 30=ERROR, 40=WARNING, 50=INFO, 60=DEBUG, 70=TRACE>
-- `-j, --json <path>`                       Parse all command flags from an input json file
 
 ### Program Flags:
-- `-p, --pci_addr <PCI-ADDRESS>`            PCI device address
+- `-a, --dev <DEVICE-ADDRESS>`              Device address (e.g., pci/03:00.0)
 
 For additional information per sample, use the `-h` option:
 
@@ -55,7 +54,7 @@ For additional information per sample, use the `-h` option:
 The following is a CLI example for running the samples when port `03:00.0` is configured (multi-port e-switch) as manager port:
 
 ```sh
-/tmp/build/samples/doca_<sample_name> -- -p 03:00.0 -l 60
+/tmp/build/samples/doca_<sample_name> -- -a pci/03:00.0 -l 60
 ```
 
 **Info:** To avoid the test being impacted by unexpected packets, it only accepts packets like the following examples:
@@ -88,23 +87,30 @@ sudo devlink dev param set pci/<pcie-address0> name esw_multiport value false cm
 #### Creating a Pipeline on Each Port
 
 - Building an UDP pipe to filter non-UDP packets.
-- Building a CT pipe to hold UDP session entries.
-- Building a counter pipe with an example 5-tuple entry to which non-unidentified UDP sessions should be sent.
-- Building a hairpin pipe to send back packets.
-- Building an RSS pipe from which all packets are directed to the sample main thread for parsing and processing.
+- Building a CT pipe with built-in counter to hold UDP session entries.
+- Building a counter pipe for CT miss packets (CT cannot count miss packets).
+- Building a port forward pipe for direct port forwarding of CT match packets.
+- Building an RSS software pipe from which CT miss packets are directed to the sample main thread for parsing and processing.
 
 #### Packet Processing on Each Port
 
+The sample demonstrates two different packet processing paths:
+
+**CT MISS Path (Software Processing):**
 - The first UDP packet triggers the miss flow as the CT pipe is empty.
 - Performing 5-tuple packet parsing.
 - Calling `doca_flow_ct_add_entry()` to create a hardware rule according to the parsed 5-tuple info.
-- The second UDP packet based on the same 5-tuple should be sent again. Packet hits the hardware rule inserted before and sent back to egress.
+- Miss packets are forwarded through Counter Miss Pipe -> RSS Software Pipe -> Queue 0 -> Software processing.
+
+**CT MATCH Path (Direct Port Forwarding):**
+- The second UDP packet based on the same 5-tuple hits the hardware rule inserted before.
+- Match packets are forwarded through CT Pipe (with built-in counting) -> Port Forward Pipe -> Direct port forwarding.
 
 **Reference:**
 
-- `doca_flow/flow_ct_udp/flow_ct_2_ports_sample.c`
-- `doca_flow/flow_ct_udp/flow_ct_2_ports_main.c`
-- `doca_flow/flow_ct_udp/meson.build`
+- `doca_flow/flow_ct_2_ports/flow_ct_2_ports_sample.c`
+- `doca_flow/flow_ct_2_ports/flow_ct_2_ports_main.c`
+- `doca_flow/flow_ct_2_ports/meson.build`
 
 ### Flow CT UDP
 
@@ -157,6 +163,20 @@ This sample illustrates how to query a Flow CT UDP session entry. The query can 
 - `doca_flow/flow_ct_udp_query/flow_ct_udp_query_sample.c`
 - `doca_flow/flow_ct_udp_query/flow_ct_udp_query_main.c`
 - `doca_flow/flow_ct_udp_query/meson.build`
+
+### Flow CT UDP Tunnel Asymmetric
+
+This sample illustrates how the usage of the tunnel_asymmetric flag. The logic is identical to that of the Flow CT UDP Query sample.
+
+#### Additional Logic
+
+- Creating a tunnel in the reply direction
+
+**Reference:**
+
+- `doca_flow/flow_ct_udp_tunnel_asymmetric/flow_ct_udp_tunnel_asymmetric_sample.c`
+- `doca_flow/flow_ct_udp_tunnel_asymmetric/flow_ct_udp_tunnel_asymmetric_main.c`
+- `doca_flow/flow_ct_udp_tunnel_asymmetric/meson.build`
 
 ### Flow CT UDP Update
 

@@ -75,7 +75,7 @@ struct eth_l2_fwd_dev_resources {
 
 	struct mmap_resources mmap_resrc; /* Memory resources to set for the ETH RXQ context */
 
-	uint16_t rxq_flow_queue_id; /* Flow queue ID for the ETH RXQ context */
+	uint16_t rxq_queue_id; /* Queue ID for the ETH RXQ context */
 };
 
 /* Ethernet L2 Forwarding application resources */

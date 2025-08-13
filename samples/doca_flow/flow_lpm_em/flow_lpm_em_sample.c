@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -30,7 +30,7 @@
 #include <doca_flow.h>
 #include <doca_bitfield.h>
 
-#include "flow_common.h"
+#include <flow_common.h>
 
 DOCA_LOG_REGISTER(FLOW_LPM_EM);
 
@@ -69,7 +69,7 @@ static doca_error_t create_classifier_pipe(struct doca_flow_port *port,
 	/* Match on tunnel type being VXLAN */
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
 	match.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-	match.outer.udp.l4_port.dst_port = RTE_BE16(DOCA_FLOW_VXLAN_DEFAULT_PORT);
+	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(DOCA_FLOW_VXLAN_DEFAULT_PORT);
 
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
@@ -386,7 +386,7 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 	rc = add_lpm_one_entry(pipe,
 			       UINT16_MAX, /* indicates forward drop */
 			       BE_IPV4_ADDR(0, 0, 0, 0),
-			       RTE_BE32(0x00000000),
+			       DOCA_HTOBE32(0x00000000),
 			       0, /* does not make a difference for a default entry */
 			       0,
 			       inner_dmac,
@@ -401,7 +401,7 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 	rc = add_lpm_one_entry(pipe,
 			       port_id,
 			       BE_IPV4_ADDR(1, 2, 3, 4),
-			       RTE_BE32(0xffffffff),
+			       DOCA_HTOBE32(0xffffffff),
 			       DOCA_HTOBE32(1),
 			       DOCA_HTOBE32(0xabcde1),
 			       inner_dmac,
@@ -415,7 +415,7 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 	rc = add_lpm_one_entry(pipe,
 			       port_id,
 			       BE_IPV4_ADDR(1, 2, 3, 4),
-			       RTE_BE32(0xffffffff),
+			       DOCA_HTOBE32(0xffffffff),
 			       DOCA_HTOBE32(2),
 			       DOCA_HTOBE32(0xabcde2),
 			       inner_dmac,
@@ -430,7 +430,7 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 	rc = add_lpm_one_entry(pipe,
 			       UINT16_MAX,
 			       BE_IPV4_ADDR(1, 2, 3, 4),
-			       RTE_BE32(0xffffffff),
+			       DOCA_HTOBE32(0xffffffff),
 			       DOCA_HTOBE32(3),
 			       DOCA_HTOBE32(0xabcde3),
 			       inner_dmac,
@@ -444,7 +444,7 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 	rc = add_lpm_one_entry(pipe,
 			       port_id,
 			       BE_IPV4_ADDR(1, 2, 0, 0),
-			       RTE_BE32(0xffff0000),
+			       DOCA_HTOBE32(0xffff0000),
 			       DOCA_HTOBE32(3),
 			       DOCA_HTOBE32(0xabcde3),
 			       inner_dmac,
@@ -477,7 +477,6 @@ doca_error_t flow_lpm_em(int nb_queues)
 	const int main_entry_idx = 1;
 	const int lpm_entries_idx = 2;
 	struct flow_resources resource = {.nr_counters = 64};
-	struct doca_dev *dev_arr[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
@@ -496,9 +495,8 @@ doca_error_t flow_lpm_em(int nb_queues)
 		return result;
 	}
 
-	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
-	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_queues, num_of_entries));
-	result = init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size);
+	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
