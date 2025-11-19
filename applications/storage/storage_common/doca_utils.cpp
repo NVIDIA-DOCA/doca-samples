@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -143,7 +143,11 @@ doca_dev_rep *open_representor(doca_dev *dev, std::string const &identifier)
 				 "\""};
 }
 
-doca_mmap *make_mmap(doca_dev *dev, char *memory_region, size_t memory_region_size, uint32_t permissions)
+doca_mmap *make_mmap(doca_dev *dev,
+		     char *memory_region,
+		     size_t memory_region_size,
+		     uint32_t permissions,
+		     storage::thread_safety ts)
 {
 	doca_error_t ret;
 	doca_mmap *obj = nullptr;
@@ -176,6 +180,14 @@ doca_mmap *make_mmap(doca_dev *dev, char *memory_region, size_t memory_region_si
 		throw std::runtime_error{"Failed to set doca_mmap access permissions: "s + doca_error_get_name(ret)};
 	}
 
+	if (ts == thread_safety::yes) {
+		ret = doca_mmap_enable_thread_safety(obj);
+		if (ret != DOCA_SUCCESS) {
+			static_cast<void>(doca_mmap_destroy(obj));
+			throw std::runtime_error{"Failed to make doca_mmap thread safe: "s + doca_error_get_name(ret)};
+		}
+	}
+
 	ret = doca_mmap_start(obj);
 	if (ret != DOCA_SUCCESS) {
 		static_cast<void>(doca_mmap_destroy(obj));
@@ -185,12 +197,23 @@ doca_mmap *make_mmap(doca_dev *dev, char *memory_region, size_t memory_region_si
 	return obj;
 }
 
-doca_mmap *make_mmap(doca_dev *dev, void const *mmap_export_blob, size_t mmap_export_blob_size)
+doca_mmap *make_mmap(doca_dev *dev,
+		     void const *mmap_export_blob,
+		     size_t mmap_export_blob_size,
+		     storage::thread_safety ts)
 {
 	doca_mmap *mmap = nullptr;
-	auto const ret = doca_mmap_create_from_export(nullptr, mmap_export_blob, mmap_export_blob_size, dev, &mmap);
+	auto ret = doca_mmap_create_from_export(nullptr, mmap_export_blob, mmap_export_blob_size, dev, &mmap);
 	if (ret != DOCA_SUCCESS) {
 		throw std::runtime_error{"Failed to create doca_mmap from export: "s + doca_error_get_name(ret)};
+	}
+
+	if (ts == thread_safety::yes) {
+		ret = doca_mmap_enable_thread_safety(mmap);
+		if (ret != DOCA_SUCCESS) {
+			static_cast<void>(doca_mmap_destroy(mmap));
+			throw std::runtime_error{"Failed to make doca_mmap thread safe: "s + doca_error_get_name(ret)};
+		}
 	}
 
 	DOCA_LOG_DBG("Created mmap from export: %p using: dev %p, blob %p, blob_size: %zu",
@@ -374,6 +397,17 @@ doca_error_t stop_context(doca_ctx *ctx, doca_pe *pe) noexcept
 
 doca_error_t stop_context(doca_ctx *ctx, doca_pe *pe, std::vector<doca_task *> &ctx_tasks) noexcept
 {
+	/* If all tasks are completed, they can be released immediately to avoid any complaints during stop */
+	if (!ctx_tasks.empty()) {
+		size_t num_inflight_tasks = 0;
+		static_cast<void>(doca_ctx_get_num_inflight_tasks(ctx, &num_inflight_tasks));
+		if (num_inflight_tasks == 0) {
+			for (auto *task : ctx_tasks)
+				doca_task_free(task);
+			ctx_tasks.clear();
+		}
+	}
+
 	auto ret = doca_ctx_stop(ctx);
 	if (ret == DOCA_SUCCESS)
 		return DOCA_SUCCESS;

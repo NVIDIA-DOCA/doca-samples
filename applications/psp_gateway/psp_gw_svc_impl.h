@@ -276,7 +276,7 @@ private:
 	std::map<session_key, psp_session_t> sessions;
 
 	// Used to assign a unique shared-resource ID to each encryption flow.
-	uint32_t next_crypto_id_ = 1;
+	uint32_t next_crypto_serial_id_ = 0;
 };
 
 #endif // _PSP_GW_SVC_H

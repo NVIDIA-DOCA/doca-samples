@@ -23,6 +23,7 @@
  *
  */
 
+#include <endian.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -197,6 +198,7 @@ static doca_error_t add_hash_pipe_entries(struct doca_flow_pipe *pipe, struct en
 		result = doca_flow_pipe_hash_add_entry(0,
 						       pipe,
 						       entry_index,
+						       0,
 						       NULL,
 						       NULL,
 						       &fwd,
@@ -244,6 +246,47 @@ static doca_error_t calc_hash(struct doca_flow_pipe *pipe)
  * @ctx [in]: flow switch context the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
+/* Context structure for statistics printing */
+struct hash_pipe_stats_context {
+	struct doca_flow_pipe_entry **entries;
+};
+
+/*
+ * Print hash pipe statistics
+ *
+ * @entries [in]: array of flow entries
+ */
+static void print_hash_pipe_stats(struct doca_flow_pipe_entry *entries[])
+{
+	doca_error_t result;
+	struct doca_flow_resource_query query_stats;
+	int entry_idx;
+
+	/* dump entries counters */
+	for (entry_idx = 0; entry_idx < NB_ENTRIES; entry_idx++) {
+		result = doca_flow_resource_query_entry(entries[entry_idx], &query_stats);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
+			return;
+		}
+		DOCA_LOG_INFO("Entry in index: %d", entry_idx);
+		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
+		DOCA_LOG_INFO("Total packets: %ld", query_stats.counter.total_pkts);
+	}
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: hash_pipe_stats_context structure
+ */
+static void print_hash_pipe_stats_wrapper(void *context)
+{
+	struct hash_pipe_stats_context *ctx = (struct hash_pipe_stats_context *)context;
+	print_hash_pipe_stats(ctx->entries);
+}
+
 doca_error_t flow_hash_pipe(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 {
 	struct flow_resources resource = {0};
@@ -252,13 +295,12 @@ doca_error_t flow_hash_pipe(int nb_queues, int nb_ports, struct flow_switch_ctx 
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *hash_pipe;
 	struct doca_flow_pipe *hash_pipe_sw;
-	struct doca_flow_resource_query query_stats;
 	struct entries_status status;
 	int num_of_entries = NB_ENTRIES;
 	doca_error_t result;
-	int entry_idx;
 
 	memset(&status, 0, sizeof(status));
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = NB_ENTRIES; /* counter per entry */
 
 	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
@@ -272,7 +314,8 @@ doca_error_t flow_hash_pipe(int nb_queues, int nb_ports, struct flow_switch_ctx 
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -318,22 +361,10 @@ doca_error_t flow_hash_pipe(int nb_queues, int nb_ports, struct flow_switch_ctx 
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
-	sleep(15);
+	/* Setup statistics context and wait for packets */
+	struct hash_pipe_stats_context stats_ctx = {.entries = entries};
 
-	/* dump entries counters */
-	for (entry_idx = 0; entry_idx < NB_ENTRIES; entry_idx++) {
-		result = doca_flow_resource_query_entry(entries[entry_idx], &query_stats);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
-		DOCA_LOG_INFO("Entry in index: %d", entry_idx);
-		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
-		DOCA_LOG_INFO("Total packets: %ld", query_stats.counter.total_pkts);
-	}
+	flow_wait_for_packets(15, print_hash_pipe_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

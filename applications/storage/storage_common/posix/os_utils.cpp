@@ -88,8 +88,20 @@ void set_thread_affinity(std::thread &thread, uint32_t cpu_core_idx)
 
 std::string strerror_r(int err) noexcept
 {
-	char buffer[128];
-	return ::strerror_r(err, buffer, 128);
+	auto constexpr buf_len = 128;
+	char buffer[buf_len];
+#if defined(__GLIBC__)
+	/* In the case of GNU strerror_r either a static immutable string is returned OR buf is populated */
+	return std::string{::strerror_r(err, buffer, buf_len)};
+#else
+	/* In the case of XSI strerror_r the user provided buffer is always populated */
+	auto const status = ::strerror_r(err, buffer, buf_len);
+	if (status != 0) {
+		/* Handle the case where strerror_r fails */
+		snprintf(buffer, buf_len, "Unknown error: %d", err);
+	}
+	return std::string{buffer};
+#endif
 }
 
 uint32_t get_system_page_size(void)

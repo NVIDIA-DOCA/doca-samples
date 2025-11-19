@@ -250,7 +250,7 @@ static doca_error_t add_shared_meter_pipe_entry(struct doca_flow_pipe *pipe,
 	SET_L4_PORT(outer, dst_port, dst_port);
 	SET_L4_PORT(outer, src_port, src_port);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, &monitor, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, &monitor, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 		return result;
@@ -380,7 +380,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *tcp_pipe, *udp_pipe, *pipe, *color_pipe;
 	int port_id;
-	uint32_t shared_meter_ids[] = {0, 1};
+	uint32_t shared_meter_ids[] = {UINT32_MAX, UINT32_MAX}; /* Invalid meter id */
 	struct doca_flow_shared_resource_cfg cfg = {0};
 	struct doca_flow_resource_meter_cfg meter_cfg = {0};
 	struct doca_flow_fwd fwd_on_green, fwd_on_red;
@@ -388,7 +388,8 @@ doca_error_t flow_shared_meter(int nb_queues)
 	int num_of_entries = 4;
 	doca_error_t result;
 
-	nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_METER] = 2;
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_meters = 2;
 
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
@@ -397,7 +398,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -413,23 +414,22 @@ doca_error_t flow_shared_meter(int nb_queues)
 	cfg.meter_cfg = meter_cfg;
 	for (port_id = 0; port_id < nb_ports; port_id++) {
 		memset(&status, 0, sizeof(status));
-		/* config shared meter with cir and cbs, based on RFC 2697 */
-		result = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_METER,
-							   shared_meter_ids[port_id],
-							   &cfg);
+		/* get shared meter id from port and configure it (RFC 2697) */
+		result = doca_flow_port_shared_resource_get(ports[port_id],
+							    DOCA_FLOW_SHARED_RESOURCE_METER,
+							    &shared_meter_ids[port_id]);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to cfg shared meter");
+			DOCA_LOG_ERR("Failed to get shared meter id from port %d", port_id);
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;
 		}
-		/* bind shared meter to port */
-		result = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_METER,
-							 &shared_meter_ids[port_id],
-							 1,
-							 ports[port_id]);
+		result = doca_flow_port_shared_resource_set_cfg(ports[port_id],
+								DOCA_FLOW_SHARED_RESOURCE_METER,
+								shared_meter_ids[port_id],
+								&cfg);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to bind shared meter to port");
+			DOCA_LOG_ERR("Failed to configure shared meter to port %d", port_id);
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;

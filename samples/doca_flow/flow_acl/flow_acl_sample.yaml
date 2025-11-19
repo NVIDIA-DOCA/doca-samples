@@ -31,7 +31,8 @@ ports_description:
 use_cases:
   - name: "Flow acl use case #1"
     description: "This sample illustrates how to use the access-control list (ACL) pipe. It shows the matching on the source and destination IPs
-                  as well as the ranges of the ports."
+                  as well as the ranges of the ports.
+                  Sample Command Line: ./build/doca_flow_acl -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
     args: ""
     stages:
       - name: "Sending packets iteration 1"

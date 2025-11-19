@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -48,14 +48,13 @@
 /* Configuration struct */
 struct a2a_config {
 	int msgsize;					/* Message size of sendbuf (in bytes) */
-	char pf_device1_name[MAX_IB_DEVICE_NAME_LEN];	/* PF DOCA device name used to create DOCA DPA context */
-	char rdma_device1_name[MAX_IB_DEVICE_NAME_LEN]; /* When running from DPU: SF DOCA device name used to create
-						 RDMA context When running from Host: will be equal to pf_device1_name
-					       */
-	char pf_device2_name[MAX_IB_DEVICE_NAME_LEN];	/* PF DOCA device name used to create second DOCA DPA context */
-	char rdma_device2_name[MAX_IB_DEVICE_NAME_LEN]; /* When running from DPU: second SF DOCA device name used to
-						 create RDMA context When running from Host: will be equal to
-						 pf_device2_name */
+	char pf_device1_name[MAX_IB_DEVICE_NAME_LEN];	/* PF DOCA device name used to create PF DOCA DPA context */
+	char rdma_device1_name[MAX_IB_DEVICE_NAME_LEN]; /* RDMA DOCA device name used to create RDMA DOCA DPA context
+							   (if needed) */
+	char pf_device2_name[MAX_IB_DEVICE_NAME_LEN];	/* PF DOCA device name used to create second PF DOCA DPA context
+							 */
+	char rdma_device2_name[MAX_IB_DEVICE_NAME_LEN]; /* RDMA DOCA device name used to create second RDMA DOCA DPA
+							   context (if needed */
 };
 
 /* A struct that includes all the resources needed for DPA */
@@ -64,16 +63,14 @@ struct a2a_resources {
 	struct doca_dev *pf_doca_device;	       /* PF DOCA device used to create the DOCA DPA context */
 	struct doca_dpa *pf_doca_dpa;		       /* DOCA DPA context created on PF device */
 	char rdma_device_name[MAX_IB_DEVICE_NAME_LEN]; /* Buffer that holds the RDMA device name */
-	struct doca_dev *rdma_doca_device; /* When running from DPU: SF DOCA device used to create RDMA context
-						 When running from Host: will be equal to pf_doca_device */
-	struct doca_dpa *rdma_doca_dpa; /* When running from DPU: extended DOCA DPA context created on RDMA DOCA device
-						   When running from Host: will be equal to pf_doca_dpa */
-	doca_dpa_dev_t rdma_doca_dpa_handle;		    /* Extended DOCA DPA context handle */
-	void *sendbuf;					    /* The send buffer we get from the alltoall call */
-	void *recvbuf;					    /* The receive buffer we get from the alltoall call */
-	struct doca_sync_event *comp_event;		    /* DOCA sync event for DPA completion event */
-	uint64_t a2a_seq_num;				    /* Sequence number for the completion event */
-	struct doca_sync_event **kernel_events;		    /* DOCA sync events for kernel */
+	struct doca_dev *rdma_doca_device;	       /* DOCA device used to create RDMA context (if needed) */
+	struct doca_dpa *rdma_doca_dpa;		/* extended DOCA DPA context created on RDMA DOCA device (if needed) */
+	doca_dpa_dev_t rdma_doca_dpa_handle;	/* Extended DOCA DPA context handle */
+	void *sendbuf;				/* The send buffer we get from the alltoall call */
+	void *recvbuf;				/* The receive buffer we get from the alltoall call */
+	struct doca_sync_event *comp_event;	/* DOCA sync event for DPA completion event */
+	uint64_t a2a_seq_num;			/* Sequence number for the completion event */
+	struct doca_sync_event **kernel_events; /* DOCA sync events for kernel */
 	doca_dpa_dev_sync_event_t *kernel_events_handle;    /* DOCA sync events handles for DPA kernel */
 	doca_dpa_dev_uintptr_t devptr_kernel_events_handle; /* DOCA DPA local processes remote events for kernel device
 							       pointers */

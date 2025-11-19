@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -64,7 +64,13 @@ struct ether_hdr {
 } __attribute__((__packed__));
 
 struct ipv4_hdr {
-	uint8_t version_ihl;	  /* version and header length */
+	union {
+		uint8_t version_ihl; /**< version and header length */
+		struct {
+			uint8_t ihl : 4;     /**< header length */
+			uint8_t version : 4; /**< version */
+		};
+	};
 	uint8_t type_of_service;  /* type of service */
 	uint16_t total_length;	  /* length of packet */
 	uint16_t packet_id;	  /* packet ID */
@@ -81,11 +87,29 @@ struct tcp_hdr {
 	uint16_t dst_port; /* TCP destination port */
 	uint32_t sent_seq; /* TX data sequence number */
 	uint32_t recv_ack; /* RX data acknowledgment sequence number */
-	uint8_t dt_off;	   /* Data offset */
-	uint8_t tcp_flags; /* TCP flags */
-	uint16_t rx_win;   /* RX flow control window */
-	uint16_t cksum;	   /* TCP checksum */
-	uint16_t tcp_urp;  /* TCP urgent pointer, if any */
+	union {
+		uint8_t data_off;
+		struct {
+			uint8_t rsrv : 4;
+			uint8_t dt_off : 4; /* Data offset */
+		};
+	};
+	union {
+		uint8_t tcp_flags; /* TCP flags */
+		struct {
+			uint8_t fin : 1;
+			uint8_t syn : 1;
+			uint8_t rst : 1;
+			uint8_t psh : 1;
+			uint8_t ack : 1;
+			uint8_t urg : 1;
+			uint8_t ecne : 1;
+			uint8_t cwr : 1;
+		};
+	};
+	uint16_t rx_win;  /* RX flow control window */
+	uint16_t cksum;	  /* TCP checksum */
+	uint16_t tcp_urp; /* TCP urgent pointer, if any */
 } __attribute__((__packed__));
 
 struct eth_ip_tcp_hdr {

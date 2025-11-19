@@ -25,21 +25,26 @@
 
 #include "nfs_fsdev_gpt.hpp"
 #include "nfs_fsdev_io_device.h"
+#include "nfs_fsdev.h"
 
 extern "C" {
 
-void *allocate_and_init_nfs_fsdev_context(char *server, char *mount_point)
+struct nfs_fsdev_context *create_nfs_fsdev_context(char *server, char *mount_point)
 {
-	return new IoDevice<nfs_fsdev_global, nfs_fsdev>(server, mount_point);
+	return (struct nfs_fsdev_context *)(new IoDevice<nfs_fsdev_global, nfs_fsdev>(server, mount_point));
+}
+void destroy_nfs_fsdev_context(struct nfs_fsdev_context *nfs_fsdev_context)
+{
+	delete (IoDevice<nfs_fsdev_global, nfs_fsdev> *)nfs_fsdev_context;
 }
 
-struct nfs_fsdev_global *get_global_context_nfs_fsdev(void *nfs_fsdev_context)
+struct nfs_fsdev_global *get_global_context_nfs_fsdev(struct nfs_fsdev_context *nfs_fsdev_context)
 {
 	IoDevice<nfs_fsdev_global, nfs_fsdev> *io_device = (IoDevice<nfs_fsdev_global, nfs_fsdev> *)nfs_fsdev_context;
 	return &(io_device->global_data);
 }
 
-struct nfs_fsdev *get_private_context_nfs_fsdev(void *nfs_fsdev_context)
+struct nfs_fsdev *get_private_context_nfs_fsdev(struct nfs_fsdev_context *nfs_fsdev_context)
 {
 	IoDevice<nfs_fsdev_global, nfs_fsdev> *io_device = (IoDevice<nfs_fsdev_global, nfs_fsdev> *)nfs_fsdev_context;
 	return &(io_device->getPerThreadData());

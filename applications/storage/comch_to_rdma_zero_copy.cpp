@@ -26,6 +26,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -50,6 +51,7 @@
 #include <storage_common/buffer_utils.hpp>
 #include <storage_common/control_message.hpp>
 #include <storage_common/control_channel.hpp>
+#include <storage_common/control_worker_async.hpp>
 #include <storage_common/definitions.hpp>
 #include <storage_common/file_utils.hpp>
 #include <storage_common/io_message.hpp>
@@ -79,10 +81,169 @@ struct zero_copy_app_configuration {
 };
 
 struct thread_stats {
-	uint32_t core_idx = 0;
+	uint16_t core_idx = 0;
 	uint64_t pe_hit_count = 0;
 	uint64_t pe_miss_count = 0;
 	uint64_t operation_count = 0;
+};
+
+struct worker_control_command {
+	enum class type {
+		create_objects,
+		export_local_rdma_connection,
+		import_remote_rdma_connection,
+		are_contexts_ready,
+		prepare_tasks,
+		start_data_path,
+		abort_thread,
+	};
+
+	worker_control_command::type cmd_type;
+
+	virtual ~worker_control_command() = default;
+	worker_control_command() = delete;
+	explicit worker_control_command(worker_control_command::type cmd_type_) : cmd_type{cmd_type_}
+	{
+	}
+	worker_control_command(worker_control_command const &) = default;
+	worker_control_command(worker_control_command &&) noexcept = default;
+	worker_control_command &operator=(worker_control_command const &) = default;
+	worker_control_command &operator=(worker_control_command &&) noexcept = default;
+};
+
+char const *to_string(worker_control_command::type cmd_type)
+{
+	switch (cmd_type) {
+	case worker_control_command::type::create_objects:
+		return "create_objects";
+	case worker_control_command::type::export_local_rdma_connection:
+		return "export_local_rdma_connection";
+	case worker_control_command::type::import_remote_rdma_connection:
+		return "import_remote_rdma_connection";
+	case worker_control_command::type::are_contexts_ready:
+		return "are_contexts_ready";
+	case worker_control_command::type::prepare_tasks:
+		return "prepare_tasks";
+	case worker_control_command::type::start_data_path:
+		return "start_data_path";
+	case worker_control_command::type::abort_thread:
+		return "abort_thread";
+	default:
+		return "UNKNOWN";
+	}
+}
+
+struct worker_create_objects_control_command : public worker_control_command {
+	/* Device to use */
+	doca_dev *dev;
+	/* Comch control channel to use */
+	doca_comch_connection *comch_conn;
+	/* Number of transactions to create */
+	uint32_t transaction_count;
+
+	~worker_create_objects_control_command() override = default;
+	worker_create_objects_control_command() = delete;
+	worker_create_objects_control_command(doca_dev *dev_,
+					      doca_comch_connection *comch_conn_,
+					      uint32_t transaction_count_)
+		: worker_control_command{worker_control_command::type::create_objects},
+		  dev{dev_},
+		  comch_conn{comch_conn_},
+		  transaction_count{transaction_count_}
+	{
+	}
+	worker_create_objects_control_command(worker_create_objects_control_command const &) = default;
+	worker_create_objects_control_command(worker_create_objects_control_command &&) noexcept = default;
+	worker_create_objects_control_command &operator=(worker_create_objects_control_command const &) = default;
+	worker_create_objects_control_command &operator=(worker_create_objects_control_command &&) noexcept = default;
+};
+
+struct worker_export_local_rdma_connection_command : public worker_control_command {
+	/* The purpose of this connection */
+	storage::control::rdma_connection_role rdma_role;
+	/* Blob exported from the local side of the RDMA connection to be imported by the remote side. (Value set during
+	 * execution of the command, caller should only access it after the command completes successfully) */
+	std::vector<uint8_t> out_exported_blob;
+
+	~worker_export_local_rdma_connection_command() override = default;
+	worker_export_local_rdma_connection_command() = delete;
+	explicit worker_export_local_rdma_connection_command(storage::control::rdma_connection_role rdma_role_)
+		: worker_control_command{worker_control_command::type::export_local_rdma_connection},
+		  rdma_role{rdma_role_},
+		  out_exported_blob{}
+	{
+	}
+	worker_export_local_rdma_connection_command(worker_export_local_rdma_connection_command const &) = default;
+	worker_export_local_rdma_connection_command(worker_export_local_rdma_connection_command &&) noexcept = default;
+	worker_export_local_rdma_connection_command &operator=(worker_export_local_rdma_connection_command const &) =
+		default;
+	worker_export_local_rdma_connection_command &operator=(
+		worker_export_local_rdma_connection_command &&) noexcept = default;
+};
+
+struct worker_import_local_rdma_connection_command : public worker_control_command {
+	/* The purpose of this connection */
+	storage::control::rdma_connection_role rdma_role;
+	/* Blob from the remote side of the RDMA connection to import */
+	std::vector<uint8_t> import_blob;
+
+	~worker_import_local_rdma_connection_command() override = default;
+	worker_import_local_rdma_connection_command() = delete;
+	worker_import_local_rdma_connection_command(storage::control::rdma_connection_role rdma_role_,
+						    std::vector<uint8_t> import_blob_)
+		: worker_control_command{worker_control_command::type::import_remote_rdma_connection},
+		  rdma_role{rdma_role_},
+		  import_blob{import_blob_}
+	{
+	}
+	worker_import_local_rdma_connection_command(worker_import_local_rdma_connection_command const &) = default;
+	worker_import_local_rdma_connection_command(worker_import_local_rdma_connection_command &&) noexcept = default;
+	worker_import_local_rdma_connection_command &operator=(worker_import_local_rdma_connection_command const &) =
+		default;
+	worker_import_local_rdma_connection_command &operator=(
+		worker_import_local_rdma_connection_command &&) noexcept = default;
+};
+
+struct worker_are_contexts_ready_control_command : public worker_control_command {
+	/*
+	 * Contexts status:
+	 *  - DOCA_SUCCESS : When all contexts are ready to perform data path operations
+	 *  - DOCA_ERROR_IN_PROGRESS : When one or more context is not ready yet
+	 *  Any other DOCA_ERROR_XXX indicates an error has occurred.
+	 */
+	doca_error_t out_status = DOCA_ERROR_UNKNOWN;
+
+	~worker_are_contexts_ready_control_command() override = default;
+	worker_are_contexts_ready_control_command()
+		: worker_control_command{worker_control_command::type::are_contexts_ready}
+	{
+	}
+	worker_are_contexts_ready_control_command(worker_are_contexts_ready_control_command const &) = default;
+	worker_are_contexts_ready_control_command(worker_are_contexts_ready_control_command &&) noexcept = default;
+	worker_are_contexts_ready_control_command &operator=(worker_are_contexts_ready_control_command const &) =
+		default;
+	worker_are_contexts_ready_control_command &operator=(worker_are_contexts_ready_control_command &&) noexcept =
+		default;
+};
+
+struct worker_prepare_tasks_control_command : public worker_control_command {
+	/* Number of transactions to prepare. MUST equal worker_create_objects_control_command::transaction_count */
+	uint32_t transaction_count;
+	/* ID of the consumer on the initiator side this worker will send messages to */
+	uint32_t remote_consumer_id;
+
+	~worker_prepare_tasks_control_command() override = default;
+	worker_prepare_tasks_control_command() = delete;
+	worker_prepare_tasks_control_command(uint32_t transaction_count_, uint32_t remote_consumer_id_)
+		: worker_control_command{worker_control_command::type::prepare_tasks},
+		  transaction_count{transaction_count_},
+		  remote_consumer_id{remote_consumer_id_}
+	{
+	}
+	worker_prepare_tasks_control_command(worker_prepare_tasks_control_command const &) = default;
+	worker_prepare_tasks_control_command(worker_prepare_tasks_control_command &&) noexcept = default;
+	worker_prepare_tasks_control_command &operator=(worker_prepare_tasks_control_command const &) = default;
+	worker_prepare_tasks_control_command &operator=(worker_prepare_tasks_control_command &&) noexcept = default;
 };
 
 class zero_copy_app_worker {
@@ -93,7 +254,7 @@ public:
 		uint64_t pe_miss_count = 0;
 		uint64_t completed_transaction_count = 0;
 		uint32_t in_flight_transaction_count = 0;
-		uint32_t core_idx = 0;
+		uint16_t core_idx = 0;
 		std::atomic_bool run_flag = false;
 		bool error_flag = false;
 	};
@@ -101,30 +262,54 @@ public:
 		      "Expected thread_context::hot_data to occupy one cache line");
 
 	~zero_copy_app_worker();
-	void init(doca_dev *dev, doca_comch_connection *comch_conn, uint32_t task_count);
-
-	std::vector<uint8_t> get_local_rdma_connection_blob(storage::control::rdma_connection_role role);
-	void connect_rdma(storage::control::rdma_connection_role role, std::vector<uint8_t> const &blob);
-	doca_error_t get_connections_state() const noexcept;
-	void stop_processing(void) noexcept;
-	void destroy_comch_objects(void) noexcept;
-
-	void create_tasks(uint32_t task_count, uint32_t remote_consumer_id);
 
 	/*
-	 * Prepare thread proc
-	 * @core_id [in]: Core to run on
+	 * Create thread proc
+	 * @core_idx [in]: Core to run on
 	 */
-	void prepare_thread_proc(uint32_t core_id);
-	void start_thread_proc();
-	[[nodiscard]] hot_data const &get_hot_data() const noexcept;
+	void create_thread_proc(uint16_t core_idx);
+
+	/*
+	 * Command interface, execute a given command.
+	 *
+	 * @cmd [in]: Command to execute
+	 * @return Result of the command
+	 */
+	doca_error_t execute_control_command(worker_control_command &cmd);
+
+	/*
+	 * Join the work thread
+	 */
+	void join_thread_proc(void);
+
+	/*
+	 * Get The workers stats
+	 *
+	 * @return stats;
+	 */
+	thread_stats get_stats() const noexcept;
+
+	/*
+	 * Destroy comch consumer and producer
+	 */
+	void destroy_comch_objects(void) noexcept;
 
 private:
-	hot_data m_hot_data = {};
+	/* Hot data - Cache aligned container of data and objects required for use on the data path. */
+	hot_data *m_hot_data = nullptr;
+
+	/**************************************************************************************************************
+	 * Control data / Ownership data
+	 * The cold path data is used to configure and prepare for the host path. These objects and data must be
+	 * maintained to allow for teardown / destruction later
+	 */
+	/* Async controller. Used to allow execution of control commands within the worker thread proc */
+	storage::control::worker_async<worker_control_command> m_async_ctrl;
 	uint8_t *m_io_message_region = nullptr;
 	doca_mmap *m_io_message_mmap = nullptr;
 	doca_buf_inventory *m_io_message_inv = nullptr;
 	std::vector<doca_buf *> m_io_message_bufs = {};
+	doca_pe *m_pe = nullptr;
 	doca_comch_consumer *m_consumer = nullptr;
 	doca_comch_producer *m_producer = nullptr;
 	storage::rdma_conn_pair m_rdma_ctrl_ctx = {};
@@ -135,7 +320,56 @@ private:
 	std::vector<doca_rdma_task_receive *> m_storage_response_tasks = {};
 	std::thread m_thread = {};
 
-	void cleanup(void) noexcept;
+	/*
+	 * Implementation of execute control command that runs within the worker thread proc
+	 *
+	 * @cmd [in]: Command to execute
+	 *
+	 * @return true if the worker is ready to start the data path, false otherwise
+	 */
+	bool execute_control_command_impl(worker_control_command &cmd) noexcept;
+
+	/*
+	 * Create the objects required by the worker.
+	 *
+	 * @cmd [in]: Command object describing the settings for the objects.
+	 */
+	void create_worker_objects(worker_create_objects_control_command const &cmd);
+
+	/*
+	 * Export the connection block for a given RDMA context
+	 *
+	 * @cmd [in/out]: Command containing the required input data to perfm the request, and storage for the output
+	 * data
+	 */
+	void export_local_rdma_connection_blob(worker_export_local_rdma_connection_command &cmd);
+
+	/*
+	 * Import a remote blob to a given rdma context and begin connecting
+	 *
+	 * @cmd [in/out]: Command containing the required input data to perfm the request, and storage for the output
+	 * data
+	 */
+	void import_remote_rdma_connection_blob(worker_import_local_rdma_connection_command const &cmd);
+
+	/*
+	 * Check that all contexts are ready to run
+	 *
+	 * @cmd [in]: Command object holding the out param to populate
+	 */
+	void are_contexts_ready(worker_are_contexts_ready_control_command &cmd) const noexcept;
+
+	/*
+	 * Create and prepare task objects
+	 *
+	 * @cmd [in]: Command with data required to prepare tasks
+	 */
+	void prepare_tasks(worker_prepare_tasks_control_command const &cmd);
+
+	/*
+	 * Start data path operations.
+	 */
+	void start_data_path();
 
 	static void doca_comch_consumer_task_post_recv_cb(doca_comch_consumer_task_post_recv *task,
 							  doca_data task_user_data,
@@ -161,7 +395,21 @@ private:
 	static void doca_rdma_task_receive_error_cb(doca_rdma_task_receive *task,
 						    doca_data task_user_data,
 						    doca_data ctx_user_data) noexcept;
-	void thread_proc();
+
+	/*
+	 * Thread entry point
+	 *
+	 * @self [in]: Pointer to self
+	 * @core_idx [in]: Core this thread will on
+	 */
+	static void thread_proc(zero_copy_app_worker *self, uint16_t core_idx) noexcept;
+
+	/*
+	 * Data path routine
+	 *
+	 * @hot_data [in]: Reference to hot_data
+	 */
+	static void run_data_path_ops(zero_copy_app_worker::hot_data &hot_data);
 };
 
 class zero_copy_app {
@@ -200,7 +448,7 @@ private:
 	uint64_t m_storage_capacity;
 	uint32_t m_storage_block_size;
 	uint32_t m_message_id_counter;
-	uint32_t m_task_count;
+	uint32_t m_transaction_count;
 	uint32_t m_core_count;
 	bool m_abort_flag;
 
@@ -398,7 +646,7 @@ zero_copy_app_configuration parse_cli_args(int argc, char **argv)
 				static_cast<zero_copy_app_configuration *>(cfg)->storage_server_address =
 					storage::parse_ip_v4_address(static_cast<char const *>(value));
 				return DOCA_SUCCESS;
-			} catch (storage::runtime_error const &ex) {
+			} catch (std::runtime_error const &ex) {
 				return DOCA_ERROR_INVALID_VALUE;
 			}
 		});
@@ -441,201 +689,136 @@ zero_copy_app_configuration parse_cli_args(int argc, char **argv)
 zero_copy_app_worker::~zero_copy_app_worker()
 {
 	if (m_thread.joinable()) {
-		m_hot_data.run_flag = false;
-		m_hot_data.error_flag = true;
-		m_thread.join();
+		DOCA_LOG_WARN("Worker Data path thread was still running during destruction");
+		if (m_hot_data != nullptr)
+			m_hot_data->error_flag = true;
+
+		join_thread_proc();
 	}
-	cleanup();
-}
-
-void zero_copy_app_worker::init(doca_dev *dev, doca_comch_connection *comch_conn, uint32_t task_count)
-{
-	doca_error_t ret;
-	auto const page_size = storage::get_system_page_size();
-
-	auto const raw_io_messages_size = task_count * storage::size_of_io_message * 2;
-
-	DOCA_LOG_DBG("Allocate comch buffers memory (%zu bytes, aligned to %u byte pages)",
-		     raw_io_messages_size,
-		     page_size);
-	m_io_message_region = static_cast<uint8_t *>(
-		storage::aligned_alloc(page_size, storage::aligned_size(page_size, raw_io_messages_size)));
-	if (m_io_message_region == nullptr) {
-		throw storage::runtime_error{DOCA_ERROR_NO_MEMORY, "Failed to allocate comch fast path buffers memory"};
-	}
-
-	m_io_message_mmap = storage::make_mmap(dev,
-					       reinterpret_cast<char *>(m_io_message_region),
-					       raw_io_messages_size,
-					       DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_PCI_READ_WRITE);
-
-	ret = doca_buf_inventory_create(task_count * 2, &m_io_message_inv);
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to create comch fast path doca_buf_inventory"};
-	}
-
-	ret = doca_buf_inventory_start(m_io_message_inv);
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to start comch fast path doca_buf_inventory"};
-	}
-
-	DOCA_LOG_DBG("Create hot path progress engine");
-	ret = doca_pe_create(std::addressof(m_hot_data.pe));
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to create doca_pe"};
-	}
-
-	m_consumer = storage::make_comch_consumer(comch_conn,
-						  m_io_message_mmap,
-						  m_hot_data.pe,
-						  task_count,
-						  doca_data{.ptr = std::addressof(m_hot_data)},
-						  doca_comch_consumer_task_post_recv_cb,
-						  doca_comch_consumer_task_post_recv_error_cb);
-
-	m_producer = storage::make_comch_producer(comch_conn,
-						  m_hot_data.pe,
-						  task_count,
-						  doca_data{.ptr = std::addressof(m_hot_data)},
-						  doca_comch_producer_task_send_cb,
-						  doca_comch_producer_task_send_error_cb);
-	auto const rdma_permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_READ |
-				      DOCA_ACCESS_FLAG_RDMA_WRITE;
-
-	m_rdma_ctrl_ctx.rdma = storage::make_rdma_context(dev,
-							  m_hot_data.pe,
-							  doca_data{.ptr = std::addressof(m_hot_data)},
-							  rdma_permissions);
-
-	ret = doca_rdma_task_receive_set_conf(m_rdma_ctrl_ctx.rdma,
-					      doca_rdma_task_receive_cb,
-					      doca_rdma_task_receive_error_cb,
-					      task_count);
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to configure rdma receive task pool"};
-	}
-
-	ret = doca_rdma_task_send_set_conf(m_rdma_ctrl_ctx.rdma,
-					   doca_rdma_task_send_cb,
-					   doca_rdma_task_send_error_cb,
-					   task_count);
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to configure rdma send task pool"};
-	}
-
-	ret = doca_ctx_start(doca_rdma_as_ctx(m_rdma_ctrl_ctx.rdma));
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to start doca_rdma context"};
-	}
-
-	m_rdma_data_ctx.rdma = storage::make_rdma_context(dev,
-							  m_hot_data.pe,
-							  doca_data{.ptr = std::addressof(m_hot_data)},
-							  rdma_permissions);
-
-	ret = doca_ctx_start(doca_rdma_as_ctx(m_rdma_data_ctx.rdma));
-	if (ret != DOCA_SUCCESS) {
-		throw storage::runtime_error{ret, "Failed to start doca_rdma context"};
-	}
-
-	m_hot_data.run_flag = false;
-	m_hot_data.error_flag = false;
-	m_hot_data.pe_hit_count = 0;
-	m_hot_data.pe_miss_count = 0;
-	m_hot_data.completed_transaction_count = 0;
-	m_hot_data.in_flight_transaction_count = 0;
-}
-
-std::vector<uint8_t> zero_copy_app_worker::get_local_rdma_connection_blob(storage::control::rdma_connection_role role)
-{
-	doca_error_t ret;
-	uint8_t const *blob = nullptr;
-	size_t blob_size = 0;
-
-	auto &rdma_pair = role == storage::control::rdma_connection_role::io_data ? m_rdma_data_ctx : m_rdma_ctrl_ctx;
-	ret = doca_rdma_export(rdma_pair.rdma,
-			       reinterpret_cast<void const **>(&blob),
-			       &blob_size,
-			       std::addressof(rdma_pair.conn));
-	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Core: %u RDMA export failed: %s", m_hot_data.core_idx, doca_error_get_name(ret));
-		throw storage::runtime_error{ret, "Failed to export rdma connection"};
-	}
-
-	return std::vector<uint8_t>{blob, blob + blob_size};
-}
-
-void zero_copy_app_worker::connect_rdma(storage::control::rdma_connection_role role, std::vector<uint8_t> const &blob)
-{
-	auto &rdma_pair = role == storage::control::rdma_connection_role::io_data ? m_rdma_data_ctx : m_rdma_ctrl_ctx;
 
 	doca_error_t ret;
-	ret = doca_rdma_connect(rdma_pair.rdma, blob.data(), blob.size(), rdma_pair.conn);
-	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Core: %u RDMA connect failed: %s", m_hot_data.core_idx, doca_error_get_name(ret));
-		throw storage::runtime_error{ret, "Failed to connect to rdma"};
+	std::vector<doca_task *> tasks;
+
+	if (m_rdma_ctrl_ctx.rdma != nullptr) {
+		tasks.clear();
+		tasks.reserve(m_storage_request_tasks.size() + m_storage_response_tasks.size());
+		std::transform(std::begin(m_storage_request_tasks),
+			       std::end(m_storage_request_tasks),
+			       std::back_inserter(tasks),
+			       doca_rdma_task_send_as_task);
+		std::transform(std::begin(m_storage_response_tasks),
+			       std::end(m_storage_response_tasks),
+			       std::back_inserter(tasks),
+			       doca_rdma_task_receive_as_task);
+
+		/* stop context with tasks list (tasks must be destroyed to finish stopping process) */
+		ret = storage::stop_context(doca_rdma_as_ctx(m_rdma_ctrl_ctx.rdma), m_pe, tasks);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to stop rdma control context: %s", doca_error_get_name(ret));
+		}
+
+		ret = doca_rdma_destroy(m_rdma_ctrl_ctx.rdma);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy rdma control context: %s", doca_error_get_name(ret));
+		}
 	}
+
+	if (m_rdma_data_ctx.rdma != nullptr) {
+		// No tasks allocated on this side for the data context, all tasks are executed from the storage side
+		ret = doca_ctx_stop(doca_rdma_as_ctx(m_rdma_data_ctx.rdma));
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to stop rdma data context: %s", doca_error_get_name(ret));
+		}
+
+		ret = doca_rdma_destroy(m_rdma_data_ctx.rdma);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy rdma data context: %s", doca_error_get_name(ret));
+		}
+	}
+
+	destroy_comch_objects();
+
+	if (m_pe != nullptr) {
+		ret = doca_pe_destroy(m_pe);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy progress engine");
+		}
+	}
+
+	for (auto *buf : m_io_message_bufs) {
+		static_cast<void>(doca_buf_dec_refcount(buf, nullptr));
+	}
+
+	if (m_io_message_inv) {
+		ret = doca_buf_inventory_stop(m_io_message_inv);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to stop buffer inventory");
+		}
+		ret = doca_buf_inventory_destroy(m_io_message_inv);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy buffer inventory");
+		}
+	}
+
+	if (m_io_message_mmap) {
+		ret = doca_mmap_stop(m_io_message_mmap);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to stop mmap");
+		}
+		ret = doca_mmap_destroy(m_io_message_mmap);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy mmap");
+		}
+	}
+
+	if (m_io_message_region != nullptr) {
+		storage::aligned_free(m_io_message_region);
+	}
+
+	storage::aligned_free(m_hot_data);
 }
 
-doca_error_t zero_copy_app_worker::get_connections_state() const noexcept
+void zero_copy_app_worker::create_thread_proc(uint16_t core_idx)
 {
-	doca_error_t ret;
-	doca_ctx_states ctx_state;
-	uint32_t pending_count = 0;
-
-	ret = doca_ctx_get_state(doca_comch_producer_as_ctx(m_producer), &ctx_state);
-	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query comch producer state: %s", doca_error_get_name(ret));
-		return ret;
-	}
-
-	if (ctx_state != DOCA_CTX_STATE_RUNNING) {
-		++pending_count;
-		static_cast<void>(doca_pe_progress(m_hot_data.pe));
-	}
-
-	ret = doca_ctx_get_state(doca_comch_consumer_as_ctx(m_consumer), &ctx_state);
-	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query comch consumer state: %s", doca_error_get_name(ret));
-		return ret;
-	}
-
-	if (ctx_state != DOCA_CTX_STATE_RUNNING) {
-		++pending_count;
-		static_cast<void>(doca_pe_progress(m_hot_data.pe));
-	}
-
-	ret = doca_ctx_get_state(doca_rdma_as_ctx(m_rdma_ctrl_ctx.rdma), &ctx_state);
-	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query rdma context state: %s", doca_error_get_name(ret));
-		return ret;
-	}
-
-	if (ctx_state != DOCA_CTX_STATE_RUNNING) {
-		++pending_count;
-		static_cast<void>(doca_pe_progress(m_hot_data.pe));
-	}
-
-	ret = doca_ctx_get_state(doca_rdma_as_ctx(m_rdma_data_ctx.rdma), &ctx_state);
-	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query rdma context state: %s", doca_error_get_name(ret));
-		return ret;
-	}
-
-	if (ctx_state != DOCA_CTX_STATE_RUNNING) {
-		++pending_count;
-		static_cast<void>(doca_pe_progress(m_hot_data.pe));
-	}
-
-	return (pending_count == 0) ? DOCA_SUCCESS : DOCA_ERROR_IN_PROGRESS;
+	m_thread = std::thread{thread_proc, this, core_idx};
 }
 
-void zero_copy_app_worker::stop_processing(void) noexcept
+doca_error_t zero_copy_app_worker::execute_control_command(worker_control_command &cmd)
 {
-	m_hot_data.run_flag = false;
-	if (m_thread.joinable()) {
-		m_thread.join();
+	return storage::control::execute_worker_command(m_async_ctrl, &cmd, std::chrono::seconds{3});
+}
+
+void zero_copy_app_worker::join_thread_proc(void)
+{
+	if (!m_thread.joinable())
+		return;
+
+	if (m_hot_data == nullptr || m_hot_data->run_flag == false) {
+		/* if the data path has not yet started it needs to receive a message to break out, so send an
+		 * abort control message */
+		worker_control_command cmd{worker_control_command::type::abort_thread};
+		static_cast<void>(execute_control_command(cmd));
+	} else {
+		/* if the thread is running the data path setting the run flag to false will trigger it to stop
+		 */
+		m_hot_data->run_flag = false;
 	}
+
+	m_thread.join();
+}
+
+thread_stats zero_copy_app_worker::get_stats() const noexcept
+{
+	thread_stats stats{};
+
+	if (m_hot_data != nullptr) {
+		stats.core_idx = m_hot_data->core_idx;
+		stats.pe_hit_count = m_hot_data->pe_hit_count;
+		stats.pe_miss_count = m_hot_data->pe_miss_count;
+		stats.operation_count = m_hot_data->completed_transaction_count;
+	}
+
+	return stats;
 }
 
 void zero_copy_app_worker::destroy_comch_objects(void) noexcept
@@ -649,7 +832,7 @@ void zero_copy_app_worker::destroy_comch_objects(void) noexcept
 			       std::end(m_host_request_tasks),
 			       std::back_inserter(tasks),
 			       doca_comch_consumer_task_post_recv_as_task);
-		ret = storage::stop_context(doca_comch_consumer_as_ctx(m_consumer), m_hot_data.pe, tasks);
+		ret = storage::stop_context(doca_comch_consumer_as_ctx(m_consumer), m_pe, tasks);
 		tasks.clear();
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to stop consumer context");
@@ -670,7 +853,7 @@ void zero_copy_app_worker::destroy_comch_objects(void) noexcept
 			       std::end(m_host_response_tasks),
 			       std::back_inserter(tasks),
 			       doca_comch_producer_task_send_as_task);
-		ret = storage::stop_context(doca_comch_producer_as_ctx(m_producer), m_hot_data.pe, tasks);
+		ret = storage::stop_context(doca_comch_producer_as_ctx(m_producer), m_pe, tasks);
 		tasks.clear();
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to stop producer context");
@@ -686,18 +869,242 @@ void zero_copy_app_worker::destroy_comch_objects(void) noexcept
 	}
 }
 
-void zero_copy_app_worker::create_tasks(uint32_t task_count, uint32_t remote_consumer_id)
+bool zero_copy_app_worker::execute_control_command_impl(worker_control_command &cmd) noexcept
+{
+	doca_error_t cmd_result;
+	bool control_path_completed = false;
+
+	try {
+		cmd_result = DOCA_SUCCESS;
+		switch (cmd.cmd_type) {
+		case worker_control_command::type::create_objects:
+			create_worker_objects(dynamic_cast<worker_create_objects_control_command &>(cmd));
+			break;
+		case worker_control_command::type::export_local_rdma_connection:
+			export_local_rdma_connection_blob(
+				dynamic_cast<worker_export_local_rdma_connection_command &>(cmd));
+			break;
+		case worker_control_command::type::import_remote_rdma_connection:
+			import_remote_rdma_connection_blob(
+				dynamic_cast<worker_import_local_rdma_connection_command &>(cmd));
+			break;
+		case worker_control_command::type::are_contexts_ready:
+			are_contexts_ready(dynamic_cast<worker_are_contexts_ready_control_command &>(cmd));
+			break;
+		case worker_control_command::type::prepare_tasks:
+			prepare_tasks(dynamic_cast<worker_prepare_tasks_control_command &>(cmd));
+			break;
+		case worker_control_command::type::start_data_path:
+			start_data_path();
+			control_path_completed = true;
+			break;
+		default:
+			DOCA_LOG_ERR("Received un handled command: %s", to_string(cmd.cmd_type));
+			cmd_result = DOCA_ERROR_INVALID_VALUE;
+		}
+	} catch (storage::runtime_error const &ex) {
+		DOCA_LOG_ERR("%s Failed: %s:%s",
+			     to_string(cmd.cmd_type),
+			     doca_error_get_name(ex.get_doca_error()),
+			     ex.what());
+		cmd_result = ex.get_doca_error();
+	} catch (std::exception const &ex) {
+		DOCA_LOG_ERR("%s Failed: %s", to_string(cmd.cmd_type), ex.what());
+		cmd_result = DOCA_ERROR_UNEXPECTED;
+	}
+
+	m_async_ctrl.set_result(cmd_result);
+
+	return control_path_completed;
+}
+
+void zero_copy_app_worker::create_worker_objects(worker_create_objects_control_command const &cmd)
+{
+	doca_error_t ret;
+	auto const page_size = storage::get_system_page_size();
+
+	auto const raw_io_messages_size = cmd.transaction_count * storage::size_of_io_message * 2;
+
+	DOCA_LOG_DBG("Allocate comch buffers memory (%zu bytes, aligned to %u byte pages)",
+		     raw_io_messages_size,
+		     page_size);
+	m_io_message_region = static_cast<uint8_t *>(
+		storage::aligned_alloc(page_size, storage::aligned_size(page_size, raw_io_messages_size)));
+	if (m_io_message_region == nullptr) {
+		throw storage::runtime_error{DOCA_ERROR_NO_MEMORY, "Failed to allocate comch fast path buffers memory"};
+	}
+
+	m_io_message_mmap = storage::make_mmap(cmd.dev,
+					       reinterpret_cast<char *>(m_io_message_region),
+					       raw_io_messages_size,
+					       DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_PCI_READ_WRITE,
+					       storage::thread_safety::no);
+
+	ret = doca_buf_inventory_create(cmd.transaction_count * 2, &m_io_message_inv);
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to create comch fast path doca_buf_inventory"};
+	}
+
+	ret = doca_buf_inventory_start(m_io_message_inv);
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to start comch fast path doca_buf_inventory"};
+	}
+
+	DOCA_LOG_DBG("Create hot path progress engine");
+	ret = doca_pe_create(std::addressof(m_pe));
+	m_hot_data->pe = m_pe;
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to create doca_pe"};
+	}
+
+	m_consumer = storage::make_comch_consumer(cmd.comch_conn,
+						  m_io_message_mmap,
+						  m_pe,
+						  cmd.transaction_count,
+						  doca_data{.ptr = m_hot_data},
+						  doca_comch_consumer_task_post_recv_cb,
+						  doca_comch_consumer_task_post_recv_error_cb);
+
+	m_producer = storage::make_comch_producer(cmd.comch_conn,
+						  m_pe,
+						  cmd.transaction_count,
+						  doca_data{.ptr = m_hot_data},
+						  doca_comch_producer_task_send_cb,
+						  doca_comch_producer_task_send_error_cb);
+	auto const rdma_permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_READ |
+				      DOCA_ACCESS_FLAG_RDMA_WRITE;
+
+	m_rdma_ctrl_ctx.rdma =
+		storage::make_rdma_context(cmd.dev, m_pe, doca_data{.ptr = m_hot_data}, rdma_permissions);
+
+	ret = doca_rdma_task_receive_set_conf(m_rdma_ctrl_ctx.rdma,
+					      doca_rdma_task_receive_cb,
+					      doca_rdma_task_receive_error_cb,
+					      cmd.transaction_count);
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to configure rdma receive task pool"};
+	}
+
+	ret = doca_rdma_task_send_set_conf(m_rdma_ctrl_ctx.rdma,
+					   doca_rdma_task_send_cb,
+					   doca_rdma_task_send_error_cb,
+					   cmd.transaction_count);
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to configure rdma send task pool"};
+	}
+
+	ret = doca_ctx_start(doca_rdma_as_ctx(m_rdma_ctrl_ctx.rdma));
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to start doca_rdma context"};
+	}
+
+	m_rdma_data_ctx.rdma =
+		storage::make_rdma_context(cmd.dev, m_pe, doca_data{.ptr = m_hot_data}, rdma_permissions);
+
+	ret = doca_ctx_start(doca_rdma_as_ctx(m_rdma_data_ctx.rdma));
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to start doca_rdma context"};
+	}
+}
+
+void zero_copy_app_worker::export_local_rdma_connection_blob(worker_export_local_rdma_connection_command &cmd)
+{
+	doca_error_t ret;
+	uint8_t const *blob = nullptr;
+	size_t blob_size = 0;
+
+	auto &rdma_pair = cmd.rdma_role == storage::control::rdma_connection_role::io_data ? m_rdma_data_ctx :
+											     m_rdma_ctrl_ctx;
+	ret = doca_rdma_export(rdma_pair.rdma,
+			       reinterpret_cast<void const **>(&blob),
+			       &blob_size,
+			       std::addressof(rdma_pair.conn));
+	if (ret != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Core: %u RDMA export failed: %s", m_hot_data->core_idx, doca_error_get_name(ret));
+		throw storage::runtime_error{ret, "Failed to export rdma connection"};
+	}
+
+	cmd.out_exported_blob = std::vector<uint8_t>{blob, blob + blob_size};
+}
+
+void zero_copy_app_worker::import_remote_rdma_connection_blob(worker_import_local_rdma_connection_command const &cmd)
+{
+	auto &rdma_pair = cmd.rdma_role == storage::control::rdma_connection_role::io_data ? m_rdma_data_ctx :
+											     m_rdma_ctrl_ctx;
+
+	doca_error_t ret;
+	ret = doca_rdma_connect(rdma_pair.rdma, cmd.import_blob.data(), cmd.import_blob.size(), rdma_pair.conn);
+	if (ret != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Core: %u RDMA connect failed: %s", m_hot_data->core_idx, doca_error_get_name(ret));
+		throw storage::runtime_error{ret, "Failed to connect to rdma"};
+	}
+}
+
+void zero_copy_app_worker::are_contexts_ready(worker_are_contexts_ready_control_command &cmd) const noexcept
+{
+	doca_ctx_states ctx_state;
+	uint32_t pending_count = 0;
+
+	cmd.out_status = doca_ctx_get_state(doca_comch_producer_as_ctx(m_producer), &ctx_state);
+	if (cmd.out_status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query comch producer state: %s", doca_error_get_name(cmd.out_status));
+		return;
+	}
+
+	if (ctx_state != DOCA_CTX_STATE_RUNNING) {
+		++pending_count;
+		static_cast<void>(doca_pe_progress(m_pe));
+	}
+
+	cmd.out_status = doca_ctx_get_state(doca_comch_consumer_as_ctx(m_consumer), &ctx_state);
+	if (cmd.out_status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query comch consumer state: %s", doca_error_get_name(cmd.out_status));
+		return;
+	}
+
+	if (ctx_state != DOCA_CTX_STATE_RUNNING) {
+		++pending_count;
+		static_cast<void>(doca_pe_progress(m_pe));
+	}
+
+	cmd.out_status = doca_ctx_get_state(doca_rdma_as_ctx(m_rdma_ctrl_ctx.rdma), &ctx_state);
+	if (cmd.out_status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query rdma context state: %s", doca_error_get_name(cmd.out_status));
+		return;
+	}
+
+	if (ctx_state != DOCA_CTX_STATE_RUNNING) {
+		++pending_count;
+		static_cast<void>(doca_pe_progress(m_pe));
+	}
+
+	cmd.out_status = doca_ctx_get_state(doca_rdma_as_ctx(m_rdma_data_ctx.rdma), &ctx_state);
+	if (cmd.out_status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query rdma context state: %s", doca_error_get_name(cmd.out_status));
+		return;
+	}
+
+	if (ctx_state != DOCA_CTX_STATE_RUNNING) {
+		++pending_count;
+		static_cast<void>(doca_pe_progress(m_pe));
+	}
+
+	cmd.out_status = (pending_count == 0) ? DOCA_SUCCESS : DOCA_ERROR_IN_PROGRESS;
+}
+
+void zero_copy_app_worker::prepare_tasks(worker_prepare_tasks_control_command const &cmd)
 {
 	doca_error_t ret;
 
 	auto *buf_addr = m_io_message_region;
-	m_io_message_bufs.reserve(task_count * 2);
-	m_host_request_tasks.reserve(task_count);
-	m_host_response_tasks.reserve(task_count);
-	m_storage_request_tasks.reserve(task_count);
-	m_storage_request_tasks.reserve(task_count);
 
-	for (uint32_t ii = 0; ii != task_count; ++ii) {
+	m_io_message_bufs.reserve(cmd.transaction_count * 2);
+	m_host_request_tasks.reserve(cmd.transaction_count);
+	m_host_response_tasks.reserve(cmd.transaction_count);
+	m_storage_request_tasks.reserve(cmd.transaction_count);
+	m_storage_request_tasks.reserve(cmd.transaction_count);
+
+	for (uint32_t ii = 0; ii != cmd.transaction_count; ++ii) {
 		doca_buf *storage_request_buff = nullptr;
 
 		ret = doca_buf_inventory_buf_get_by_addr(m_io_message_inv,
@@ -767,7 +1174,7 @@ void zero_copy_app_worker::create_tasks(uint32_t task_count, uint32_t remote_con
 							       storage_recv_buf,
 							       nullptr,
 							       0,
-							       remote_consumer_id,
+							       cmd.remote_consumer_id,
 							       &comch_producer_task_send);
 		if (ret != DOCA_SUCCESS) {
 			throw storage::runtime_error{ret, "Unable to get doca_buf for producer task"};
@@ -784,131 +1191,9 @@ void zero_copy_app_worker::create_tasks(uint32_t task_count, uint32_t remote_con
 	}
 }
 
-void zero_copy_app_worker::prepare_thread_proc(uint32_t core_id)
+void zero_copy_app_worker::start_data_path(void)
 {
-	m_thread = std::thread{[this]() {
-		try {
-			thread_proc();
-		} catch (std::exception const &ex) {
-			DOCA_LOG_ERR("Core: %u Exception: %s", m_hot_data.core_idx, ex.what());
-			m_hot_data.error_flag = true;
-			m_hot_data.run_flag = false;
-		}
-	}};
-	m_hot_data.core_idx = core_id;
-	storage::set_thread_affinity(m_thread, m_hot_data.core_idx);
-}
-
-void zero_copy_app_worker::start_thread_proc(void)
-{
-	// Submit initial tasks
-	doca_error_t ret;
-	for (auto *task : m_host_request_tasks) {
-		ret = doca_task_submit(doca_comch_consumer_task_post_recv_as_task(task));
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to submit initial doca_comch_consumer_task_post_recv task: %s",
-				     doca_error_get_name(ret));
-			throw storage::runtime_error{ret, "Failed to submit initial task"};
-		}
-	}
-
-	for (auto *task : m_storage_response_tasks) {
-		ret = doca_task_submit(doca_rdma_task_receive_as_task(task));
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to submit initial doca_rdma_task_receive task: %s",
-				     doca_error_get_name(ret));
-			throw storage::runtime_error{ret, "Failed to submit initial task"};
-		}
-	}
-
-	m_hot_data.run_flag = true;
-}
-
-zero_copy_app_worker::hot_data const &zero_copy_app_worker::get_hot_data(void) const noexcept
-{
-	return m_hot_data;
-}
-
-void zero_copy_app_worker::cleanup(void) noexcept
-{
-	doca_error_t ret;
-	std::vector<doca_task *> tasks;
-
-	if (m_rdma_ctrl_ctx.rdma != nullptr) {
-		tasks.clear();
-		tasks.reserve(m_storage_request_tasks.size() + m_storage_response_tasks.size());
-		std::transform(std::begin(m_storage_request_tasks),
-			       std::end(m_storage_request_tasks),
-			       std::back_inserter(tasks),
-			       doca_rdma_task_send_as_task);
-		std::transform(std::begin(m_storage_response_tasks),
-			       std::end(m_storage_response_tasks),
-			       std::back_inserter(tasks),
-			       doca_rdma_task_receive_as_task);
-
-		/* stop context with tasks list (tasks must be destroyed to finish stopping process) */
-		ret = storage::stop_context(doca_rdma_as_ctx(m_rdma_ctrl_ctx.rdma), m_hot_data.pe, tasks);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to stop rdma control context: %s", doca_error_get_name(ret));
-		}
-
-		ret = doca_rdma_destroy(m_rdma_ctrl_ctx.rdma);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to destroy rdma control context: %s", doca_error_get_name(ret));
-		}
-	}
-
-	if (m_rdma_data_ctx.rdma != nullptr) {
-		// No tasks allocated on this side for the data context, all tasks are executed from the storage side
-		ret = doca_ctx_stop(doca_rdma_as_ctx(m_rdma_data_ctx.rdma));
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to stop rdma data context: %s", doca_error_get_name(ret));
-		}
-
-		ret = doca_rdma_destroy(m_rdma_data_ctx.rdma);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to destroy rdma data context: %s", doca_error_get_name(ret));
-		}
-	}
-
-	destroy_comch_objects();
-
-	if (m_hot_data.pe != nullptr) {
-		ret = doca_pe_destroy(m_hot_data.pe);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to destroy progress engine");
-		}
-	}
-
-	for (auto *buf : m_io_message_bufs) {
-		static_cast<void>(doca_buf_dec_refcount(buf, nullptr));
-	}
-
-	if (m_io_message_inv) {
-		ret = doca_buf_inventory_stop(m_io_message_inv);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to stop buffer inventory");
-		}
-		ret = doca_buf_inventory_destroy(m_io_message_inv);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to destroy buffer inventory");
-		}
-	}
-
-	if (m_io_message_mmap) {
-		ret = doca_mmap_stop(m_io_message_mmap);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to stop mmap");
-		}
-		ret = doca_mmap_destroy(m_io_message_mmap);
-		if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to destroy mmap");
-		}
-	}
-
-	if (m_io_message_region != nullptr) {
-		storage::aligned_free(m_io_message_region);
-	}
+	m_hot_data->run_flag = true;
 }
 
 void zero_copy_app_worker::doca_comch_consumer_task_post_recv_cb(doca_comch_consumer_task_post_recv *task,
@@ -1058,25 +1343,92 @@ void zero_copy_app_worker::doca_rdma_task_receive_error_cb(doca_rdma_task_receiv
 	}
 }
 
-void zero_copy_app_worker::thread_proc()
+void zero_copy_app_worker::thread_proc(zero_copy_app_worker *self, uint16_t core_idx) noexcept
 {
-	while (m_hot_data.run_flag == false) {
-		std::this_thread::yield();
-		if (m_hot_data.error_flag)
-			return;
+	try {
+		storage::set_thread_affinity(self->m_thread, core_idx);
+		self->m_hot_data = storage::make_aligned<zero_copy_app_worker::hot_data>{}.object();
+		DOCA_LOG_INFO("Worker: %p (core: %u) starting", self, core_idx);
+	} catch (std::exception const &ex) {
+		DOCA_LOG_ERR("Worker: %p (core: %u) Failed to initialise: %s", self, core_idx, ex.what());
+		std::exit(EXIT_FAILURE);
+	}
+	self->m_hot_data->core_idx = core_idx;
+	self->m_hot_data->run_flag = false;
+	self->m_hot_data->error_flag = false;
+	self->m_hot_data->pe_hit_count = 0;
+	self->m_hot_data->pe_miss_count = 0;
+	self->m_hot_data->completed_transaction_count = 0;
+	self->m_hot_data->in_flight_transaction_count = 0;
+
+	try {
+		/* Configure, create objects and connect to remote objects */
+		for (;;) {
+			bool control_path_completed = false;
+			self->m_async_ctrl.lock();
+			worker_control_command *const cmd = self->m_async_ctrl.get_command();
+			if (cmd != nullptr) {
+				if (cmd->cmd_type == worker_control_command::type::abort_thread) {
+					self->m_hot_data->error_flag = true;
+					self->m_async_ctrl.unlock();
+					return;
+				}
+				control_path_completed = self->execute_control_command_impl(*cmd);
+				self->m_async_ctrl.unlock();
+			} else {
+				self->m_async_ctrl.unlock();
+				std::this_thread::yield();
+			}
+
+			if (control_path_completed)
+				break;
+		}
+
+		/* Submit initial tasks */
+		doca_error_t ret;
+		for (auto *task : self->m_host_request_tasks) {
+			ret = doca_task_submit(doca_comch_consumer_task_post_recv_as_task(task));
+			if (ret != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to submit initial doca_comch_consumer_task_post_recv task: %s",
+					     doca_error_get_name(ret));
+				throw storage::runtime_error{ret, "Failed to submit initial task"};
+			}
+		}
+
+		for (auto *task : self->m_storage_response_tasks) {
+			ret = doca_task_submit(doca_rdma_task_receive_as_task(task));
+			if (ret != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to submit initial doca_rdma_task_receive task: %s",
+					     doca_error_get_name(ret));
+				throw storage::runtime_error{ret, "Failed to submit initial task"};
+			}
+		}
+
+		/* Run data path operations */
+		run_data_path_ops(*(self->m_hot_data));
+
+	} catch (storage::runtime_error const &ex) {
+		DOCA_LOG_ERR("Worker: %p, Exception: %s:%s", self, doca_error_get_name(ex.get_doca_error()), ex.what());
+		self->m_hot_data->error_flag = true;
+		self->m_hot_data->run_flag = false;
 	}
 
-	DOCA_LOG_INFO("Core: %u running", m_hot_data.core_idx);
+	DOCA_LOG_INFO("Worker: %p exits", self);
+}
 
-	while (m_hot_data.run_flag) {
-		doca_pe_progress(m_hot_data.pe) ? ++(m_hot_data.pe_hit_count) : ++(m_hot_data.pe_miss_count);
+void zero_copy_app_worker::run_data_path_ops(zero_copy_app_worker::hot_data &hot_data)
+{
+	DOCA_LOG_INFO("Core: %u running", hot_data.core_idx);
+
+	while (hot_data.run_flag) {
+		doca_pe_progress(hot_data.pe) ? ++(hot_data.pe_hit_count) : ++(hot_data.pe_miss_count);
 	}
 
-	while (m_hot_data.error_flag == false && m_hot_data.in_flight_transaction_count != 0) {
-		doca_pe_progress(m_hot_data.pe) ? ++(m_hot_data.pe_hit_count) : ++(m_hot_data.pe_miss_count);
+	while (hot_data.error_flag == false && hot_data.in_flight_transaction_count != 0) {
+		doca_pe_progress(hot_data.pe) ? ++(hot_data.pe_hit_count) : ++(hot_data.pe_miss_count);
 	}
 
-	DOCA_LOG_INFO("Core: %u complete", m_hot_data.core_idx);
+	DOCA_LOG_INFO("Core: %u complete", hot_data.core_idx);
 }
 
 zero_copy_app::~zero_copy_app()
@@ -1086,9 +1438,30 @@ zero_copy_app::~zero_copy_app()
 	m_client_control_channel.reset();
 
 	doca_error_t ret;
+
+	if (m_remote_io_mmap) {
+		ret = doca_mmap_stop(m_remote_io_mmap);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to stop remote mmap");
+		}
+		ret = doca_mmap_destroy(m_remote_io_mmap);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy remote mmap");
+		}
+	}
+
+	if (m_dev_rep != nullptr) {
+		ret = doca_dev_rep_close(m_dev_rep);
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to close dev rep");
+		}
+	}
+
 	if (m_dev != nullptr) {
 		ret = doca_dev_close(m_dev);
-		if (ret != DOCA_SUCCESS) {}
+		if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to close dev");
+		}
 	}
 }
 
@@ -1107,7 +1480,7 @@ zero_copy_app::zero_copy_app(zero_copy_app_configuration const &cfg)
 	  m_storage_capacity{},
 	  m_storage_block_size{},
 	  m_message_id_counter{},
-	  m_task_count{0},
+	  m_transaction_count{0},
 	  m_core_count{0},
 	  m_abort_flag{false}
 {
@@ -1488,12 +1861,12 @@ storage::control::message zero_copy_app::process_init_storage(storage::control::
 	}
 
 	m_remote_consumer_ids.reserve(init_storage_details->core_count);
-
-	m_task_count = init_storage_details->task_count;
+	m_transaction_count = init_storage_details->transaction_count * 2;
 	m_core_count = init_storage_details->core_count;
 	m_remote_io_mmap = storage::make_mmap(m_dev,
 					      init_storage_details->mmap_export_blob.data(),
-					      init_storage_details->mmap_export_blob.size());
+					      init_storage_details->mmap_export_blob.size(),
+					      storage::thread_safety::no);
 	std::vector<uint8_t> mmap_export_blob = [this]() {
 		uint8_t const *reexport_blob = nullptr;
 		size_t reexport_blob_size = 0;
@@ -1508,14 +1881,14 @@ storage::control::message zero_copy_app::process_init_storage(storage::control::
 		return std::vector<uint8_t>{reexport_blob, reexport_blob + reexport_blob_size};
 	}();
 
-	DOCA_LOG_INFO("Configured storage: %u cores, %u tasks", m_core_count, m_task_count);
+	DOCA_LOG_INFO("Configured storage: %u cores, %u transactions", m_core_count, m_transaction_count);
 
 	DOCA_LOG_DBG("Forward request to storage...");
 	auto storage_request = storage::control::message{
 		storage::control::message_type::init_storage_request,
 		storage::control::message_id{m_message_id_counter++},
 		client_request.correlation_id,
-		std::make_unique<storage::control::init_storage_payload>(init_storage_details->task_count,
+		std::make_unique<storage::control::init_storage_payload>(m_transaction_count,
 									 init_storage_details->core_count,
 									 std::move(mmap_export_blob)),
 	};
@@ -1566,8 +1939,12 @@ storage::control::message zero_copy_app::process_start_storage(storage::control:
 	if (storage_response.message_type == storage::control::message_type::start_storage_response) {
 		verify_connections_are_ready();
 		for (uint32_t ii = 0; ii != m_core_count; ++ii) {
-			m_workers[ii].create_tasks(m_task_count, m_remote_consumer_ids[ii]);
-			m_workers[ii].start_thread_proc();
+			worker_prepare_tasks_control_command cmd{m_transaction_count, m_remote_consumer_ids[ii]};
+			m_workers[ii].execute_control_command(cmd);
+		}
+		for (uint32_t ii = 0; ii != m_core_count; ++ii) {
+			worker_control_command cmd{worker_control_command::type::start_data_path};
+			m_workers[ii].execute_control_command(cmd);
 		}
 		return storage::control::message{
 			storage::control::message_type::start_storage_response,
@@ -1609,14 +1986,8 @@ storage::control::message zero_copy_app::process_stop_storage(storage::control::
 		/* Stop all processing */
 		m_stats.reserve(m_core_count);
 		for (uint32_t ii = 0; ii != m_core_count; ++ii) {
-			m_workers[ii].stop_processing();
-			auto const &hot_data = m_workers[ii].get_hot_data();
-			m_stats.push_back(thread_stats{
-				m_cfg.cpu_set[ii],
-				hot_data.pe_hit_count,
-				hot_data.pe_miss_count,
-				hot_data.completed_transaction_count,
-			});
+			m_workers[ii].join_thread_proc();
+			m_stats.push_back(m_workers[ii].get_stats());
 			m_workers[ii].destroy_comch_objects();
 		}
 		return storage::control::message{
@@ -1692,10 +2063,14 @@ void zero_copy_app::prepare_thread_contexts(storage::control::correlation_id cid
 	m_workers = storage::make_aligned<zero_copy_app_worker>{}.object_array(m_core_count);
 
 	for (uint32_t ii = 0; ii != m_core_count; ++ii) {
-		m_workers[ii].init(m_dev, m_client_control_channel->get_comch_connection(), m_task_count);
+		m_workers[ii].create_thread_proc(m_cfg.cpu_set[ii]);
+
+		worker_create_objects_control_command cmd{m_dev,
+							  m_client_control_channel->get_comch_connection(),
+							  m_transaction_count};
+		m_workers[ii].execute_control_command(cmd);
 		connect_rdma(ii, storage::control::rdma_connection_role::io_data, cid);
 		connect_rdma(ii, storage::control::rdma_connection_role::io_control, cid);
-		m_workers[ii].prepare_thread_proc(m_cfg.cpu_set[ii]);
 	}
 }
 
@@ -1704,14 +2079,21 @@ void zero_copy_app::connect_rdma(uint32_t thread_idx,
 				 storage::control::correlation_id cid)
 {
 	auto &tctx = m_workers[thread_idx];
+	doca_error_t ret;
+
+	worker_export_local_rdma_connection_command export_cmd{role};
+	ret = tctx.execute_control_command(export_cmd);
+	if (ret != DOCA_SUCCESS) {
+		throw storage::runtime_error{ret, "Failed to export local RDMA connection"};
+	}
+
 	storage::control::message connect_rdma_request{
 		storage::control::message_type::create_rdma_connection_request,
 		storage::control::message_id{m_message_id_counter++},
 		cid,
-		std::make_unique<storage::control::rdma_connection_details_payload>(
-			thread_idx,
-			role,
-			tctx.get_local_rdma_connection_blob(role)),
+		std::make_unique<storage::control::rdma_connection_details_payload>(thread_idx,
+										    role,
+										    export_cmd.out_exported_blob),
 	};
 
 	m_storage_control_channel->send_message(connect_rdma_request);
@@ -1723,7 +2105,11 @@ void zero_copy_app::connect_rdma(uint32_t thread_idx,
 	if (connect_rdma_response.message_type == storage::control::message_type::create_rdma_connection_response) {
 		auto *remote_details = reinterpret_cast<storage::control::rdma_connection_details_payload const *>(
 			connect_rdma_response.payload.get());
-		tctx.connect_rdma(role, remote_details->connection_details);
+		worker_import_local_rdma_connection_command input_cmd{role, remote_details->connection_details};
+		ret = tctx.execute_control_command(input_cmd);
+		if (ret != DOCA_SUCCESS) {
+			throw storage::runtime_error{ret, "Failed to import remote RDMA connection"};
+		}
 	} else if (connect_rdma_response.message_type == storage::control::message_type::error_response) {
 		auto *error_details = reinterpret_cast<storage::control::error_response_payload const *>(
 			connect_rdma_response.payload.get());
@@ -1756,11 +2142,17 @@ void zero_copy_app::verify_connections_are_ready(void)
 		}
 
 		for (uint32_t ii = 0; ii != m_core_count; ++ii) {
-			auto const ret = m_workers[ii].get_connections_state();
-			if (ret == DOCA_ERROR_IN_PROGRESS) {
+			worker_are_contexts_ready_control_command cmd{};
+			auto const ret = m_workers[ii].execute_control_command(cmd);
+			if (ret != DOCA_SUCCESS) {
+				throw storage::runtime_error{ret, "Failed to query connections status"};
+			}
+
+			if (cmd.out_status == DOCA_ERROR_IN_PROGRESS) {
 				++not_ready_count;
-			} else if (ret != DOCA_SUCCESS) {
-				throw storage::runtime_error{ret, "Failure while establishing RDMA connections"};
+			} else if (cmd.out_status != DOCA_SUCCESS) {
+				throw storage::runtime_error{cmd.out_status,
+							     "Failure while establishing RDMA connections"};
 			}
 		}
 

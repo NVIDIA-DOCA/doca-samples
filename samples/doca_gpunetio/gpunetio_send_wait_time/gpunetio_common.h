@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -40,38 +40,26 @@
 #include <doca_gpunetio.h>
 #include <doca_eth_txq.h>
 #include <doca_buf_array.h>
+#include <doca_gpunetio_eth_def.h>
+#include <doca_eth_txq_gpu_data_path.h>
 
 #include "common.h"
 
-/* Set alignment to 64kB to work on all platforms */
-#define GPU_PAGE_SIZE (1UL << 16)
-#define WARP_SIZE 32
-#define NUM_BURST_SEND 8
-#define NUM_PACKETS_X_BURST WARP_SIZE
-#define PACKET_SIZE 1024
-#define DELTA_NS 50000000 /* 50ms of delta before sending the first burst */
+#define MAX_PCI_ADDRESS_LEN 32U
 #define ETHER_ADDR_LEN 6
 #define MAX_SQ_DESCR_NUM 8192
+#define SHARED_QP_BLOCKS 2
+#define NUM_BURST_SEND 8
+#define NUM_PACKETS_X_BURST DOCA_GPUNETIO_ETH_WARP_SIZE
+#define PACKET_SIZE 1024
+#define DELTA_NS 50000000 /* 50ms of delta before sending the first burst */
 
 /* Application configuration structure */
 struct sample_send_wait_cfg {
 	char gpu_pcie_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* GPU PCIe address */
 	char nic_pcie_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* Network card PCIe address */
 	uint32_t time_interval_ns;			/* Nanoseconds between sends */
-};
-
-/* Tx buffer, used to send HTTP responses */
-struct tx_buf {
-	struct doca_gpu *gpu_dev;	      /* GPU device */
-	struct doca_dev *ddev;		      /* Network DOCA device */
-	uint32_t num_packets;		      /* Number of packets in the buffer */
-	uint32_t max_pkt_sz;		      /* Max size of each packet in the buffer */
-	uint32_t pkt_nbytes;		      /* Effective bytes in each packet */
-	uint8_t *gpu_pkt_addr;		      /* GPU memory address of the buffer */
-	struct doca_mmap *mmap;		      /* DOCA mmap around GPU memory buffer for the DOCA device */
-	struct doca_buf_arr *buf_arr;	      /* DOCA buffer array object around GPU memory buffer */
-	struct doca_gpu_buf_arr *buf_arr_gpu; /* DOCA buffer array GPU handle */
-	int dmabuf_fd;			      /* GPU memory dmabuf file descriptor */
+	uint32_t exec_scope;				/* If shared QP mode is enabled, define the exec scope */
 };
 
 /* Send queues objects */
@@ -83,7 +71,13 @@ struct txq_queue {
 	struct doca_eth_txq *eth_txq_cpu;     /* DOCA Ethernet send queue CPU handler */
 	struct doca_gpu_eth_txq *eth_txq_gpu; /* DOCA Ethernet send queue GPU handler */
 
-	struct tx_buf txbuf; /* GPU memory buffer for HTTP index page */
+	struct doca_mmap *pkt_buff_mmap; /* DOCA mmap to send packet with DOCA Ethernet queue */
+	uint32_t pkt_buff_mkey;		 /* DOCA mmap memory key */
+	uint8_t *pkt_buff_addr;		 /* DOCA mmap GPU memory address */
+	int dmabuf_fd;			 /* GPU memory dmabuf descriptor */
+	struct doca_flow_port *port;	 /* DOCA Flow port */
+	size_t pkt_size;		 /* Packet size to send */
+	uint32_t cuda_threads;		 /* Number of CUDA threads in CUDA send kernel */
 };
 
 struct ether_hdr {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -36,7 +36,6 @@
 #include "gpunetio_dma_common.h"
 
 #define SLEEP_IN_NANOS (10 * 1000)
-#define GPU_PAGE_SIZE (1UL << 16)
 #define NUM_TASKS 1
 #define NUM_BUFS 2
 #define DEFAULT_VALUE 0
@@ -64,6 +63,19 @@ struct gpu_dma_sample_objects {
 	char *dst_buffer;			       /* dst buffer address - GPU memory */
 	bool gpu_datapath;			       /* Enable GPU datapath */
 };
+
+/*
+ * Retrieve host page size
+ *
+ * @return: host page size
+ */
+static size_t get_host_page_size(void)
+{
+	long ret = sysconf(_SC_PAGESIZE);
+	if (ret == -1)
+		return 4096; // 4KB, default Linux page size
+	return (size_t)ret;
+}
 
 /*
  * DMA memcpy task common callback
@@ -117,12 +129,27 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 {
 	doca_error_t status;
 	char *tmp_cpu;
+	int dmabuf_fd;
+	size_t size = DMA_MEMCPY_SIZE;
+
+	ALIGN_SIZE(size, get_host_page_size());
+
+	status = doca_mmap_create(&state->core_objs.src_mmap);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Unable to create source mmap: %s", doca_error_get_descr(status));
+		return status;
+	}
+	status = doca_mmap_add_dev(state->core_objs.src_mmap, state->core_objs.dev);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Unable to add device to source mmap: %s", doca_error_get_descr(status));
+		return status;
+	}
 
 	if (state->gpu_datapath) {
 		/* Allocate GPU src buffer */
 		status = doca_gpu_mem_alloc(state->gpu_dev,
-					    DMA_MEMCPY_SIZE,
-					    GPU_PAGE_SIZE,
+					    size,
+					    get_host_page_size(),
 					    DOCA_GPU_MEM_TYPE_GPU_CPU, // GDRCopy
 					    (void **)&state->src_buffer,
 					    (void **)&tmp_cpu);
@@ -132,30 +159,53 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 			return status;
 		}
 
+		/* Map GPU memory buffer used to receive packets with DMABuf */
+		status = doca_gpu_dmabuf_fd(state->gpu_dev, state->src_buffer, size, &(dmabuf_fd));
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_INFO("Mapping src buffer (0x%p size %zdB) with nvidia-peermem mode",
+				      state->src_buffer,
+				      size);
+
+			/* If failed, use nvidia-peermem legacy method */
+			status = doca_mmap_set_memrange(state->core_objs.src_mmap, state->src_buffer, size);
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR(
+					"Failed to initialize memory objects: Unable to set memrange to src mmap: %s",
+					doca_error_get_descr(status));
+				return status;
+			}
+		} else {
+			DOCA_LOG_INFO("Mapping src buffer (0x%p size %zdB dmabuf fd %d) with dmabuf mode",
+				      state->src_buffer,
+				      size,
+				      dmabuf_fd);
+
+			status = doca_mmap_set_dmabuf_memrange(state->core_objs.src_mmap,
+							       dmabuf_fd,
+							       state->src_buffer,
+							       0,
+							       size);
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR(
+					"Failed to initialize dmabuf memory objects: Unable to set dmabuf memrange to src mmap: %s",
+					doca_error_get_descr(status));
+				return status;
+			}
+		}
+
 		/* Copy data to src buffer */
 		strcpy(tmp_cpu, "This is a sample piece of text from GPU");
 
 		DOCA_LOG_INFO("The GPU source buffer value to be copied to CPU memory: %s", tmp_cpu);
 
-		status = doca_mmap_create(&state->core_objs.src_mmap);
-		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Unable to create source mmap: %s", doca_error_get_descr(status));
-			return status;
-		}
-		status = doca_mmap_add_dev(state->core_objs.src_mmap, state->core_objs.dev);
-		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Unable to add device to source mmap: %s", doca_error_get_descr(status));
-			return status;
-		}
-
 		/* Allocate CPU dst buffer */
-		state->dst_buffer = (char *)malloc(DMA_MEMCPY_SIZE);
+		state->dst_buffer = (char *)malloc(size);
 		if (state->dst_buffer == NULL) {
 			DOCA_LOG_ERR("Failed to initialize memory objects: Unable to allocate cpu memory");
 			return DOCA_ERROR_NO_MEMORY;
 		}
 
-		memset(state->dst_buffer, DEFAULT_VALUE, DMA_MEMCPY_SIZE);
+		memset(state->dst_buffer, DEFAULT_VALUE, size);
 
 		status = doca_mmap_create(&state->core_objs.dst_mmap);
 		if (status != DOCA_SUCCESS) {
@@ -165,6 +215,13 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 		status = doca_mmap_add_dev(state->core_objs.dst_mmap, state->core_objs.dev);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Unable to add device to destination mmap: %s", doca_error_get_descr(status));
+			return status;
+		}
+
+		status = doca_mmap_set_memrange(state->core_objs.dst_mmap, state->dst_buffer, size);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to initialize memory objects: Unable to set memrange to dst mmap: %s",
+				     doca_error_get_descr(status));
 			return status;
 		}
 
@@ -178,7 +235,7 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 		}
 
 		/* Allocate CPU src buffer */
-		state->src_buffer = (char *)malloc(DMA_MEMCPY_SIZE);
+		state->src_buffer = (char *)malloc(size);
 		if (state->src_buffer == NULL) {
 			DOCA_LOG_ERR("Failed to initialize memory objects: Unable to allocate cpu memory");
 			return DOCA_ERROR_NO_MEMORY;
@@ -192,8 +249,8 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 
 		/* Allocate GPU dst buffer */
 		status = doca_gpu_mem_alloc(state->gpu_dev,
-					    DMA_MEMCPY_SIZE,
-					    GPU_PAGE_SIZE,
+					    size,
+					    get_host_page_size(),
 					    DOCA_GPU_MEM_TYPE_GPU,
 					    (void **)&state->dst_buffer,
 					    NULL);
@@ -202,22 +259,48 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 				     doca_error_get_descr(status));
 			return status;
 		}
-	}
 
-	/* Set memory range in dst mmap with GPU memory address */
-	status = doca_mmap_set_memrange(state->core_objs.dst_mmap, state->dst_buffer, DMA_MEMCPY_SIZE);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to initialize memory objects: Unable to set memrange to dst mmap: %s",
-			     doca_error_get_descr(status));
-		return status;
-	}
+		/* Map GPU memory buffer used to receive packets with DMABuf */
+		status = doca_gpu_dmabuf_fd(state->gpu_dev, state->dst_buffer, size, &(dmabuf_fd));
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_INFO("Mapping dst buffer (0x%p size %zdB) with nvidia-peermem mode",
+				      state->dst_buffer,
+				      size);
 
-	/* Set memory range in src mmap with CPU memory address */
-	status = doca_mmap_set_memrange(state->core_objs.src_mmap, state->src_buffer, DMA_MEMCPY_SIZE);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to initialize memory objects: Unable to set memrange to src mmap: %s",
-			     doca_error_get_descr(status));
-		return status;
+			/* If failed, use nvidia-peermem legacy method */
+			status = doca_mmap_set_memrange(state->core_objs.dst_mmap, state->dst_buffer, size);
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR(
+					"Failed to initialize memory objects: Unable to set memrange to dst mmap: %s",
+					doca_error_get_descr(status));
+				return status;
+			}
+		} else {
+			DOCA_LOG_INFO("Mapping dst buffer (0x%p size %zdB dmabuf fd %d) with dmabuf mode",
+				      state->dst_buffer,
+				      size,
+				      dmabuf_fd);
+
+			status = doca_mmap_set_dmabuf_memrange(state->core_objs.dst_mmap,
+							       dmabuf_fd,
+							       state->dst_buffer,
+							       0,
+							       size);
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR(
+					"Failed to initialize dmabuf memory objects: Unable to set memrange to dst mmap: %s",
+					doca_error_get_descr(status));
+				return status;
+			}
+		}
+
+		/* Set memory range in src mmap with CPU memory address */
+		status = doca_mmap_set_memrange(state->core_objs.src_mmap, state->src_buffer, size);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to initialize memory objects: Unable to set memrange to src mmap: %s",
+				     doca_error_get_descr(status));
+			return status;
+		}
 	}
 
 	/* Start src mmap */
@@ -250,8 +333,7 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 			return status;
 		}
 
-		status =
-			doca_buf_arr_set_params(state->src_doca_buf_arr, state->core_objs.src_mmap, DMA_MEMCPY_SIZE, 0);
+		status = doca_buf_arr_set_params(state->src_doca_buf_arr, state->core_objs.src_mmap, size, 0);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Unable to start buf: doca src_doca_buf_arr internal error");
 			return status;
@@ -282,8 +364,7 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 			return status;
 		}
 
-		status =
-			doca_buf_arr_set_params(state->dst_doca_buf_arr, state->core_objs.dst_mmap, DMA_MEMCPY_SIZE, 0);
+		status = doca_buf_arr_set_params(state->dst_doca_buf_arr, state->core_objs.dst_mmap, size, 0);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Unable to start buf: doca dst_doca_buf_arr internal error");
 			return status;
@@ -305,7 +386,7 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 		doca_buf_inventory_buf_get_by_data(state->core_objs.buf_inv,
 						   state->core_objs.src_mmap,
 						   state->src_buffer,
-						   DMA_MEMCPY_SIZE,
+						   size,
 						   &state->src_doca_buf);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR(
@@ -318,7 +399,7 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 		status = doca_buf_inventory_buf_get_by_addr(state->core_objs.buf_inv,
 							    state->core_objs.dst_mmap,
 							    state->dst_buffer,
-							    DMA_MEMCPY_SIZE,
+							    size,
 							    &state->dst_doca_buf);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR(
@@ -607,22 +688,6 @@ doca_error_t gpunetio_dma_memcpy(struct gpu_dma_config *cfg)
 	struct gpu_dma_sample_objects state_cpu_gpu = {0};
 	struct gpu_dma_sample_objects state_gpu_cpu = {0};
 
-#if 0
-	struct doca_log_backend *stdout_logger = NULL;
-
-    status = doca_log_backend_create_with_file_sdk(stdout, &stdout_logger);
-    if (status != DOCA_SUCCESS)
-            return status;
-
-    status = doca_log_backend_set_sdk_level(stdout_logger, DOCA_LOG_LEVEL_TRACE);
-    if (status != DOCA_SUCCESS)
-            return status;
-
-	if (cfg == NULL) {
-		DOCA_LOG_ERR("Invalid sample configuration input value");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-#endif
 	status = init_doca_device(cfg->nic_pcie_addr, &state_cpu_gpu.core_objs.dev);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function init_doca_device returned %s", doca_error_get_descr(status));

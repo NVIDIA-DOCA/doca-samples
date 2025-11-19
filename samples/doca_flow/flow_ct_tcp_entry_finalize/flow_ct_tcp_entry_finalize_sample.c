@@ -24,6 +24,7 @@
  */
 
 #include <unistd.h>
+#include <sys/time.h>
 
 #include <rte_ethdev.h>
 
@@ -38,11 +39,12 @@
 #define PACKET_BURST 128
 #define DEFAULT_CNT_DELAY_S 2
 #define DEFAULT_CNT_QUERY_INTERVAL 1
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 DOCA_LOG_REGISTER(FLOW_CT_TCP_ENTRY_FINALIZE);
 
 static int nb_entry_finalize_triggers;
-static int nb_entries = 0;
+static uint16_t sessions = 0;
 
 /*
  * Create RSS pipe
@@ -98,7 +100,7 @@ static doca_error_t create_rss_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add RSS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -143,7 +145,7 @@ static doca_error_t create_egress_pipe(struct doca_flow_port *port,
 		return result;
 	}
 
-	result = set_flow_pipe_cfg(cfg, "EGRESS_PIPE", DOCA_FLOW_PIPE_BASIC, false);
+	result = set_flow_pipe_cfg(cfg, "EGRESS_PIPE", DOCA_FLOW_PIPE_BASIC, true);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -151,6 +153,11 @@ static doca_error_t create_egress_pipe(struct doca_flow_port *port,
 	result = doca_flow_pipe_cfg_set_match(cfg, &match, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_domain(cfg, DOCA_FLOW_PIPE_DOMAIN_EGRESS);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg domain: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 
@@ -165,7 +172,7 @@ static doca_error_t create_egress_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add EGRESS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -174,78 +181,6 @@ static doca_error_t create_egress_pipe(struct doca_flow_port *port,
 	result = doca_flow_entries_process(port, 0, DEFAULT_TIMEOUT_US, 0);
 	if (result != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to process EGRESS entry: %s", doca_error_get_descr(result));
-
-	return result;
-
-destroy_pipe_cfg:
-	doca_flow_pipe_cfg_destroy(cfg);
-	return result;
-}
-
-/*
- * Create CT miss pipe
- *
- * @port [in]: Pipe port
- * @fwd_pipe [in]: Forward pipe pointer
- * @status [in]: user context for adding entry
- * @pipe [out]: Created pipe pointer
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
- */
-static doca_error_t create_ct_miss_pipe(struct doca_flow_port *port,
-					struct doca_flow_pipe *fwd_pipe,
-					struct entries_status *status,
-					struct doca_flow_pipe **pipe)
-{
-	struct doca_flow_match match;
-	struct doca_flow_pipe_cfg *cfg;
-	struct doca_flow_fwd fwd;
-	struct doca_flow_fwd fwd_miss;
-	doca_error_t result;
-
-	memset(&match, 0, sizeof(match));
-	memset(&fwd, 0, sizeof(fwd));
-	memset(&fwd_miss, 0, sizeof(fwd));
-
-	result = doca_flow_pipe_cfg_create(&cfg, port);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	result = set_flow_pipe_cfg(cfg, "CT_MISS_PIPE", DOCA_FLOW_PIPE_BASIC, false);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-	result = doca_flow_pipe_cfg_set_match(cfg, &match, NULL);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-
-	fwd.type = DOCA_FLOW_FWD_PIPE;
-	fwd.next_pipe = fwd_pipe;
-
-	fwd_miss.type = DOCA_FLOW_FWD_PIPE;
-	fwd_miss.next_pipe = fwd_pipe;
-
-	result = doca_flow_pipe_create(cfg, &fwd, &fwd_miss, pipe);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create CT miss pipe: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-	doca_flow_pipe_cfg_destroy(cfg);
-
-	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, &fwd, 0, status, NULL);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to add CT miss pipe entry: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	result = doca_flow_entries_process(port, 0, DEFAULT_TIMEOUT_US, 0);
-	if (result != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to process CT miss entry: %s", doca_error_get_descr(result));
 
 	return result;
 
@@ -321,7 +256,7 @@ static doca_error_t create_tcp_flags_filter_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	match.outer.tcp.flags = 0;
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create TCP flags filter pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -432,7 +367,7 @@ static void parse_packet(struct rte_mbuf *packet,
 }
 
 /*
- * Dequeue 'SYN' packets from DPDK queues, parse and update CT tables with new connection 5 tuple
+ * Dequeue packets from DPDK queues, parse and update CT tables with new connection 5 tuple
  *
  * @port [in]: Port id to which an entry should be inserted
  * @ct_queue [in]: DOCA Flow CT queue number
@@ -440,20 +375,23 @@ static void parse_packet(struct rte_mbuf *packet,
  * @entry [in/out]: CT entry
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t process_syn_packets(struct doca_flow_port *port,
-					uint16_t ct_queue,
-					struct entries_status *ct_status,
-					struct doca_flow_pipe_entry **entry)
+static doca_error_t process_packets(struct doca_flow_port *port,
+				    uint16_t ct_queue,
+				    struct entries_status *ct_status,
+				    struct doca_flow_pipe_entry **entry)
 {
 	struct rte_mbuf *packets[PACKET_BURST];
 	struct doca_flow_ct_match match_o;
 	struct doca_flow_ct_match match_r;
-	uint32_t flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
-			 DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_ENTRY_FINALIZE |
-			 DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN;
+	uint32_t prepare_flags = DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS;
+	uint32_t entry_flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
+			       DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_ENTRY_FINALIZE |
+			       DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN;
 	uint8_t tcp_state;
 	doca_error_t result;
-	int rc, i, nb_packets, nb_process = 0;
+	int rc, i, nb_packets, nb_processed = 0, total_valid_packets = 0;
+	uint64_t timeout_s = 5; /* Timeout in seconds */
+	time_t end_time, max_end_time;
 
 	memset(&match_o, 0, sizeof(match_o));
 	memset(&match_r, 0, sizeof(match_r));
@@ -464,148 +402,120 @@ static doca_error_t process_syn_packets(struct doca_flow_port *port,
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	nb_packets = rte_eth_rx_burst(0, 0, packets, PACKET_BURST);
-	if (nb_packets == 0) {
-		DOCA_LOG_INFO("Sample didn't receive packets to process");
-		return DOCA_ERROR_BAD_STATE;
-	}
+	max_end_time = time(NULL) + timeout_s; /* Absolute maximum timeout */
+	end_time = max_end_time;	       /* Current timeout */
+	do {
+		nb_packets = rte_eth_rx_burst(0, 0, packets, PACKET_BURST);
+		if (nb_packets == 0) {
+			/* No packets received, continue immediately without blocking */
+			continue;
+		}
 
-	DOCA_LOG_INFO("%d packets received on rx_burst()", nb_packets);
-	for (i = 0; i < PACKET_BURST && i < nb_packets; i++) {
-		parse_packet(packets[i], &match_o, &match_r, &tcp_state);
-		if (tcp_state & DOCA_FLOW_MATCH_TCP_FLAG_SYN) {
-			if (nb_entries > 0) {
-				DOCA_LOG_INFO("Already have one entry, skip");
-				continue;
-			}
-			/* Allocate CT entry */
-			result = doca_flow_ct_entry_prepare(ct_queue,
-							    NULL,
-							    DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS,
-							    &match_o,
-							    0,
-							    &match_r,
-							    0,
-							    entry,
-							    NULL);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to prepare CT entry\n");
-				return result;
-			}
-			result = doca_flow_ct_add_entry(ct_queue,
-							NULL,
-							flags,
-							&match_o,
-							&match_r,
-							0,
-							0,
-							0,
-							0,
-							0,
-							ct_status,
-							*entry);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to add CT pipe an entry: %s", doca_error_get_descr(result));
-				return result;
-			}
-			nb_entries++;
-			nb_process++;
-			while (ct_status->nb_processed != nb_process) {
-				result = doca_flow_ct_entries_process(port, ct_queue, 0, 0, NULL);
+		DOCA_LOG_INFO("%d packets received on rx_burst()", nb_packets);
+		for (i = 0; i < PACKET_BURST && i < nb_packets; i++) {
+			parse_packet(packets[i], &match_o, &match_r, &tcp_state);
+			if (tcp_state & DOCA_FLOW_MATCH_TCP_FLAG_SYN) {
+				if (sessions > 0) {
+					DOCA_LOG_INFO("Already have one entry, skip");
+					continue;
+				}
+				total_valid_packets++;
+				/* Updated timeout */
+				end_time = MIN(time(NULL) + 2, max_end_time);
+
+				result = flow_ct_create_entry(port,
+							      ct_queue,
+							      NULL,
+							      prepare_flags,
+							      entry_flags,
+							      &match_o,
+							      &match_r,
+							      0,
+							      0,
+							      0,
+							      0,
+							      0,
+							      0,
+							      0,
+							      ct_status,
+							      entry);
 				if (result != DOCA_SUCCESS) {
-					DOCA_LOG_ERR("Failed to process Flow CT entries: %s",
+					DOCA_LOG_ERR("Failed to create CT entry\n");
+					return result;
+				}
+				sessions++;
+				DOCA_LOG_INFO("TCP session was created");
+				DOCA_LOG_INFO(
+					"Entry %d matches on the 5-tuple of the incoming packet. Reply direction matches on the inversed origin direction",
+					i);
+			} else if (tcp_state & DOCA_FLOW_MATCH_TCP_FLAG_FIN ||
+				   tcp_state & DOCA_FLOW_MATCH_TCP_FLAG_RST) {
+				if (sessions == 0) {
+					DOCA_LOG_INFO("No entry to remove, skip");
+					continue;
+				}
+				total_valid_packets++;
+				/* Updated timeout */
+				end_time = MIN(time(NULL) + 2, max_end_time);
+				result = doca_flow_ct_rm_entry(ct_queue, NULL, entry_flags, *entry);
+				if (result != DOCA_SUCCESS) {
+					DOCA_LOG_ERR("Failed to remove CT pipe entry: %s",
 						     doca_error_get_descr(result));
 					return result;
 				}
-
-				if (ct_status->failure) {
-					DOCA_LOG_ERR("Flow CT entries process returned with a failure");
-					return DOCA_ERROR_BAD_STATE;
+				nb_processed++;
+				while (nb_entry_finalize_triggers != nb_processed) {
+					result = doca_flow_ct_entries_process(port, ct_queue, 0, 0, NULL);
+					if (result != DOCA_SUCCESS) {
+						DOCA_LOG_ERR("Failed to process Flow CT entries: %s",
+							     doca_error_get_descr(result));
+						return result;
+					}
+					(void)doca_flow_aging_handle(port, ct_queue, 0, 0);
 				}
+				sessions--;
+				DOCA_LOG_INFO("TCP session was ended");
+			} else {
+				DOCA_LOG_WARN("Sample is only able to process 'SYN', 'FIN' and 'RST' packets");
+				continue;
 			}
 			rte_flow_dynf_metadata_set(packets[i], 1);
 			packets[i]->ol_flags |= RTE_MBUF_DYNFLAG_TX_METADATA;
 			rte_eth_tx_burst(0, 0, &packets[i], 1);
-		} else {
-			DOCA_LOG_WARN("Sample is only able to process 'SYN' packets at first phase");
-			continue;
 		}
+	} while (time(NULL) < end_time);
+
+	if (total_valid_packets == 0) {
+		if (sessions == 0) {
+			DOCA_LOG_ERR("Sample didn't receive SYN packets within 5 seconds timeout");
+		} else {
+			DOCA_LOG_ERR("Sample didn't receive 'FIN'/'RST' packets within 5 seconds timeout");
+		}
+		return DOCA_ERROR_BAD_STATE;
 	}
-	ct_status->nb_processed = 0;
 
 	return DOCA_SUCCESS;
 }
 
-/*
- * Dequeue 'FIN' and 'RST' packets from DPDK queues to remove entries
- *
- * @port [in]: Port id to which an entry should be inserted
- * @ct_queue [in]: DOCA Flow CT queue number
- * @entry [in/out]: CT entry
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
- */
-static doca_error_t process_fin_packets(struct doca_flow_port *port,
-					uint16_t ct_queue,
-					struct doca_flow_pipe_entry **entry)
+static void entry_get(struct doca_flow_pipe *pipe, void *entry, uint16_t ct_queue)
 {
-	struct rte_mbuf *packets[PACKET_BURST];
-	struct doca_flow_ct_match match_o;
-	struct doca_flow_ct_match match_r;
-	uint32_t flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT;
-	uint8_t tcp_state;
+	uint64_t entry_flags;
+
+	struct doca_flow_ct_match match_o, match_r;
 	doca_error_t result;
-	int rc, i, nb_packets, nb_process = 0;
 
-	memset(&match_o, 0, sizeof(match_o));
-	memset(&match_r, 0, sizeof(match_r));
-
-	rc = rte_flow_dynf_metadata_register();
-	if (unlikely(rc)) {
-		DOCA_LOG_ERR("Enable metadata failed");
-		return DOCA_ERROR_BAD_STATE;
+	result = doca_flow_ct_get_entry(ct_queue, pipe, 0, entry, &match_o, &match_r, &entry_flags, NULL, NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get CT entry information: %s", doca_error_get_descr(result));
+		return;
 	}
 
-	nb_packets = rte_eth_rx_burst(0, 0, packets, PACKET_BURST);
-	if (nb_packets == 0) {
-		DOCA_LOG_INFO("Sample didn't receive packets to process");
-		return DOCA_ERROR_BAD_STATE;
-	}
-
-	DOCA_LOG_INFO("%d packets received on rx_burst()", nb_packets);
-	for (i = 0; i < PACKET_BURST && i < nb_packets; i++) {
-		parse_packet(packets[i], &match_o, &match_r, &tcp_state);
-		if (tcp_state & DOCA_FLOW_MATCH_TCP_FLAG_FIN || tcp_state & DOCA_FLOW_MATCH_TCP_FLAG_RST) {
-			if (nb_entries == 0) {
-				DOCA_LOG_INFO("No entry to remove, skip");
-				continue;
-			}
-			result = doca_flow_ct_rm_entry(ct_queue, NULL, flags, *entry);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to remove CT pipe entry: %s", doca_error_get_descr(result));
-				return result;
-			}
-			nb_process++;
-			while (nb_entry_finalize_triggers != nb_process) {
-				result = doca_flow_ct_entries_process(port, ct_queue, 0, 0, NULL);
-				if (result != DOCA_SUCCESS) {
-					DOCA_LOG_ERR("Failed to process Flow CT entries: %s",
-						     doca_error_get_descr(result));
-					return result;
-				}
-				(void)doca_flow_aging_handle(port, ct_queue, 0, 0);
-			}
-			nb_entries--;
-			DOCA_LOG_INFO("TCP session was ended");
-			rte_flow_dynf_metadata_set(packets[i], 1);
-			packets[i]->ol_flags |= RTE_MBUF_DYNFLAG_TX_METADATA;
-			rte_eth_tx_burst(0, 0, &packets[i], 1);
-		} else {
-			DOCA_LOG_WARN("Sample is only able to process 'FIN' and 'RST' packets at second phase");
-			continue;
-		}
-	}
-
-	return DOCA_SUCCESS;
+	DOCA_LOG_INFO("Entry %d origin: 0x%08x:0x%x -> 0x%08x:0x%x",
+		      nb_entry_finalize_triggers + 1,
+		      be32toh(match_o.ipv4.src_ip),
+		      match_o.ipv4.l4_port.src_port,
+		      be32toh(match_o.ipv4.dst_ip),
+		      match_o.ipv4.l4_port.dst_port);
 }
 
 /*
@@ -619,25 +529,13 @@ static doca_error_t process_fin_packets(struct doca_flow_port *port,
 static void entry_finalize_cb(struct doca_flow_pipe *pipe, void *entry, uint16_t ct_queue, void *usr_ctx)
 {
 	(void)usr_ctx;
-	uint64_t entry_flags, last_hit_s;
-	struct doca_flow_ct_match match_o, match_r;
+	uint64_t last_hit_s;
 	struct doca_flow_resource_query query_o, query_r;
 	doca_error_t result;
 
-	result = doca_flow_ct_get_entry(ct_queue, pipe, 0, entry, &match_o, &match_r, &entry_flags);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get CT entry information: %s", doca_error_get_descr(result));
-		return;
-	}
-
 	nb_entry_finalize_triggers++;
 
-	DOCA_LOG_INFO("Entry finalize callback triggered on entry %d, origin: 0x%08x:0x%x -> 0x%08x:0x%x",
-		      nb_entry_finalize_triggers,
-		      be32toh(match_o.ipv4.src_ip),
-		      match_o.ipv4.l4_port.src_port,
-		      be32toh(match_o.ipv4.dst_ip),
-		      match_o.ipv4.l4_port.dst_port);
+	DOCA_LOG_INFO("Entry finalize callback triggered on entry %d", nb_entry_finalize_triggers);
 
 	result = doca_flow_ct_query_entry(ct_queue, pipe, 0, entry, &query_o, &query_r, &last_hit_s);
 	if (result != DOCA_SUCCESS) {
@@ -645,11 +543,15 @@ static void entry_finalize_cb(struct doca_flow_pipe *pipe, void *entry, uint16_t
 		return;
 	}
 
-	DOCA_LOG_INFO("Entry %d, origin total bytes: %ld", nb_entry_finalize_triggers, query_o.counter.total_bytes);
-	DOCA_LOG_INFO("Entry %d, origin total packets: %ld", nb_entry_finalize_triggers, query_o.counter.total_pkts);
-	DOCA_LOG_INFO("Entry %d, reply total bytes: %ld", nb_entry_finalize_triggers, query_r.counter.total_bytes);
-	DOCA_LOG_INFO("Entry %d, reply total packets: %ld", nb_entry_finalize_triggers, query_r.counter.total_pkts);
-	DOCA_LOG_INFO("Entry %d, last hit since Epoch (sec) : %ld", nb_entry_finalize_triggers, last_hit_s);
+	DOCA_LOG_INFO("Entry %d, Origin total packets: %ld, Origin total bytes: %ld",
+		      nb_entry_finalize_triggers,
+		      query_o.counter.total_pkts,
+		      query_o.counter.total_bytes);
+	DOCA_LOG_INFO("Entry %d, Reply total packets: %ld, Reply total bytes: %ld",
+		      nb_entry_finalize_triggers,
+		      query_r.counter.total_pkts,
+		      query_r.counter.total_bytes);
+	DOCA_LOG_INFO("Entry %d, Last hit since Epoch (sec) : %ld", nb_entry_finalize_triggers, last_hit_s);
 }
 
 /*
@@ -661,11 +563,12 @@ static void entry_finalize_cb(struct doca_flow_pipe *pipe, void *entry, uint16_t
  */
 doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 {
-	const int nb_ports = 2, nb_entries = 7;
+	const int nb_ports = ctx->devs_ctx.devs_manager[0].nb_reps > 0 ? 2 : 1;
+	const int nb_entries = 6;
 	struct flow_resources resource;
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_pipe_entry *tcp_entry;
-	struct doca_flow_pipe *egress_pipe, *ct_miss_pipe, *tcp_flags_filter_pipe, *rss_pipe, *tcp_pipe;
+	struct doca_flow_pipe *egress_pipe, *tcp_flags_filter_pipe, *rss_pipe, *tcp_pipe;
 	struct doca_flow_pipe *ct_pipe = NULL;
 	struct doca_flow_port *ports[nb_ports];
 	struct doca_flow_meta o_zone_mask, r_zone_mask;
@@ -681,9 +584,11 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct flow_switch_c
 	memset(&ct_status, 0, sizeof(ct_status));
 	memset(&resource, 0, sizeof(resource));
 
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 1;
+	resource.nr_rss = 1;
 
-	result = init_doca_flow(nb_queues, "switch,hws,isolated", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws,isolated,expert", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -720,7 +625,8 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct flow_switch_c
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_ct_destroy();
@@ -732,7 +638,7 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct flow_switch_c
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
-	result = create_egress_pipe(ports[0], 1, &ctrl_status, &egress_pipe);
+	result = create_egress_pipe(ports[0], nb_ports > 1 ? 1 : 0, &ctrl_status, &egress_pipe);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
@@ -740,11 +646,7 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct flow_switch_c
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
-	result = create_ct_miss_pipe(ports[0], rss_pipe, &ctrl_status, &ct_miss_pipe);
-	if (result != DOCA_SUCCESS)
-		goto cleanup;
-
-	result = create_ct_pipe(ports[0], tcp_flags_filter_pipe, ct_miss_pipe, &ct_pipe);
+	result = create_ct_pipe(ports[0], tcp_flags_filter_pipe, rss_pipe, &ct_pipe);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
@@ -764,19 +666,14 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct flow_switch_c
 		goto cleanup;
 	}
 
-	DOCA_LOG_INFO("Wait few seconds for 'SYN' packet to arrive");
-
-	sleep(5);
-	result = process_syn_packets(ports[0], ct_queue, &ct_status, &tcp_entry);
+	DOCA_LOG_INFO("Wait a few seconds for 'SYN' packets to arrive");
+	result = process_packets(ports[0], ct_queue, &ct_status, &tcp_entry);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
-	sleep(DEFAULT_CNT_DELAY_S + DEFAULT_CNT_QUERY_INTERVAL);
-	DOCA_LOG_INFO("TCP session was created");
-	DOCA_LOG_INFO("waiting for 'FIN'/'RST' packet to arrive before ending the session");
-
-	sleep(7);
-	result = process_fin_packets(ports[0], ct_queue, &tcp_entry);
+	DOCA_LOG_INFO("Waiting for 'FIN'/'RST' packets to arrive before ending the session");
+	entry_get(ct_pipe, tcp_entry, ct_queue);
+	result = process_packets(ports[0], ct_queue, &ct_status, &tcp_entry);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 

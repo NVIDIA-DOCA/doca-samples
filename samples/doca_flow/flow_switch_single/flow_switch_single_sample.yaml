@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -29,7 +29,8 @@ ports_description:
   port_0: doca_dev
   port_1: doca_rep_dev
   port_2: doca_rep_dev
-description: "This sample shows how to use a single switch"
+description: "This sample shows how to use a single switch.
+              Sample Command Line: ./build/doca_flow_switch_single -- -l 60 -r pci/08:00.0,pf0sf[0-1]"
 use_cases:
   - name: "Switch single use case #1"
     args: ""

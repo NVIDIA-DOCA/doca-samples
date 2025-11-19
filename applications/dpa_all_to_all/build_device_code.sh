@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #
-# Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -39,12 +39,14 @@ DOCA_BUILD_DIR=$1
 DPA_KERNELS_DEVICE_SRC=$2
 DPACC_MCPU_FLAG=$3
 DOCA_LIB_DIR=$4
+APPLICATION_DPA_ATTRIBUTES=$5
 
 # DOCA Configurations
 DOCA_DIR="/opt/mellanox/doca"
 DOCA_INCLUDE="${DOCA_DIR}/include"
 DOCA_TOOLS="${DOCA_DIR}/tools"
 DOCA_DPACC="${DOCA_TOOLS}/dpacc"
+DOCA_APP_ATTRIBUTES2BLOB="${DOCA_TOOLS}/dpa-app-attributes2blob"
 
 # DOCA DPA APP Configuration
 # This variable name passed to DPACC with --app-name parameter and it's token must be identical to the
@@ -62,9 +64,13 @@ DEVICE_CC_FLAGS="-Wno-deprecated-declarations -Werror -Wall -Wextra -DFLEXIO_DEV
 
 # Build directory for the DPA device (kernel) code
 APPLICATION_DEVICE_BUILD_DIR="${DOCA_BUILD_DIR}/dpa_all_to_all/device/build_dpacc"
+APPLICATION_DPA_ATTRIBUTES_BLOB="${APPLICATION_DEVICE_BUILD_DIR}/dpa_all_to_all_attributes.blob"
 
 rm -rf $APPLICATION_DEVICE_BUILD_DIR
 mkdir -p $APPLICATION_DEVICE_BUILD_DIR
+
+# Generate blob from device attributes file
+$DOCA_APP_ATTRIBUTES2BLOB ${APPLICATION_DPA_ATTRIBUTES} ${APPLICATION_DPA_ATTRIBUTES_BLOB}
 
 # Compile the DPA (kernel) device source code using the DPACC
 $DOCA_DPACC $DPA_KERNELS_DEVICE_SRC \
@@ -77,3 +83,4 @@ $DOCA_DPACC $DPA_KERNELS_DEVICE_SRC \
 	--app-name="${DPA_APP_NAME}" \
 	-flto \
 	-I${DOCA_INCLUDE} \
+	--dpa-proc-attr="${APPLICATION_DPA_ATTRIBUTES_BLOB}"

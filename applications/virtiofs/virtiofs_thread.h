@@ -55,6 +55,11 @@ struct virtiofs_thread_attr {
 	bool admin_thread;		/* Admin thread flag */
 };
 
+struct virtiofs_thread;
+
+/* VirtioFS thread execution function */
+typedef doca_error_t (*virtiofs_thread_exec_fn_t)(struct virtiofs_thread *thread, void *cb_arg);
+
 /* VirtioFS thread */
 struct virtiofs_thread {
 	struct virtiofs_thread_attr attr;	      /* Thread attributes */
@@ -68,6 +73,8 @@ struct virtiofs_thread {
 	uint32_t curr_inflights;		      /* Current IO inflights */
 	volatile bool suspend;			      /* Suspend flag */
 	volatile bool stop;			      /* Stop flag */
+	virtiofs_thread_exec_fn_t fn;
+	void *cb_arg;
 } CL_ALIGNED;
 
 /* VirtioFS thread context */
@@ -75,9 +82,6 @@ struct virtiofs_thread_ctx {
 	struct virtiofs_thread *thread;	      /* VirtioFS thread */
 	struct virtiofs_mpool_set *mpool_set; /* VirtioFS mpool set */
 };
-
-/* VirtioFS thread execution function */
-typedef doca_error_t (*virtiofs_thread_exec_fn_t)(struct virtiofs_thread *thread, void *cb_arg);
 
 /*
  * VirtioFS thread create
@@ -102,9 +106,13 @@ doca_error_t virtiofs_thread_start(struct virtiofs_thread *thread);
  * @param thread [in]: VirtioFS thread
  * @param fn [in]: VirtioFS thread execution function
  * @param arg [in]: VirtioFS thread execution argument
+ * @param exec_on_caller_thread [in]: Execute fn on caller thread or passed thread
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t virtiofs_thread_exec(struct virtiofs_thread *thread, virtiofs_thread_exec_fn_t fn, void *arg);
+doca_error_t virtiofs_thread_exec(struct virtiofs_thread *thread,
+				  virtiofs_thread_exec_fn_t fn,
+				  void *arg,
+				  bool exec_on_caller_thread);
 
 /*
  * VirtioFS thread poller add

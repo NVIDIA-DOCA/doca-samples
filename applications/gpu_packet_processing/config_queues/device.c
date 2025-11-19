@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,15 +23,9 @@
  *
  */
 
-#include <rte_ethdev.h>
-
 #include "common.h"
 
 DOCA_LOG_REGISTER(GPU_PACKET_PROCESSING_DEVICE);
-
-struct rte_eth_dev_info dev_info = {0};
-struct rte_eth_conf eth_conf = {0};
-struct rte_mempool *mp;
 
 /*
  * Initialize a DOCA device with PCIe address object.
@@ -40,7 +34,7 @@ struct rte_mempool *mp;
  * @retval [out]: DOCA device object
  * @return: DOCA_SUCCESS on success and DOCA_ERROR_INVALID_VALUE otherwise
  */
-static doca_error_t open_doca_device_with_pci(const char *pcie_value, struct doca_dev **retval)
+static doca_error_t open_doca_device_with_pci(const char *pcie_value, struct doca_dev **ddev)
 {
 	struct doca_devinfo **dev_list;
 	uint32_t nb_devs;
@@ -49,7 +43,7 @@ static doca_error_t open_doca_device_with_pci(const char *pcie_value, struct doc
 	uint8_t is_addr_equal = 0;
 
 	/* Set default return value */
-	*retval = NULL;
+	*ddev = NULL;
 
 	res = doca_devinfo_create_list(&dev_list, &nb_devs);
 	if (res != DOCA_SUCCESS) {
@@ -62,7 +56,7 @@ static doca_error_t open_doca_device_with_pci(const char *pcie_value, struct doc
 		res = doca_devinfo_is_equal_pci_addr(dev_list[i], pcie_value, &is_addr_equal);
 		if (res == DOCA_SUCCESS && is_addr_equal) {
 			/* if device can be opened */
-			res = doca_dev_open(dev_list[i], retval);
+			res = doca_dev_open(dev_list[i], ddev);
 			if (res == DOCA_SUCCESS) {
 				doca_devinfo_destroy_list(dev_list);
 				return res;
@@ -77,13 +71,11 @@ static doca_error_t open_doca_device_with_pci(const char *pcie_value, struct doc
 	return res;
 }
 
-doca_error_t init_doca_device(char *nic_pcie_addr, struct doca_dev **ddev, uint16_t *dpdk_port_id)
+doca_error_t init_doca_device(char *nic_pcie_addr, struct doca_dev **ddev)
 {
 	doca_error_t result;
-	int ret;
-	char *eal_param[3] = {"", "-a", "00:00.0"};
 
-	if (nic_pcie_addr == NULL || ddev == NULL || dpdk_port_id == NULL)
+	if (nic_pcie_addr == NULL || ddev == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
 
 	if (strlen(nic_pcie_addr) >= DOCA_DEVINFO_PCI_ADDR_SIZE)
@@ -92,25 +84,6 @@ doca_error_t init_doca_device(char *nic_pcie_addr, struct doca_dev **ddev, uint1
 	result = open_doca_device_with_pci(nic_pcie_addr, ddev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to open NIC device based on PCI address");
-		return result;
-	}
-
-	ret = rte_eal_init(3, eal_param);
-	if (ret < 0) {
-		DOCA_LOG_ERR("DPDK init failed: %d", ret);
-		return DOCA_ERROR_DRIVER;
-	}
-
-	/* Enable DOCA Flow HWS mode */
-	result = doca_dpdk_port_probe(*ddev, "dv_flow_en=2");
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Function doca_dpdk_port_probe returned %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	result = doca_dpdk_get_first_port_id(*ddev, dpdk_port_id);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Function doca_dpdk_get_first_port_id returned %s", doca_error_get_descr(result));
 		return result;
 	}
 

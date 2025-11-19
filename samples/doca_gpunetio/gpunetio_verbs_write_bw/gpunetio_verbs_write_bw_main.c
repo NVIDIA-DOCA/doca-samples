@@ -197,7 +197,7 @@ int main(int argc, char **argv)
 	status = doca_log_backend_create_with_file_sdk(stderr, &sdk_log);
 	if (status != DOCA_SUCCESS)
 		goto sample_exit;
-	status = doca_log_backend_set_sdk_level(sdk_log, DOCA_LOG_LEVEL_INFO);
+	status = doca_log_backend_set_sdk_level(sdk_log, DOCA_LOG_LEVEL_WARNING);
 	if (status != DOCA_SUCCESS)
 		goto sample_exit;
 

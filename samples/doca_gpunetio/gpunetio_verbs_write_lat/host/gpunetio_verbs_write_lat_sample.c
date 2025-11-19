@@ -69,62 +69,99 @@ static doca_error_t destroy_local_memory_objects(struct verbs_resources *resourc
 static doca_error_t create_local_memory_object(struct verbs_resources *resources)
 {
 	doca_error_t status = DOCA_SUCCESS;
+	size_t host_page_size = get_page_size();
+	size_t size_data;
+	int dmabuf_fd;
 
 	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
+		resources->data_mr[idx] = NULL;
+		size_data = (size_t)(resources->cuda_threads * message_size[idx]);
+		ALIGN_SIZE(size_data, host_page_size);
+
 		status = doca_gpu_mem_alloc(resources->gpu_dev,
-					    (size_t)(resources->cuda_threads * message_size[idx]),
-					    4096,
+					    size_data,
+					    host_page_size,
 					    DOCA_GPU_MEM_TYPE_GPU,
 					    (void **)&(resources->local_poll_buf[idx]),
 					    NULL);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to allocate GPU memory buffer %d of size = %d (%d x %d)",
+			DOCA_LOG_ERR("Failed to allocate GPU memory buffer %d of size = %zd (%d x %d)",
 				     idx,
-				     message_size[idx] * resources->cuda_threads,
+				     size_data,
 				     message_size[idx],
 				     resources->cuda_threads);
 			goto exit_error;
 		}
 
-		cudaMemset(resources->local_poll_buf[idx], 0, resources->cuda_threads * message_size[idx]);
+		cudaMemset(resources->local_poll_buf[idx], 0, size_data);
 
-		resources->local_poll_mr[idx] =
-			ibv_reg_mr(resources->pd,
-				   resources->local_poll_buf[idx],
-				   (size_t)resources->cuda_threads * (size_t)message_size[idx],
-				   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+		/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method. */
+		status = doca_gpu_dmabuf_fd(resources->gpu_dev, resources->local_poll_buf[idx], size_data, &dmabuf_fd);
+		if (status == DOCA_SUCCESS) {
+			resources->local_poll_mr[idx] =
+				ibv_reg_dmabuf_mr(resources->pd,
+						  0,
+						  size_data,
+						  (uint64_t)resources->local_poll_buf[idx],
+						  dmabuf_fd,
+						  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+		}
+
 		if (resources->local_poll_mr[idx] == NULL) {
-			status = DOCA_ERROR_DRIVER;
-			DOCA_LOG_ERR("Failed to create mr: %s", doca_error_get_descr(status));
-			goto exit_error;
+			resources->local_poll_mr[idx] =
+				ibv_reg_mr(resources->pd,
+					   resources->local_poll_buf[idx],
+					   size_data,
+					   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
+						   IBV_ACCESS_REMOTE_ATOMIC);
+			if (resources->local_poll_mr[idx] == NULL) {
+				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
+				goto exit_error;
+			}
 		}
 
 		status = doca_gpu_mem_alloc(resources->gpu_dev,
-					    (size_t)(resources->cuda_threads * message_size[idx]),
-					    4096,
+					    size_data,
+					    host_page_size,
 					    DOCA_GPU_MEM_TYPE_GPU,
 					    (void **)&(resources->local_post_buf[idx]),
 					    NULL);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to allocate GPU memory buffer %d of size = %d (%d x %d)",
+			DOCA_LOG_ERR("Failed to allocate GPU memory buffer %d of size = %zd (%d x %d)",
 				     idx,
-				     message_size[idx] * resources->cuda_threads,
+				     size_data,
 				     message_size[idx],
 				     resources->cuda_threads);
 			goto exit_error;
 		}
 
-		cudaMemset(resources->local_post_buf[idx], 0, resources->cuda_threads * message_size[idx]);
+		cudaMemset(resources->local_post_buf[idx], 0, size_data);
 
-		resources->local_post_mr[idx] =
-			ibv_reg_mr(resources->pd,
-				   resources->local_post_buf[idx],
-				   (size_t)resources->cuda_threads * (size_t)message_size[idx],
-				   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+		/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method. */
+		status = doca_gpu_dmabuf_fd(resources->gpu_dev, resources->local_post_buf[idx], size_data, &dmabuf_fd);
+		if (status == DOCA_SUCCESS) {
+			resources->local_post_mr[idx] =
+				ibv_reg_dmabuf_mr(resources->pd,
+						  0,
+						  size_data,
+						  (uint64_t)resources->local_post_buf[idx],
+						  dmabuf_fd,
+						  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+		}
+
 		if (resources->local_post_mr[idx] == NULL) {
-			status = DOCA_ERROR_DRIVER;
-			DOCA_LOG_ERR("Failed to create mr: %s", doca_error_get_descr(status));
-			goto exit_error;
+			resources->local_post_mr[idx] =
+				ibv_reg_mr(resources->pd,
+					   resources->local_post_buf[idx],
+					   size_data,
+					   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
+						   IBV_ACCESS_REMOTE_ATOMIC);
+			if (resources->local_post_mr[idx] == NULL) {
+				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
+				goto exit_error;
+			}
 		}
 	}
 

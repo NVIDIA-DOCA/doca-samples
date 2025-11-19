@@ -190,7 +190,7 @@ static doca_error_t add_rss_tcp_ip_pipe_entry(struct doca_flow_pipe *pipe, struc
 	match.outer.tcp.l4_port.dst_port = dst_port;
 	match.outer.tcp.l4_port.src_port = src_port;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -295,7 +295,7 @@ static doca_error_t add_rss_rss_udp_ip_pipe_entry(struct doca_flow_pipe *pipe, s
 	/* set meta value */
 	actions.meta.pkt_meta = DOCA_HTOBE32(10);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -453,7 +453,7 @@ static doca_error_t add_loopback_pipe_entry(struct doca_flow_pipe *pipe,
 	actions.encap_cfg.encap.tun.type = DOCA_FLOW_TUN_VXLAN;
 	actions.encap_cfg.encap.tun.vxlan_tun_id = encap_vxlan_tun_id;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -521,6 +521,9 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 	if (result)
 		return result;
 
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_rss = num_of_entries;
+	resource.nr_encap = 1;
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -528,7 +531,7 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

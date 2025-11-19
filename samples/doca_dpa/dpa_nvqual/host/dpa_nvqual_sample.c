@@ -25,6 +25,8 @@
 
 #include <sys/time.h>
 #include <signal.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #include <dpa_common.h>
 #include <dpa_nvqual_common_defs.h>
@@ -36,7 +38,8 @@ DOCA_LOG_REGISTER(DPA_NVQUAL);
 /**
  * kernel/RPC declaration
  */
-doca_dpa_func_t dpa_nvqual_kernel;
+doca_dpa_func_t dpa_nvqual_memory_stress_kernel;
+doca_dpa_func_t dpa_nvqual_arithmetic_stress_kernel;
 doca_dpa_func_t dpa_nvqual_entry_point;
 
 static struct doca_log_backend *stdout_logger = NULL;
@@ -107,7 +110,16 @@ static doca_error_t get_available_eus(struct doca_dpa *dpa,
 			return doca_err;
 		}
 
-		doca_err = doca_dpa_thread_set_func_arg(thread, dpa_nvqual_kernel, 0);
+		// Set the kernel function based on the EU id (16 EUs per core).
+		// On each core, the first DPA_NVQUAL_NUM_MEMORY_EUS_PER_CORE EUs id will perform memory stress, and the
+		// rest will perform arithmetic stress
+		bool is_memory_kernel = (eu_id % DPA_NVQUAL_NUM_EUS_PER_CORE < DPA_NVQUAL_NUM_MEMORY_EUS_PER_CORE);
+		if (is_memory_kernel) {
+			doca_err = doca_dpa_thread_set_func_arg(thread, dpa_nvqual_memory_stress_kernel, 0);
+		} else {
+			doca_err = doca_dpa_thread_set_func_arg(thread, dpa_nvqual_arithmetic_stress_kernel, 0);
+		}
+
 		if (doca_err != DOCA_SUCCESS) {
 			(void)doca_dpa_eu_affinity_destroy(affinity);
 			(void)doca_dpa_thread_destroy(thread);
@@ -116,8 +128,14 @@ static doca_error_t get_available_eus(struct doca_dpa *dpa,
 		}
 
 		/* Suppress stderr prints temporarily to avoid FlexIO prints, as we allow thread failures on setup */
-		FILE *orig_stderr = stderr;
-		stderr = fopen("/dev/null", "w");
+		int orig_stderr_fd = dup(STDERR_FILENO);
+		int null_fd = open("/dev/null", O_WRONLY);
+		if (orig_stderr_fd != -1 && null_fd != -1) {
+			fflush(stderr);
+			dup2(null_fd, STDERR_FILENO);
+		}
+		if (null_fd != -1)
+			close(null_fd);
 
 		/* Suppress DOCA SDK error prints temporarily as well */
 		(void)doca_log_backend_set_sdk_level(stdout_logger, DOCA_LOG_LEVEL_CRIT);
@@ -129,8 +147,10 @@ static doca_error_t get_available_eus(struct doca_dpa *dpa,
 		}
 
 		/* Restore stderr */
-		fclose(stderr);
-		stderr = orig_stderr;
+		if (orig_stderr_fd != -1) {
+			dup2(orig_stderr_fd, STDERR_FILENO);
+			close(orig_stderr_fd);
+		}
 
 		/* Restore DOCA SDK error prints */
 		(void)doca_log_backend_set_sdk_level(stdout_logger, DOCA_LOG_LEVEL_WARNING);
@@ -176,7 +196,8 @@ static size_t get_num_used_eus(bool *available_eus, bool *excluded_eus, unsigned
  */
 static doca_error_t iteration_complete_cb(struct dpa_nvqual *nvq, uint64_t ret_val)
 {
-	float avg = ret_val / (float)(nvq->buffers_size * nvq->num_ops * DPA_NVQUAL_DPA_FREQ);
+	// Calculate average based on actual bytes processed per operation (256 bytes for memory kernel)
+	float avg = ret_val / (float)(DPA_NVQUAL_MEMORY_BYTES_PER_OP * nvq->num_ops * DPA_NVQUAL_DPA_FREQ);
 	nvq->avg_latency_single_op = (nvq->data_size * (float)nvq->avg_latency_single_op + avg) / (nvq->data_size + 1);
 	nvq->data_size++;
 	return DOCA_SUCCESS;
@@ -629,9 +650,6 @@ static doca_error_t setup(struct dpa_nvqual_config *nvqual_argp_cfg, struct dpa_
 
 	nvq->buffers_size = (size_t)((nvq->flow_cfg.allocated_dpa_heap_size / num_used_eus) / 2);
 
-	nvq->num_ops = (uint64_t)((nvq->flow_cfg.iteration_duration_sec * DPA_NVQUAL_SEC_TO_USEC) /
-				  (DPA_NVQUAL_COPY_BYTE_LATENCY_USEC * (float)(nvq->buffers_size)));
-
 	doca_err = doca_dpa_mem_alloc(nvq->dpa,
 				      sizeof(doca_dpa_dev_notification_completion_t) *
 					      (nvq->available_eus_size - nvq->flow_cfg.excluded_eus_size),
@@ -691,16 +709,6 @@ static doca_error_t setup(struct dpa_nvqual_config *nvqual_argp_cfg, struct dpa_
 			return doca_err;
 		}
 
-		doca_dpa_dev_uintptr_t src_buf;
-
-		doca_err = doca_dpa_mem_alloc(nvq->dpa, nvq->buffers_size, &src_buf);
-		if (doca_err != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to alloc src buffer of size %lu : %s",
-				     nvq->buffers_size,
-				     (doca_error_get_name(doca_err)));
-			return doca_err;
-		}
-
 		doca_dpa_dev_uintptr_t dst_buf;
 
 		doca_err = doca_dpa_mem_alloc(nvq->dpa, nvq->buffers_size, &dst_buf);
@@ -719,13 +727,29 @@ static doca_error_t setup(struct dpa_nvqual_config *nvqual_argp_cfg, struct dpa_
 			return doca_err;
 		}
 
+		// Determine kernel type first, then assign appropriate num_ops
+		bool is_memory_kernel = (eu_id % DPA_NVQUAL_NUM_EUS_PER_CORE < DPA_NVQUAL_NUM_MEMORY_EUS_PER_CORE);
+
 		struct dpa_nvqual_tls htls;
 		htls.eu = eu_id;
 		htls.thread_ret = nvq->thread_rets + (nvq->num_threads * sizeof(struct dpa_nvqual_thread_ret));
-		htls.src_buf = src_buf;
 		htls.dst_buf = dst_buf;
 		htls.buffers_size = nvq->buffers_size;
-		htls.num_ops = nvq->num_ops;
+		// Assign different num_ops based on kernel type
+
+		// Calculate num_ops for memory kernel based on actual bytes written per operation (256 bytes)
+		uint64_t num_ops_memory =
+			(uint64_t)((nvq->flow_cfg.iteration_duration_sec * DPA_NVQUAL_SEC_TO_USEC) /
+				   (DPA_NVQUAL_COPY_BYTE_LATENCY_USEC * (float)DPA_NVQUAL_MEMORY_BYTES_PER_OP));
+
+		// Calculate num_ops for arithmetic kernel - accounting for the 100x multiplier in the kernel
+		// Divide by ARITHMETIC_OPS_MULTIPLIER since the kernel does (num_ops * 100) iterations
+		uint64_t num_ops_arithmetic =
+			(uint64_t)((nvq->flow_cfg.iteration_duration_sec * DPA_NVQUAL_SEC_TO_USEC *
+				    DPA_NVQUAL_DPA_FREQ) /
+				   (DPA_NVQUAL_ARITHMETIC_CYCLES_PER_OP * DPA_NVQUAL_ARITHMETIC_OPS_MULTIPLIER));
+
+		htls.num_ops = is_memory_kernel ? num_ops_memory : num_ops_arithmetic;
 		htls.dev_se = nvq->dev_se;
 
 		doca_err = doca_dpa_h2d_memcpy(nvq->dpa, dtls, (void *)(&htls), sizeof(struct dpa_nvqual_tls));
@@ -736,8 +760,17 @@ static doca_error_t setup(struct dpa_nvqual_config *nvqual_argp_cfg, struct dpa_
 
 		nvq->tlss[eu_id] = htls;
 		nvq->dev_tlss[eu_id] = dtls;
+		nvq->num_ops = htls.num_ops;
 
-		doca_err = doca_dpa_thread_set_func_arg(thread, dpa_nvqual_kernel, 0);
+		// Set the kernel function based on the EU id (16 EUs per core).
+		// On each core, the first DPA_NVQUAL_NUM_MEMORY_EUS_PER_CORE EUs id will perform memory stress, and the
+		// rest will perform arithmetic stress
+		if (is_memory_kernel) {
+			doca_err = doca_dpa_thread_set_func_arg(thread, dpa_nvqual_memory_stress_kernel, 0);
+		} else {
+			doca_err = doca_dpa_thread_set_func_arg(thread, dpa_nvqual_arithmetic_stress_kernel, 0);
+		}
+
 		if (doca_err != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set thread kernel: %s", (doca_error_get_name(doca_err)));
 			return doca_err;
@@ -822,7 +855,6 @@ static doca_error_t tear_down(struct dpa_nvqual *nvq)
 
 	for (unsigned int i = 1; i < nvq->total_num_eus; i++) {
 		if (memcmp(&nvq->tlss[i], &(struct dpa_nvqual_tls){0}, sizeof(struct dpa_nvqual_tls)) != 0) {
-			(void)doca_dpa_mem_free(nvq->dpa, nvq->tlss[i].src_buf);
 			(void)doca_dpa_mem_free(nvq->dpa, nvq->tlss[i].dst_buf);
 		}
 	}

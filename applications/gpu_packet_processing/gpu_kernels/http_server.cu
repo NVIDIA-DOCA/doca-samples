@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -76,12 +76,12 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 	struct info_http *http_global;
 	uint8_t *payload;
 	uint32_t base_pkt_len = sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr) + sizeof(struct tcp_hdr);
-	uint16_t send_pkts = 0;
-	uint32_t nbytes_page = 0;
-	uint32_t lane_id = threadIdx.x % WARP_SIZE;
+	uint32_t nbytes_page = 0, buf_mkey;
+	const uint32_t lane_id = doca_gpu_dev_eth_get_lane_id();
 	uint32_t warp_id = threadIdx.x / WARP_SIZE;
 	uint32_t sem_http_idx = lane_id;
 	uint64_t doca_gpu_buf_idx = lane_id;
+	doca_gpu_dev_eth_ticket_t out_ticket;
 
 	if (warp_id == 0) {
 		txq = txq0;
@@ -99,7 +99,6 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 		return;
 
 	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
-		send_pkts = 0;
 		if (txq && sem_http) {
 			ret = doca_gpu_dev_semaphore_get_status(sem_http, sem_http_idx, &status);
 			if (ret != DOCA_SUCCESS) {
@@ -138,6 +137,7 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 				}
 
 				doca_gpu_dev_buf_get_addr(buf, &buf_addr);
+				doca_gpu_dev_buf_get_mkey(buf, &buf_mkey);
 
 				raw_to_tcp(buf_addr, &hdr, &payload);
 				http_set_mac_addr(hdr,
@@ -155,15 +155,13 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 					BYTE_SWAP32(BYTE_SWAP32(http_global->tcp_sent_seq) + prev_pkt_sz);
 				hdr->l4_hdr.cksum = 0;
 
-				ret = doca_gpu_dev_eth_txq_send_enqueue_strong(txq, buf, base_pkt_len + nbytes_page, 0);
-				if (ret != DOCA_SUCCESS) {
-					printf("Error %d doca_gpu_dev_eth_txq_send_enqueue_strong block %d thread %d\n",
-					       ret,
-					       warp_id,
-					       lane_id);
-					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
-					break;
-				}
+				// DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA: this CUDA kernel has only 1 CUDA block, each warp a different QP
+				// DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD: Not all threads in the warp may get an HTTP message to send
+				doca_gpu_dev_eth_txq_send<DOCA_GPUNETIO_ETH_RESOURCE_SHARING_MODE_CTA,
+										DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA,
+										DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
+										DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD>(txq, buf_addr, buf_mkey, base_pkt_len + nbytes_page,
+											DOCA_GPUNETIO_ETH_SEND_FLAG_NONE, &out_ticket);
 
 				ret = doca_gpu_dev_semaphore_set_status(sem_http,
 									sem_http_idx,
@@ -179,20 +177,7 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 
 				sem_http_idx = (sem_http_idx + WARP_SIZE) % sem_num;
 				doca_gpu_buf_idx = (doca_gpu_buf_idx + WARP_SIZE) % TX_BUF_NUM;
-				send_pkts++;
 			}
-		}
-		__syncwarp();
-
-		/* Send only if needed */
-#pragma unroll
-		for (int offset = 16; offset > 0; offset /= 2)
-			send_pkts += __shfl_down_sync(WARP_FULL_MASK, send_pkts, offset);
-		__syncwarp();
-
-		if (lane_id == 0 && send_pkts > 0) {
-			doca_gpu_dev_eth_txq_commit_strong(txq);
-			doca_gpu_dev_eth_txq_push(txq);
 		}
 		__syncwarp();
 	}

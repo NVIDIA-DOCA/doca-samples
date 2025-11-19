@@ -79,8 +79,8 @@ if flag_enable_gpu_support
 		flag_enable_gpu_support = false
 	else
 		cuda_version = cuda_dep.version()
-		if not cuda_version.version_compare('>= 12-1')
-			warning('CUDA version ' + cuda_version + ' is lower than the expected version of 12.1 - Disabling GPU support!')
+		if not cuda_version.version_compare('>= 12-2')
+			warning('CUDA version ' + cuda_version + ' is lower than the expected version of 12.2 - Disabling GPU support!')
 			flag_enable_gpu_support = false
 		endif
 	endif
@@ -98,12 +98,15 @@ if flag_enable_gpu_support
 	nvcc_flags = []
 	nvcc_flags += ['-gencode', 'arch=compute_80,code=sm_80']
 	nvcc_flags += ['-gencode', 'arch=compute_90,code=sm_90']
+	if cuda_version.version_compare('>= 12-8')
+		nvcc_flags += ['-gencode', 'arch=compute_100,code=sm_100']
+	endif
 	add_project_arguments(nvcc_flags, language: 'cuda')
 
 	# Refer to https://mesonbuild.com/Cuda-module.html
 	add_project_arguments('-forward-unknown-to-host-compiler', language: 'cuda')
 	if get_option('enable_cross_compilation_to_dpu')
-		add_project_link_arguments(['-forward-unknown-to-host-linker', '--allow-shlib-undefined'], language : 'cuda')
+		add_project_link_arguments(['-forward-unknown-to-host-compiler', '--allow-shlib-undefined'], language : 'cuda')
 	endif
 	add_project_arguments('-rdc=true', language: 'cuda')
 
@@ -112,6 +115,10 @@ if flag_enable_gpu_support
 	nvcc_flags_link = []
 	nvcc_flags_link += ['-gencode=arch=compute_80,code=sm_80']
 	nvcc_flags_link += ['-gencode=arch=compute_90,code=sm_90']
+	if cuda_version.version_compare('>= 12-8')
+		nvcc_flags_link += ['-gencode=arch=compute_100,code=sm_100']
+	endif
+
 	add_project_link_arguments(nvcc_flags_link, language: 'cuda')
 
 	# Update the compilation flags
@@ -291,8 +298,10 @@ samples_dir_path = '../../samples'
 
 app_list = [
 	    'app_shield_agent',
+	    'bifurcated_driver_model',
 	    'dma_copy',
 	    'dpa_all_to_all',
+	    'dpu_gpu_remote_offload',
 	    'eth_l2_fwd',
 	    'file_compression',
 	    'file_integrity',

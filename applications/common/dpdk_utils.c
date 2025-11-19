@@ -696,3 +696,73 @@ void dpdk_fini(void)
 
 	DOCA_LOG_DBG("DPDK fini is done");
 }
+
+doca_error_t detect_vf_mac_address(char *vf_if_name, uint8_t *vf_mac_address)
+{
+	struct ifreq ifr;
+	int sockfd;
+	char mac_addr_parsed[MAC_ADDR_STR_LEN];
+
+	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sockfd == -1) {
+		DOCA_LOG_ERR("Socket creation failed");
+		return DOCA_ERROR_UNKNOWN;
+	}
+
+	strncpy(ifr.ifr_name, vf_if_name, IFNAMSIZ - 1);
+	ifr.ifr_name[IFNAMSIZ - 1] = '\0';
+	if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) == -1) {
+		DOCA_LOG_ERR("ioctl(SIOCGIFHWADDR) failed");
+		close(sockfd);
+		return DOCA_ERROR_UNKNOWN;
+	}
+
+	memcpy(vf_mac_address, ifr.ifr_hwaddr.sa_data, MAC_ADDR_LEN);
+	BIN_ARRAY_TO_MAC_STRING(vf_mac_address, mac_addr_parsed);
+	DOCA_LOG_INFO("VF %s was detected to have the following MAC address: %s", vf_if_name, mac_addr_parsed);
+	close(sockfd);
+	return DOCA_SUCCESS;
+}
+
+doca_error_t detect_vf_ip_address(char *vf_if_name, uint8_t *vf_ip_local_address, uint8_t *vf_ip_global_address)
+{
+	struct ifaddrs *ifap, *ifa;
+	struct sockaddr_in6 *sa;
+	char addr[INET6_ADDRSTRLEN];
+
+	if (getifaddrs(&ifap) == -1) {
+		DOCA_LOG_ERR("getifaddrs failed");
+		return DOCA_ERROR_UNEXPECTED;
+	}
+
+	for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+		if (ifa->ifa_addr->sa_family != AF_INET6)
+			continue;
+
+		if (strcmp(ifa->ifa_name, vf_if_name) != 0)
+			continue;
+
+		sa = (struct sockaddr_in6 *)ifa->ifa_addr;
+		inet_ntop(AF_INET6, &sa->sin6_addr, addr, sizeof(addr));
+		// Detect if the IP address is a local address by checking the first two bytes e.g.
+		// fe80::1234:5678:9abc:def0
+		if (sa->sin6_addr.s6_addr[0] == 0xfe && (sa->sin6_addr.s6_addr[1] & 0xc0) == 0x80) {
+			if (inet_pton(AF_INET6, addr, vf_ip_local_address) != 1) {
+				DOCA_LOG_ERR("Failed to parse VF IPv6 local addr: %s", addr);
+				freeifaddrs(ifap);
+				return DOCA_ERROR_BAD_CONFIG;
+			}
+			DOCA_LOG_INFO("Local IP6 address %s for VF %s", addr, vf_if_name);
+		} else {
+			if (inet_pton(AF_INET6, addr, vf_ip_global_address) != 1) {
+				DOCA_LOG_ERR("Failed to parse VF IPv6 global addr: %s", addr);
+				freeifaddrs(ifap);
+				return DOCA_ERROR_BAD_CONFIG;
+			}
+			DOCA_LOG_INFO("Global IP6 address %s for VF %s", addr, vf_if_name);
+		}
+	}
+
+	freeifaddrs(ifap);
+	return DOCA_SUCCESS;
+}

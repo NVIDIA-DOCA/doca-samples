@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -98,13 +98,13 @@ doca_error_t ipsec_security_gw_create_encrypt_egress(struct ipsec_security_gw_po
 doca_error_t handle_unsecured_packets_received(struct rte_mbuf **packet, struct ipsec_security_gw_core_ctx *ctx);
 
 /*
- * Bind encrypt IDs to the secure port
+ * Allocate encrypt IDs to the secure port
  *
  * @nb_rules [in]: number of decrypt rules
  * @port [in]: secure port pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t bind_encrypt_ids(int nb_rules, struct doca_flow_port *port);
+doca_error_t get_encrypt_ids(int nb_rules, struct doca_flow_port *port);
 
 #ifdef __cplusplus
 } /* extern "C" */

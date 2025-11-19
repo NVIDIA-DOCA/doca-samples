@@ -23,6 +23,7 @@
  *
  */
 
+#include "doca_flow_ct.h"
 #include <doca_log.h>
 #include <doca_bitfield.h>
 #include <doca_dpdk.h>
@@ -59,7 +60,7 @@ static uint32_t fnv1a_32bit_hash(const void *buf, size_t len, uint32_t hash)
 
 doca_error_t flow_ct_register_params(void)
 {
-	return register_flow_switch_device_params(NULL);
+	return register_doca_flow_switch_params();
 }
 
 doca_error_t init_doca_flow_ct(uint32_t flags,
@@ -106,6 +107,7 @@ doca_error_t init_doca_flow_ct(uint32_t flags,
 	doca_flow_ct_cfg_set_dup_filter_size(ct_cfg, dup_filter_sz);
 	doca_flow_ct_cfg_set_direction(ct_cfg, false, o_match_inner, o_zone_mask, o_modify_mask);
 	doca_flow_ct_cfg_set_direction(ct_cfg, true, r_match_inner, r_zone_mask, r_modify_mask);
+	doca_flow_ct_cfg_set_max_connections_per_zone(ct_cfg, 8192 * 1024);
 
 	result = doca_flow_ct_init(ct_cfg);
 	if (result != DOCA_SUCCESS)
@@ -363,9 +365,8 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 		return result;
 	}
 
-	if (conn_found) {
+	if (conn_found)
 		return DOCA_SUCCESS;
-	}
 
 	/* Add CT entry */
 	result = doca_flow_ct_add_entry(ct_queue,
@@ -385,12 +386,15 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 		return result;
 	}
 
-	/*process entries*/
-	result = flow_ct_queue_reserve(port, ct_queue, ct_status, 0);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
-		return result;
+	if ((entry_flags & DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT) != 0) {
+		/*process entries*/
+		result = flow_ct_queue_reserve(port, ct_queue, ct_status, 0);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
+			return result;
+		}
 	}
+
 	return DOCA_SUCCESS;
 }
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #
-# Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -43,12 +43,14 @@ SAMPLE_NAME=$3
 SAMPLE_PROGRAM_NAME=$4
 DPACC_MCPU_FLAG=$5
 DOCA_LIB_DIR=$6
+SAMPLE_ATTRIBUTES=$7
 
 # DOCA Configurations
 DOCA_DIR="/opt/mellanox/doca"
 DOCA_INCLUDE="${DOCA_DIR}/include"
 DOCA_TOOLS="${DOCA_DIR}/tools"
 DOCA_DPACC="${DOCA_TOOLS}/dpacc"
+DOCA_APP_ATTRIBUTES2BLOB="${DOCA_TOOLS}/dpa-app-attributes2blob"
 
 HOST_CC_FLAGS="-Wno-deprecated-declarations -Werror -Wall -Wextra -DFLEXIO_ALLOW_EXPERIMENTAL_API"
 DEVICE_CC_FLAGS="-Wno-deprecated-declarations -Werror -Wall -Wextra -DFLEXIO_DEV_ALLOW_EXPERIMENTAL_API -O2"
@@ -65,9 +67,13 @@ DPA_APP_NAME="dpa_sample_app"
 
 # Build directory for the DPA device (kernel) code
 SAMPLE_DEVICE_BUILD_DIR="${PROJECT_BUILD_DIR}/${SAMPLE_NAME}/device/build_dpacc"
+SAMPLE_ATTRIBUTES_BLOB="${SAMPLE_DEVICE_BUILD_DIR}/${SAMPLE_NAME}_attributes.blob"
 
 rm -rf ${SAMPLE_DEVICE_BUILD_DIR}
 mkdir -p ${SAMPLE_DEVICE_BUILD_DIR}
+
+# Generate blob from device attributes file
+$DOCA_APP_ATTRIBUTES2BLOB ${SAMPLE_ATTRIBUTES} ${SAMPLE_ATTRIBUTES_BLOB}
 
 # Compile the DPA (kernel) device source code using the DPACC
 $DOCA_DPACC $DPA_KERNELS_DEVICE_SRC \
@@ -77,6 +83,7 @@ $DOCA_DPACC $DPA_KERNELS_DEVICE_SRC \
 	-hostcc-options="${HOST_CC_FLAGS}" \
 	--devicecc-options="${DEVICE_CC_FLAGS}" \
 	--app-name="${DPA_APP_NAME}" \
-	-device-libs="-L${DOCA_LIB_DIR} -ldoca_dpa_dev -ldoca_dpa_dev_comm" \
+	-device-libs="-L${DOCA_LIB_DIR} -ldoca_dpa_dev -ldoca_dpa_dev_comm -ldoca_dpa_dev_verbs" \
 	-flto \
 	-I${DOCA_INCLUDE} \
+	--dpa-proc-attr="${SAMPLE_ATTRIBUTES_BLOB}"

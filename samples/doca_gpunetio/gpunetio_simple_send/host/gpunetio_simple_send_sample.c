@@ -25,9 +25,7 @@
 
 #include <arpa/inet.h>
 #include <doca_flow.h>
-#include <doca_dpdk.h>
 #include <doca_log.h>
-#include <rte_ethdev.h>
 
 #include "gpunetio_common.h"
 
@@ -36,12 +34,27 @@
 #define FLOW_NB_COUNTERS 524228 /* 1024 x 512 */
 #define MBUF_NUM 8192
 #define MBUF_SIZE 2048
+#define QUEUE_ID 0
 #define CPU_TO_BE16(val) __builtin_bswap16(val)
 
 struct doca_flow_port *df_port;
 bool force_quit;
 
 DOCA_LOG_REGISTER(SIMPLE_SEND : SAMPLE);
+
+/*
+ * Retrieve host page size
+ *
+ * @return: host page size
+ */
+static size_t get_host_page_size(void)
+{
+	long ret = sysconf(_SC_PAGESIZE);
+	if (ret == -1)
+		return 4096; // 4KB, default Linux page size
+
+	return (size_t)ret;
+}
 
 /*
  * Signal handler to quit application gracefully
@@ -60,15 +73,12 @@ static void signal_handler(int signum)
  * Initialize a DOCA network device.
  *
  * @nic_pcie_addr [in]: Network card PCIe address
- * @dpdk_port_id [in]: DPDK Port id of the DOCA device
  * @ddev [out]: DOCA device
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t init_doca_device(char *nic_pcie_addr, struct doca_dev **ddev)
 {
 	doca_error_t result;
-	int ret;
-	char *eal_param[3] = {"", "-a", "00:00.0"};
 
 	if (nic_pcie_addr == NULL || ddev == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
@@ -79,19 +89,6 @@ doca_error_t init_doca_device(char *nic_pcie_addr, struct doca_dev **ddev)
 	result = open_doca_device_with_pci(nic_pcie_addr, NULL, ddev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to open NIC device based on PCI address");
-		return result;
-	}
-
-	ret = rte_eal_init(3, eal_param);
-	if (ret < 0) {
-		DOCA_LOG_ERR("DPDK init failed: %d", ret);
-		return DOCA_ERROR_DRIVER;
-	}
-
-	// /* Enable DOCA Flow HWS mode */
-	result = doca_dpdk_port_probe(*ddev, "dv_flow_en=2");
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Function doca_dpdk_port_probe returned %s", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -186,13 +183,15 @@ static doca_error_t start_doca_flow(struct doca_dev *dev)
 		return result;
 	}
 
+	doca_flow_port_cfg_destroy(port_cfg);
+
 	return DOCA_SUCCESS;
 }
 
 /*
  * Destroy DOCA Ethernet Tx queue for GPU
  *
- * @txq [in]: DOCA Eth Rx queue handler
+ * @txq [in]: DOCA Eth Tx queue handler
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t destroy_txq(struct txq_queue *txq)
@@ -214,8 +213,8 @@ static doca_error_t destroy_txq(struct txq_queue *txq)
 		}
 	}
 
-	if (txq->gpu_pkt_addr != NULL) {
-		result = doca_gpu_mem_free(txq->gpu_dev, txq->gpu_pkt_addr);
+	if (txq->pkt_buff_addr != NULL) {
+		result = doca_gpu_mem_free(txq->gpu_dev, txq->pkt_buff_addr);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to free gpu memory: %s", doca_error_get_descr(result));
 			return DOCA_ERROR_BAD_STATE;
@@ -261,13 +260,17 @@ static doca_error_t destroy_txq(struct txq_queue *txq)
  * @txq [in]: DOCA Eth Tx queue handler
  * @gpu_dev [in]: DOCA GPUNetIO device
  * @ddev [in]: DOCA device
+ * @pkt_size [in]: Packet max size
+ * @pkt_num [in]: Packet number in buffer
+ * @cpu_proxy [in]: Enable CPU proxy mode
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t create_txq(struct txq_queue *txq,
 			       struct doca_gpu *gpu_dev,
 			       struct doca_dev *ddev,
-			       uint32_t pkt_size,
-			       uint32_t pkt_num)
+			       size_t pkt_size,
+			       uint32_t pkt_num,
+			       bool cpu_proxy)
 {
 	doca_error_t result;
 	cudaError_t res_cuda;
@@ -275,8 +278,8 @@ static doca_error_t create_txq(struct txq_queue *txq,
 	uint32_t buffer_size = 0;
 	uint8_t *cpu_pkt_addr;
 
-	if (txq == NULL || gpu_dev == NULL || ddev == NULL) {
-		DOCA_LOG_ERR("Can't create UDP queues, invalid input");
+	if (txq == NULL || gpu_dev == NULL || ddev == NULL || pkt_size == 0 || pkt_num == 0) {
+		DOCA_LOG_ERR("Can't create TXQ queue, invalid input");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -285,7 +288,6 @@ static doca_error_t create_txq(struct txq_queue *txq,
 	txq->port = df_port;
 	txq->pkt_size = pkt_size;
 	txq->cuda_threads = pkt_num;
-	txq->inflight_sends = MAX_SQ_DESCR_NUM / 2;
 	buffer_size = txq->cuda_threads * pkt_size;
 
 	DOCA_LOG_INFO("Creating Sample Eth Txq");
@@ -315,6 +317,14 @@ static doca_error_t create_txq(struct txq_queue *txq,
 		goto exit_error;
 	}
 
+	if (cpu_proxy) {
+		result = doca_eth_txq_gpu_set_uar_on_cpu(txq->eth_txq_cpu);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed doca_eth_txq_gpu_set_uar_on_cpu: %s", doca_error_get_descr(result));
+			goto exit_error;
+		}
+	}
+
 	txq->eth_txq_ctx = doca_eth_txq_as_doca_ctx(txq->eth_txq_cpu);
 	if (txq->eth_txq_ctx == NULL) {
 		DOCA_LOG_ERR("Failed doca_eth_txq_as_doca_ctx: %s", doca_error_get_descr(result));
@@ -330,6 +340,12 @@ static doca_error_t create_txq(struct txq_queue *txq,
 	result = doca_ctx_start(txq->eth_txq_ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed doca_ctx_start: %s", doca_error_get_descr(result));
+		goto exit_error;
+	}
+
+	result = doca_eth_txq_apply_queue_id(txq->eth_txq_cpu, QUEUE_ID);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed doca_eth_txq_apply_queue_id: %s", doca_error_get_descr(result));
 		goto exit_error;
 	}
 
@@ -351,13 +367,15 @@ static doca_error_t create_txq(struct txq_queue *txq,
 		goto exit_error;
 	}
 
+	ALIGN_SIZE(buffer_size, get_host_page_size());
+
 	result = doca_gpu_mem_alloc(txq->gpu_dev,
 				    buffer_size,
-				    GPU_PAGE_SIZE,
+				    get_host_page_size(),
 				    DOCA_GPU_MEM_TYPE_GPU,
-				    &txq->gpu_pkt_addr,
+				    (void **)&txq->pkt_buff_addr,
 				    NULL);
-	if (result != DOCA_SUCCESS || txq->gpu_pkt_addr == NULL) {
+	if (result != DOCA_SUCCESS || txq->pkt_buff_addr == NULL) {
 		DOCA_LOG_ERR("Failed to allocate gpu memory %s", doca_error_get_descr(result));
 		goto exit_error;
 	}
@@ -389,35 +407,35 @@ static doca_error_t create_txq(struct txq_queue *txq,
 		eth->ether_type = CPU_TO_BE16(0x0800);
 	}
 
-	res_cuda = cudaMemcpy(txq->gpu_pkt_addr, cpu_pkt_addr, buffer_size, cudaMemcpyDefault);
+	res_cuda = cudaMemcpy(txq->pkt_buff_addr, cpu_pkt_addr, buffer_size, cudaMemcpyDefault);
 	free(cpu_pkt_addr);
 	if (res_cuda != cudaSuccess) {
 		DOCA_LOG_ERR("Function CUDA Memcpy cqe_addr failed with %s", cudaGetErrorString(res_cuda));
 		return DOCA_ERROR_DRIVER;
 	}
 
-	/* Map GPU memory buffer used to receive packets with DMABuf */
-	result = doca_gpu_dmabuf_fd(txq->gpu_dev, txq->gpu_pkt_addr, buffer_size, &(txq->dmabuf_fd));
+	/* Map GPU memory buffer used to send packets with DMABuf */
+	result = doca_gpu_dmabuf_fd(txq->gpu_dev, txq->pkt_buff_addr, buffer_size, &(txq->dmabuf_fd));
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_INFO("Mapping receive queue buffer (0x%p size %dB) with nvidia-peermem mode",
-			      txq->gpu_pkt_addr,
+		DOCA_LOG_INFO("Mapping send queue buffer (0x%p size %dB) with nvidia-peermem mode",
+			      txq->pkt_buff_addr,
 			      buffer_size);
 
 		/* If failed, use nvidia-peermem legacy method */
-		result = doca_mmap_set_memrange(txq->pkt_buff_mmap, txq->gpu_pkt_addr, buffer_size);
+		result = doca_mmap_set_memrange(txq->pkt_buff_mmap, txq->pkt_buff_addr, buffer_size);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set memrange for mmap %s", doca_error_get_descr(result));
 			goto exit_error;
 		}
 	} else {
-		DOCA_LOG_INFO("Mapping receive queue buffer (0x%p size %dB dmabuf fd %d) with dmabuf mode",
-			      txq->gpu_pkt_addr,
+		DOCA_LOG_INFO("Mapping send queue buffer (0x%p size %dB dmabuf fd %d) with dmabuf mode",
+			      txq->pkt_buff_addr,
 			      buffer_size,
 			      txq->dmabuf_fd);
 
 		result = doca_mmap_set_dmabuf_memrange(txq->pkt_buff_mmap,
 						       txq->dmabuf_fd,
-						       txq->gpu_pkt_addr,
+						       txq->pkt_buff_addr,
 						       0,
 						       buffer_size);
 		if (result != DOCA_SUCCESS) {
@@ -438,41 +456,38 @@ static doca_error_t create_txq(struct txq_queue *txq,
 		goto exit_error;
 	}
 
-	result = doca_buf_arr_create(txq->cuda_threads, &txq->buf_arr);
+	result = doca_mmap_get_mkey(txq->pkt_buff_mmap, txq->ddev, &txq->pkt_buff_mkey);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Unable to start buf: doca buf_arr internal error");
+		DOCA_LOG_ERR("Failed to get mmap mkey %s", doca_error_get_descr(result));
 		goto exit_error;
 	}
-
-	result = doca_buf_arr_set_target_gpu(txq->buf_arr, txq->gpu_dev);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Unable to start buf: doca buf_arr internal error");
-		goto exit_error;
-	}
-
-	result = doca_buf_arr_set_params(txq->buf_arr, txq->pkt_buff_mmap, txq->pkt_size, 0);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Unable to start buf: doca buf_arr internal error");
-		goto exit_error;
-	}
-
-	result = doca_buf_arr_start(txq->buf_arr);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Unable to start buf: doca buf_arr internal error");
-		goto exit_error;
-	}
-
-	result = doca_buf_arr_get_gpu_handle(txq->buf_arr, &(txq->buf_arr_gpu));
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Unable to get buff_arr GPU handle: %s", doca_error_get_descr(result));
-		goto exit_error;
-	}
+	// N.B. mkey must be in network byte order
+	txq->pkt_buff_mkey = htobe32(txq->pkt_buff_mkey);
 
 	return DOCA_SUCCESS;
 
 exit_error:
 	destroy_txq(txq);
 	return DOCA_ERROR_BAD_STATE;
+}
+
+/*
+ * CPU proxy thread: wait in a continuou loop an update from the GPU.
+ * Once the GPU requires to ring the doorbell, it notifies this thread via internal
+ * shared memory. This CPU thread rings the Txq DB in place of the GPU.
+ *
+ * @args_ [in]: Thread args
+ */
+static void *progress_cpu_proxy(void *args_)
+{
+	struct cpu_proxy_args *args = (struct cpu_proxy_args *)args_;
+
+	printf("Thread CPU proxy progress is running... %ld\n", ACCESS_ONCE_64b(*args->exit_flag));
+
+	while (ACCESS_ONCE_64b(*args->exit_flag) == 0)
+		doca_eth_txq_gpu_cpu_proxy_progress(args->txq);
+
+	return NULL;
 }
 
 /*
@@ -491,6 +506,8 @@ doca_error_t gpunetio_simple_send(struct sample_simple_send_cfg *sample_cfg)
 	cudaError_t res_rt = cudaSuccess;
 	uint32_t *cpu_exit_condition;
 	uint32_t *gpu_exit_condition;
+	struct cpu_proxy_args args;
+	pthread_t thread_id;
 
 	result = init_doca_device(sample_cfg->nic_pcie_addr, &ddev);
 	if (result != DOCA_SUCCESS) {
@@ -521,7 +538,12 @@ doca_error_t gpunetio_simple_send(struct sample_simple_send_cfg *sample_cfg)
 		goto exit;
 	}
 
-	result = create_txq(&txq, gpu_dev, ddev, sample_cfg->pkt_size, sample_cfg->cuda_threads);
+	result = create_txq(&txq,
+			    gpu_dev,
+			    ddev,
+			    sample_cfg->pkt_size,
+			    sample_cfg->cuda_threads,
+			    (sample_cfg->nic_handler == DOCA_GPUNETIO_ETH_NIC_HANDLER_CPU_PROXY));
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function create_txq returned %s", doca_error_get_descr(result));
 		goto exit;
@@ -530,26 +552,38 @@ doca_error_t gpunetio_simple_send(struct sample_simple_send_cfg *sample_cfg)
 	res_rt = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
 	if (res_rt != cudaSuccess) {
 		DOCA_LOG_ERR("Function cudaStreamCreateWithFlags error %d", res_rt);
-		return DOCA_ERROR_DRIVER;
+		goto exit;
 	}
 
 	result = doca_gpu_mem_alloc(gpu_dev,
 				    sizeof(uint32_t),
-				    GPU_PAGE_SIZE,
+				    get_host_page_size(),
 				    DOCA_GPU_MEM_TYPE_GPU_CPU,
 				    (void **)&gpu_exit_condition,
 				    (void **)&cpu_exit_condition);
 	if (result != DOCA_SUCCESS || gpu_exit_condition == NULL || cpu_exit_condition == NULL) {
 		DOCA_LOG_ERR("Function doca_gpu_mem_alloc returned %s", doca_error_get_descr(result));
-		return EXIT_FAILURE;
+		goto exit;
 	}
 	cpu_exit_condition[0] = 0;
 
-	DOCA_LOG_INFO("Launching CUDA kernel to receive packets");
+	if (sample_cfg->nic_handler == DOCA_GPUNETIO_ETH_NIC_HANDLER_CPU_PROXY) {
+		args.txq = txq.eth_txq_cpu;
+		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
+		*(args.exit_flag) = 0;
 
-	kernel_send_packets(stream, &txq, gpu_exit_condition);
+		int result = pthread_create(&thread_id, NULL, progress_cpu_proxy, (void *)&args);
+		if (result != 0) {
+			perror("Failed to create thread");
+			goto exit;
+		}
+	}
 
-	DOCA_LOG_INFO("Waiting for termination");
+	DOCA_LOG_INFO("Launching CUDA kernel to send packets.");
+
+	kernel_send_packets(stream, &txq, gpu_exit_condition, sample_cfg->shared_qp, sample_cfg->exec_scope);
+
+	DOCA_LOG_INFO("Waiting for ctrl+c termination");
 	/* This loop keeps busy main thread until force_quit is set to 1 (e.g. typing ctrl+c) */
 	while (DOCA_GPUNETIO_VOLATILE(force_quit) == false)
 		;
@@ -558,7 +592,18 @@ doca_error_t gpunetio_simple_send(struct sample_simple_send_cfg *sample_cfg)
 	DOCA_LOG_INFO("Exiting from sample");
 
 	cudaStreamSynchronize(stream);
+
+	if (sample_cfg->nic_handler == DOCA_GPUNETIO_ETH_NIC_HANDLER_CPU_PROXY) {
+		WRITE_ONCE_64b(*args.exit_flag, 1);
+		pthread_join(thread_id, NULL);
+	}
+
 exit:
+
+	if (stream)
+		cudaStreamDestroy(stream);
+	if (gpu_exit_condition)
+		doca_gpu_mem_free(gpu_dev, gpu_exit_condition);
 
 	result = destroy_txq(&txq);
 	if (result != DOCA_SUCCESS) {

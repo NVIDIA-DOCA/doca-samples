@@ -32,27 +32,34 @@
 extern "C" {
 #endif
 
+struct nfs_fsdev_context;
 /**
  * @brief Allocate and initialize the NFS fsdev context.
  * @param [in] server The NFS server.
  * @param [in] mount_point The NFS mount point.
  * @return Pointer to the context, or NULL on failure.
  */
-void *allocate_and_init_nfs_fsdev_context(char *server, char *mount_point);
+struct nfs_fsdev_context *create_nfs_fsdev_context(char *server, char *mount_point);
+
+/**
+ * @brief Destroy the NFS fsdev context.
+ * @param [in] nfs_fsdev_context The NFS fsdev context.
+ */
+void destroy_nfs_fsdev_context(struct nfs_fsdev_context *nfs_fsdev_context);
 
 /**
  * @brief Get the global context from an NFS fsdev context.
  * @param [in] nfs_fsdev The NFS fsdev context.
  * @return Pointer to the global context.
  */
-struct nfs_fsdev_global *get_global_context_nfs_fsdev(void *nfs_fsdev);
+struct nfs_fsdev_global *get_global_context_nfs_fsdev(struct nfs_fsdev_context *nfs_fsdev_context);
 
 /**
  * @brief Get the private context from an NFS fsdev context.
  * @param [in] nfs_fsdev The NFS fsdev context.
  * @return Pointer to the private context.
  */
-struct nfs_fsdev *get_private_context_nfs_fsdev(void *nfs_fsdev);
+struct nfs_fsdev *get_private_context_nfs_fsdev(struct nfs_fsdev_context *nfs_fsdev_context);
 
 #ifdef __cplusplus
 }

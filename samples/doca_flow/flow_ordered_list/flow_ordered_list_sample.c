@@ -116,6 +116,8 @@ doca_error_t add_root_pipe_entries(struct doca_flow_pipe *pipe,
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_entry *entry1;
 	struct doca_flow_pipe_entry *entry2;
+	struct doca_flow_pipe_entry *entry3;
+	struct doca_flow_pipe_entry *entry4;
 	doca_error_t result;
 	doca_be32_t dst_ip_addr = BE_IPV4_ADDR(8, 8, 8, 8);
 	doca_be32_t src_ip_addr = BE_IPV4_ADDR(1, 1, 1, 1);
@@ -134,7 +136,7 @@ doca_error_t add_root_pipe_entries(struct doca_flow_pipe *pipe,
 	fwd.ordered_list_pipe.pipe = next_pipe;
 	fwd.ordered_list_pipe.idx = 0; // fwd the first entry matches to entry idx 0 in ordered list pipe
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, &fwd, 0, status, &entry1);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, &entry1);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -142,7 +144,23 @@ doca_error_t add_root_pipe_entries(struct doca_flow_pipe *pipe,
 	match.outer.ip4.src_ip = src_ip_addr;
 	fwd.ordered_list_pipe.idx = 1; // fwd the second entry matches to entry idx 1 in ordered list pipe
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, &fwd, 0, status, &entry2);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, &entry2);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	src_ip_addr = BE_IPV4_ADDR(3, 3, 3, 3);
+	match.outer.ip4.src_ip = src_ip_addr;
+	fwd.ordered_list_pipe.idx = 2; // fwd the third entry matches to entry idx 2 in ordered list pipe
+
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, &entry3);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	src_ip_addr = BE_IPV4_ADDR(4, 4, 4, 4);
+	match.outer.ip4.src_ip = src_ip_addr;
+	fwd.ordered_list_pipe.idx = 3; // fwd the fourth entry matches to entry idx 3 in ordered list pipe
+
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, &entry4);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -198,11 +216,11 @@ doca_error_t create_ordered_list_pipe(struct doca_flow_port *port, int port_id, 
 
 	ordered_list_0.idx = 0;
 	ordered_list_0.size = 2;
-	ordered_list_0.elements = (struct doca_flow_ordered_list_element[]){element_0, element_1};
+	ordered_list_0.elements = (struct doca_flow_ordered_list_element[]){element_1, element_0};
 
 	ordered_list_1.idx = 1;
 	ordered_list_1.size = 3;
-	ordered_list_1.elements = (struct doca_flow_ordered_list_element[]){element_2, element_0, element_1};
+	ordered_list_1.elements = (struct doca_flow_ordered_list_element[]){element_0, element_1, element_2};
 
 	/* monitor with changeable shared counter ID */
 	counter.counter_type = DOCA_FLOW_RESOURCE_TYPE_SHARED;
@@ -248,14 +266,17 @@ destroy_pipe_cfg:
  * Add DOCA Flow pipe entries to the ordered list pipe.
  *
  * @pipe [in]: pipe of the entries
- * @port_id [in]: port ID of the entries
  * @status [in]: user context for adding entry
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t add_ordered_list_pipe_entries(struct doca_flow_pipe *pipe, int port_id, struct entries_status *status)
+doca_error_t add_ordered_list_pipe_entries(struct doca_flow_pipe *pipe,
+					   uint32_t *shared_cntr_ids,
+					   struct entries_status *status)
 {
 	struct doca_flow_pipe_entry *entry1;
 	struct doca_flow_pipe_entry *entry2;
+	struct doca_flow_pipe_entry *entry3;
+	struct doca_flow_pipe_entry *entry4;
 	struct doca_flow_ordered_list ordered_list_0;
 	struct doca_flow_ordered_list ordered_list_1;
 	struct doca_flow_ordered_list_element element_0;
@@ -285,10 +306,10 @@ doca_error_t add_ordered_list_pipe_entries(struct doca_flow_pipe *pipe, int port
 
 	ordered_list_0.idx = 0;
 	ordered_list_0.size = 2;
-	ordered_list_0.elements = (struct doca_flow_ordered_list_element[]){element_0, element_1};
+	ordered_list_0.elements = (struct doca_flow_ordered_list_element[]){element_1, element_0};
 
-	/* first list with counter ID = port ID */
-	counter.shared_counter.shared_counter_id = port_id;
+	/* second list with counter ID in idx = 0*/
+	counter.shared_counter.shared_counter_id = shared_cntr_ids[0];
 
 	result = doca_flow_pipe_ordered_list_add_entry(0,
 						       pipe,
@@ -303,10 +324,10 @@ doca_error_t add_ordered_list_pipe_entries(struct doca_flow_pipe *pipe, int port
 
 	ordered_list_1.idx = 1;
 	ordered_list_1.size = 3;
-	ordered_list_1.elements = (struct doca_flow_ordered_list_element[]){element_2, element_0, element_1};
+	ordered_list_1.elements = (struct doca_flow_ordered_list_element[]){element_0, element_1, element_2};
 
-	/* second list with counter ID = port ID + 2*/
-	counter.shared_counter.shared_counter_id = port_id + 2;
+	/* second list with counter ID in idx = 1*/
+	counter.shared_counter.shared_counter_id = shared_cntr_ids[1];
 	result = doca_flow_pipe_ordered_list_add_entry(0,
 						       pipe,
 						       1,
@@ -315,6 +336,34 @@ doca_error_t add_ordered_list_pipe_entries(struct doca_flow_pipe *pipe, int port
 						       DOCA_FLOW_NO_WAIT,
 						       status,
 						       &entry2);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	/* second list with counter ID in idx = 2*/
+	ordered_list_0.idx = 0;
+	counter.shared_counter.shared_counter_id = shared_cntr_ids[2];
+	result = doca_flow_pipe_ordered_list_add_entry(0,
+						       pipe,
+						       2,
+						       &ordered_list_0,
+						       NULL,
+						       DOCA_FLOW_NO_WAIT,
+						       status,
+						       &entry3);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	/* fourth entry reuses ordered_list_1 at index 3 with counter ID in idx = 3 */
+	ordered_list_1.idx = 1;
+	counter.shared_counter.shared_counter_id = shared_cntr_ids[3];
+	result = doca_flow_pipe_ordered_list_add_entry(0,
+						       pipe,
+						       3,
+						       &ordered_list_1,
+						       NULL,
+						       DOCA_FLOW_NO_WAIT,
+						       status,
+						       &entry4);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -327,6 +376,74 @@ doca_error_t add_ordered_list_pipe_entries(struct doca_flow_pipe *pipe, int port
  * @nb_queues [in]: number of queues the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
+/* Context structure for statistics printing */
+struct ordered_list_stats_context {
+	int nb_ports;
+	struct doca_flow_port **ports;
+	int nb_shared_res;
+	uint32_t (*shared_counter_ids)[4]; /* 2D array pointer */
+	struct doca_flow_resource_query *query_results_array;
+};
+
+/*
+ * Print ordered list statistics
+ *
+ * @nb_ports [in]: number of ports
+ * @ports [in]: array of DOCA flow ports
+ * @nb_shared_res [in]: number of shared resources
+ * @shared_counter_ids [in]: 2D array of shared counter IDs
+ * @query_results_array [in]: array of query results
+ */
+static void print_ordered_list_stats(int nb_ports,
+				     struct doca_flow_port *ports[],
+				     int nb_shared_res,
+				     uint32_t shared_counter_ids[][nb_shared_res],
+				     struct doca_flow_resource_query *query_results_array)
+{
+	doca_error_t result;
+	int port_id, shared_res_idx;
+
+	for (port_id = 0; port_id < nb_ports; port_id++) {
+		result = doca_flow_port_shared_resources_query(ports[port_id],
+							       DOCA_FLOW_SHARED_RESOURCE_COUNTER,
+							       &shared_counter_ids[port_id][0],
+							       &query_results_array[port_id * nb_shared_res],
+							       nb_shared_res);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query shared counter resource: %s", doca_error_get_descr(result));
+			stop_doca_flow_ports(nb_ports, ports);
+			doca_flow_destroy();
+			return;
+		}
+	}
+
+	for (shared_res_idx = 0; shared_res_idx < nb_shared_res; shared_res_idx++) {
+		for (port_id = 0; port_id < nb_ports; port_id++) {
+			int res_idx = port_id * nb_shared_res + shared_res_idx;
+
+			DOCA_LOG_INFO("Counter %d:", port_id);
+			DOCA_LOG_INFO("Total bytes: %ld", query_results_array[res_idx].counter.total_bytes);
+			DOCA_LOG_INFO("Total packets: %ld", query_results_array[res_idx].counter.total_pkts);
+		}
+	}
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: ordered_list_stats_context structure
+ */
+static void print_ordered_list_stats_wrapper(void *context)
+{
+	struct ordered_list_stats_context *ctx = (struct ordered_list_stats_context *)context;
+	print_ordered_list_stats(ctx->nb_ports,
+				 ctx->ports,
+				 ctx->nb_shared_res,
+				 ctx->shared_counter_ids,
+				 ctx->query_results_array);
+}
+
 doca_error_t flow_ordered_list(int nb_queues)
 {
 	int nb_ports = 2;
@@ -336,17 +453,18 @@ doca_error_t flow_ordered_list(int nb_queues)
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *root_pipe;
 	struct doca_flow_pipe *ordered_list_pipe;
-	uint32_t shared_counter_ids[] = {0, 1, 2, 3};
-	struct doca_flow_resource_query query_results_array[4];
+	int shared_res_idx, nb_shared_res = 4;
+	uint32_t shared_counter_ids[nb_ports][nb_shared_res];
+	struct doca_flow_resource_query query_results_array[8];
 	struct doca_flow_shared_resource_cfg cfg = {0};
 	int port_id;
 	struct entries_status status;
-	int num_of_entries = 4;
+	int num_of_entries = 8;
 	doca_error_t result;
 
-	nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_COUNTER] = 4;
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 2;
-
+	resource.nr_counters += num_of_entries;
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -354,7 +472,7 @@ doca_error_t flow_ordered_list(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -372,49 +490,30 @@ doca_error_t flow_ordered_list(int nb_queues)
 			return result;
 		}
 
-		result = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_COUNTER,
-							   shared_counter_ids[port_id],
-							   &cfg);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to configure shared counter to port %d", port_id);
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+		for (shared_res_idx = 0; shared_res_idx < nb_shared_res; shared_res_idx++) {
+			result = doca_flow_port_shared_resource_get(ports[port_id],
+								    DOCA_FLOW_SHARED_RESOURCE_COUNTER,
+								    &shared_counter_ids[port_id][shared_res_idx]);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to get shared counter id from port %d", port_id);
+				stop_doca_flow_ports(nb_ports, ports);
+				doca_flow_destroy();
+				return result;
+			}
+
+			result = doca_flow_port_shared_resource_set_cfg(ports[port_id],
+									DOCA_FLOW_SHARED_RESOURCE_COUNTER,
+									shared_counter_ids[port_id][shared_res_idx],
+									&cfg);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to configure shared counter to port %d", port_id);
+				stop_doca_flow_ports(nb_ports, ports);
+				doca_flow_destroy();
+				return result;
+			}
 		}
 
-		result = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_COUNTER,
-							 &shared_counter_ids[port_id],
-							 1,
-							 ports[port_id]);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to bind shared counter to pipe: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
-
-		result = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_COUNTER,
-							   shared_counter_ids[port_id + 2],
-							   &cfg);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to configure shared counter to port %d", port_id);
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
-
-		result = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_COUNTER,
-							 &shared_counter_ids[port_id + 2],
-							 1,
-							 ports[port_id]);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to bind shared counter to pipe: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
-
-		result = add_ordered_list_pipe_entries(ordered_list_pipe, port_id, &status);
+		result = add_ordered_list_pipe_entries(ordered_list_pipe, &shared_counter_ids[port_id][0], &status);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add ordered list pipe entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
@@ -453,25 +552,14 @@ doca_error_t flow_ordered_list(int nb_queues)
 		}
 	}
 
-	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
-	sleep(5);
+	/* Setup statistics context and wait for packets */
+	struct ordered_list_stats_context ctx = {.nb_ports = nb_ports,
+						 .ports = ports,
+						 .nb_shared_res = nb_shared_res,
+						 .shared_counter_ids = shared_counter_ids,
+						 .query_results_array = query_results_array};
 
-	result = doca_flow_shared_resources_query(DOCA_FLOW_SHARED_RESOURCE_COUNTER,
-						  shared_counter_ids,
-						  query_results_array,
-						  nb_ports * 2);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query shared counters: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
-	}
-
-	for (port_id = 0; port_id < 4; port_id++) {
-		DOCA_LOG_INFO("Counter %d:", port_id);
-		DOCA_LOG_INFO("Total bytes: %ld", query_results_array[port_id].counter.total_bytes);
-		DOCA_LOG_INFO("Total packets: %ld", query_results_array[port_id].counter.total_pkts);
-	}
+	flow_wait_for_packets(10, print_ordered_list_stats_wrapper, &ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

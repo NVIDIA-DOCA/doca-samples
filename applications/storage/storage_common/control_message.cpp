@@ -57,7 +57,7 @@ uint32_t wire_size(storage::control::message const &msg)
 		size += sizeof(storage_details_payload::block_size);
 	} break;
 	case message_type::init_storage_request: {
-		size += sizeof(init_storage_payload::task_count);
+		size += sizeof(init_storage_payload::transaction_count);
 		size += sizeof(init_storage_payload::core_count);
 
 		auto const *details = dynamic_cast<init_storage_payload const *>(msg.payload.get());
@@ -141,7 +141,7 @@ char *encode(char *buffer, storage::control::message const &msg)
 			throw storage::runtime_error{DOCA_ERROR_INVALID_VALUE,
 						     "[bug] Unable to encode invalid init_storage_request, no payload"};
 		}
-		buffer = storage::to_buffer(buffer, details->task_count);
+		buffer = storage::to_buffer(buffer, details->transaction_count);
 		buffer = storage::to_buffer(buffer, details->core_count);
 		buffer = storage::to_buffer(buffer, details->mmap_export_blob);
 	} break;
@@ -201,7 +201,7 @@ char const *decode(char const *buffer, storage::control::message &msg)
 	} break;
 	case message_type::init_storage_request: {
 		auto details = std::make_unique<init_storage_payload>();
-		buffer = storage::from_buffer(buffer, details->task_count);
+		buffer = storage::from_buffer(buffer, details->transaction_count);
 		buffer = storage::from_buffer(buffer, details->core_count);
 		buffer = storage::from_buffer(buffer, details->mmap_export_blob);
 		msg.payload = std::move(details);
@@ -322,8 +322,8 @@ std::string to_string(storage::control::message const &msg)
 			throw storage::runtime_error{DOCA_ERROR_INVALID_VALUE,
 						     "[bug] Unable to encode invalid init_storage_request, no payload"};
 		}
-		s += "task_count: ";
-		s += std::to_string(details->task_count);
+		s += "transaction_count: ";
+		s += std::to_string(details->transaction_count);
 		s += ", core_count: ";
 		s += std::to_string(details->core_count);
 		s += ", mmap_export_blob: [";

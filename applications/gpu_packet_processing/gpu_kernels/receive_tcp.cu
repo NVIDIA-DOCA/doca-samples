@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -55,7 +55,7 @@ static __device__ void report_http_info(struct info_http *http_global, struct et
 	/* TCP info */
 	http_global->tcp_src_port = hdr->l4_hdr.src_port;
 	http_global->tcp_dst_port = hdr->l4_hdr.dst_port;
-	http_global->tcp_dt_off = hdr->l4_hdr.dt_off;
+	http_global->tcp_dt_off = hdr->l4_hdr.data_off;
 	http_global->tcp_sent_seq = hdr->l4_hdr.sent_seq;
 	http_global->tcp_recv_ack = hdr->l4_hdr.recv_ack;
 }
@@ -90,8 +90,8 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 					struct doca_gpu_semaphore_gpu *sem_http3,
 					bool http_server)
 {
-	__shared__ uint32_t rx_pkt_num;
-	__shared__ uint64_t rx_buf_idx;
+	__shared__ uint64_t out_first_pkt_idx;
+	__shared__ uint32_t out_pkt_num;
 	__shared__ struct stats_tcp stats_sh;
 	__shared__ int sem_http_idx;
 
@@ -99,26 +99,15 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 	struct doca_gpu_eth_rxq *rxq = NULL;
 	struct doca_gpu_semaphore_gpu *sem_stats = NULL;
 	struct doca_gpu_semaphore_gpu *sem_http = NULL;
-	struct doca_gpu_buf *buf_ptr;
 	struct stats_tcp stats_thread;
 	struct stats_tcp *stats_global;
 	struct info_http *http_global;
 	struct eth_ip_tcp_hdr *hdr;
 	uintptr_t buf_addr;
 	uint64_t buf_idx = 0;
-	uint32_t laneId = threadIdx.x % WARP_SIZE;
+	uint32_t lane_id = doca_gpu_dev_eth_get_lane_id();
 	uint32_t sem_stats_idx = 0;
 	uint8_t *payload;
-	uint32_t max_pkts;
-	uint64_t timeout_ns;
-
-	if (http_server) {
-		max_pkts = MAX_RX_NUM_PKTS;
-		timeout_ns = MAX_RX_TIMEOUT_NS;
-	} else {
-		max_pkts = MAX_RX_NUM_PKTS;
-		timeout_ns = MAX_RX_TIMEOUT_NS;
-	}
 
 	if (blockIdx.x == 0) {
 		rxq = rxq0;
@@ -162,7 +151,16 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 		stats_thread.tcp_ack = 0;
 		stats_thread.others = 0;
 
-		ret = doca_gpu_dev_eth_rxq_receive_block(rxq, max_pkts, timeout_ns, &rx_pkt_num, &rx_buf_idx);
+		ret = doca_gpu_dev_eth_rxq_recv<DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK,
+									DOCA_GPUNETIO_ETH_MCST_AUTO,
+									DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
+									false>(
+								rxq,
+								MAX_RX_NUM_PKTS,
+								MAX_RX_TIMEOUT_NS,
+								&out_first_pkt_idx,
+								&out_pkt_num,
+								NULL);
 		/* If any thread returns receive error, the whole execution stops */
 		if (ret != DOCA_SUCCESS) {
 			if (threadIdx.x == 0) {
@@ -174,21 +172,19 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 				printf("Receive TCP kernel error %d Block %d rxpkts %d error %d\n",
 				       ret,
 				       blockIdx.x,
-				       rx_pkt_num,
+				       out_pkt_num,
 				       ret);
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 			}
 			break;
 		}
 
-		if (rx_pkt_num == 0)
+		if (out_pkt_num == 0)
 			continue;
 
 		buf_idx = threadIdx.x;
-		while (buf_idx < rx_pkt_num) {
-			doca_gpu_dev_eth_rxq_get_buf(rxq, rx_buf_idx + buf_idx, &buf_ptr);
-			doca_gpu_dev_buf_get_addr(buf_ptr, &buf_addr);
-
+		while (buf_idx < out_pkt_num) {
+			buf_addr = doca_gpu_dev_eth_rxq_get_pkt_addr(rxq, out_first_pkt_idx + buf_idx);
 			raw_to_tcp(buf_addr, &hdr, &payload);
 
 			/* Priority to GET for the HTTP server mode */
@@ -252,7 +248,7 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 			__syncwarp();
 		}
 
-		if (laneId == 0) {
+		if (lane_id == 0) {
 			atomicAdd_block(&(stats_sh.http), stats_thread.http);
 			atomicAdd_block(&(stats_sh.http_head), stats_thread.http_head);
 			atomicAdd_block(&(stats_sh.http_get), stats_thread.http_get);
@@ -264,7 +260,7 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 		}
 		__syncthreads();
 
-		if (threadIdx.x == 0 && rx_pkt_num > 0) {
+		if (threadIdx.x == 0 && out_pkt_num > 0) {
 			ret = doca_gpu_dev_semaphore_get_custom_info_addr(sem_stats,
 									  sem_stats_idx,
 									  (void **)&stats_global);
@@ -285,7 +281,7 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 			DOCA_GPUNETIO_VOLATILE(stats_global->tcp_fin) = DOCA_GPUNETIO_VOLATILE(stats_sh.tcp_fin);
 			DOCA_GPUNETIO_VOLATILE(stats_global->tcp_ack) = DOCA_GPUNETIO_VOLATILE(stats_sh.tcp_ack);
 			DOCA_GPUNETIO_VOLATILE(stats_global->others) = DOCA_GPUNETIO_VOLATILE(stats_sh.others);
-			DOCA_GPUNETIO_VOLATILE(stats_global->total) = rx_pkt_num;
+			DOCA_GPUNETIO_VOLATILE(stats_global->total) = out_pkt_num;
 
 			doca_gpu_dev_semaphore_set_status(sem_stats, sem_stats_idx, DOCA_GPU_SEMAPHORE_STATUS_READY);
 			__threadfence_system();

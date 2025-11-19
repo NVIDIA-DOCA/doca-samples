@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -86,6 +86,7 @@ static void (*create_pipe_func)(struct doca_flow_pipe_cfg *,
 static void (*add_entry_func)(uint16_t,
 			      uint64_t,
 			      struct doca_flow_match *,
+			      uint8_t,
 			      struct doca_flow_actions *,
 			      struct doca_flow_monitor *,
 			      struct doca_flow_fwd *,
@@ -187,6 +188,7 @@ void set_pipe_create(void (*action)(struct doca_flow_pipe_cfg *,
 void set_pipe_add_entry(void (*action)(uint16_t,
 				       uint64_t,
 				       struct doca_flow_match *,
+				       uint8_t,
 				       struct doca_flow_actions *,
 				       struct doca_flow_monitor *,
 				       struct doca_flow_fwd *,
@@ -1634,6 +1636,7 @@ static void cmd_add_entry_parsed(void *parsed_result, __rte_unused struct cmdlin
 	(*add_entry_func)(pipe_queue,
 			  pipe_id,
 			  &entry_match,
+			  0,
 			  &actions,
 			  tmp_monitor,
 			  tmp_fwd,

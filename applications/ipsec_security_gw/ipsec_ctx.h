@@ -132,30 +132,33 @@ struct security_gateway_pipe_info {
 
 /* all the pipes that is used for encrypt packets */
 struct encrypt_pipes {
-	struct security_gateway_pipe_info encrypt_root;		/* encrypt control pipe */
-	struct security_gateway_pipe_info egress_ip_classifier; /* egress IP classifier */
-	struct security_gateway_pipe_info ipv4_encrypt_pipe;	/* encryption action pipe for ipv4 traffic */
-	struct security_gateway_pipe_info ipv6_encrypt_pipe;	/* encryption action pipe for ipv6 traffic */
-	struct security_gateway_pipe_info ipv4_tcp_pipe;	/* 5-tuple ipv4 tcp match pipe */
-	struct security_gateway_pipe_info ipv4_udp_pipe;	/* 5-tuple ipv4 udp match pipe */
-	struct security_gateway_pipe_info ipv6_tcp_pipe;	/* 5-tuple ipv6 tcp match pipe */
-	struct security_gateway_pipe_info ipv6_udp_pipe;	/* 5-tuple ipv6 udp match pipe */
-	struct security_gateway_pipe_info ipv6_src_tcp_pipe;	/* src ipv6 tcp match pipe */
-	struct security_gateway_pipe_info ipv6_src_udp_pipe;	/* src ipv6 udp match pipe */
-	struct security_gateway_pipe_info vxlan_encap_pipe;	/* vxlan encap pipe */
-	struct security_gateway_pipe_info marker_insert_pipe;	/* insert non-ESP marker pipe */
+	struct security_gateway_pipe_info encrypt_root;		   /* encrypt control pipe */
+	struct security_gateway_pipe_info egress_ip_classifier;	   /* egress IP classifier */
+	struct security_gateway_pipe_info match_encrypt_ipv4_pipe; /* encryption match pipe for ipv4 traffic */
+	struct security_gateway_pipe_info match_encrypt_ipv6_pipe; /* encryption match pipe for ipv6 traffic */
+	struct security_gateway_pipe_info encrypt_pipe;		   /* encryption ordered list pipe */
+	struct security_gateway_pipe_info ipv4_tcp_pipe;	   /* 5-tuple ipv4 tcp match pipe */
+	struct security_gateway_pipe_info ipv4_udp_pipe;	   /* 5-tuple ipv4 udp match pipe */
+	struct security_gateway_pipe_info ipv6_tcp_pipe;	   /* 5-tuple ipv6 tcp match pipe */
+	struct security_gateway_pipe_info ipv6_udp_pipe;	   /* 5-tuple ipv6 udp match pipe */
+	struct security_gateway_pipe_info ipv6_src_tcp_pipe;	   /* src ipv6 tcp match pipe */
+	struct security_gateway_pipe_info ipv6_src_udp_pipe;	   /* src ipv6 udp match pipe */
+	struct security_gateway_pipe_info vxlan_encap_pipe;	   /* vxlan encap pipe */
+	struct security_gateway_pipe_info marker_insert_pipe;	   /* insert non-ESP marker pipe */
 };
 
 /* all the pipes that is used for decrypt packets */
 struct decrypt_pipes {
-	struct security_gateway_pipe_info decrypt_root;		 /* decrypt control pipe */
-	struct security_gateway_pipe_info marker_remove_pipe;	 /* remove non-ESP marker pipe */
-	struct security_gateway_pipe_info decrypt_ipv4_pipe;	 /* decrypt ipv4 pipe */
-	struct security_gateway_pipe_info decrypt_ipv6_pipe;	 /* decrypt ipv6 pipe */
-	struct security_gateway_pipe_info decap_pipe;		 /* decap ESP header pipe */
-	struct security_gateway_pipe_info bad_syndrome_pipe;	 /* match on ipsec bad syndrome */
-	struct security_gateway_pipe_info vxlan_decap_ipv4_pipe; /* decap vxlan tunnel inner ipv4 pipe */
-	struct security_gateway_pipe_info vxlan_decap_ipv6_pipe; /* decap vxlan tunnel inner ipv6 pipe */
+	struct security_gateway_pipe_info decrypt_root;		   /* decrypt control pipe */
+	struct security_gateway_pipe_info marker_remove_pipe;	   /* remove non-ESP marker pipe */
+	struct security_gateway_pipe_info match_decrypt_ipv4_pipe; /* decrypt ipv4 match pipe */
+	struct security_gateway_pipe_info match_decrypt_ipv6_pipe; /* decrypt ipv6 match pipe */
+	struct security_gateway_pipe_info decrypt_pipe;		   /* decrypt ordered list pipe */
+	struct security_gateway_pipe_info match_decap_pipe;	   /* decap ESP header match pipe */
+	struct security_gateway_pipe_info decap_pipe;		   /* decap ESP header ordered list pipe */
+	struct security_gateway_pipe_info bad_syndrome_pipe;	   /* match on ipsec bad syndrome */
+	struct security_gateway_pipe_info vxlan_decap_ipv4_pipe;   /* decap vxlan tunnel inner ipv4 pipe */
+	struct security_gateway_pipe_info vxlan_decap_ipv6_pipe;   /* decap vxlan tunnel inner ipv6 pipe */
 };
 
 /* all the pipes that is ued for switch mode */

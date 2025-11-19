@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,6 +23,7 @@
  *
  */
 
+#include <endian.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -36,6 +37,7 @@
 
 #include "common.h"
 #include "eth_common.h"
+#include "eth_flow_common.h"
 
 DOCA_LOG_REGISTER(ETH_TXQ_LSO_SEND_ETHERNET_FRAMES);
 
@@ -52,6 +54,7 @@ DOCA_LOG_REGISTER(ETH_TXQ_LSO_SEND_ETHERNET_FRAMES);
 
 struct eth_txq_lso_sample_objects {
 	struct eth_core_resources core_resources;	  /* A struct to hold ETH core resources */
+	struct eth_flow_common_resources flow_resources;  /* A struct to hold flow resources */
 	struct doca_eth_txq *eth_txq;			  /* DOCA ETH TXQ context */
 	struct doca_buf *lso_eth_payload_buf;		  /* DOCA buffer to contain LSO ethernet payload */
 	struct doca_gather_list *lso_pkt_headers;	  /* DOCA gather list to contain LSO packet headers */
@@ -356,6 +359,12 @@ static doca_error_t create_eth_txq_ctx(struct eth_txq_lso_sample_objects *state)
 		goto destroy_eth_txq;
 	}
 
+	status = doca_eth_txq_apply_queue_id(state->eth_txq, 0);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to apply queue ID, err: %s", doca_error_get_name(status));
+		goto destroy_eth_txq;
+	}
+
 	return DOCA_SUCCESS;
 destroy_eth_txq:
 	clean_status = doca_eth_txq_destroy(state->eth_txq);
@@ -381,6 +390,12 @@ static void eth_txq_lso_cleanup(struct eth_txq_lso_sample_objects *state)
 
 	if (state->lso_pkt_headers_buf != NULL)
 		free(state->lso_pkt_headers_buf);
+
+	if (state->flow_resources.df_port != NULL) {
+		eth_flow_common_destroy_flow_port(&(state->flow_resources));
+	}
+
+	eth_flow_common_cleanup_flow();
 
 	if (state->eth_txq != NULL) {
 		status = destroy_eth_txq_ctx(state);
@@ -476,6 +491,18 @@ doca_error_t eth_txq_lso_send_ethernet_frames(const char *ib_dev_name, uint8_t *
 	status = create_eth_txq_ctx(&state);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create/start ETH TXQ context, err: %s", doca_error_get_name(status));
+		goto txq_lso_cleanup;
+	}
+
+	status = eth_flow_common_init_flow();
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to init flow, err: %s", doca_error_get_name(status));
+		goto txq_lso_cleanup;
+	}
+
+	status = eth_flow_common_create_flow_port(state.core_resources.core_objs.dev, 0, &(state.flow_resources));
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create flow port, err: %s", doca_error_get_name(status));
 		goto txq_lso_cleanup;
 	}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -41,6 +41,7 @@
 #include "common.h"
 
 #define DMA_MEMCPY_SIZE 1024
+#define ALIGN_SIZE(size, align) size = ((size + (align)-1) / (align)) * (align);
 
 /* Sample configuration structure */
 struct gpu_dma_config {

@@ -35,6 +35,7 @@
 #include <doca_log.h>
 
 #include "upf_accel.h"
+#include "upf_accel_smf_default_init.h"
 
 DOCA_LOG_REGISTER(UPF_ACCEL::JSON_PARSER);
 
@@ -831,17 +832,6 @@ err_pdr:
 }
 
 /*
- * Cleanup items were created by upf_accel_pdr_parse
- *
- * @cfg [out]: UPF Acceleration configuration
- */
-static void upf_accel_pdr_cleanup(struct upf_accel_config *cfg)
-{
-	rte_free(cfg->pdrs);
-	cfg->pdrs = NULL;
-}
-
-/*
  * Parse OH (outer header) group
  *
  * @oh [in]: json object of the group
@@ -943,17 +933,6 @@ err_far:
 }
 
 /*
- * Cleanup items were created by upf_accel_far_parse
- *
- * @cfg [out]: UPF Acceleration configuration
- */
-static void upf_accel_far_cleanup(struct upf_accel_config *cfg)
-{
-	rte_free(cfg->fars);
-	cfg->fars = NULL;
-}
-
-/*
  * Parse volume quota group
  *
  * @volume_quota [in]: json object of the group
@@ -1029,17 +1008,6 @@ static doca_error_t upf_accel_urr_parse(struct json_object *urr_arr, struct upf_
 err_far:
 	rte_free(urrs);
 	return err;
-}
-
-/*
- * Cleanup items were created by upf_accel_urr_parse
- *
- * @cfg [out]: UPF Acceleration configuration
- */
-static void upf_accel_urr_cleanup(struct upf_accel_config *cfg)
-{
-	rte_free(cfg->urrs);
-	cfg->urrs = NULL;
 }
 
 /*
@@ -1131,17 +1099,6 @@ err_far:
 }
 
 /*
- * Cleanup items were created by upf_accel_qer_parse
- *
- * @cfg [out]: UPF Acceleration configuration
- */
-static void upf_accel_qer_cleanup(struct upf_accel_config *cfg)
-{
-	rte_free(cfg->qers);
-	cfg->qers = NULL;
-}
-
-/*
  * Parse SMF input
  *
  * @cfg [out]: UPF Acceleration configuration
@@ -1155,6 +1112,9 @@ doca_error_t upf_accel_smf_parse(struct upf_accel_config *cfg)
 	struct json_object *qer_arr;
 	struct json_object *root;
 	doca_error_t err;
+
+	if (cfg->dry_run)
+		return upf_accel_smf_dry_run_get(cfg);
 
 	root = json_object_from_file(cfg->smf_config_file_path);
 	if (!root) {

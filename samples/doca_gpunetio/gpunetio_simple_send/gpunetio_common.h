@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,8 +23,8 @@
  *
  */
 
-#ifndef GPUNETIO_SEND_WAIT_TIME_COMMON_H_
-#define GPUNETIO_SEND_WAIT_TIME_COMMON_H_
+#ifndef GPUNETIO_SIMPLE_SEND_COMMON_H_
+#define GPUNETIO_SIMPLE_SEND_COMMON_H_
 
 #include <stdio.h>
 #include <unistd.h>
@@ -39,20 +39,27 @@
 #include <doca_dev.h>
 #include <doca_mmap.h>
 #include <doca_gpunetio.h>
+#include <doca_gpunetio_eth_def.h>
 #include <doca_eth_txq.h>
 #include <doca_eth_txq_gpu_data_path.h>
 #include <doca_buf_array.h>
 
 #include "common.h"
 
-/* Set alignment to 64kB to work on all platforms */
-#define GPU_PAGE_SIZE (1UL << 16)
 #define MAX_PCI_ADDRESS_LEN 32U
-#define PACKET_SIZE 1024
 #define ETHER_ADDR_LEN 6
 #define MAX_SQ_DESCR_NUM 8192
-#define MAX_RX_TIMEOUT_NS 500000 // 500us
-#define MAX_RX_NUM_PKTS 2048
+#define SHARED_QP_BLOCKS 2
+
+#ifndef ACCESS_ONCE_64b
+#define ACCESS_ONCE_64b(x) (*(volatile uint64_t *)&(x))
+#endif
+
+#ifndef WRITE_ONCE_64b
+#define WRITE_ONCE_64b(x, v) (ACCESS_ONCE_64b(x) = (v))
+#endif
+
+#define ALIGN_SIZE(size, align) size = ((size + (align)-1) / (align)) * (align);
 
 struct ether_hdr {
 	uint8_t d_addr_bytes[ETHER_ADDR_LEN]; /* Destination addr bytes in tx order */
@@ -62,10 +69,13 @@ struct ether_hdr {
 
 /* Application configuration structure */
 struct sample_simple_send_cfg {
-	char gpu_pcie_addr[MAX_PCI_ADDRESS_LEN]; /* GPU PCIe address */
-	char nic_pcie_addr[MAX_PCI_ADDRESS_LEN]; /* Network card PCIe address */
-	uint32_t pkt_size;			 /* Packet size to send */
-	uint32_t cuda_threads;			 /* Number of CUDA threads in CUDA send kernel */
+	char gpu_pcie_addr[MAX_PCI_ADDRESS_LEN];       /* GPU PCIe address */
+	char nic_pcie_addr[MAX_PCI_ADDRESS_LEN];       /* Network card PCIe address */
+	size_t pkt_size;			       /* Packet size to send */
+	uint32_t cuda_threads;			       /* Number of CUDA threads in CUDA send kernel */
+	bool shared_qp;				       /* Shared QP mode enabled/disabled */
+	uint32_t exec_scope;			       /* If shared QP mode is enabled, define the exec scope */
+	enum doca_gpu_dev_eth_nic_handler nic_handler; /* Regular GPU DB ring or via CPU proxy */
 };
 
 /* Send queues objects */
@@ -76,15 +86,20 @@ struct txq_queue {
 	struct doca_ctx *eth_txq_ctx;	      /* DOCA Ethernet send queue context */
 	struct doca_eth_txq *eth_txq_cpu;     /* DOCA Ethernet send queue CPU handler */
 	struct doca_gpu_eth_txq *eth_txq_gpu; /* DOCA Ethernet send queue GPU handler */
-	struct doca_mmap *pkt_buff_mmap;      /* DOCA mmap to send packet with DOCA Ethernet queue */
-	void *gpu_pkt_addr;		      /* DOCA mmap GPU memory address */
-	int dmabuf_fd;			      /* GPU memory dmabuf descriptor */
-	struct doca_flow_port *port;	      /* DOCA Flow port */
-	struct doca_buf_arr *buf_arr;	      /* DOCA buffer array object around GPU memory buffer */
-	struct doca_gpu_buf_arr *buf_arr_gpu; /* DOCA buffer array GPU handle */
-	uint32_t pkt_size;		      /* Packet size to send */
-	uint32_t cuda_threads;		      /* Number of CUDA threads in CUDA send kernel */
-	uint32_t inflight_sends;	      /* Number of inflight sends in queue */
+
+	struct doca_mmap *pkt_buff_mmap; /* DOCA mmap to send packet with DOCA Ethernet queue */
+	uint32_t pkt_buff_mkey;		 /* DOCA mmap memory key */
+	uint8_t *pkt_buff_addr;		 /* DOCA mmap GPU memory address */
+	int dmabuf_fd;			 /* GPU memory dmabuf descriptor */
+	struct doca_flow_port *port;	 /* DOCA Flow port */
+	size_t pkt_size;		 /* Packet size to send */
+	uint32_t cuda_threads;		 /* Number of CUDA threads in CUDA send kernel */
+};
+
+/* CPU Proxy thread arguments */
+struct cpu_proxy_args {
+	struct doca_eth_txq *txq; /* DOCA Eth Txq handler to progress */
+	uint64_t *exit_flag;	  /* CPU thread exit flag */
 };
 
 /*
@@ -105,9 +120,15 @@ extern "C" {
  * @stream [in]: CUDA stream to launch the kernel
  * @txq [in]: DOCA Eth Tx queue to use to send packets
  * @gpu_exit_condition [in]: exit from CUDA kernel
+ * @shared_qp [in]: enable shared qp mode
+ * @exec_scope [in]: if shared qp is enabled, define the exec scope
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t kernel_send_packets(cudaStream_t stream, struct txq_queue *txq, uint32_t *gpu_exit_condition);
+doca_error_t kernel_send_packets(cudaStream_t stream,
+				 struct txq_queue *txq,
+				 uint32_t *gpu_exit_condition,
+				 bool shared_qp,
+				 enum doca_gpu_dev_eth_exec_scope exec_scope);
 
 #if __cplusplus
 }

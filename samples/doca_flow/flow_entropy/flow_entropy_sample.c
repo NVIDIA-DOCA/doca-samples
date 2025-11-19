@@ -69,7 +69,8 @@ doca_error_t flow_entropy(struct flow_switch_ctx *ctx)
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -79,7 +80,8 @@ doca_error_t flow_entropy(struct flow_switch_ctx *ctx)
 	header.l3_type = DOCA_FLOW_L3_TYPE_IP4;
 	header.ip4.src_ip = BE_IPV4_ADDR(8, 8, 8, 8);
 	header.ip4.dst_ip = BE_IPV4_ADDR(7, 7, 7, 7);
-	header.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
+	header.ip4.next_proto = IPPROTO_UDP;
+	header.is_transport = true;
 	header.transport.src_port = DOCA_HTOBE16(1234);
 	header.transport.dst_port = DOCA_HTOBE16(5678);
 
@@ -87,6 +89,25 @@ doca_error_t flow_entropy(struct flow_switch_ctx *ctx)
 	result = doca_flow_port_calc_entropy(ports[0], &header, &entropy);
 	if (result == DOCA_SUCCESS)
 		DOCA_LOG_INFO("The entropy for the given packet header is:0x%x", DOCA_BETOH16(entropy));
+	else
+		DOCA_LOG_ERR("Failed to retrieve entropy: %s", doca_error_get_descr(result));
+
+	/* Packet with GRE header
+	 * [outer_mac][outer_ip][GRE][inner_mac][inner_ip][tcp][payload].
+	 * Pass in the outer IP's along with correct IP_PROTO value.
+	 * Set is_transport to false.
+	 */
+	entropy = 0;
+	header.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+	header.ip4.src_ip = BE_IPV4_ADDR(10, 11, 12, 13);
+	header.ip4.dst_ip = BE_IPV4_ADDR(255, 255, 255, 255);
+	header.ip4.next_proto = IPPROTO_GRE;
+	header.is_transport = false;
+
+	/* The entropy result should be equal to 0xde18 */
+	result = doca_flow_port_calc_entropy(ports[0], &header, &entropy);
+	if (result == DOCA_SUCCESS)
+		DOCA_LOG_INFO("The entropy for the given packet with GRE header is:0x%x", DOCA_BETOH16(entropy));
 	else
 		DOCA_LOG_ERR("Failed to retrieve entropy: %s", doca_error_get_descr(result));
 

@@ -23,11 +23,9 @@
  *
  */
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
+#define _GNU_SOURCE 1
 #include <pthread.h>
+#include <sched.h>
 #include <doca_pe.h>
 #include <doca_log.h>
 
@@ -87,6 +85,12 @@ static void *virtiofs_thread_progress(void *args)
 			;
 
 		pthread_mutex_lock(&thread->lock);
+
+		if (doca_unlikely(thread->fn)) {
+			thread->fn(thread, thread->cb_arg);
+			thread->fn = NULL;
+			thread->cb_arg = NULL;
+		}
 
 		event_count = 0;
 		while (thread->curr_inflights < thread->attr.max_inflights && doca_pe_progress(thread->io_pe) &&
@@ -180,13 +184,24 @@ doca_error_t virtiofs_thread_start(struct virtiofs_thread *thread)
 	return DOCA_SUCCESS;
 }
 
-doca_error_t virtiofs_thread_exec(struct virtiofs_thread *thread, virtiofs_thread_exec_fn_t fn, void *arg)
+doca_error_t virtiofs_thread_exec(struct virtiofs_thread *thread,
+				  virtiofs_thread_exec_fn_t fn,
+				  void *arg,
+				  bool exec_on_caller_thread)
 {
 	doca_error_t err;
 
 	thread->suspend = 1;
 	pthread_mutex_lock(&thread->lock);
-	err = fn(thread, arg);
+	if (exec_on_caller_thread) {
+		/* fn will be executed on current thread */
+		err = fn(thread, arg);
+	} else {
+		/* fn will be executed by virtiofs_thread_progress() on "thread" */
+		thread->fn = fn;
+		thread->cb_arg = arg;
+		err = 0;
+	}
 	pthread_mutex_unlock(&thread->lock);
 	thread->suspend = 0;
 
@@ -213,7 +228,7 @@ doca_error_t virtiofs_thread_poller_add(struct virtiofs_thread *thread, virtiofs
 	poller->fn = fn;
 	poller->arg = arg;
 
-	return virtiofs_thread_exec(thread, virtiofs_thread_poller_add_impl, poller);
+	return virtiofs_thread_exec(thread, virtiofs_thread_poller_add_impl, poller, true);
 }
 
 static doca_error_t virtiofs_thread_poller_remove_impl(struct virtiofs_thread *thread, void *cb_arg)
@@ -237,7 +252,7 @@ doca_error_t virtiofs_thread_poller_remove(struct virtiofs_thread *thread, virti
 {
 	struct virtiofs_thread_poller poller = {.fn = fn, .arg = arg};
 
-	return virtiofs_thread_exec(thread, virtiofs_thread_poller_remove_impl, &poller);
+	return virtiofs_thread_exec(thread, virtiofs_thread_poller_remove_impl, &poller, true);
 }
 
 struct virtiofs_thread *virtiofs_thread_get(struct virtiofs_resources *ctx)

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -74,6 +74,7 @@ void set_pipe_create(void (*action)(struct doca_flow_pipe_cfg *cfg,
 void set_pipe_add_entry(void (*action)(uint16_t pipe_queue,
 				       uint64_t pipe_id,
 				       struct doca_flow_match *match,
+				       uint8_t action_idx,
 				       struct doca_flow_actions *actions,
 				       struct doca_flow_monitor *monitor,
 				       struct doca_flow_fwd *fwd,

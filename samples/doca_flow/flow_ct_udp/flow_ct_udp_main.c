@@ -54,7 +54,7 @@ int main(int argc, char **argv)
 	int exit_status = EXIT_FAILURE;
 	struct flow_switch_ctx ct_cfg = {0};
 	struct application_dpdk_config dpdk_config = {
-		.port_config.nb_ports = 2,
+		.port_config.nb_ports = 1,
 		.port_config.nb_queues = 2,
 		.port_config.switch_mode = 1,
 		.reserve_main_thread = false,

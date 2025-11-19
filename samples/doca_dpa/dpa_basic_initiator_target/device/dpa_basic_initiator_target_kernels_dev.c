@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -79,7 +79,7 @@ __dpa_global__ void thread_kernel(uint64_t arg)
  *
  * This RPC is used by target host application to post RDMA receive operation on DPA local buffer
  *
- * @rdma_dpa_ctx_handle [in]: DPA context handle used for RDMA DOCA device. Needed when running from DPU
+ * @rdma_dpa_ctx_handle [in]: DPA context handle used for RDMA DOCA device
  * @rdma [in]: RDMA DPA handle
  * @local_buf_addr [in]: address of received buffer
  * @dpa_mmap_handle [in]: received DOCA Mmap handle
@@ -90,7 +90,7 @@ __dpa_rpc__ uint64_t rdma_post_receive_rpc(doca_dpa_dev_t rdma_dpa_ctx_handle,
 					   doca_dpa_dev_rdma_t rdma,
 					   doca_dpa_dev_uintptr_t local_buf_addr,
 					   doca_dpa_dev_mmap_t dpa_mmap_handle,
-					   size_t length)
+					   uint64_t length)
 {
 	DOCA_DPA_DEV_LOG_INFO("%s: Post RDMA receive on DPA Mmap handle %u, address 0x%lx, length %lu\n",
 			      __func__,
@@ -110,7 +110,7 @@ __dpa_rpc__ uint64_t rdma_post_receive_rpc(doca_dpa_dev_t rdma_dpa_ctx_handle,
  *
  * This RPC is used by initiator host application to post RDMA send operation on host local buffer
  *
- * @rdma_dpa_ctx_handle [in]: DPA context handle used for RDMA DOCA device. Needed when running from DPU
+ * @rdma_dpa_ctx_handle [in]: DPA context handle used for RDMA DOCA device
  * @rdma [in]: RDMA DPA handle
  * @local_buf_addr [in]: address of send buffer
  * @dpa_mmap_handle [in]: send DOCA Mmap handle
@@ -121,7 +121,7 @@ __dpa_rpc__ uint64_t rdma_post_send_rpc(doca_dpa_dev_t rdma_dpa_ctx_handle,
 					doca_dpa_dev_rdma_t rdma,
 					uintptr_t local_buf_addr,
 					doca_dpa_dev_mmap_t dpa_mmap_handle,
-					size_t length)
+					uint64_t length)
 {
 	DOCA_DPA_DEV_LOG_INFO("%s: Post RDMA send on DPA Mmap handle %u, address 0x%lx, length %lu\n",
 			      __func__,

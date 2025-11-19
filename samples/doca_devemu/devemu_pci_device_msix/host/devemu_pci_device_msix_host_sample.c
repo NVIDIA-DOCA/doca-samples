@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -189,6 +189,8 @@ doca_error_t devemu_pci_device_msix_host(const char *pci_address, int vfio_group
 	while (!force_quit)
 		for (uint16_t msix = 0; msix < PCI_TYPE_NUM_MSIX; msix++)
 			read_msix_events(&resources, msix);
+
+	devemu_host_resources_cleanup(&resources);
 
 	return DOCA_SUCCESS;
 }

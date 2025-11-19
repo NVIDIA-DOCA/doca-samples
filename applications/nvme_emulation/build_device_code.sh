@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #
-# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -45,17 +45,24 @@ OUTPUT_DIR=$2
 DPACC_MCPU_FLAG=$3
 DPA_LINK_FLAGS=$4
 DPA_APP_NAME=$5
-OUTPUT_ARCHIVE_NAME=$6
-DPA_SOURCE_FILES="${@:7}"
+APPLICATION_DPA_ATTRIBUTES=$6
+OUTPUT_ARCHIVE_NAME=$7
+DPA_SOURCE_FILES="${@:8}"
 
 ####################
 ## Configurations ##
 ####################
 
 DOCA_DPACC="/opt/mellanox/doca/tools/dpacc"
+DPA_APP_ATTRIBUTES2BLOB="/opt/mellanox/doca/tools/dpa-app-attributes2blob"
+
 HOST_CC_FLAGS="-Wno-deprecated-declarations -Werror -Wall -Wextra -DFLEXIO_ALLOW_EXPERIMENTAL_API"
 DEVICE_CC_FLAGS="-Wno-deprecated-declarations -Werror -Wall -Wextra -DFLEXIO_DEV_ALLOW_EXPERIMENTAL_API"
 DEVICE_CC_FLAGS="-MMD -MT ${OUTPUT_ARCHIVE_NAME} ${DEVICE_CC_FLAGS}"
+APPLICATION_DPA_ATTRIBUTES_BLOB=`pwd`"/${OUTPUT_DIR}/${DPA_APP_NAME}_attributes.blob"
+
+# Generate blob from device attributes file
+$DPA_APP_ATTRIBUTES2BLOB ${APPLICATION_DPA_ATTRIBUTES} ${APPLICATION_DPA_ATTRIBUTES_BLOB}
 
 ${DOCA_DPACC} \
 	${DPA_SOURCE_FILES} \
@@ -69,4 +76,5 @@ ${DOCA_DPACC} \
 	${DPA_INCLUDE_FLAGS} \
 	-flto \
 	-disable-asm-checks \
-	--keep-dir ${OUTPUT_DIR}
+	--keep-dir ${OUTPUT_DIR} \
+	--dpa-proc-attr="${APPLICATION_DPA_ATTRIBUTES_BLOB}"

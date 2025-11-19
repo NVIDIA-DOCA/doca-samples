@@ -85,7 +85,7 @@ static doca_error_t create_classifier_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to create classifier pipe: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, &entry);
 
 destroy_pipe_cfg:
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
@@ -212,9 +212,8 @@ static doca_error_t add_gtp_encap_pipe_entry(struct doca_flow_pipe *pipe, struct
 	actions.encap_cfg.encap.tun.gtp_teid = DOCA_HTOBE32(0xdeadbeef);
 	actions.encap_cfg.encap.tun.gtp_next_ext_hdr_type = DOCA_FLOW_GTP_EXT_PSC;
 	actions.encap_cfg.encap.tun.gtp_ext_psc_qfi = 0x26;
-	actions.action_idx = 0;
 
-	result = doca_flow_pipe_add_entry(0, pipe, NULL, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, NULL, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -243,6 +242,8 @@ doca_error_t flow_gtp_encap(int nb_queues)
 	doca_error_t result;
 	int port_id;
 
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_encap = num_of_entries_egress;
 	result = init_doca_flow(nb_queues, "vnf", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -250,7 +251,7 @@ doca_error_t flow_gtp_encap(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries_ingress + num_of_entries_egress));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

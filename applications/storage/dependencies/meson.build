@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -26,5 +26,6 @@
 app_doca_depends += ['argp']
 app_doca_depends += ['comch']
 app_doca_depends += ['compress']
+app_doca_depends += ['dma']
 app_doca_depends += ['erasure_coding']
 app_doca_depends += ['rdma']

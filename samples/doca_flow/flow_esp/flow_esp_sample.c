@@ -122,7 +122,7 @@ static doca_error_t add_root_pipe_entry(struct doca_flow_pipe *pipe,
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = next_pipe;
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, &fwd, 0, status, &entry);
+	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, &entry);
 }
 
 /*
@@ -277,7 +277,7 @@ doca_error_t flow_esp(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

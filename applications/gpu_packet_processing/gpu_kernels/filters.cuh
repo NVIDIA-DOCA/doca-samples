@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -43,7 +43,7 @@ __device__ __inline__ int raw_to_tcp(const uintptr_t buf_addr, struct eth_ip_tcp
 {
 	(*hdr) = (struct eth_ip_tcp_hdr *)buf_addr;
 	(*payload) = (uint8_t *)(buf_addr + sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr) +
-				 (((*hdr)->l4_hdr.dt_off >> 4) * sizeof(int)));
+				 ((*hdr)->l4_hdr.dt_off * sizeof(int)));
 
 	return 0;
 }

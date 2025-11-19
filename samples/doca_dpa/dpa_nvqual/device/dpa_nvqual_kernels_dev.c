@@ -31,38 +31,123 @@
 #include "../common/dpa_nvqual_common_defs.h"
 
 /**
- * @brief Kernel function of DPA nvqual thread
+ * @brief Memory stress kernel function of DPA nvqual thread
  *
- * The function copies source buffer to destination buffer,
+ * The function performs intensive memory write operations to stress the memory subsystem,
  * and returns the number of cycles of the DPA thread it took
  *
  * The function uses thread local storage parameters:
- * source buffer, destination buffer, buffers size and number of operations.
+ * destination buffer, buffers size, number of operations.
+ *
+ * After checks and experiments, this memory stress function proposed to gain more memory stress:
+ * 	This memory function performs 32 separate memory writes per iteration, each with different patterns.
+ * 	The code uses large strides (increments of 8, 16, 24, ..., up to 248) between memory writes within a single
+ * iteration. These large strides are chosen to minimize cache hits (skip L1 and L2 cache) and maximize memory subsystem
+ * stress, ensuring that each write targets a different cache line or memory bank. The base index for each set of writes
+ * is calculated using both the operation index and the EU id to further spread accesses across the buffer and avoid
+ * overlapping between threads. This approach increases the likelihood of exercising different memory channels and
+ * reduces the effectiveness of hardware prefetchers, thereby providing a more intensive and realistic memory stress
+ * test. Or operation is used to avoid compiler optimizations and ensure memory barriers.
  *
  */
-__dpa_global__ void dpa_nvqual_kernel(void)
+__dpa_global__ void dpa_nvqual_memory_stress_kernel(void)
 {
-	DOCA_DPA_DEV_LOG_DBG("DPA thread kernel has been activated\n");
+	DOCA_DPA_DEV_LOG_DBG("DPA thread memory stress kernel has been activated\n");
 
 	struct dpa_nvqual_tls *tls = (struct dpa_nvqual_tls *)doca_dpa_dev_thread_get_local_storage();
 
-	DOCA_DPA_DEV_LOG_DBG("%s called with src=%ld, dst=%ld, size=%ld, num_ops=%ld\n",
+	DOCA_DPA_DEV_LOG_DBG("%s called with dst=%ld, size=%ld, num_ops=%ld\n",
 			     __func__,
-			     tls->src_buf,
 			     tls->dst_buf,
 			     tls->buffers_size,
 			     tls->num_ops);
 
-	uint64_t src = tls->src_buf;
-	uint64_t dst = tls->dst_buf;
-	size_t size = tls->buffers_size;
+	// volatile is used to avoid compiler optimizations and ensure memory barriers
+	volatile uint64_t *data = (volatile uint64_t *)tls->dst_buf;
+	uint64_t eu_id = tls->eu;
+	size_t num_elements = tls->buffers_size / sizeof(uint64_t); // Convert bytes to elements
 	uint64_t num_ops = tls->num_ops;
 	uint64_t start_cycles, end_cycles;
 
 	start_cycles = __dpa_thread_cycles();
 	for (uint64_t op_idx = 0; op_idx < num_ops; op_idx++) {
-		for (size_t i = 0; i < size; i++) {
-			((uint8_t *)dst)[i] = ((uint8_t *)src)[i];
+		// Calculate base index to spread memory accesses across buffer and avoid cache hits:
+		// - Multiply by 256 elements (2KB) to create large strides between accesses
+		// - Use (op_idx % 4) to cycle through 4 different base regions per EU
+		// - Use (4 * eu_id) to separate each EU's access pattern, preventing overlap
+		// - Modulo num_elements to wrap around and stay within buffer bounds
+		size_t index = (256 * (op_idx % 4 + 4 * eu_id)) % num_elements;
+
+		// 32 memory writes in 16 pairs - stress the memory subsystem, where 248 is the highest offset
+		// Using loop for better readability while maintaining same memory access pattern
+		// 0xcafecafe00000000ULL and 0xdeadbeef00000000ULL are used to avoid compiler optimizations
+		for (int i = 0; i < 16; i++) {
+			// Prevent compiler optimizations and ensure memory barriers for each iteration
+			__dpa_compiler_barrier();
+
+			size_t offset = index + (i * 16);
+			if (offset + 8 < num_elements) {
+				data[offset] = 0xcafecafe00000000ULL | eu_id;
+				data[offset + 8] = 0xdeadbeef00000000ULL | op_idx;
+			}
+		}
+	}
+
+	end_cycles = __dpa_thread_cycles();
+
+	uint64_t ret_val = end_cycles - start_cycles;
+
+	((struct dpa_nvqual_thread_ret *)tls->thread_ret)->eu = tls->eu;
+	((struct dpa_nvqual_thread_ret *)tls->thread_ret)->val = ret_val;
+
+	doca_dpa_dev_sync_event_update_add(tls->dev_se, 1);
+
+	doca_dpa_dev_thread_reschedule();
+}
+
+/**
+ * @brief Arithmetic stress kernel function of DPA nvqual thread
+ *
+ * The function performs intensive arithmetic operations to stress the arithmetic unit,
+ * and returns the number of cycles of the DPA thread it took
+ *
+ * The function uses thread local storage parameters:
+ * number of operations.
+ *
+ * After checks and experiments, this arithmetic stress function proposed to gain more arithmetic stress:
+ * 	This arithmetic function performs 100 iterations of 10 arithmetic operations per iteration.
+ * 	Each arithmetic operation is a complex arithmetic operation that is not easily optimized by the compiler.
+ * 	Disabling compiler optimizations is used to avoid compiler optimizations and ensure memory barriers.
+ *
+ */
+__dpa_global__ void dpa_nvqual_arithmetic_stress_kernel(void)
+{
+	DOCA_DPA_DEV_LOG_DBG("DPA thread arithmetic stress kernel has been activated\n");
+
+	struct dpa_nvqual_tls *tls = (struct dpa_nvqual_tls *)doca_dpa_dev_thread_get_local_storage();
+
+	DOCA_DPA_DEV_LOG_DBG("%s called with num_ops=%ld\n", __func__, tls->num_ops);
+
+	uint64_t num_ops = tls->num_ops;
+	uint64_t start_cycles, end_cycles;
+
+	// Define local variables for arithmetic operations
+	volatile int64_t array[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+	volatile int sum = 0;
+
+	start_cycles = __dpa_thread_cycles();
+	for (uint64_t op_idx = 0; op_idx < num_ops * 100; op_idx++) {
+		for (int j = 0; j < 10; ++j) {
+			// Prevent compiler optimizations
+			__dpa_compiler_barrier();
+			sum += array[j];					// Sum the elements
+			array[j] *= array[j];					// Square the elements
+			array[j] += sum;					// Add sum to each element (dependency)
+			array[j] = (array[j] * j) - (sum * j) + (array[j] * j); // Complex arithmetic
+			array[j] += 5;						// Add sum to each element (dependency)
+			array[j] += sum;					// Add sum to each element (dependency)
+			sum -= array[j];					// Subtract modified element from sum
+			sum = (sum * 7) + (array[j] * 3);			// Avoid division and modulo
 		}
 	}
 

@@ -74,7 +74,8 @@ doca_error_t init_doca_flow_switch_ports(struct flow_devs_manager devs_manager[]
 					 int nb_managers,
 					 struct doca_flow_port *ports[],
 					 int nb_ports,
-					 uint32_t actions_mem_size[]);
+					 uint32_t actions_mem_size[],
+					 struct flow_resources *resources);
 
 #ifdef __cplusplus
 }

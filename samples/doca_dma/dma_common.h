@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -38,7 +38,6 @@
 #define MAX_ARG_SIZE (MAX_USER_ARG_SIZE + 1) /* Maximum size of input argument */
 #define MAX_USER_TXT_SIZE 4096		     /* Maximum size of user input text */
 #define MAX_TXT_SIZE (MAX_USER_TXT_SIZE + 1) /* Maximum size of input text */
-#define PAGE_SIZE sysconf(_SC_PAGESIZE)	     /* Page size */
 #define NUM_DMA_TASKS (1)		     /* DMA tasks number */
 
 /* Configuration struct */

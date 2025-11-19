@@ -38,20 +38,21 @@ struct telemetry_diag_sample_cfg {
 	char data_ids_example_export_path[TELEMETRY_DIAG_SAMPLE_MAX_FILE_NAME]; /**< output file for example json dump
 										 */
 	uint64_t sample_period;							/**< sample period to be used */
-	struct data_id_entry *data_ids_struct;		      /**< array of data_id_entry structures */
-	uint32_t run_time;				      /**< total sample run time, in seconds */
-	uint32_t max_num_samples_per_read;		      /**< max number of samples for each read */
-	uint32_t num_data_ids;				      /**< the number of entries in the data_ids_struct */
-	enum doca_telemetry_diag_sync_mode sync_mode;	      /**< sync mode to be used */
-	enum doca_telemetry_diag_sample_mode sample_mode;     /**< sample mode to be used */
-	enum doca_telemetry_diag_output_format output_format; /**< output format to be used */
-	uint8_t log_max_num_samples;			      /**< log max number of samples to be used */
-	uint8_t force_ownership;			      /**< force ownership when creating diag context */
-	uint8_t export_json;				      /**< whether the user chose to export example json */
-	uint8_t import_json;				      /**< whether an input data_ids json path was given */
-	uint8_t pci_set;				      /**< whether the user provided a pci address */
-	char pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE];	      /**< PCI address to be used */
-	uint64_t reconfig_sample_period;		      /**< reconfig sample period to be used */
+	struct data_id_entry *data_ids_struct;			    /**< array of data_id_entry structures */
+	uint32_t run_time;					    /**< total sample run time, in seconds */
+	uint32_t max_num_samples_per_read;			    /**< max number of samples for each read */
+	uint32_t num_data_ids;					    /**< the number of entries in the data_ids_struct */
+	enum doca_telemetry_diag_sync_mode sync_mode;		    /**< sync mode to be used */
+	enum doca_telemetry_diag_sample_mode sample_mode;	    /**< sample mode to be used */
+	enum doca_telemetry_diag_output_format output_format;	    /**< output format to be used */
+	enum doca_telemetry_diag_timestamp_source timestamp_source; /**< timestamp source to be used */
+	uint8_t log_max_num_samples;				    /**< log max number of samples to be used */
+	uint8_t force_ownership;				    /**< force ownership when creating diag context */
+	uint8_t export_json;			   /**< whether the user chose to export example json */
+	uint8_t import_json;			   /**< whether an input data_ids json path was given */
+	uint8_t pci_set;			   /**< whether the user provided a pci address */
+	char pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /**< PCI address to be used */
+	uint64_t reconfig_sample_period;	   /**< reconfig sample period to be used */
 };
 
 /*

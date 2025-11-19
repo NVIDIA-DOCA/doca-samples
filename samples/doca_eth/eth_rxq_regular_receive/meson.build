@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -53,7 +53,7 @@ sample_srcs = [
 	SAMPLE_NAME + '_main.c',
 	# Common code for the DOCA library samples
 	'../eth_common.c',
-	'../eth_rxq_common.c',
+	'../eth_flow_common.c',
 	# Common code for all DOCA samples
 	'../../common.c',
 ]

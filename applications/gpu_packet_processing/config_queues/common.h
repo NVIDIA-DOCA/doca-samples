@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -44,16 +44,23 @@ struct rxq_tcp_queues {
 	struct doca_gpu *gpu_dev; /* GPUNetio handler associated to queues */
 	struct doca_dev *ddev;	  /* DOCA device handler associated to queues */
 
-	uint16_t numq;			      /* Number of queues processed in the GPU */
-	uint16_t numq_cpu_rss;		      /* Number of queues processed in the CPU */
-	uint16_t lcore_idx_start;	      /* Map queues [0 .. numq] to [lcore_idx_start .. lcore_idx_start+numq] */
-	struct rte_mempool *tcp_ack_pkt_pool; /* Memory pool shared by RSS cores to respond with TCP ACKs */
-	struct doca_ctx *eth_rxq_ctx[MAX_QUEUES];	  /* DOCA Ethernet receive queue context */
-	struct doca_eth_rxq *eth_rxq_cpu[MAX_QUEUES];	  /* DOCA Ethernet receive queue CPU handler */
-	struct doca_gpu_eth_rxq *eth_rxq_gpu[MAX_QUEUES]; /* DOCA Ethernet receive queue GPU handler */
-	struct doca_mmap *pkt_buff_mmap[MAX_QUEUES];	  /* DOCA mmap to receive packet with DOCA Ethernet queue */
-	void *gpu_pkt_addr[MAX_QUEUES];			  /* DOCA mmap GPU memory address */
-	int dmabuf_fd[MAX_QUEUES];			  /* GPU memory dmabuf file descriptor */
+	uint16_t numq;					  /* Number of queues processed in the GPU */
+	uint16_t numq_cpu_rss;				  /* Number of queues processed in the CPU */
+	struct doca_eth_rxq *eth_rxq_cpu_rss[MAX_QUEUES]; /* DOCA Ethernet receive queue CPU RSS handler */
+	struct doca_mmap *rxq_cpu_rss_mmap[MAX_QUEUES];	  /* DOCA mmap to receive packet with DOCA Ethernet CPU queue */
+	void *rxq_cpu_rss_mmap_addr[MAX_QUEUES];	  /* DOCA mmap CPU memory address */
+	struct doca_eth_txq *eth_txq_cpu_rss[MAX_QUEUES]; /* DOCA Ethernet transmit queue CPU RSS handler */
+	struct doca_mmap *txq_cpu_rss_mmap[MAX_QUEUES];	  /* DOCA mmap to send packet with DOCA Ethernet CPU queue */
+	void *txq_cpu_rss_mmap_addr[MAX_QUEUES];	  /* DOCA mmap CPU memory address */
+	struct doca_buf_pool *txq_cpu_rss_buf_pool[MAX_QUEUES]; /* DOCA buf pool to send packet with DOCA Ethernet CPU
+								   queue */
+	struct doca_pe *cpu_rss_pe[MAX_QUEUES];			/* DOCA PE associated to queues */
+	struct doca_ctx *eth_rxq_ctx[MAX_QUEUES];		/* DOCA Ethernet receive queue context */
+	struct doca_eth_rxq *eth_rxq_cpu[MAX_QUEUES];		/* DOCA Ethernet receive queue CPU handler */
+	struct doca_gpu_eth_rxq *eth_rxq_gpu[MAX_QUEUES];	/* DOCA Ethernet receive queue GPU handler */
+	struct doca_mmap *pkt_buff_mmap[MAX_QUEUES]; /* DOCA mmap to receive packet with DOCA Ethernet queue */
+	void *gpu_pkt_addr[MAX_QUEUES];		     /* DOCA mmap GPU memory address */
+	int dmabuf_fd[MAX_QUEUES];		     /* GPU memory dmabuf file descriptor */
 
 	struct doca_flow_port *port;		    /* DOCA Flow port */
 	struct doca_flow_pipe *rxq_pipe_gpu;	    /* DOCA Flow pipe for GPU queues */
@@ -181,6 +188,11 @@ struct info_http {
 /* Defined in tcp_session_table.h */
 struct tcp_session_entry;
 
+struct thread_args {
+	uint16_t queue_id;
+	void *args;
+};
+
 /*
  * Register application command line parameters.
  *
@@ -193,19 +205,19 @@ doca_error_t register_application_params(void);
  *
  * @nic_pcie_addr [in]: Network card PCIe address
  * @ddev [out]: DOCA device
- * @dpdk_port_id [out]: DPDK port id associated with the DOCA device
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t init_doca_device(char *nic_pcie_addr, struct doca_dev **ddev, uint16_t *dpdk_port_id);
+doca_error_t init_doca_device(char *nic_pcie_addr, struct doca_dev **ddev);
 
 /*
  * Initialize DOCA Flow.
  *
+ * @dev [in]: DOCA device
  * @port_id [in]: DOCA device DPDK port id
  * @rxq_num [in]: Receive queue number
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-struct doca_flow_port *init_doca_flow(uint16_t port_id, uint8_t rxq_num);
+struct doca_flow_port *init_doca_flow(struct doca_dev *dev, uint16_t port_id, uint8_t rxq_num);
 
 /*
  * Create DOCA Flow pipeline for UDP packets.

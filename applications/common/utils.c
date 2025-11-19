@@ -114,7 +114,7 @@ void linear_array_init_u16(uint16_t *array, uint16_t n)
 		array[i] = i;
 }
 
-#if !defined(DOCA_USE_LIBBSD) && !defined(DOCA_USE_LIBC_STRING_L_FUNC)
+#if !defined(DOCA_USE_LIBBSD) && !defined(DOCA_USE_LIBC_STRING_L_FUNC) && !defined(strlcpy)
 
 #include <string.h>
 

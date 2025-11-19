@@ -253,7 +253,7 @@ static doca_error_t create_count_pipe(struct doca_flow_port *port, struct doca_f
 	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(80);
 	match.outer.udp.l4_port.src_port = DOCA_HTOBE16(1234);
 
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, NULL, 0, NULL, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, NULL, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add count pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -397,6 +397,7 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 	memset(&resource, 0, sizeof(resource));
 	memset(user_data, 0, sizeof(struct aging_user_data *) * nb_aged_entries);
 
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 1;
 
 	result = init_doca_flow_cb(nb_queues,
@@ -442,7 +443,8 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_ct_destroy();

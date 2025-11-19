@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,65 +23,127 @@
  *
  */
 
-#include <doca_gpunetio_dev_buf.cuh>
 #include <doca_gpunetio_dev_eth_txq.cuh>
 #include <doca_log.h>
 #include "gpunetio_common.h"
 
 DOCA_LOG_REGISTER(GPU_SIMPLE_SEND::KERNEL);
 
-__global__ void send_packets(struct doca_gpu_eth_txq *eth_txq_gpu,
-			     struct doca_gpu_buf_arr *buf_arr_gpu,
-			     const uint32_t pkt_size,
-			     const uint32_t inflight_sends,
-			     uint32_t *exit_cond)
+template <enum doca_gpu_dev_eth_exec_scope exec_scope = DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK>
+__global__ void send_packets_shared_qp_enabled(struct doca_gpu_eth_txq *txq,
+					       uint8_t *pkt_buff_addr,
+					       const uint32_t pkt_buff_mkey,
+					       const size_t pkt_size,
+					       uint32_t *exit_cond)
 {
-	struct doca_gpu_buf *buf_ptr = NULL;
-	uint64_t doca_gpu_buf_idx = threadIdx.x;
-	uint32_t position;
-	__shared__ uint32_t num_completed;
-	uint32_t curr_position, mask_max_position;
+	uint32_t num_completed, count_cqe;
+	doca_error_t status;
+	doca_gpu_dev_eth_ticket_t out_ticket;
+	enum doca_gpu_eth_send_flags flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NONE;
+	/* For simplicity, every thread always send the same buffer */
+	uint64_t addr = ((uint64_t)pkt_buff_addr) + (uint64_t)(pkt_size * threadIdx.x);
 
-	/* Just for simplicity, every thread always send the same buffer */
-	doca_gpu_dev_buf_get_buf(buf_arr_gpu, doca_gpu_buf_idx, &buf_ptr);
+	/*
+	 * To maximize the throughput, the notification flag can be set at MAX_SQ_DESCR_NUM / 2.
+	 * In this example, for demonstration purposes, the notification is set by every last thread
+	 * relative to the selected scope.
+	 */
+	if (exec_scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD) {
+		/* In thread scope, every thread requests a CQE. */
+		count_cqe = blockDim.x;
+		flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NOTIFY;
+	} else if (exec_scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP) {
+		/* In warp scope, every last thread in warp requests a CQE. */
+		count_cqe = blockDim.x / DOCA_GPUNETIO_ETH_WARP_SIZE;
+		if (doca_gpu_dev_eth_get_lane_id() == (DOCA_GPUNETIO_ETH_WARP_SIZE - 1))
+			flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NOTIFY;
+	} else {
+		/* In block scope, only the last thread in block requests a CQE. */
+		count_cqe = 1;
+		if (threadIdx.x == (blockDim.x - 1))
+			flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NOTIFY;
+	}
 
 	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
-		doca_gpu_dev_eth_txq_get_info(eth_txq_gpu, &curr_position, &mask_max_position);
-		position = (curr_position + threadIdx.x) & mask_max_position;
-		/*
-		 * Only last packet has the NOTIFY flag just to ensure the whole burts of packets in the iteration
-		 * has been correctly sent.
-		 */
-		if ((position % (inflight_sends - 1)) == 0) {
-			/* Just re-use a variable to avoid wasting registers memory */
-			num_completed = 1;
-			doca_gpu_dev_eth_txq_send_enqueue_weak(eth_txq_gpu,
-							       buf_ptr,
-							       pkt_size,
-							       position,
-							       DOCA_GPU_SEND_FLAG_NOTIFY);
-		} else
-			doca_gpu_dev_eth_txq_send_enqueue_weak(eth_txq_gpu, buf_ptr, pkt_size, position, 0);
-		__syncthreads();
+		doca_gpu_dev_eth_txq_send<DOCA_GPUNETIO_ETH_RESOURCE_SHARING_MODE_GPU,
+					  DOCA_GPUNETIO_ETH_SYNC_SCOPE_GPU,
+					  DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
+					  exec_scope>(txq, addr, pkt_buff_mkey, pkt_size, flags, &out_ticket);
 
-		/* First thread in warp flushes send queue */
+		// __syncthreads already present in send with BLOCK scope
+		if (exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK)
+			__syncthreads();
+
 		if (threadIdx.x == 0) {
-			doca_gpu_dev_eth_txq_commit_weak(eth_txq_gpu, blockDim.x);
-			doca_gpu_dev_eth_txq_push(eth_txq_gpu);
-			if (num_completed == 1)
-				doca_gpu_dev_eth_txq_wait_completion(eth_txq_gpu,
-								     1,
-								     DOCA_GPU_ETH_TXQ_WAIT_FLAG_B,
-								     &num_completed);
-			num_completed = 0;
+			status = doca_gpu_dev_eth_txq_poll_completion<DOCA_GPUNETIO_ETH_CQ_POLL_LAST>(
+				txq,
+				count_cqe,
+				DOCA_GPUNETIO_ETH_WAIT_FLAG_B,
+				&num_completed);
+			if (status != DOCA_SUCCESS)
+				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 		}
 		__syncthreads();
 	}
 }
 
+__global__ void send_packets_shared_qp_disabled(struct doca_gpu_eth_txq *txq,
+						uint8_t *pkt_buff_addr,
+						const uint32_t pkt_buff_mkey,
+						const size_t pkt_size,
+						uint32_t *exit_cond)
+{
+	uint64_t wqe_idx = threadIdx.x, cqe_idx = 0;
+	doca_error_t status;
+	enum doca_gpu_eth_send_flags flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NONE;
+	struct doca_gpu_dev_eth_txq_wqe *wqe_ptr;
+	/* For simplicity, every thread always send the same buffer */
+	uint64_t addr = ((uint64_t)pkt_buff_addr) + (uint64_t)(pkt_size * threadIdx.x);
+
+	/*
+	 * To maximize the throughput, the notification flag can be set at MAX_SQ_DESCR_NUM / 2.
+	 * In this example, for demonstration purposes, the notification is set by the last thread
+	 * in the block.
+	 */
+	if (threadIdx.x == (blockDim.x - 1))
+		flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NOTIFY;
+
+	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
+		wqe_ptr = doca_gpu_dev_eth_txq_get_wqe_ptr(txq, wqe_idx);
+		doca_gpu_dev_eth_txq_wqe_prepare_send(txq, wqe_ptr, wqe_idx, addr, pkt_buff_mkey, pkt_size, flags);
+		__syncthreads();
+
+		if (threadIdx.x == (blockDim.x - 1)) {
+			/*
+			 * Generic fucntion to update the dbrec and ring db checking if UAR is on GPU or CPU.
+			 * If these checks are not needed, a lower level combination of API can be used to reduce latency/
+			 * As an example, to ring GPU DB:
+			 * doca_priv_gpu_dev_eth_txq_update_dbr(txq, wqe_idx + 1);
+			 * doca_gpu_dev_eth_txq_ring_db<sync_scope>(txq, wqe_idx + 1);
+			 */
+			doca_gpu_dev_eth_txq_submit(txq, wqe_idx + 1);
+			status = doca_gpu_dev_eth_txq_poll_completion_at<DOCA_GPUNETIO_ETH_RESOURCE_SHARING_MODE_GPU,
+									 DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA>(
+				txq,
+				cqe_idx,
+				DOCA_GPUNETIO_ETH_WAIT_FLAG_B);
+			if (status != DOCA_SUCCESS)
+				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
+			cqe_idx++;
+		}
+		__syncthreads();
+
+		wqe_idx += blockDim.x;
+	}
+}
+
 extern "C" {
 
-doca_error_t kernel_send_packets(cudaStream_t stream, struct txq_queue *txq, uint32_t *gpu_exit_condition)
+doca_error_t kernel_send_packets(cudaStream_t stream,
+				 struct txq_queue *txq,
+				 uint32_t *gpu_exit_condition,
+				 bool shared_qp,
+				 enum doca_gpu_dev_eth_exec_scope exec_scope)
 {
 	cudaError_t result = cudaSuccess;
 
@@ -97,12 +159,39 @@ doca_error_t kernel_send_packets(cudaStream_t stream, struct txq_queue *txq, uin
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	/* For simplicity launch 1 CUDA block with 32 CUDA threads */
-	send_packets<<<1, txq->cuda_threads, 0, stream>>>(txq->eth_txq_gpu,
-							  txq->buf_arr_gpu,
-							  txq->pkt_size,
-							  txq->inflight_sends,
-							  gpu_exit_condition);
+	if (shared_qp) {
+		if (exec_scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD)
+			send_packets_shared_qp_enabled<DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD>
+				<<<SHARED_QP_BLOCKS, txq->cuda_threads / SHARED_QP_BLOCKS, 0, stream>>>(
+					txq->eth_txq_gpu,
+					txq->pkt_buff_addr,
+					txq->pkt_buff_mkey,
+					txq->pkt_size,
+					gpu_exit_condition);
+		if (exec_scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP)
+			send_packets_shared_qp_enabled<DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP>
+				<<<SHARED_QP_BLOCKS, txq->cuda_threads / SHARED_QP_BLOCKS, 0, stream>>>(
+					txq->eth_txq_gpu,
+					txq->pkt_buff_addr,
+					txq->pkt_buff_mkey,
+					txq->pkt_size,
+					gpu_exit_condition);
+		if (exec_scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK)
+			send_packets_shared_qp_enabled<DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK>
+				<<<SHARED_QP_BLOCKS, txq->cuda_threads / SHARED_QP_BLOCKS, 0, stream>>>(
+					txq->eth_txq_gpu,
+					txq->pkt_buff_addr,
+					txq->pkt_buff_mkey,
+					txq->pkt_size,
+					gpu_exit_condition);
+	} else {
+		send_packets_shared_qp_disabled<<<1, txq->cuda_threads, 0, stream>>>(txq->eth_txq_gpu,
+										     txq->pkt_buff_addr,
+										     txq->pkt_buff_mkey,
+										     txq->pkt_size,
+										     gpu_exit_condition);
+	}
+
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
 		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));

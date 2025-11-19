@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -107,7 +107,7 @@ static doca_error_t create_memory_local_remote_server(int oob_sock_fd,
 	server_local_mmap_obj_A[conn_idx].memrange_len = (size_t)GPU_BUF_NUM * GPU_BUF_SIZE_A;
 
 	DOCA_LOG_INFO("Create local server mmap A context");
-	result = create_mmap(&server_local_mmap_obj_A[conn_idx]);
+	result = create_mmap(resources->gpudev, &server_local_mmap_obj_A[conn_idx]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function create_mmap failed: %s", doca_error_get_descr(result));
 		goto error;
@@ -243,7 +243,7 @@ static doca_error_t create_memory_local_remote_client(int oob_sock_fd,
 
 	/* create local mmap object */
 	DOCA_LOG_INFO("Create local client mmap B context");
-	result = create_mmap(&client_local_mmap_obj_B[conn_idx]);
+	result = create_mmap(resources->gpudev, &client_local_mmap_obj_B[conn_idx]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function create_mmap failed: %s", doca_error_get_descr(result));
 		goto error;
@@ -275,7 +275,7 @@ static doca_error_t create_memory_local_remote_client(int oob_sock_fd,
 
 	/* create local mmap object */
 	DOCA_LOG_INFO("Create local client mmap C context");
-	result = create_mmap(&client_local_mmap_obj_C[conn_idx]);
+	result = create_mmap(resources->gpudev, &client_local_mmap_obj_C[conn_idx]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function create_mmap failed: %s", doca_error_get_descr(result));
 		goto error;
@@ -301,7 +301,7 @@ static doca_error_t create_memory_local_remote_client(int oob_sock_fd,
 
 	/* create local mmap object */
 	DOCA_LOG_INFO("Create local client mmap F context");
-	result = create_mmap(&client_local_mmap_obj_F[conn_idx]);
+	result = create_mmap(resources->gpudev, &client_local_mmap_obj_F[conn_idx]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function create_mmap failed: %s", doca_error_get_descr(result));
 		goto error;

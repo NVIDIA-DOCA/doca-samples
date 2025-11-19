@@ -173,7 +173,6 @@ struct psp_gw_app_config {
 	bool disable_ingress_acl;	    /* Allow any ingress packet that successfully decrypts */
 	bool debug_keys;		    /* Print the contents of PSP encryption keys to the console */
 	bool print_stats;		    /* Print session and pipeline statistics to the console */
-	bool maintain_order;		    /* Maintain packet ordering when sampling enabled */
 	uint16_t print_perf_flags;	    /* Print performance information to the console */
 	enum doca_flow_l3_type outer;	    /* Indicate outer tunnel IP type */
 	enum doca_flow_l3_type inner;	    /* Indicate inner tunnel IP type */

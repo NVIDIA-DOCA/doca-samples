@@ -103,15 +103,16 @@ static bool virtiofs_is_resource_available(struct virtiofs_request *dreq)
 	return true;
 }
 
-static void virtiofs_process_datain(struct virtiofs_request *dreq)
+static doca_error_t virtiofs_process_datain(struct virtiofs_request *dreq)
 {
-	doca_error_t err;
+	doca_error_t err = DOCA_SUCCESS;
 	struct virtiofs_device_io_ctx *dio = dreq->dio;
 
 	dreq->datain.host_doca_buf = dreq->in_datain;
 	if (dreq->datain.host_doca_buf == NULL) {
 		DOCA_LOG_ERR("dev %s: Failed to get datain doca_buf from req", dio->dev->config.name);
-		return;
+		err = DOCA_ERROR_INVALID_VALUE;
+		goto out_err;
 	}
 
 	dreq->datain.length = doca_devemu_vfs_fuse_req_get_datain_data_len(dreq->devemu_fuse_req);
@@ -137,11 +138,12 @@ static void virtiofs_process_datain(struct virtiofs_request *dreq)
 		goto out_err;
 	}
 
-	return;
+	return DOCA_SUCCESS;
 
 out_err:
 	dreq->dataout.length = 0;
 	virtiofs_req_complete(dreq, err);
+	return err;
 }
 
 static doca_error_t virtiofs_request_dma_from_host_done(struct virtiofs_request *dreq)
@@ -207,6 +209,7 @@ static doca_error_t virtiofs_request_dma_from_host_done(struct virtiofs_request 
 			return DOCA_ERROR_UNKNOWN;
 		}
 	}
+
 	dreq->dio->fsdev_tctx->fsdev->ops->submit(dreq->dio->fsdev_tctx,
 						  (char *)dreq->hdr_in,
 						  dreq->cmnd_hdr_in,
@@ -218,7 +221,6 @@ static doca_error_t virtiofs_request_dma_from_host_done(struct virtiofs_request 
 						  doca_devemu_vfs_fuse_req_get_id(dreq->devemu_fuse_req),
 						  dreq->cb,
 						  dreq);
-
 	return DOCA_SUCCESS;
 }
 
@@ -232,10 +234,20 @@ static void virtiofs_request_handle(struct virtiofs_request *dreq)
 	if (!virtiofs_is_resource_available(dreq))
 		return;
 
-	if (dreq->in_datain)
-		virtiofs_process_datain(dreq);
-	else
-		virtiofs_process_dataout(dreq);
+	if (dreq->in_datain) {
+		/* If a request has "datain", we can submit it to doca_dma and add it to order list,
+		 * since the doca_dma gurantees ordered completions. */
+		if (virtiofs_process_datain(dreq) == DOCA_SUCCESS)
+			TAILQ_INSERT_TAIL(&dreq->dio->order, dreq, order);
+	} else {
+		if (TAILQ_EMPTY(&dreq->dio->order)) {
+			/* Request without "datain", safe to submit to backend as there are no outstanding IOs */
+			virtiofs_process_dataout(dreq);
+		} else {
+			/* Order list is not empty, can't skip the queue, wait for the turn */
+			TAILQ_INSERT_TAIL(&dreq->dio->order, dreq, order);
+		}
+	}
 }
 
 static void virtiofs_req_complete(struct virtiofs_request *dreq, doca_error_t error)
@@ -342,11 +354,30 @@ static doca_error_t virtiofs_request_dma_to_host_progress(struct virtiofs_reques
 	return DOCA_ERROR_IN_PROGRESS;
 }
 
+static void virtiofs_process_dio_order_list(struct virtiofs_device_io_ctx *dio)
+{
+	struct virtiofs_request *dreq;
+
+	while (!TAILQ_EMPTY(&dio->order)) {
+		dreq = TAILQ_FIRST(&dio->order);
+		if (dreq->in_datain == NULL) {
+			/* Request without any "datain" waiting for its turn */
+			virtiofs_process_dataout(dreq);
+			TAILQ_REMOVE(&dio->order, dreq, order);
+		} else {
+			/* Request with "datain", will be processed when dma cb is received */
+			break;
+		}
+	}
+}
+
 void virtiofs_request_dma_done(struct doca_dma_task_memcpy *dma_task,
 			       union doca_data task_user_data,
 			       union doca_data ctx_user_data)
 {
-	struct virtiofs_request *dreq = task_user_data.ptr;
+	(void)dma_task;
+	(void)ctx_user_data;
+	struct virtiofs_request *dreq = task_user_data.ptr, *order_dreq;
 	doca_error_t err;
 
 	DOCA_LOG_DBG("%s, core_id %d", dreq->dio->dev->config.name, dreq->dio->thread->attr.core_id);
@@ -354,7 +385,18 @@ void virtiofs_request_dma_done(struct doca_dma_task_memcpy *dma_task,
 	doca_task_free(dreq->task);
 
 	if (dreq->dma_op == VIRTIOFS_REQUEST_DMA_OP_FROM_HOST) {
+		order_dreq = TAILQ_FIRST(&dreq->dio->order);
+		if (order_dreq != dreq) {
+			/* This can never happen as completions from doca_dma are guaranteed */
+			DOCA_LOG_ERR("Invalid condition order_dreq:%p dreq:%p", order_dreq, dreq);
+			assert(0);
+		}
+
 		virtiofs_request_dma_from_host_done(dreq);
+
+		TAILQ_REMOVE(&dreq->dio->order, dreq, order);
+
+		virtiofs_process_dio_order_list(dreq->dio);
 	} else {
 		err = virtiofs_request_dma_to_host_progress(dreq);
 		if (err != DOCA_ERROR_IN_PROGRESS) {
@@ -368,6 +410,7 @@ void virtiofs_request_dma_err(struct doca_dma_task_memcpy *dma_task,
 			      union doca_data task_user_data,
 			      union doca_data ctx_user_data)
 {
+	(void)dma_task;
 	struct virtiofs_device_io_ctx *dio = ctx_user_data.ptr;
 	struct virtiofs_request *dreq = task_user_data.ptr;
 
@@ -702,6 +745,7 @@ void virtiofs_request_create_handler(struct doca_devemu_vfs_fuse_req *req,
 				     struct fuse_entry_out *entry_out,
 				     struct fuse_open_out *open_out)
 {
+	(void)open_out;
 	virtiofs_process_request(req,
 				 req_user_data,
 				 (char *)in,

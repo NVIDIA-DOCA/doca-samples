@@ -169,6 +169,33 @@ static doca_error_t register_virtiofs_params(void)
 	return DOCA_SUCCESS;
 }
 
+/*
+ * Initialize signal handling for main thread: build the wait set and block it
+ * so signals are delivered via sigwait.
+ *
+ * @param sigset [out]: signal set to populate
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR_UNKNOWN otherwise
+ */
+static doca_error_t virtiofs_signals_setup(sigset_t *sigset)
+{
+	int rc;
+
+	if (sigemptyset(sigset) != 0)
+		return DOCA_ERROR_UNKNOWN;
+	if (sigaddset(sigset, SIGINT) != 0)
+		return DOCA_ERROR_UNKNOWN;
+	if (sigaddset(sigset, SIGTERM) != 0)
+		return DOCA_ERROR_UNKNOWN;
+
+	rc = pthread_sigmask(SIG_BLOCK, sigset, NULL);
+	if (rc != 0) {
+		DOCA_LOG_ERR("Failed to block signals for sigwait: %s", strerror(rc));
+		return DOCA_ERROR_UNKNOWN;
+	}
+
+	return DOCA_SUCCESS;
+}
+
 static bool virtiofs_skip_rw(void)
 {
 	const char *env_var = NULL;
@@ -261,7 +288,7 @@ int main(int argc, char **argv)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to start doca context");
 		exit_status = EXIT_FAILURE;
-		goto destroy_argp;
+		goto cleanup_ctx;
 	}
 
 	skip_rw = virtiofs_skip_rw();
@@ -270,10 +297,16 @@ int main(int argc, char **argv)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create static devices");
 		exit_status = EXIT_FAILURE;
-		goto destroy_argp;
+		goto cleanup_ctx;
 	}
 
-	/* Pause the main thread till receiving a signal*/
+	result = virtiofs_signals_setup(&sigset);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to setup signal handling for sigwait");
+		exit_status = EXIT_FAILURE;
+		goto cleanup_ctx;
+	}
+
 	while (!force_quit) {
 		ret = sigwait(&sigset, &sig);
 		if (ret) {
@@ -298,6 +331,10 @@ int main(int argc, char **argv)
 	virtiofs_destroy(ctx);
 	DOCA_LOG_INFO("VirtioFS app finished successfully");
 	exit(EXIT_SUCCESS);
+
+cleanup_ctx:
+	virtiofs_stop(ctx);
+	virtiofs_destroy(ctx);
 
 destroy_argp:
 	doca_argp_destroy();

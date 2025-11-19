@@ -1180,7 +1180,7 @@ static doca_error_t ip_frag_rss_pipe_create(struct ip_frag_ctx *ctx,
 		return ret;
 	}
 
-	ret = doca_flow_pipe_add_entry(0, pipe, NULL, NULL, NULL, NULL, 0, &status, NULL);
+	ret = doca_flow_pipe_add_entry(0, pipe, NULL, 0, NULL, NULL, NULL, 0, &status, NULL);
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add rss entry: %s", doca_error_get_descr(ret));
 		return ret;
@@ -1273,7 +1273,7 @@ doca_error_t ip_frag(struct ip_frag_config *cfg, struct application_dpdk_config 
 	};
 	uint32_t actions_mem_size[RTE_MAX_ETHPORTS];
 	struct ip_frag_wt_data *wt_data_arr;
-	struct flow_resources resource = {0};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	doca_error_t ret;
 
 	ret = init_doca_flow(ctx.num_queues, "vnf,hws", &resource, nr_shared_resources);
@@ -1298,7 +1298,8 @@ doca_error_t ip_frag(struct ip_frag_config *cfg, struct application_dpdk_config 
 	if (ret != DOCA_SUCCESS)
 		goto cleanup_doca_flow;
 
-	ret = init_doca_flow_ports(ctx.num_ports, ctx.ports, false, ctx.dev_arr, actions_mem_size);
+	resource.nr_rss = 2; /* IPv4 + IPv6 */
+	ret = init_doca_flow_ports(ctx.num_ports, ctx.ports, false, ctx.dev_arr, actions_mem_size, &resource);
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(ret));
 		goto cleanup_wt_data;

@@ -55,9 +55,7 @@ static size_t virtiofs_mpool_hp_align(size_t size)
 static void *virtiofs_mpool_hp_malloc(size_t size)
 {
 	size_t aligned_size = virtiofs_mpool_hp_align(size);
-	void *ptr;
-
-	ptr = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+	void *ptr = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 	if (ptr == MAP_FAILED) {
 		DOCA_LOG_ERR("Failed to allocate huge page memory, err: %s", strerror(errno));
 		return NULL;
@@ -157,7 +155,7 @@ dev_rm:
 mmap_destroy:
 	doca_mmap_destroy(mpool->mmap);
 memory_free:
-	free(mpool->memory);
+	virtiofs_mpool_hp_free(mpool->memory, mpool->attr.num_bufs * mpool->attr.buf_size);
 mpool_free:
 	free(mpool);
 out:

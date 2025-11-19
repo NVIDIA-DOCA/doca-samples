@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -25,11 +25,26 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <rte_ethdev.h>
 
 #include "common.h"
 
+/* Since DPDK and ETH queues should have different IDs, we define a range for DPDK queues */
+#define MAX_DPDK_QUEUE_NUM 128
+
 DOCA_LOG_REGISTER(GPU_PACKET_PROCESSING_UDP);
+
+/*
+ * Retrieve host page size
+ *
+ * @return: host page size
+ */
+static size_t get_host_page_size(void)
+{
+	long ret = sysconf(_SC_PAGESIZE);
+	if (ret == -1)
+		return 4096; // 4KB, default Linux page size
+	return (size_t)ret;
+}
 
 doca_error_t create_icmp_queues(struct rxq_icmp_queues *icmp_queues,
 				struct doca_flow_port *df_port,
@@ -101,9 +116,10 @@ doca_error_t create_icmp_queues(struct rxq_icmp_queues *icmp_queues,
 			return DOCA_ERROR_BAD_STATE;
 		}
 
+		ALIGN_SIZE(cyclic_buffer_size, get_host_page_size());
 		result = doca_gpu_mem_alloc(icmp_queues->gpu_dev,
 					    cyclic_buffer_size,
-					    GPU_PAGE_SIZE,
+					    get_host_page_size(),
 					    DOCA_GPU_MEM_TYPE_GPU,
 					    &icmp_queues->gpu_pkt_addr[idx],
 					    NULL);
@@ -266,6 +282,13 @@ doca_error_t create_icmp_queues(struct rxq_icmp_queues *icmp_queues,
 		result = doca_ctx_start(icmp_queues->eth_txq_ctx[idx]);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed doca_ctx_start: %s", doca_error_get_descr(result));
+			destroy_icmp_queues(icmp_queues);
+			return DOCA_ERROR_BAD_STATE;
+		}
+
+		result = doca_eth_txq_apply_queue_id(icmp_queues->eth_txq_cpu[idx], QUEUE_ID_ICMP_0 + idx);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed doca_eth_txq_apply_queue_id: %s", doca_error_get_descr(result));
 			destroy_icmp_queues(icmp_queues);
 			return DOCA_ERROR_BAD_STATE;
 		}

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -162,14 +162,28 @@ static doca_error_t init_template_fields(void)
  */
 static void prepare_netflow_example_record(struct doca_telemetry_exporter_netflow_example_record *record)
 {
-	record->src_addr_v4 = inet_addr("192.168.120.1");		       /* Source IPV4 Address */
-	record->dst_addr_v4 = inet_addr("192.168.120.2");		       /* Destination IPV4 Address */
-	inet_pton(AF_INET6, "0:0:0:0:0:FFFF:C0A8:7801", &record->src_addr_v6); /* Source IPV6 Address */
-	inet_pton(AF_INET6, "0:0:0:0:0:FFFF:C0A8:7802", &record->dst_addr_v6); /* Destination IPV6 Address */
-	record->next_hop_v4 = inet_addr("192.168.133.7");		       /* Next hop router's IPV4 Address */
-	inet_pton(AF_INET6, "0:0:0:0:0:FFFF:C0A8:8507", &record->next_hop_v6); /* Next hop router's IPV6 Address */
-	record->input = htobe16(1);					       /* Input interface index */
-	record->output = htobe16(65535);				       /* Output interface index */
+	int ret;
+
+	record->src_addr_v4 = inet_addr("192.168.120.1"); /* Source IPV4 Address */
+	record->dst_addr_v4 = inet_addr("192.168.120.2"); /* Destination IPV4 Address */
+
+	ret = inet_pton(AF_INET6, "0:0:0:0:0:FFFF:C0A8:7801", &record->src_addr_v6); /* Source IPV6 Address */
+	if (ret != 1)
+		DOCA_LOG_ERR("Failed to convert source IPv6 address, ret=%d", ret);
+
+	ret = inet_pton(AF_INET6, "0:0:0:0:0:FFFF:C0A8:7802", &record->dst_addr_v6); /* Destination IPV6 Address */
+	if (ret != 1)
+		DOCA_LOG_ERR("Failed to convert destination IPv6 address, ret=%d", ret);
+
+	record->next_hop_v4 = inet_addr("192.168.133.7"); /* Next hop router's IPV4 Address */
+
+	ret = inet_pton(AF_INET6, "0:0:0:0:0:FFFF:C0A8:8507", &record->next_hop_v6); /* Next hop router's IPV6 Address
+										      */
+	if (ret != 1)
+		DOCA_LOG_ERR("Failed to convert next hop IPv6 address, ret=%d", ret);
+
+	record->input = htobe16(1);	  /* Input interface index */
+	record->output = htobe16(65535);  /* Output interface index */
 	record->src_port = htobe16(5353); /* TCP/UDP source port number or equivalent */
 	record->dst_port = htobe16(8000); /* TCP/UDP destination port number or equivalent */
 	record->tcp_flags = 0;		  /* Cumulative OR of tcp flags */

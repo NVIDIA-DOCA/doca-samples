@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -104,7 +104,6 @@ static doca_error_t pf_devices_name_callback(void *param, void *config)
 	return DOCA_SUCCESS;
 }
 
-#ifdef DOCA_ARCH_DPU
 /*
  * ARGP Callback - Handle RDMA device names parameter
  *
@@ -155,7 +154,6 @@ static doca_error_t rdma_devices_name_callback(void *param, void *config)
 
 	return DOCA_SUCCESS;
 }
-#endif
 
 /*
  * Register the command line parameters for the All to All application.
@@ -206,7 +204,6 @@ static doca_error_t register_all_to_all_params(void)
 		return result;
 	}
 
-#ifdef DOCA_ARCH_DPU
 	struct doca_argp_param *rdma_devices_param;
 	result = doca_argp_param_create(&rdma_devices_param);
 	if (result != DOCA_SUCCESS) {
@@ -226,7 +223,6 @@ static doca_error_t register_all_to_all_params(void)
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
 		return result;
 	}
-#endif
 
 	return DOCA_SUCCESS;
 }

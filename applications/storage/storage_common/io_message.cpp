@@ -53,9 +53,8 @@ std::string io_message_to_string(char const *buf)
 	using std::to_string;
 
 	auto const msg_type = io_message_view::get_type(buf);
-	std::string s = "type: " + to_string(msg_type) +
-			", user_data: " + to_string(io_message_view::get_user_data(buf).u64) +
-			", correlation_id: " + to_string(io_message_view::get_correlation_id(buf));
+	std::string s =
+		"type: " + to_string(msg_type) + ", user_data: " + to_string(io_message_view::get_user_data(buf).u64);
 
 	switch (msg_type) {
 	case io_message_type::result:

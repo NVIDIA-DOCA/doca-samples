@@ -130,12 +130,14 @@ static doca_error_t virtiofs_get_possible_doca_devs(void)
 		err = doca_dev_open(dev_list[i], &devs[num_devs]);
 		if (err != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to open doca dev, err: %s\n", doca_error_get_name(err));
+			doca_devinfo_destroy_list(dev_list);
 			return err;
 		}
 
 		num_devs += 1;
 	}
 
+	doca_devinfo_destroy_list(dev_list);
 	return DOCA_SUCCESS;
 }
 
@@ -157,10 +159,10 @@ static doca_error_t virtiofs_devemu_vfs_init(void)
 		return err;
 	}
 
-	for (int i = 0; i < num_devs; i++) {
+	for (uint32_t i = 0; i < num_devs; i++) {
 		err = doca_devemu_vfs_cfg_add_dev(cfg, devs[i]);
 		if (err != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to add dev to cfg at idx:%d, err: %s", i, doca_error_get_name(err));
+			DOCA_LOG_ERR("Failed to add dev to cfg at idx:%u, err: %s", i, doca_error_get_name(err));
 		}
 	}
 
@@ -212,6 +214,7 @@ struct virtiofs_resources *virtiofs_create(uint32_t core_mask)
 	err = virtiofs_managers_create(ctx);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca managers, err: %d", err);
+		free(ctx);
 		return NULL;
 	}
 
@@ -312,6 +315,8 @@ static doca_error_t virtiofs_devices_teardown_progress(struct virtiofs_resources
 			break;
 
 		case VIRTIOFS_DEVICE_STATE_STOPPED:
+			if (dev->io_ctxs_alive != 0)
+				break;
 			err = virtiofs_device_destroy(ctx, dev->config.name);
 			if (err != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to destroy device %s, err: %s",
@@ -357,6 +362,10 @@ void virtiofs_destroy(struct virtiofs_resources *ctx)
 		virtiofs_mpool_set_destroy(ctx->threads[i].mpool_set);
 		virtiofs_thread_destroy(ctx->threads[i].thread);
 	}
+
+	struct virtiofs_fsdev *f, *tmp;
+	SLIST_FOREACH_SAFE(f, &ctx->fsdevs, entry, tmp)
+	f->ops->destroy(f);
 
 	virtiofs_managers_destroy(ctx);
 	free(ctx);

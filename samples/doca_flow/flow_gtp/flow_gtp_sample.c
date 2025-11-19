@@ -131,7 +131,7 @@ int add_modify_gtp_psc_header_entry(struct doca_flow_pipe *pipe, struct entries_
 	actions.tun.type = DOCA_FLOW_TUN_GTPU;
 	actions.tun.gtp_ext_psc_qfi = 0x3a;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -189,7 +189,7 @@ static doca_error_t create_match_gtp_pipe_and_add_entry(struct doca_flow_port *p
 		goto destroy_pipe_cfg;
 	}
 
-	result = doca_flow_pipe_add_entry(0, *pipe, NULL, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
+	result = doca_flow_pipe_add_entry(0, *pipe, NULL, 0, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
 
 destroy_pipe_cfg:
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
@@ -224,7 +224,7 @@ doca_error_t flow_gtp(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

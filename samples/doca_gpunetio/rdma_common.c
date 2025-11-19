@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -563,13 +563,14 @@ doca_error_t destroy_rdma_resources(struct rdma_resources *resources)
 /*
  * Create a DOCA mmap object
  *
+ * @gpu_dev [in]: DOCA GPUNetIO handler
  * @mmap_obj [in]: mmap object to populate
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t create_mmap(struct rdma_mmap_obj *mmap_obj)
+doca_error_t create_mmap(struct doca_gpu *gpu_dev, struct rdma_mmap_obj *mmap_obj)
 {
-	/* setup mmap */
 	doca_error_t result, result2;
+	int dmabuf_fd;
 
 	result = doca_mmap_create(&(mmap_obj->mmap));
 	if (result != DOCA_SUCCESS)
@@ -578,6 +579,29 @@ doca_error_t create_mmap(struct rdma_mmap_obj *mmap_obj)
 	result = doca_mmap_set_permissions(mmap_obj->mmap, mmap_obj->permissions);
 	if (result != DOCA_SUCCESS)
 		goto error;
+
+	/* Map GPU memory buffer used to receive packets with DMABuf */
+	result = doca_gpu_dmabuf_fd(gpu_dev, mmap_obj->memrange_addr, mmap_obj->memrange_len, &(dmabuf_fd));
+	if (result != DOCA_SUCCESS) {
+		/* If failed, use nvidia-peermem legacy method */
+		result = doca_mmap_set_memrange(mmap_obj->mmap, mmap_obj->memrange_addr, mmap_obj->memrange_len);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to initialize memory objects: Unable to set memrange: %s",
+				     doca_error_get_descr(result));
+			goto error;
+		}
+	} else {
+		result = doca_mmap_set_dmabuf_memrange(mmap_obj->mmap,
+						       dmabuf_fd,
+						       mmap_obj->memrange_addr,
+						       0,
+						       mmap_obj->memrange_len);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to initialize memory objects: Unable to set dmabuf memrange: %s",
+				     doca_error_get_descr(result));
+			goto error;
+		}
+	}
 
 	result = doca_mmap_set_memrange(mmap_obj->mmap, mmap_obj->memrange_addr, mmap_obj->memrange_len);
 	if (result != DOCA_SUCCESS)

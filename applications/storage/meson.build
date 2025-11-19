@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -45,6 +45,32 @@ elif host_machine.system() == 'windows'
 else
     message('Storage application does not currently support this unknown operating system')
     subdir_done()
+endif
+
+lz4_dev_dep = dependency('liblz4', required : false)
+if lz4_dev_dep.found()
+    base_c_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=1']
+    base_cpp_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=1']
+    app_dependencies += [lz4_dev_dep]
+    storage_common_src += [
+        'storage_common/lz4_sw_context.cpp',
+    ]
+
+    executable(DOCA_PREFIX + APP_NAME + '_gga_offload_sbc_generator',
+               [
+                   'gga_offload_sbc_generator.cpp',
+               ] + storage_common_src,
+               override_options : ['cpp_std=c++17'],
+               c_args : base_c_args,
+               cpp_args : base_cpp_args,
+               dependencies : app_dependencies,
+               include_directories : app_inc_dirs + include_directories('.'),
+               install : install_apps,
+    )
+else
+    message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_gga_offload_sbc_generator' + ' - Missing library liblz4')
+    base_c_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=0']
+    base_cpp_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=0']
 endif
 
 if is_host
@@ -100,20 +126,4 @@ executable(DOCA_PREFIX + APP_NAME + '_target_rdma',
            install : install_apps,
 )
 
-lz4_dev_dep = dependency('liblz4', required : false)
-if lz4_dev_dep.found()
-    executable(DOCA_PREFIX + APP_NAME + '_gga_offload_sbc_generator',
-               [
-                   'gga_offload_sbc_generator.cpp',
-               ] + storage_common_src,
-               override_options : ['cpp_std=c++17'],
-               c_args : base_c_args,
-               cpp_args : base_cpp_args,
-               dependencies : app_dependencies,
-               include_directories : app_inc_dirs + include_directories('.'),
-               install : install_apps,
-    )
-else
-    message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_gga_offload_sbc_generator' + ' - Missing library liblz4')
-endif
 

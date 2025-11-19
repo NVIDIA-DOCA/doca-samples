@@ -78,12 +78,11 @@ extern "C" {
  * @brief A struct that includes all the resources needed for DPA
  */
 struct dpa_resources {
-	struct doca_dev *pf_doca_device;   /**< PF DOCA device */
-	struct doca_dpa *pf_dpa_ctx;	   /**< DOCA DPA context created on PF device */
-	struct doca_dev *rdma_doca_device; /**< When running from DPU: SF DOCA device used to create RDMA context
-						 When running from Host: will be equal to pf_doca_device */
-	struct doca_dpa *rdma_dpa_ctx; /**< When running from DPU: extended DOCA DPA context created on RDMA DOCA device
-					      When running from Host: will be equal to pf_dpa_ctx */
+	struct doca_dev *pf_doca_device;	  /**< PF DOCA device */
+	struct doca_dpa *pf_dpa_ctx;		  /**< DOCA DPA context created on PF device */
+	struct doca_dev *rdma_doca_device;	  /**< DOCA device used to create RDMA context */
+	struct doca_dpa *rdma_dpa_ctx;		  /**< extended DOCA DPA context created on RDMA DOCA device (or same as
+						     pf_dpa_ctx) */
 	doca_dpa_dev_t rdma_dpa_ctx_handle;	  /**< RDMA DOCA DPA context handle */
 	struct doca_dpa_eu_affinity **affinities; /**< DPA thread affinity */
 	uint32_t num_affinities;		  /**< Number of affinities */
@@ -96,8 +95,7 @@ struct dpa_resources {
  */
 struct dpa_config {
 	char pf_device_name[DOCA_DEVINFO_IBDEV_NAME_SIZE];    /**< Buffer that holds the PF device name */
-	char rdma_device_name[DOCA_DEVINFO_IBDEV_NAME_SIZE];  /**< Needed when running from DPU: Buffer that holds the
-								 RDMA device name */
+	char rdma_device_name[DOCA_DEVINFO_IBDEV_NAME_SIZE];  /**< Buffer that holds the RDMA device name */
 	char dpa_resources_file[DPA_RESOURCES_PATH_MAX_SIZE]; /**< Path to the DPA resources file */
 	char dpa_app_key[DPA_APP_KEY_MAX_SIZE];		      /**< DPA application key */
 	bool is_gid_index_set;				      /* Is the set_index parameter passed */
@@ -181,7 +179,7 @@ struct doca_mmap_obj {
 	struct doca_dpa *doca_dpa;	     /**< DOCA DPA context */
 	uint32_t permissions;		     /**< Mmap permissions */
 	void *memrange_addr;		     /**< Mmap address */
-	size_t memrange_len;		     /**< Mmap address length */
+	uint64_t memrange_len;		     /**< Mmap address length */
 	struct doca_mmap *mmap;		     /**< Created Mmap */
 	doca_dpa_dev_mmap_t dpa_mmap_handle; /**< Created Mmap DPA device handle */
 	const void *rdma_export;	     /**< Exported Mmap to be used for RDMA operations */

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -122,7 +122,7 @@ __dpa_global__ void thread_kernel(uint64_t arg)
  * On the first iteration the two threads post receive operation on the expected receive addresses.
  * To trigger the first completion the ping thread posts a send operation as well.
  *
- * @rdma_dpa_ctx_handle [in]: DPA context handle used for RDMA DOCA device. Needed when running from DPU
+ * @rdma_dpa_ctx_handle [in]: DPA context handle used for RDMA DOCA device
  * @ping_thread_arg [in]: Ping thread argument which includes all needed info for RDMA post send/receive
  * @pong_thread_arg [in]: Pong thread argument which includes all needed info for RDMA post receive
  * @return: RPC function always succeed and returns 0

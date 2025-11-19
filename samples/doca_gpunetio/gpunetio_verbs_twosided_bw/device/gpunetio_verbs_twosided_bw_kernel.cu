@@ -91,25 +91,23 @@ __global__ void server(struct doca_gpu_dev_verbs_qp *qp,
 		       uint32_t dump_flag_mkey)
 {
 	doca_gpu_dev_verbs_ticket_t out_ticket;
+	uint32_t lane_idx = doca_gpu_dev_verbs_get_lane_id();
 	uint32_t tidx = threadIdx.x + (blockIdx.x * blockDim.x);
 	uint64_t wqe_idx;
 	struct doca_gpu_dev_verbs_wqe *wqe_ptr;
 
-	for (uint32_t iter_idx = blockIdx.x * blockDim.x + threadIdx.x; iter_idx < num_iters; iter_idx += (blockDim.x * gridDim.x)) {
-		// Every thread posts an RDMA Recv with shared qp support
-		doca_gpu_dev_verbs_recv<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-					       DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
-					       scope>(
+	for (uint32_t iter_idx = tidx; iter_idx < num_iters; iter_idx += (blockDim.x * gridDim.x)) {
+
+		doca_gpu_dev_verbs_recv<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO, scope>(
 			qp,
-			doca_gpu_dev_verbs_addr{.addr = (uint64_t)(src_buf + (data_size * tidx)),
-									.key = src_buf_mkey},
+			doca_gpu_dev_verbs_addr{.addr = (uint64_t)(src_buf + (data_size * tidx)), .key = (uint32_t)src_buf_mkey},
 			data_size,
 			&out_ticket);
 
 		// Wait for all the recv to be posted
 		__syncthreads();
 
-		// Post RDMA write to notify Recv has been posted. One write per block to reduce the number of ops
+		// Post RDMA write to notify Recv has been posted. One write per block from thread 0 is enough
 		if (threadIdx.x == 0) {
 			src_flag[tidx] = start_iters + iter_idx + 1;
 			wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots(qp, 1);
@@ -127,12 +125,24 @@ __global__ void server(struct doca_gpu_dev_verbs_qp *qp,
 								sizeof(uint64_t));
 			doca_gpu_dev_verbs_mark_wqes_ready(qp, wqe_idx, wqe_idx);
 			doca_gpu_dev_verbs_submit(qp, wqe_idx + 1);
+
+			/*
+			 * First thread in block waits for all recv posted in this iteration.
+			 * As an alternative, doca_gpu_dev_verbs_recv_wait() can be called with a specific out_ticket.
+			 * This way a specific CUDA thread can wait on a specific Recv WQE. 
+			 *
+			 * pre-Hopper GPU memory regions require to ensure the memory consistency before returning.
+			 */
+#if __CUDA_ARCH__ < 900
+			doca_gpu_dev_verbs_recv_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO, DOCA_GPUNETIO_VERBS_MCST_ENABLED>(
+										qp, doca_gpu_dev_verbs_addr{.addr = (uint64_t)dump_flag, .key = dump_flag_mkey});
+#else
+			doca_gpu_dev_verbs_recv_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO, DOCA_GPUNETIO_VERBS_MCST_DISABLED>(
+										qp, doca_gpu_dev_verbs_addr{.addr = 0, .key = 0});
+#endif
 		}
 
-		doca_gpu_dev_verbs_wait_recv<scope>(qp,
-						out_ticket,
-						doca_gpu_dev_verbs_addr{.addr = (uint64_t)dump_flag,
-												.key = (uint32_t)dump_flag_mkey});
+		__syncthreads();
 	}
 }
 

@@ -24,90 +24,22 @@
  */
 
 #include <arpa/inet.h>
-#include <rte_ethdev.h>
 #include <doca_flow.h>
 
 #include "common.h"
-#include "dpdk_tcp/tcp_session_table.h"
-
-/* Since DPDK and ETH queues should have different IDs, we define a range for DPDK queues */
-#define MAX_DPDK_QUEUE_NUM 128
+#include "tcp_cpu/tcp_session_table.h"
 
 DOCA_LOG_REGISTER(GPU_PACKET_PROCESSING_FLOW);
 
 static uint64_t default_flow_timeout_usec;
 
-struct doca_flow_port *init_doca_flow(uint16_t port_id, uint8_t rxq_num)
+struct doca_flow_port *init_doca_flow(struct doca_dev *dev, uint16_t port_id, uint8_t rxq_num)
 {
 	doca_error_t result;
 	struct doca_flow_port_cfg *port_cfg;
 	struct doca_flow_port *df_port;
 	struct doca_flow_cfg *rxq_flow_cfg;
-	struct doca_dev *dev;
-	int ret = 0;
-	struct rte_eth_dev_info dev_info = {0};
-	struct rte_eth_conf eth_conf = {
-		.rxmode =
-			{
-				.mtu = 2048, /* Not really used, just to initialize DPDK */
-			},
-		.txmode =
-			{
-				.offloads = RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
-					    RTE_ETH_TX_OFFLOAD_TCP_CKSUM,
-			},
-	};
-	struct rte_mempool *mp = NULL;
-	struct rte_eth_txconf tx_conf;
-
-	/*
-	 * DPDK should be initialized and started before DOCA Flow.
-	 * DPDK doesn't start the device without, at least, one DPDK Rx queue.
-	 * DOCA Flow needs to specify in advance how many Rx queues will be used by the app.
-	 *
-	 * Following lines of code can be considered the minimum WAR for this issue.
-	 */
-
-	ret = rte_eth_dev_info_get(port_id, &dev_info);
-	if (ret) {
-		DOCA_LOG_ERR("Failed rte_eth_dev_info_get with: %s", rte_strerror(-ret));
-		return NULL;
-	}
-
-	ret = rte_eth_dev_configure(port_id, rxq_num, rxq_num, &eth_conf);
-	if (ret) {
-		DOCA_LOG_ERR("Failed rte_eth_dev_configure with: %s", rte_strerror(-ret));
-		return NULL;
-	}
-
-	mp = rte_pktmbuf_pool_create("TEST", 8192, 0, 0, MAX_PKT_SIZE, rte_eth_dev_socket_id(port_id));
-	if (mp == NULL) {
-		DOCA_LOG_ERR("Failed rte_pktmbuf_pool_create with: %s", rte_strerror(-ret));
-		return NULL;
-	}
-
-	tx_conf = dev_info.default_txconf;
-	tx_conf.offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
-
-	for (int idx = 0; idx < rxq_num; idx++) {
-		ret = rte_eth_rx_queue_setup(port_id, idx, 2048, rte_eth_dev_socket_id(port_id), NULL, mp);
-		if (ret) {
-			DOCA_LOG_ERR("Failed rte_eth_rx_queue_setup with: %s", rte_strerror(-ret));
-			return NULL;
-		}
-
-		ret = rte_eth_tx_queue_setup(port_id, idx, 2048, rte_eth_dev_socket_id(port_id), &tx_conf);
-		if (ret) {
-			DOCA_LOG_ERR("Failed rte_eth_tx_queue_setup with: %s", rte_strerror(-ret));
-			return NULL;
-		}
-	}
-
-	ret = rte_eth_dev_start(port_id);
-	if (ret) {
-		DOCA_LOG_ERR("Failed rte_eth_dev_start with: %s", rte_strerror(-ret));
-		return NULL;
-	}
+	int ret;
 
 	/* Initialize doca flow framework */
 	ret = doca_flow_cfg_create(&rxq_flow_cfg);
@@ -115,28 +47,28 @@ struct doca_flow_port *init_doca_flow(uint16_t port_id, uint8_t rxq_num)
 		DOCA_LOG_ERR("Failed to create doca_flow_cfg: %s", doca_error_get_descr(ret));
 		return NULL;
 	}
+
 	ret = doca_flow_cfg_set_pipe_queues(rxq_flow_cfg, rxq_num);
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg pipe_queues: %s", doca_error_get_descr(ret));
 		doca_flow_cfg_destroy(rxq_flow_cfg);
 		return NULL;
 	}
-	/*
-	 * HWS: Hardware steering
-	 * Isolated: don't create RSS rule for DPDK created RX queues
-	 */
+
 	ret = doca_flow_cfg_set_mode_args(rxq_flow_cfg, "vnf,hws,isolated");
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg mode_args: %s", doca_error_get_descr(ret));
 		doca_flow_cfg_destroy(rxq_flow_cfg);
 		return NULL;
 	}
+
 	ret = doca_flow_cfg_set_nr_counters(rxq_flow_cfg, FLOW_NB_COUNTERS);
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_counters: %s", doca_error_get_descr(ret));
 		doca_flow_cfg_destroy(rxq_flow_cfg);
 		return NULL;
 	}
+
 	ret = doca_flow_init(rxq_flow_cfg);
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init doca flow with: %s", doca_error_get_descr(ret));
@@ -145,30 +77,27 @@ struct doca_flow_port *init_doca_flow(uint16_t port_id, uint8_t rxq_num)
 	}
 	doca_flow_cfg_destroy(rxq_flow_cfg);
 
-	result = doca_dpdk_port_as_dev(port_id, &dev);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get DOCA device: %s", doca_error_get_descr(result));
-		return NULL;
-	}
-
 	/* Start doca flow port */
 	result = doca_flow_port_cfg_create(&port_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca_flow_port_cfg: %s", doca_error_get_descr(result));
 		return NULL;
 	}
+
 	result = doca_flow_port_cfg_set_port_id(port_cfg, port_id);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg port_id: %s", doca_error_get_descr(result));
 		doca_flow_port_cfg_destroy(port_cfg);
 		return NULL;
 	}
+
 	result = doca_flow_port_cfg_set_dev(port_cfg, dev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg DOCA device: %s", doca_error_get_descr(result));
 		doca_flow_port_cfg_destroy(port_cfg);
 		return NULL;
 	}
+
 	result = doca_flow_port_start(port_cfg, &df_port);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to start doca flow port with: %s", doca_error_get_descr(result));
@@ -235,8 +164,8 @@ doca_error_t create_udp_pipe(struct rxq_udp_queues *udp_queues, struct doca_flow
 	}
 
 	for (int idx = 0; idx < udp_queues->numq; idx++) {
-		doca_eth_rxq_apply_queue_id(udp_queues->eth_rxq_cpu[idx], MAX_DPDK_QUEUE_NUM + idx);
-		rss_queues[idx] = MAX_DPDK_QUEUE_NUM + idx;
+		rss_queues[idx] = QUEUE_ID_UDP_0 + idx;
+		doca_eth_rxq_apply_queue_id(udp_queues->eth_rxq_cpu[idx], rss_queues[idx]);
 	}
 
 	fwd.type = DOCA_FLOW_FWD_RSS;
@@ -259,6 +188,7 @@ doca_error_t create_udp_pipe(struct rxq_udp_queues *udp_queues, struct doca_flow
 	result = doca_flow_pipe_add_entry(0,
 					  udp_queues->rxq_pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  NULL,
@@ -285,11 +215,14 @@ destroy_pipe_cfg:
 	return result;
 }
 
+#include <rte_eal.h>
+
 doca_error_t create_tcp_cpu_pipe(struct rxq_tcp_queues *tcp_queues, struct doca_flow_port *port)
 {
 	doca_error_t result;
 	uint16_t rss_queues[MAX_QUEUES];
 	struct doca_flow_match match = {0};
+	char *eal_param[3] = {"", "-a", "00:00.0"};
 
 	/*
 	 * Setup the TCP pipe 'rxq_pipe_cpu' which forwards unrecognized flows and
@@ -300,14 +233,23 @@ doca_error_t create_tcp_cpu_pipe(struct rxq_tcp_queues *tcp_queues, struct doca_
 	if (tcp_queues == NULL || port == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
 
+	/* DPDK initialization is needed to use DPDK rte_hash */
+	int ret = rte_eal_init(3, eal_param);
+	if (ret < 0) {
+		DOCA_LOG_ERR("DPDK init failed: %d", ret);
+		return DOCA_ERROR_DRIVER;
+	}
+
 	/* Init TCP session table */
 	tcp_session_table = rte_hash_create(&tcp_session_ht_params);
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_TCP;
 
-	for (int idx = 0; idx < tcp_queues->numq_cpu_rss; idx++)
-		rss_queues[idx] = idx;
+	for (int idx = 0; idx < tcp_queues->numq_cpu_rss; idx++) {
+		rss_queues[idx] = QUEUE_ID_TCP_CPU_0 + idx;
+		doca_eth_rxq_apply_queue_id(tcp_queues->eth_rxq_cpu_rss[idx], rss_queues[idx]);
+	}
 
 	struct doca_flow_fwd fwd = {
 		.type = DOCA_FLOW_FWD_RSS,
@@ -374,6 +316,7 @@ doca_error_t create_tcp_cpu_pipe(struct rxq_tcp_queues *tcp_queues, struct doca_
 	result = doca_flow_pipe_add_entry(0,
 					  tcp_queues->rxq_pipe_cpu,
 					  NULL,
+					  0,
 					  NULL,
 					  NULL,
 					  NULL,
@@ -430,8 +373,8 @@ doca_error_t create_tcp_gpu_pipe(struct rxq_tcp_queues *tcp_queues,
 	};
 
 	for (int idx = 0; idx < tcp_queues->numq; idx++) {
-		doca_eth_rxq_apply_queue_id(tcp_queues->eth_rxq_cpu[idx], MAX_DPDK_QUEUE_NUM + MAX_QUEUES + idx);
-		rss_queues[idx] = MAX_DPDK_QUEUE_NUM + MAX_QUEUES + idx;
+		rss_queues[idx] = QUEUE_ID_TCP_0 + idx;
+		doca_eth_rxq_apply_queue_id(tcp_queues->eth_rxq_cpu[idx], rss_queues[idx]);
 	}
 
 	struct doca_flow_fwd fwd = {
@@ -502,6 +445,7 @@ doca_error_t create_tcp_gpu_pipe(struct rxq_tcp_queues *tcp_queues,
 		result = doca_flow_pipe_add_entry(0,
 						  tcp_queues->rxq_pipe_gpu,
 						  NULL,
+						  0,
 						  NULL,
 						  NULL,
 						  NULL,
@@ -585,8 +529,8 @@ doca_error_t create_icmp_gpu_pipe(struct rxq_icmp_queues *icmp_queues, struct do
 	}
 
 	for (int idx = 0; idx < icmp_queues->numq; idx++) {
-		doca_eth_rxq_apply_queue_id(icmp_queues->eth_rxq_cpu[idx], MAX_DPDK_QUEUE_NUM + 2 * MAX_QUEUES + idx);
-		rss_queues[idx] = MAX_DPDK_QUEUE_NUM + 2 * MAX_QUEUES + idx;
+		rss_queues[idx] = QUEUE_ID_ICMP_0 + idx;
+		doca_eth_rxq_apply_queue_id(icmp_queues->eth_rxq_cpu[idx], rss_queues[idx]);
 	}
 
 	fwd.type = DOCA_FLOW_FWD_RSS;
@@ -609,6 +553,7 @@ doca_error_t create_icmp_gpu_pipe(struct rxq_icmp_queues *icmp_queues, struct do
 	result = doca_flow_pipe_add_entry(0,
 					  icmp_queues->rxq_pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  NULL,
@@ -869,6 +814,7 @@ doca_error_t enable_tcp_gpu_offload(struct doca_flow_port *port,
 	result = doca_flow_pipe_add_entry(queue_id,
 					  gpu_rss_pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  NULL,

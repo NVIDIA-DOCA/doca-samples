@@ -145,7 +145,7 @@ static doca_error_t add_root_pipe_entry(struct doca_flow_pipe *pipe,
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = next_pipe;
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, &fwd, 0, status, entry);
+	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, entry);
 }
 
 /*
@@ -313,7 +313,7 @@ static doca_error_t add_random_sampling_pipe_entry(struct doca_flow_pipe *pipe,
 	 * no need to provide fresh information here again.
 	 */
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, 0, status, entry);
+	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
 }
 
 /*
@@ -405,7 +405,7 @@ static doca_error_t add_random_distribution_pipe_entries(struct doca_flow_pipe *
 		if (i == nb_entries - 1)
 			flags = DOCA_FLOW_NO_WAIT;
 
-		result = doca_flow_pipe_hash_add_entry(0, pipe, i, NULL, NULL, &fwd, flags, status, &entry);
+		result = doca_flow_pipe_hash_add_entry(0, pipe, i, 0, NULL, NULL, &fwd, flags, status, &entry);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add hash pipe entry %u: %s", i, doca_error_get_descr(result));
 			return result;
@@ -526,16 +526,83 @@ static doca_error_t random_distribution_results(uint16_t port_id,
 }
 
 /*
- * Run flow_random sample.
- *
- * This sample tests the 2 common use-cases of random matching:
- *  1. Sampling certain percentage of traffic.
- *  2. Random distribution over port/queues.
+ * Run flow_random sample
  *
  * @nb_steering_queues [in]: number of steering queues the sample will use
  * @nb_rss_queues [in]: number of rss queues the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
+/* Context structure for statistics printing */
+struct random_stats_context {
+	int nb_ports;
+	int nb_rss_queues;
+	uint8_t requested_percentage;
+	struct doca_flow_pipe_entry **root2sampling_entry;
+	struct doca_flow_pipe_entry **random_entry;
+	struct doca_flow_pipe_entry **root2distribution_entry;
+};
+
+/*
+ * Print random statistics
+ *
+ * @nb_ports [in]: number of ports
+ * @nb_rss_queues [in]: number of RSS queues
+ * @requested_percentage [in]: requested sampling percentage
+ * @root2sampling_entry [in]: array of root to sampling entries
+ * @random_entry [in]: array of random entries
+ * @root2distribution_entry [in]: array of root to distribution entries
+ */
+static void print_random_stats(int nb_ports,
+			       int nb_rss_queues,
+			       uint8_t requested_percentage,
+			       struct doca_flow_pipe_entry *root2sampling_entry[],
+			       struct doca_flow_pipe_entry *random_entry[],
+			       struct doca_flow_pipe_entry *root2distribution_entry[])
+{
+	doca_error_t result;
+	int port_id;
+
+	for (port_id = 0; port_id < nb_ports; port_id++) {
+		/* Show the results for sampling */
+		result = random_sampling_results(port_id,
+						 root2sampling_entry[port_id],
+						 random_entry[port_id],
+						 requested_percentage);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to show sampling results in port %u: %s",
+				     port_id,
+				     doca_error_get_descr(result));
+			return;
+		}
+
+		/* Show the results for distribution */
+		result = random_distribution_results(port_id, nb_rss_queues, root2distribution_entry[port_id]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to show distribution results in port %u: %s",
+				     port_id,
+				     doca_error_get_descr(result));
+			return;
+		}
+	}
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: random_stats_context structure
+ */
+static void print_random_stats_wrapper(void *context)
+{
+	struct random_stats_context *ctx = (struct random_stats_context *)context;
+	print_random_stats(ctx->nb_ports,
+			   ctx->nb_rss_queues,
+			   ctx->requested_percentage,
+			   ctx->root2sampling_entry,
+			   ctx->random_entry,
+			   ctx->root2distribution_entry);
+}
+
 doca_error_t flow_random(int nb_steering_queues, int nb_rss_queues)
 {
 	int nb_ports = 2;
@@ -556,6 +623,9 @@ doca_error_t flow_random(int nb_steering_queues, int nb_rss_queues)
 	int port_id;
 
 	memset(&status, 0, sizeof(status));
+
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_rss = num_of_entries;
 	resource.nr_counters = num_of_entries;
 
 	result = init_doca_flow(nb_steering_queues, "vnf,hws", &resource, nr_shared_resources);
@@ -565,7 +635,7 @@ doca_error_t flow_random(int nb_steering_queues, int nb_rss_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -638,35 +708,15 @@ doca_error_t flow_random(int nb_steering_queues, int nb_rss_queues)
 		}
 	}
 
-	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
-	sleep(15);
+	/* Setup statistics context and wait for packets */
+	struct random_stats_context stats_ctx = {.nb_ports = nb_ports,
+						 .nb_rss_queues = nb_rss_queues,
+						 .requested_percentage = requested_percentage,
+						 .root2sampling_entry = root2sampling_entry,
+						 .random_entry = random_entry,
+						 .root2distribution_entry = root2distribution_entry};
 
-	for (port_id = 0; port_id < nb_ports; port_id++) {
-		/* Show the results for sampling */
-		result = random_sampling_results(port_id,
-						 root2sampling_entry[port_id],
-						 random_entry[port_id],
-						 requested_percentage);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to show sampling results in port %u: %s",
-				     port_id,
-				     doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
-
-		/* Show the results for distribution */
-		result = random_distribution_results(port_id, nb_rss_queues, root2distribution_entry[port_id]);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to show distribution results in port %u: %s",
-				     port_id,
-				     doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
-	}
+	flow_wait_for_packets(15, print_random_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

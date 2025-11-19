@@ -41,8 +41,13 @@ use_cases:
           - receiving_port: 0
             packets:
               - Ether()/IP(dst="1.1.1.1")/UDP()/Raw(load=b'Sent to port 0, dropped')
-              - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/TCP(sport=1, dport=2, flags="S")/Raw(load=b'Sent to port 0, origin direction, forwarded to RSS')
+              - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/TCP(sport=1, dport=2, flags="S")/Raw(load=b'Sent to port 0, origin direction, forwarded to RSS, then to port 1')
         validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/TCP(sport=1, dport=2, flags="S")/Raw(load=b'Sent to port 0, origin direction, forwarded to RSS, then to port 1')
           - type: dump
             expected_text:
               - "TCP session was created"
@@ -52,7 +57,7 @@ use_cases:
             packets:
               - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/TCP(sport=1, dport=2, flags="")/Raw(load=b'Sent to port 0, origin direction, forwarded from port 1')
               - Ether()/IP(src="1.1.1.1", dst="2.2.2.2")/TCP(sport=2, dport=1, flags="")/Raw(load=b'Sent to port 0, reply direction, forwarded from port 1')
-              - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/TCP(sport=1, dport=2, flags="F")/Raw(load=b'Sent to port 0, origin direction, forwarded to RSS')
+              - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/TCP(sport=1, dport=2, flags="F")/Raw(load=b'Sent to port 0, origin direction, forwarded to RSS, then to port 1')
         validation:
           - type: packet
             expected_packets:
@@ -60,6 +65,7 @@ use_cases:
                 packets:
                   - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/TCP(sport=1, dport=2, flags="")/Raw(load=b'Sent to port 0, origin direction, forwarded from port 1')
                   - Ether()/IP(src="1.1.1.1", dst="2.2.2.2")/TCP(sport=2, dport=1, flags="")/Raw(load=b'Sent to port 0, reply direction, forwarded from port 1')
+                  - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/TCP(sport=1, dport=2, flags="F")/Raw(load=b'Sent to port 0, origin direction, forwarded to RSS, then to port 1')
           - type: dump
             expected_text:
               - "TCP session was ended"

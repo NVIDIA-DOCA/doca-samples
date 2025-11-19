@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -236,6 +236,12 @@ doca_error_t rmax_stream_set_attributes(struct doca_rmax_in_stream *stream, stru
 		result = doca_rmax_in_stream_set_scatter_type_ulp(stream);
 	if (result != DOCA_SUCCESS)
 		return result;
+
+	if (config->order_by_rtp_seqn) {
+		result = doca_rmax_in_stream_set_packet_placement_order_rtp_seqn(stream);
+		if (result != DOCA_SUCCESS)
+			return result;
+	}
 
 	result = doca_rmax_in_stream_set_elements_count(stream, config->num_elements);
 	if (result != DOCA_SUCCESS)

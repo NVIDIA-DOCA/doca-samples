@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #
-# Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -54,6 +54,7 @@ MLNX_INSTALL_PATH="/opt/mellanox"
 DOCA_INSTALL_DIR="${MLNX_INSTALL_PATH}/doca"
 DOCA_TOOLS="${DOCA_INSTALL_DIR}/tools"
 DPACC="${DOCA_TOOLS}/dpacc"
+DPA_APP_ATTRIBUTES2BLOB="${DOCA_TOOLS}/dpa-app-attributes2blob"
 FLEXIO_INCLUDE="${MLNX_INSTALL_PATH}/flexio/include"
 
 # DOCA include list
@@ -61,6 +62,8 @@ DOCA_APP_DEVICE_COMMON_DIR="${PCC_APP_DEVICE_SRC_DIR}/../../common/device"
 DOCA_APP_DEVICE_PCC_DIR="${PCC_APP_DEVICE_SRC_DIR}"
 DOCA_PCC_DEVICE_RP_ALGO_DIR="${DOCA_APP_DEVICE_PCC_DIR}/rp/algo"
 DOCA_INC_LIST="-I${DOCA_INSTALL_DIR}/include/ -I${DOCA_APP_DEVICE_PCC_DIR} -I${DOCA_APP_DEVICE_COMMON_DIR}"
+APPLICATION_DPA_ATTRIBUTES="${PCC_APP_DEVICE_SRC_DIR}/dpa_app_attributes.yaml"
+APPLICATION_DPA_ATTRIBUTES_BLOB="${APPLICATION_DEVICE_BUILD_DIR}/${PCC_APP_NAME}_attributes.blob"
 
 # Set source files
 if [ ${PCC_APP_NAME} = "pcc_rp_rtt_template_app" ]
@@ -149,6 +152,9 @@ function generate_prog_from_stubs()
 
 mkdir -p $APPLICATION_DEVICE_BUILD_DIR
 
+# Generate blob from device attributes file
+$DPA_APP_ATTRIBUTES2BLOB ${APPLICATION_DPA_ATTRIBUTES} ${APPLICATION_DPA_ATTRIBUTES_BLOB}
+
 # Compile the DPA (kernel) device source code using the DPACC
 $DPACC \
 -flto \
@@ -161,7 +167,8 @@ $PCC_DEVICE_SRC_FILES \
 -disable-asm-checks \
 -device-libs="-L${DOCA_LIB_DIR} -l${DOCA_PCC_DEV_LIB_NAME}" \
 --app-name="${PCC_APP_NAME}" \
---keep-dir="${PCC_DEV_STUBS_KEEP_DIR}"
+--keep-dir="${PCC_DEV_STUBS_KEEP_DIR}" \
+--dpa-proc-attr="${APPLICATION_DPA_ATTRIBUTES_BLOB}"
 
 # generate device application program from auto-generated host stubs
 generate_prog_from_stubs "${PCC_DEVICE_SRC_FILES}"

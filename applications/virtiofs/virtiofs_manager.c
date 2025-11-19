@@ -79,30 +79,35 @@ static struct virtiofs_function *virtiofs_function_create(struct doca_devinfo_re
 	err = doca_devinfo_rep_get_is_hotplug(devinfo_rep, &func->is_hotplugged);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get hotplug status, ret: %d\n", err);
+		free(func);
 		return NULL;
 	}
 
 	err = doca_devinfo_rep_get_pci_addr_str(devinfo_rep, func->pci_buf);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get pci_addr, ret: %d\n", err);
+		free(func);
 		return NULL;
 	}
 
 	err = doca_devinfo_rep_get_vuid(devinfo_rep, func->vuid, DOCA_DEVINFO_REP_VUID_SIZE);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get vuid, ret: %d\n", err);
+		free(func);
 		return NULL;
 	}
 
 	err = doca_devinfo_rep_get_pci_func_type(devinfo_rep, &func->pci_function_type);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get pci function type, ret: %d\n", err);
+		free(func);
 		return NULL;
 	}
 
 	err = doca_dev_rep_open(devinfo_rep, &func->rep);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to open doca_dev_rep, ret: %d\n", err);
+		free(func);
 		return NULL;
 	}
 

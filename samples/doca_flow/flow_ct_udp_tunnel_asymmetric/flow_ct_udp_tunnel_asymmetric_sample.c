@@ -42,6 +42,8 @@
 #define DEFAULT_CNT_QUERY_INTERVAL 1
 #define CT_SHARED_COUNTERS 1
 
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+
 DOCA_LOG_REGISTER(FLOW_CT_UDP);
 
 /*
@@ -98,7 +100,7 @@ static doca_error_t create_rss_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add RSS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -268,9 +270,8 @@ static doca_error_t create_vxlan_encap_pipe(struct doca_flow_port *port,
 	actions.encap_cfg.encap.outer.ip4.dst_ip = BE_IPV4_ADDR(81, 81, 81, 81);
 	actions.encap_cfg.encap.outer.ip4.ttl = 17;
 	actions.encap_cfg.encap.tun.vxlan_tun_id = DOCA_HTOBE32(0xadadad);
-	actions.action_idx = 0;
 
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, &actions, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add VxLAN Encap pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -366,7 +367,7 @@ static doca_error_t create_count_pipe(struct doca_flow_port *port,
 	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(80);
 	match.outer.udp.l4_port.src_port = DOCA_HTOBE16(1234);
 
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add count pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -438,21 +439,24 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 	struct doca_flow_ct_match match_r_shared;
 	uint32_t entry_flags, prepare_flags;
 	doca_error_t result;
-	int i, nb_packets = 0;
+	int i, nb_packets = 0, total_packets_processed = 0;
 	uint64_t timeout_s = 5; /* Timeout in seconds */
-	time_t cur_time, end_time;
+	time_t end_time, max_end_time;
 
 	memset(&match_o_asym, 0, sizeof(match_o_asym));
 	memset(&match_r_asym, 0, sizeof(match_r_asym));
 
-	cur_time = time(NULL);
-	end_time = cur_time + timeout_s;
+	max_end_time = time(NULL) + timeout_s; /* Absolute maximum timeout */
+	end_time = max_end_time;	       /* Current timeout */
 	do {
 		nb_packets = rte_eth_rx_burst(0, 0, packets, PACKET_BURST);
 		if (nb_packets == 0) {
 			/* No packets received, continue immediately without blocking */
 			continue;
 		}
+		total_packets_processed += nb_packets;
+		/* Updated timeout */
+		end_time = MIN(time(NULL) + 2, max_end_time);
 
 		DOCA_LOG_INFO("Sample received %d packets", nb_packets);
 		for (i = 0; i < PACKET_BURST && i < nb_packets; i++) {
@@ -517,23 +521,20 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 						      &entry[1]);
 
 			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to handle CT entry\n");
+				DOCA_LOG_ERR("Failed to create CT entry\n");
 				return result;
 			}
-		}
-		if (nb_packets > 0) {
 			DOCA_LOG_INFO(
-				"two entries created: asym counter entry - matches on the incoming packet's 5-tuple, shared counter entry - matches on incoming packet's ip addresses and on port addresses + 1");
-			break;
+				"Two entries created from packet %d: asymmetric counter entry - matches on the incoming packet's 5-tuple, shared counter entry - matches on incoming packet's ip addresses and on port addresses + 1",
+				i);
 		}
 	} while (time(NULL) < end_time);
 
-	if (nb_packets == 0) {
-		DOCA_LOG_INFO("Sample didn't receive packets to process within 5 seconds timeout");
+	if (total_packets_processed == 0) {
+		DOCA_LOG_ERR("Sample didn't receive packets within 5 seconds timeout");
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	DOCA_LOG_INFO("Sample processed %d packets", nb_packets);
 	return DOCA_SUCCESS;
 }
 
@@ -544,6 +545,82 @@ static doca_error_t process_packets(struct doca_flow_port *port,
  * @ctx [in]: flow switch context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
+/* Context structure for statistics printing */
+struct ct_udp_tunnel_stats_context {
+	struct doca_flow_pipe *ct_pipe;
+	struct doca_flow_pipe_entry **ct_entry;
+	uint16_t ct_queue;
+};
+
+/*
+ * Print CT UDP tunnel statistics
+ *
+ * @ct_pipe [in]: CT pipe
+ * @ct_entry [in]: array of CT entries
+ * @ct_queue [in]: CT queue
+ */
+static void print_ct_udp_tunnel_stats(struct doca_flow_pipe *ct_pipe,
+				      struct doca_flow_pipe_entry *ct_entry[],
+				      uint16_t ct_queue)
+{
+	doca_error_t result;
+	struct doca_flow_resource_query query_o_asym, query_r_asym, query_o_shared, query_r_shared;
+	uint64_t last_hit_s_asym, last_hit_s_shared;
+
+	/* Query asymmetric counter */
+	result = doca_flow_ct_query_entry(ct_queue,
+					  ct_pipe,
+					  DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT,
+					  ct_entry[0],
+					  &query_o_asym,
+					  &query_r_asym,
+					  &last_hit_s_asym);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query CT entry: %s", doca_error_get_descr(result));
+		return;
+	}
+
+	/* Query shared counter */
+	result = doca_flow_ct_query_entry(ct_queue,
+					  ct_pipe,
+					  DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT,
+					  ct_entry[1],
+					  &query_o_shared,
+					  &query_r_shared,
+					  &last_hit_s_shared);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query CT entry: %s", doca_error_get_descr(result));
+		return;
+	}
+	DOCA_LOG_INFO("(Port 0) Asymmetric counter - Origin total packets: %ld, Origin total bytes: %ld",
+		      query_o_asym.counter.total_pkts,
+		      query_o_asym.counter.total_bytes);
+	DOCA_LOG_INFO("(Port 0) Asymmetric counter - Reply total packets: %ld, Reply total bytes: %ld",
+		      query_r_asym.counter.total_pkts,
+		      query_r_asym.counter.total_bytes);
+	DOCA_LOG_INFO("(Port 0) Asymmetric counter - Last hit since Epoch (sec) : %ld", last_hit_s_asym);
+
+	DOCA_LOG_INFO("(Port 0) Shared counter - Origin total packets: %ld, Origin total bytes: %ld",
+		      query_o_shared.counter.total_pkts,
+		      query_o_shared.counter.total_bytes);
+	DOCA_LOG_INFO("(Port 0) Shared counter - Reply total packets: %ld, Reply total bytes: %ld",
+		      query_r_shared.counter.total_pkts,
+		      query_r_shared.counter.total_bytes);
+	DOCA_LOG_INFO("(Port 0) Shared counter - Last hit since Epoch (sec) : %ld", last_hit_s_shared);
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: ct_udp_tunnel_stats_context structure
+ */
+static void print_ct_udp_tunnel_stats_wrapper(void *context)
+{
+	struct ct_udp_tunnel_stats_context *ctx = (struct ct_udp_tunnel_stats_context *)context;
+	print_ct_udp_tunnel_stats(ctx->ct_pipe, ctx->ct_entry, ctx->ct_queue);
+}
+
 doca_error_t flow_ct_udp_tunnel_asymmetric(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 {
 	const int nb_ports = 1, nb_entries = 6;
@@ -554,21 +631,23 @@ doca_error_t flow_ct_udp_tunnel_asymmetric(uint16_t nb_queues, struct flow_switc
 	struct doca_flow_port *ports[nb_ports];
 	struct doca_flow_meta o_zone_mask, r_zone_mask;
 	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
-	struct doca_flow_resource_query query_o_asym, query_r_asym, query_o_shared, query_r_shared;
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ctrl_status, ct_status;
-	uint64_t last_hit_s_asym, last_hit_s_shared;
 	uint32_t ct_flags, num_total_sessions, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 0,
 					       nb_ipv4_sessions = 1024, nb_ipv6_sessions = 0; /* On BF2 should always be
 												 0 */
 	uint16_t ct_queue = nb_queues;
+	struct ct_udp_tunnel_stats_context stats_ctx = {.ct_pipe = ct_pipe, .ct_entry = ct_entry, .ct_queue = ct_queue};
 	doca_error_t result;
 
 	memset(&ctrl_status, 0, sizeof(ctrl_status));
 	memset(&ct_status, 0, sizeof(ct_status));
 	memset(&resource, 0, sizeof(resource));
 
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 1;
+	resource.nr_rss = 1;
+	resource.nr_encap = 1;
 	ct_status.nb_processed = 0;
 
 	result = init_doca_flow(nb_queues, "switch,hws,isolated", &resource, nr_shared_resources);
@@ -610,7 +689,8 @@ doca_error_t flow_ct_udp_tunnel_asymmetric(uint16_t nb_queues, struct flow_switc
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_ct_destroy();
@@ -644,52 +724,12 @@ doca_error_t flow_ct_udp_tunnel_asymmetric(uint16_t nb_queues, struct flow_switc
 		goto cleanup;
 	}
 
-	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
+	DOCA_LOG_INFO("Wait a few seconds for packets to arrive");
 	result = process_packets(ports[0], ct_queue, &ct_status, ct_entry);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
-	DOCA_LOG_INFO("tunneled and non-tunneled packets should be sent. wait for packet to arrive");
-	sleep(5);
-	/* Query asymmetric counter */
-	result = doca_flow_ct_query_entry(ct_queue,
-					  ct_pipe,
-					  DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT,
-					  ct_entry[0],
-					  &query_o_asym,
-					  &query_r_asym,
-					  &last_hit_s_asym);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query CT entry: %s", doca_error_get_descr(result));
-		goto cleanup;
-	}
-
-	/* Query shared counter */
-	result = doca_flow_ct_query_entry(ct_queue,
-					  ct_pipe,
-					  DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT,
-					  ct_entry[1],
-					  &query_o_shared,
-					  &query_r_shared,
-					  &last_hit_s_shared);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query CT entry: %s", doca_error_get_descr(result));
-		goto cleanup;
-	}
-	DOCA_LOG_INFO("Port 0:");
-	DOCA_LOG_INFO("Asymmetric counter:");
-	DOCA_LOG_INFO("Origin Total bytes: %ld", query_o_asym.counter.total_bytes);
-	DOCA_LOG_INFO("Origin Total packets: %ld", query_o_asym.counter.total_pkts);
-	DOCA_LOG_INFO("Reply Total bytes: %ld", query_r_asym.counter.total_bytes);
-	DOCA_LOG_INFO("Reply Total packets: %ld", query_r_asym.counter.total_pkts);
-	DOCA_LOG_INFO("Last hit since Epoch (sec) : %ld", last_hit_s_asym);
-
-	DOCA_LOG_INFO("Shared counter:");
-	DOCA_LOG_INFO("Origin Total bytes: %ld", query_o_shared.counter.total_bytes);
-	DOCA_LOG_INFO("Origin Total packets: %ld", query_o_shared.counter.total_pkts);
-	DOCA_LOG_INFO("Reply Total bytes: %ld", query_r_shared.counter.total_bytes);
-	DOCA_LOG_INFO("Reply Total packets: %ld", query_r_shared.counter.total_pkts);
-	DOCA_LOG_INFO("Last hit since Epoch (sec) : %ld", last_hit_s_shared);
+	flow_wait_for_packets(5, print_ct_udp_tunnel_stats_wrapper, &stats_ctx);
 
 cleanup:
 	cleanup_procedure(ct_pipe, nb_ports, ports);

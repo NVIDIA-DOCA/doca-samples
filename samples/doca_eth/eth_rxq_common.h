@@ -28,51 +28,8 @@
 
 #include <unistd.h>
 
-#include <doca_flow.h>
-#include <doca_dev.h>
 #include <doca_error.h>
 #include <doca_buf.h>
-
-struct eth_rxq_flow_resources {
-	struct doca_flow_port *df_port;		 /* DOCA flow port */
-	struct doca_flow_pipe *root_pipe;	 /* DOCA flow root pipe*/
-	struct doca_flow_pipe_entry *root_entry; /* DOCA flow root pipe entry*/
-};
-
-struct eth_rxq_flow_config {
-	struct doca_dev *dev;	 /* DOCA device */
-	uint16_t *rxq_queue_ids; /* DOCA ETH RXQ's queue IDs array */
-	uint16_t nb_queues;	 /* Number of queues IDs in the array */
-};
-
-/*
- * Initializes DOCA flow for ETH RXQ sample
- *
- * @dev [in]: Doca device to use for doca_flow_port
- * @port_id [in]: doca_flow_port id to assign
- * @resources [in]: flow resources
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-doca_error_t rxq_common_init_doca_flow(struct doca_dev *dev,
-				       uint16_t port_id,
-				       struct eth_rxq_flow_resources *resources);
-
-/*
- * Allocate DOCA flow resources for ETH RXQ sample
- *
- * @cfg [in]: Configuration parameters
- * @resources [out]: DOCA flow resources for ETH RXQ sample to allocate
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-doca_error_t allocate_eth_rxq_flow_resources(struct eth_rxq_flow_config *cfg, struct eth_rxq_flow_resources *resources);
-
-/*
- * Destroy DOCA flow resources for ETH RXQ sample
- *
- * @resources [in]: DOCA flow resources for ETH RXQ sample to destroy
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-doca_error_t destroy_eth_rxq_flow_resources(struct eth_rxq_flow_resources *resources);
 
 /*
  * Get DOCA buf packet headroom size for ETH RXQ sample

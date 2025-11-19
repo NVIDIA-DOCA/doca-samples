@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -892,8 +892,8 @@ doca_error_t register_pcc_params(void)
 	}
 	doca_argp_param_set_short_name(device_param, "d");
 	doca_argp_param_set_long_name(device_param, "device");
-	doca_argp_param_set_arguments(device_param, "<IB device names>");
-	doca_argp_param_set_description(device_param, "IB device name that supports PCC (mandatory).");
+	doca_argp_param_set_arguments(device_param, "<RDMA device names>");
+	doca_argp_param_set_description(device_param, "RDMA device name that supports PCC (mandatory).");
 	doca_argp_param_set_callback(device_param, device_name_callback);
 	doca_argp_param_set_type(device_param, DOCA_ARGP_TYPE_STRING);
 	doca_argp_param_set_mandatory(device_param);

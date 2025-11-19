@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -42,6 +42,7 @@ doca_error_t rmax_create_stream(struct rmax_program_state *state, struct rmax_st
 static void init_config(struct rmax_stream_config *config)
 {
 	config->scatter_all = true;
+	config->order_by_rtp_seqn = false;
 	config->src_ip.s_addr = 0;
 	config->dst_ip.s_addr = 0;
 	config->dst_port = 5200;

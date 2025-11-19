@@ -165,7 +165,7 @@ static doca_error_t add_rss_esp_pipe_entry(struct doca_flow_pipe *pipe,
 	memset(&match, 0, sizeof(match));
 	memset(status, 0, sizeof(*status));
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, 0, status, entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to insert ESP RSS entry: %s", doca_error_get_descr(result));
 		return result;
@@ -245,6 +245,46 @@ static doca_error_t rss_distribution_results(uint16_t port_id, uint16_t nb_queue
  * @nb_rss_queues [in]: number of rss queues the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
+
+/* Context structure for statistics printing */
+struct rss_esp_stats_context {
+	int nb_ports;
+	int nb_rss_queues;
+	struct doca_flow_pipe_entry **entries;
+};
+
+/*
+ * Print RSS ESP statistics
+ *
+ * @nb_ports [in]: number of ports
+ * @nb_rss_queues [in]: number of RSS queues
+ * @entries [in]: array of flow entries
+ */
+static void print_rss_esp_stats(int nb_ports, int nb_rss_queues, struct doca_flow_pipe_entry *entries[])
+{
+	doca_error_t result;
+	int port_id;
+
+	for (port_id = 0; port_id < nb_ports; port_id++) {
+		result = rss_distribution_results(port_id, nb_rss_queues, entries[port_id]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Port %d failed to query entry: %s", port_id, doca_error_get_descr(result));
+			return;
+		}
+	}
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: rss_esp_stats_context structure
+ */
+static void print_rss_esp_stats_wrapper(void *context)
+{
+	struct rss_esp_stats_context *ctx = (struct rss_esp_stats_context *)context;
+	print_rss_esp_stats(ctx->nb_ports, ctx->nb_rss_queues, ctx->entries);
+}
+
 doca_error_t flow_rss_esp(int nb_steering_queues, int nb_rss_queues)
 {
 	const int nb_ports = 2;
@@ -258,6 +298,8 @@ doca_error_t flow_rss_esp(int nb_steering_queues, int nb_rss_queues)
 	doca_error_t result;
 	int port_id;
 
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_rss = 1;
 	result = init_doca_flow(nb_steering_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -265,7 +307,7 @@ doca_error_t flow_rss_esp(int nb_steering_queues, int nb_rss_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(1));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -290,18 +332,12 @@ doca_error_t flow_rss_esp(int nb_steering_queues, int nb_rss_queues)
 		}
 	}
 
-	DOCA_LOG_INFO("Wait %d seconds for packets to arrive", WAITING_TIME);
-	sleep(WAITING_TIME);
+	/* Setup statistics context and wait for packets */
+	struct rss_esp_stats_context stats_ctx = {.nb_ports = nb_ports,
+						  .nb_rss_queues = nb_rss_queues,
+						  .entries = entries};
 
-	for (port_id = 0; port_id < nb_ports; port_id++) {
-		result = rss_distribution_results(port_id, nb_rss_queues, entries[port_id]);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Port %d failed to query entry: %s", port_id, doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
-	}
+	flow_wait_for_packets(WAITING_TIME, print_rss_esp_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

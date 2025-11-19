@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -66,6 +66,10 @@ extern "C" {
 		addr[4] = e & 0xff; \
 		addr[5] = f & 0xff; \
 	} while (0) /* create source mac address */
+
+#define IPSEC_ID(index) allocated_ipsec_id[index]
+
+extern uint32_t *allocated_ipsec_id;
 
 /* IPsec Security Gateway mapping between dpdk and doca flow port */
 struct ipsec_security_gw_ports_map {
@@ -135,8 +139,8 @@ doca_error_t ipsec_security_gw_init_status(struct ipsec_security_gw_config *app_
  * @app_cfg [in]: application configuration structure
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t ipsec_security_gw_bind(struct ipsec_security_gw_ports_map *ports[],
-				    struct ipsec_security_gw_config *app_cfg);
+doca_error_t ipsec_security_gw_ids_get(struct ipsec_security_gw_ports_map *ports[],
+				       struct ipsec_security_gw_config *app_cfg);
 
 /*
  * Destroy DOCA Flow resources

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -53,14 +53,19 @@
 #include <doca_dpdk.h>
 #include <doca_flow.h>
 #include <doca_pe.h>
+#include <doca_gpunetio_eth_def.h>
 
 /* GPU page size */
-#define GPU_PAGE_SIZE (1UL << 16)
 #define WARP_SIZE 32
 #define WARP_FULL_MASK 0xFFFFFFFF
 #define MAX_PORT_STR_LEN 128 /* Maximal length of port name */
 #define MAX_QUEUES 4
 #define MAX_QUEUES_ICMP 1
+#define QUEUE_ID_UDP_0 (MAX_QUEUES * 0)
+#define QUEUE_ID_TCP_0 (MAX_QUEUES * 1)
+#define QUEUE_ID_HTTP_0 (MAX_QUEUES * 2)
+#define QUEUE_ID_TCP_CPU_0 (MAX_QUEUES * 3)
+#define QUEUE_ID_ICMP_0 (MAX_QUEUES * 4)
 #define MAX_PKT_NUM 65536
 #define MAX_PKT_SIZE 8192
 #define MAX_RX_NUM_PKTS 4096
@@ -84,13 +89,13 @@
 #define TX_BUF_NUM 1024 /* 32 x 32 */
 #define TX_BUF_MAX_SZ 512
 #define FLOW_NB_COUNTERS 524228 /* 1024 x 512 */
-/* DPDK port to accept new TCP connections */
-#define DPDK_DEFAULT_PORT 0
 /* HTTP page type to send as response to HTTP GET request */
 enum http_page_get {
 	HTTP_GET_INDEX = 0, /* HTML index page */
 	HTTP_GET_CONTACTS,  /* HTML contact page */
 	HTTP_GET_NOT_FOUND  /* HTML not found page */
 };
+
+#define ALIGN_SIZE(size, align) size = ((size + (align)-1) / (align)) * (align);
 
 #endif /* DOCA_GPU_PACKET_PROCESSING_DEF_H */

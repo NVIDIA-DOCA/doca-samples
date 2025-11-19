@@ -69,6 +69,7 @@ struct virtiofs_request {
 	vfs_doca_fsdev_io_cb cb;			  /* Callback */
 	enum virtiofs_request_dma_op dma_op;		  /* DMA operation */
 	TAILQ_ENTRY(virtiofs_request) entry;		  /* List entry */
+	TAILQ_ENTRY(virtiofs_request) order;
 };
 
 /*

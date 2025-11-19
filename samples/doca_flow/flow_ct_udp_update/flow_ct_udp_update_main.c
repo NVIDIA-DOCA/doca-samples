@@ -54,7 +54,7 @@ int main(int argc, char **argv)
 	int exit_status = EXIT_FAILURE;
 	struct flow_switch_ctx ct_cfg = {0};
 	struct application_dpdk_config dpdk_config = {
-		.port_config.nb_ports = 2,
+		.port_config.nb_ports = 1,
 		.port_config.nb_queues = 2,
 		.port_config.switch_mode = 1,
 		.reserve_main_thread = false,
@@ -87,6 +87,13 @@ int main(int argc, char **argv)
 	result = flow_ct_register_params();
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register Flow Ct sample parameters: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+
+	/* Register common flow statistics parameters */
+	result = register_flow_stats_params();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register stats parameters: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 

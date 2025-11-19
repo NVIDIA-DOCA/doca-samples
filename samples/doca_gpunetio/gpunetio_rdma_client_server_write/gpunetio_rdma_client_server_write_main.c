@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -437,6 +437,8 @@ int main(int argc, char **argv)
 	doca_error_t result;
 	struct doca_log_backend *sdk_log;
 	int exit_status = EXIT_FAILURE;
+	cudaError_t cuda_ret;
+	int cuda_id;
 
 	/* Set the default configuration values (Example values) */
 	cfg.is_server = true;
@@ -487,6 +489,25 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
+
+	/*
+	 * A CUDA context must be initialized before calling GPUNetIO functions.
+	 * cudaFree(0) triggers tje CUDA runtime initialization and report any errors.
+	 */
+	cuda_ret = cudaFree(0);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("CUDA initialization failed: %s\n", cudaGetErrorString(cuda_ret));
+		goto argp_cleanup;
+	}
+
+	/* In a multi-GPU system, ensure CUDA refers to the right GPU device */
+	cuda_ret = cudaDeviceGetByPCIBusId(&cuda_id, cfg.gpu_pcie_addr);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("Invalid GPU bus id provided %s", cfg.gpu_pcie_addr);
+		goto argp_cleanup;
+	}
+
+	cudaSetDevice(cuda_id);
 
 	/* Start sample */
 	if (cfg.is_server) {

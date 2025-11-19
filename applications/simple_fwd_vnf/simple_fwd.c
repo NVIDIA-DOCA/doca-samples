@@ -167,15 +167,11 @@ out:
  *
  * @nb_queues [in]: number of queues the sample will use
  * @mode [in]: doca flow architecture mode
- * @nr_counters [in]: number of counters to configure
- * @nr_meters [in]: number of meters to configure
  * @return: 0 on success, negative errno value otherwise and error is set.
  */
-static int simple_fwd_init_doca_flow(int nb_queues, const char *mode, uint32_t nr_counters, uint32_t nr_meters)
+static int simple_fwd_init_doca_flow(int nb_queues, const char *mode)
 {
 	struct doca_flow_cfg *flow_cfg;
-	uint16_t rss_queues[nb_queues];
-	struct doca_flow_resource_rss_cfg rss = {0};
 	doca_error_t result, tmp_result;
 
 	result = doca_flow_cfg_create(&flow_cfg);
@@ -196,30 +192,15 @@ static int simple_fwd_init_doca_flow(int nb_queues, const char *mode, uint32_t n
 		goto destroy_cfg;
 	}
 
-	result = doca_flow_cfg_set_nr_counters(flow_cfg, nr_counters);
+	result = doca_flow_cfg_set_resource_mode(flow_cfg, DOCA_FLOW_RESOURCE_MODE_PORT);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_counters: %s", doca_error_get_descr(result));
-		goto destroy_cfg;
-	}
-
-	result = doca_flow_cfg_set_nr_meters(flow_cfg, nr_meters);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_meters: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg resource mode: %s", doca_error_get_descr(result));
 		goto destroy_cfg;
 	}
 
 	result = doca_flow_cfg_set_cb_entry_process(flow_cfg, simple_fwd_check_for_valid_entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg cb_entry_process: %s", doca_error_get_descr(result));
-		goto destroy_cfg;
-	}
-
-	linear_array_init_u16(rss_queues, nb_queues);
-	rss.nr_queues = nb_queues;
-	rss.queues_array = rss_queues;
-	result = doca_flow_cfg_set_default_rss(flow_cfg, &rss);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg rss: %s", doca_error_get_descr(result));
 		goto destroy_cfg;
 	}
 
@@ -248,7 +229,7 @@ destroy_cfg:
  * @port_id [in]: port ID
  * @return: port handler on success, NULL otherwise and error is set.
  */
-static struct doca_flow_port *simple_fwd_create_doca_flow_port(int port_id)
+static struct doca_flow_port *simple_fwd_create_doca_flow_port(int port_id, uint32_t nr_counters, uint32_t nr_meters)
 {
 	struct doca_flow_port_cfg *port_cfg;
 	doca_error_t result, tmp_result;
@@ -293,6 +274,20 @@ static struct doca_flow_port *simple_fwd_create_doca_flow_port(int port_id)
 		goto destroy_port_cfg;
 	}
 
+	result = doca_flow_port_cfg_set_nr_resources(port_cfg, DOCA_FLOW_RESOURCE_COUNTER, nr_counters);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg resources number with counter type: %s",
+			     doca_error_get_descr(result));
+		goto destroy_port_cfg;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(port_cfg, DOCA_FLOW_RESOURCE_METER, nr_meters);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg resources number with meter type: %s",
+			     doca_error_get_descr(result));
+		goto destroy_port_cfg;
+	}
+
 	result = doca_flow_port_start(port_cfg, &port);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to start doca_flow port: %s", doca_error_get_descr(result));
@@ -333,13 +328,17 @@ static void simple_fwd_stop_doca_flow_ports(int nb_ports, struct doca_flow_port 
  * @is_hairpin [in]: port pair should run if is_hairpin = true
  * @return: 0 on success and negative value otherwise.
  */
-static int simple_fwd_init_doca_flow_ports(int nb_ports, struct doca_flow_port *ports[], bool is_hairpin)
+static int simple_fwd_init_doca_flow_ports(int nb_ports,
+					   struct doca_flow_port *ports[],
+					   bool is_hairpin,
+					   uint32_t nr_counters,
+					   uint32_t nr_meters)
 {
 	int portid;
 
 	for (portid = 0; portid < nb_ports; portid++) {
 		/* Create doca flow port */
-		ports[portid] = simple_fwd_create_doca_flow_port(portid);
+		ports[portid] = simple_fwd_create_doca_flow_port(portid, nr_counters, nr_meters);
 		if (ports[portid] == NULL) {
 			simple_fwd_stop_doca_flow_ports(portid + 1, ports);
 			return -1;
@@ -536,6 +535,7 @@ static int simple_fwd_build_rss_flow(uint16_t port_id)
 	result = doca_flow_pipe_add_entry(0,
 					  simple_fwd_ins->pipe_rss[port_cfg->port_id],
 					  &match,
+					  0,
 					  &actions,
 					  NULL,
 					  &fwd,
@@ -634,6 +634,7 @@ static int simple_fwd_build_hairpin_flow(uint16_t port_id)
 	result = doca_flow_pipe_add_entry(0,
 					  simple_fwd_ins->pipe_hairpin[port_cfg->port_id],
 					  &match,
+					  0,
 					  &actions,
 					  NULL,
 					  &fwd,
@@ -1169,11 +1170,11 @@ static doca_error_t simple_fwd_add_vxlan_encap_pipe_entry(struct simple_fwd_port
 	actions.encap_cfg.encap.outer.ip4.ttl = encap_ttl;
 	actions.encap_cfg.encap.tun.type = DOCA_FLOW_TUN_VXLAN;
 	actions.encap_cfg.encap.tun.vxlan_tun_id = encap_vxlan_tun_id;
-	actions.action_idx = 0;
 
 	result = doca_flow_pipe_add_entry(0,
 					  simple_fwd_ins->vxlan_encap_pipe[port_cfg->port_id],
 					  &match,
+					  0,
 					  &actions,
 					  NULL,
 					  NULL,
@@ -1208,13 +1209,17 @@ static int simple_fwd_init_ports_and_pipes(struct simple_fwd_port_cfg *port_cfg)
 	int port_id;
 	int result;
 
-	if (simple_fwd_init_doca_flow(port_cfg->nb_queues, "vnf,hws", port_cfg->nb_counters, port_cfg->nb_meters) < 0) {
+	if (simple_fwd_init_doca_flow(port_cfg->nb_queues, "vnf,hws") < 0) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow");
 		simple_fwd_destroy_ins();
 		return -1;
 	}
 
-	if (simple_fwd_init_doca_flow_ports(nb_ports, simple_fwd_ins->ports, true) < 0) {
+	if (simple_fwd_init_doca_flow_ports(nb_ports,
+					    simple_fwd_ins->ports,
+					    true,
+					    port_cfg->nb_counters,
+					    port_cfg->nb_meters) < 0) {
 		DOCA_LOG_ERR("Failed to init DOCA ports");
 		return -1;
 	}
@@ -1227,6 +1232,9 @@ static int simple_fwd_init_ports_and_pipes(struct simple_fwd_port_cfg *port_cfg)
 		curr_port_cfg->is_hairpin = port_cfg->is_hairpin;
 		curr_port_cfg->nb_meters = port_cfg->nb_meters;
 		curr_port_cfg->nb_counters = port_cfg->nb_counters;
+		curr_port_cfg->nb_rss = port_cfg->nb_rss;
+		curr_port_cfg->nb_encap = port_cfg->nb_encap;
+		curr_port_cfg->nb_decap = port_cfg->nb_decap;
 		curr_port_cfg->age_thread = port_cfg->age_thread;
 
 		curr_port_cfg->port_id = port_id ^ 1;
@@ -1469,7 +1477,6 @@ static struct doca_flow_pipe_entry *simple_fwd_pipe_add_entry(struct simple_fwd_
 	}
 
 	actions.meta.pkt_meta = DOCA_HTOBE32(1);
-	actions.action_idx = 0;
 
 	status->ft_entry = user_ctx;
 
@@ -1482,6 +1489,7 @@ static struct doca_flow_pipe_entry *simple_fwd_pipe_add_entry(struct simple_fwd_
 	result = doca_flow_pipe_add_entry(pinfo->pipe_queue,
 					  pipe,
 					  &match,
+					  0,
 					  &actions,
 					  &monitor,
 					  NULL,

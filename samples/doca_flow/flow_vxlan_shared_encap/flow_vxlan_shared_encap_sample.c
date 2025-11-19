@@ -115,6 +115,7 @@ destroy_pipe_cfg:
  */
 static doca_error_t create_vxlan_shared_encap_pipe(struct doca_flow_port *port,
 						   int port_id,
+						   uint32_t shared_encap_id,
 						   struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
@@ -134,10 +135,7 @@ static doca_error_t create_vxlan_shared_encap_pipe(struct doca_flow_port *port,
 
 	/* build basic outer VXLAN encap data*/
 	actions.encap_type = DOCA_FLOW_RESOURCE_TYPE_SHARED;
-	if (port_id == 0)
-		actions.shared_encap_id = 1;
-	else
-		actions.shared_encap_id = 2;
+	actions.shared_encap_id = shared_encap_id;
 	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
@@ -206,9 +204,8 @@ static doca_error_t add_match_pipe_entry(struct doca_flow_pipe *pipe, struct ent
 
 	actions.meta.pkt_meta = DOCA_HTOBE32(1);
 	actions.outer.transport.src_port = DOCA_HTOBE16(1235);
-	actions.action_idx = 0;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -219,12 +216,11 @@ static doca_error_t add_match_pipe_entry(struct doca_flow_pipe *pipe, struct ent
  * Add DOCA Flow pipe entry with example encap values
  *
  * @pipe [in]: pipe of the entry
- * @port_id [in]: port id
  * @status [in]: user context for adding entry
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t add_vxlan_shared_encap_pipe_entry(struct doca_flow_pipe *pipe,
-						      uint16_t port_id,
+						      uint32_t shared_encap_id,
 						      struct entries_status *status)
 {
 	struct doca_flow_match match;
@@ -238,13 +234,9 @@ static doca_error_t add_vxlan_shared_encap_pipe_entry(struct doca_flow_pipe *pip
 	match.meta.pkt_meta = DOCA_HTOBE32(1);
 
 	actions.encap_type = DOCA_FLOW_RESOURCE_TYPE_SHARED;
-	if (port_id == 0)
-		actions.shared_encap_id = 1;
-	else
-		actions.shared_encap_id = 2;
-	actions.action_idx = 0;
+	actions.shared_encap_id = shared_encap_id;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -290,51 +282,18 @@ static void create_encap_action(struct doca_flow_encap_action *encap, uint32_t i
  *
  * @return: 0 on success and negative value otherwise
  */
-static int create_shared_resource_encap(void)
+static int create_shared_resource_encap(struct doca_flow_port *port, uint32_t *id, uint32_t port_id)
 {
-	struct doca_flow_shared_resource_cfg res_cfg[ENCAP_RESOURCE_NUM] = {0};
-	uint32_t i, id;
+	struct doca_flow_shared_resource_cfg res_cfg = {0};
 	int ret;
 
-	for (i = 0; i < ENCAP_RESOURCE_NUM; i++) {
-		create_encap_action(&res_cfg[i].encap_cfg.encap, i);
-		res_cfg[i].encap_cfg.is_l2 = true;
+	create_encap_action(&res_cfg.encap_cfg.encap, port_id);
+	res_cfg.encap_cfg.is_l2 = true;
 
-		id = i + 1;
-		ret = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_ENCAP, id, &res_cfg[i]);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
-}
-
-/*
- * Bind shared resource encap
- *
- * @port [in]: doca_flow port
- * @port_id [in]: shared_encap to create flows if true
- * @return: 0 on success and negative value otherwise
- */
-int bind_shared_resource_encap(struct doca_flow_port *port, uint16_t port_id)
-{
-	uint32_t shared_res_arr[ENCAP_RESOURCE_NUM] = {0};
-	uint32_t i, id;
-	int ret;
-
-	for (i = 0; i < ENCAP_RESOURCE_NUM; i++) {
-		id = i + 1;
-		shared_res_arr[i] = id;
-	}
-
-	if (port_id == 0)
-		ret = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_ENCAP, &shared_res_arr[0], 1, port);
-	else
-		ret = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_ENCAP, &shared_res_arr[1], 1, port);
+	ret = doca_flow_port_shared_resource_get(port, DOCA_FLOW_SHARED_RESOURCE_ENCAP, id);
 	if (ret)
 		return ret;
-
-	return 0;
+	return doca_flow_port_shared_resource_set_cfg(port, DOCA_FLOW_SHARED_RESOURCE_ENCAP, *id, &res_cfg);
 }
 
 /*
@@ -348,6 +307,7 @@ doca_error_t flow_vxlan_shared_encap(int nb_queues)
 	int nb_ports = 2;
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
+	uint32_t shared_encap_ids[nb_ports];
 	struct doca_flow_port *ports[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *pipe;
@@ -359,7 +319,8 @@ doca_error_t flow_vxlan_shared_encap(int nb_queues)
 	doca_error_t result;
 	int port_id;
 
-	nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_ENCAP] = ENCAP_RESOURCE_NUM + 1;
+	resource.nr_encap = ENCAP_RESOURCE_NUM + 1;
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -367,25 +328,17 @@ doca_error_t flow_vxlan_shared_encap(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries_ingress + num_of_entries_egress));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
 		return result;
 	}
 
-	result = create_shared_resource_encap();
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Create shared_encap resource failed: ret %d", result);
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
-	}
-
 	for (int i = 0; i < nb_ports; i++) {
-		result = bind_shared_resource_encap(ports[i], i);
+		result = create_shared_resource_encap(ports[i], &shared_encap_ids[i], i);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Bind shared_encap resource failed: ret %d", result);
+			DOCA_LOG_ERR("Create shared_encap resource failed: ret %d", result);
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;
@@ -395,7 +348,10 @@ doca_error_t flow_vxlan_shared_encap(int nb_queues)
 	for (port_id = 0; port_id < nb_ports; port_id++) {
 		memset(&status_egress, 0, sizeof(status_egress));
 
-		result = create_vxlan_shared_encap_pipe(ports[port_id], port_id, &egress_pipe[port_id]);
+		result = create_vxlan_shared_encap_pipe(ports[port_id],
+							port_id,
+							shared_encap_ids[port_id],
+							&egress_pipe[port_id]);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create vxlan encap pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
@@ -403,7 +359,9 @@ doca_error_t flow_vxlan_shared_encap(int nb_queues)
 			return result;
 		}
 
-		result = add_vxlan_shared_encap_pipe_entry(egress_pipe[port_id], port_id, &status_egress);
+		result = add_vxlan_shared_encap_pipe_entry(egress_pipe[port_id],
+							   shared_encap_ids[port_id],
+							   &status_egress);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry to vxlan encap pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
