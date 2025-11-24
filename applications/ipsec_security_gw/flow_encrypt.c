@@ -49,6 +49,9 @@ DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::flow_encrypt);
 #define ENCAP_ESP_SN_IDX_TRANSPORT 4	  /* index in encap raw data for esp SN in transport mode*/
 #define ENCAP_ESP_SN_IDX_UDP_TRANSPORT 12 /* index in encap raw data for esp SN in transport over UDP mode*/
 
+#define ENCRYPT_IPV4_SEQ_IDX 0 /* IPv4 sequence index for ordered list */
+#define ENCRYPT_IPV6_SEQ_IDX 1 /* IPv6 sequence index for ordered list */
+
 #define ENCAP_MARKER_HEADER_SIZE 8 /* non-ESP marker header size */
 #define PADDING_ALIGN 4		   /* padding alignment */
 
@@ -391,7 +394,7 @@ static doca_error_t create_egress_ip_classifier(struct doca_flow_port *port,
 	}
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
-	fwd.next_pipe = encrypt_pipes->ipv4_encrypt_pipe.pipe;
+	fwd.next_pipe = encrypt_pipes->match_encrypt_ipv4_pipe.pipe;
 
 	if (debug_mode) {
 		snprintf(pipe->entries_info[pipe->nb_entries].name, MAX_NAME_LEN, "IPv4");
@@ -400,6 +403,7 @@ static doca_error_t create_egress_ip_classifier(struct doca_flow_port *port,
 	result = doca_flow_pipe_add_entry(0,
 					  pipe->pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -412,7 +416,7 @@ static doca_error_t create_egress_ip_classifier(struct doca_flow_port *port,
 	}
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV6;
-	fwd.next_pipe = encrypt_pipes->ipv6_encrypt_pipe.pipe;
+	fwd.next_pipe = encrypt_pipes->match_encrypt_ipv6_pipe.pipe;
 
 	if (debug_mode) {
 		snprintf(pipe->entries_info[pipe->nb_entries].name, MAX_NAME_LEN, "IPv6");
@@ -421,6 +425,7 @@ static doca_error_t create_egress_ip_classifier(struct doca_flow_port *port,
 	result = doca_flow_pipe_add_entry(0,
 					  pipe->pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -491,6 +496,7 @@ static doca_error_t add_vxlan_encap_pipe_entry(struct doca_flow_port *port,
 	result = doca_flow_pipe_add_entry(0,
 					  pipe->pipe,
 					  &match,
+					  0,
 					  &actions,
 					  NULL,
 					  NULL,
@@ -724,6 +730,7 @@ static doca_error_t create_marker_encap_pipe(struct doca_flow_port *port,
 	result = doca_flow_pipe_add_entry(0,
 					  pipe_info->pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -753,13 +760,12 @@ destroy_pipe_cfg:
 }
 
 /*
- * Create ipsec encrypt pipe changeable meta data match and changeable shared IPSEC encryption object
+ * Create ipsec encrypt pipe with shared IPSEC encryption object
  *
  * @port [in]: port of the pipe
  * @port_id [in]: port ID to forward the packet to
  * @expected_entries [in]: expected number of entries
  * @app_cfg [in]: application configuration struct
- * @l3_type [in]: DOCA_FLOW_L3_META_IPV4 / DOCA_FLOW_L3_META_IPV6
  * @pipe_info [out]: pipe info struct
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -767,71 +773,81 @@ static doca_error_t create_ipsec_encrypt_pipe(struct doca_flow_port *port,
 					      uint16_t port_id,
 					      int expected_entries,
 					      struct ipsec_security_gw_config *app_cfg,
-					      enum doca_flow_l3_meta l3_type,
 					      struct security_gateway_pipe_info *pipe_info)
 {
-	int nb_actions = 2;
-	struct doca_flow_match match;
-	struct doca_flow_match match_mask;
-	struct doca_flow_monitor monitor;
-	struct doca_flow_actions actions, actions_arr[nb_actions];
+	struct doca_flow_crypto crypto_actions_ipv4 = {};
+	struct doca_flow_crypto crypto_actions_ipv6 = {};
 	struct doca_flow_fwd fwd;
+	struct doca_flow_fwd fwd_miss;
 	struct doca_flow_pipe_cfg *pipe_cfg;
+	const int nb_ordered_lists = 2;
+	struct doca_flow_ordered_list *ordered_lists[nb_ordered_lists];
+	struct doca_flow_ordered_list ordered_list_ipv4 = {};
+	struct doca_flow_ordered_list ordered_list_ipv6 = {};
+	struct doca_flow_ordered_list_element elements_ipv4[1] = {0};
+	struct doca_flow_ordered_list_element elements_ipv6[1] = {0};
 	doca_error_t result;
-	union security_gateway_pkt_meta meta = {0};
 
-	memset(&match, 0, sizeof(match));
-	memset(&match_mask, 0, sizeof(match_mask));
-	memset(&monitor, 0, sizeof(monitor));
-	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
+	memset(&fwd_miss, 0, sizeof(fwd_miss));
 
-	meta.rule_id = -1;
-	match_mask.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
-	match.meta.pkt_meta = 0xffffffff;
-	match_mask.parser_meta.outer_l3_type = l3_type;
-	match.parser_meta.outer_l3_type = l3_type;
+	crypto_actions_ipv4.crypto.action_type = DOCA_FLOW_CRYPTO_ACTION_ENCRYPT;
+	crypto_actions_ipv4.crypto.resource_type = DOCA_FLOW_CRYPTO_RESOURCE_IPSEC_SA;
+	crypto_actions_ipv4.crypto.crypto_id = UINT32_MAX;
+	if (!app_cfg->sw_sn_inc_enable) {
+		crypto_actions_ipv4.crypto.ipsec_sa.sn_en = !app_cfg->sw_sn_inc_enable;
+	}
 
 	if (app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_BOTH ||
-	    app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_ENCAP)
-		actions.has_crypto_encap = true;
+	    app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_ENCAP) {
+		crypto_actions_ipv4.has_crypto_encap = true;
+		crypto_actions_ipv4.crypto_encap.action_type = DOCA_FLOW_CRYPTO_REFORMAT_ENCAP;
+		crypto_actions_ipv4.crypto_encap.icv_size = get_icv_len_int(app_cfg->icv_length);
 
-	actions.crypto_encap.action_type = DOCA_FLOW_CRYPTO_REFORMAT_ENCAP;
-	actions.crypto_encap.icv_size = get_icv_len_int(app_cfg->icv_length);
-	actions.crypto.resource_type = DOCA_FLOW_CRYPTO_RESOURCE_IPSEC_SA;
-	if (!app_cfg->sw_sn_inc_enable) {
-		actions.crypto.ipsec_sa.sn_en = !app_cfg->sw_sn_inc_enable;
-	}
-	actions.crypto.action_type = DOCA_FLOW_CRYPTO_ACTION_ENCRYPT;
-	actions.crypto.crypto_id = UINT32_MAX;
-
-	if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL) {
-		actions.crypto_encap.net_type = DOCA_FLOW_CRYPTO_HEADER_ESP_TUNNEL;
-		actions_arr[0] = actions;
-		actions_arr[1] = actions;
-		/* action idx 0 will add encap ipv4 */
-		memset(actions_arr[0].crypto_encap.encap_data, 0xff, 50);
-		actions_arr[0].crypto_encap.data_size = 50;
-		/* action idx 1 will add encap ipv6 */
-		memset(actions_arr[1].crypto_encap.encap_data, 0xff, 70);
-		actions_arr[1].crypto_encap.data_size = 70;
-	} else if (app_cfg->mode == IPSEC_SECURITY_GW_TRANSPORT) {
-		actions.crypto_encap.net_type = (l3_type == DOCA_FLOW_L3_META_IPV4) ?
-							DOCA_FLOW_CRYPTO_HEADER_ESP_OVER_IPV4 :
-							DOCA_FLOW_CRYPTO_HEADER_ESP_OVER_IPV6;
-		memset(actions.crypto_encap.encap_data, 0xff, 16);
-		actions.crypto_encap.data_size = 16;
-		actions_arr[0] = actions;
-	} else {
-		actions.crypto_encap.net_type = (l3_type == DOCA_FLOW_L3_META_IPV4) ?
-							DOCA_FLOW_CRYPTO_HEADER_UDP_ESP_OVER_IPV4 :
-							DOCA_FLOW_CRYPTO_HEADER_UDP_ESP_OVER_IPV6;
-		memset(actions.crypto_encap.encap_data, 0xff, 24);
-		actions.crypto_encap.data_size = 24;
-		actions_arr[0] = actions;
+		if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL) {
+			crypto_actions_ipv4.crypto_encap.net_type = DOCA_FLOW_CRYPTO_HEADER_ESP_TUNNEL;
+			crypto_actions_ipv4.crypto_encap.data_size = 50;
+		} else if (app_cfg->mode == IPSEC_SECURITY_GW_TRANSPORT) {
+			crypto_actions_ipv4.crypto_encap.net_type = DOCA_FLOW_CRYPTO_HEADER_ESP_OVER_IPV4;
+			crypto_actions_ipv4.crypto_encap.data_size = 16;
+		} else {
+			crypto_actions_ipv4.crypto_encap.net_type = DOCA_FLOW_CRYPTO_HEADER_UDP_ESP_OVER_IPV4;
+			crypto_actions_ipv4.crypto_encap.data_size = 24;
+		}
+		memset(crypto_actions_ipv4.crypto_encap.encap_data, 0xff, crypto_actions_ipv4.crypto_encap.data_size);
 	}
 
-	struct doca_flow_actions *actions_list[] = {&actions_arr[0], &actions_arr[1]};
+	crypto_actions_ipv6 = crypto_actions_ipv4;
+	if (app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_BOTH ||
+	    app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_ENCAP) {
+		if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL) {
+			crypto_actions_ipv6.crypto_encap.data_size = 70;
+		} else if (app_cfg->mode == IPSEC_SECURITY_GW_TRANSPORT) {
+			crypto_actions_ipv6.crypto_encap.net_type = DOCA_FLOW_CRYPTO_HEADER_ESP_OVER_IPV6;
+		} else {
+			crypto_actions_ipv6.crypto_encap.net_type = DOCA_FLOW_CRYPTO_HEADER_UDP_ESP_OVER_IPV6;
+		}
+		memset(crypto_actions_ipv6.crypto_encap.encap_data, 0xff, crypto_actions_ipv6.crypto_encap.data_size);
+	}
+
+	/* Create 2 ordered lists (sequences) - one for IPv4, one for IPv6 */
+	/* IPv4 sequence elements */
+	elements_ipv4[0].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_CRYPTO;
+	elements_ipv4[0].crypto = &crypto_actions_ipv4;
+
+	ordered_list_ipv4.idx = ENCRYPT_IPV4_SEQ_IDX;
+	ordered_list_ipv4.size = 1;
+	ordered_list_ipv4.elements = elements_ipv4;
+	ordered_lists[0] = &ordered_list_ipv4;
+
+	/* IPv6 sequence elements */
+	elements_ipv6[0].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_CRYPTO;
+	elements_ipv6[0].crypto = &crypto_actions_ipv6;
+
+	ordered_list_ipv6.idx = ENCRYPT_IPV6_SEQ_IDX;
+	ordered_list_ipv6.size = 1;
+	ordered_list_ipv6.elements = elements_ipv6;
+	ordered_lists[1] = &ordered_list_ipv6;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -844,9 +860,99 @@ static doca_error_t create_ipsec_encrypt_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg name: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_type(pipe_cfg, DOCA_FLOW_PIPE_BASIC);
+	result = doca_flow_pipe_cfg_set_type(pipe_cfg, DOCA_FLOW_PIPE_ORDERED_LIST);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg type: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_domain(pipe_cfg, DOCA_FLOW_PIPE_DOMAIN_SECURE_EGRESS);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg domain: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, expected_entries);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg nr_entries: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_ordered_lists(pipe_cfg, ordered_lists, nb_ordered_lists);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg ordered_lists: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	if (!app_cfg->vxlan_encap) {
+		if (app_cfg->marker_encap && app_cfg->encrypt_pipes.marker_insert_pipe.pipe != NULL) {
+			fwd.type = DOCA_FLOW_FWD_PIPE;
+			fwd.next_pipe = app_cfg->encrypt_pipes.marker_insert_pipe.pipe;
+		} else {
+			fwd.type = DOCA_FLOW_FWD_PORT;
+			fwd.port_id = port_id;
+		}
+	} else {
+		fwd.type = DOCA_FLOW_FWD_PIPE;
+		fwd.next_pipe = app_cfg->encrypt_pipes.vxlan_encap_pipe.pipe;
+	}
+
+	fwd_miss.type = DOCA_FLOW_FWD_DROP;
+
+	result = doca_flow_pipe_create(pipe_cfg, &fwd, &fwd_miss, &pipe_info->pipe);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create encrypt ordered list pipe: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+destroy_pipe_cfg:
+	doca_flow_pipe_cfg_destroy(pipe_cfg);
+	return result;
+}
+
+/*
+ * Create ipsec encrypt match pipe with changeable meta data match that forwards to ordered list pipe
+ *
+ * @port [in]: port of the pipe
+ * @expected_entries [in]: expected number of entries
+ * @app_cfg [in]: application configuration struct
+ * @l3_type [in]: DOCA_FLOW_L3_META_IPV4 / DOCA_FLOW_L3_META_IPV6
+ * @ordered_list_pipe [in]: ordered list pipe to forward to
+ * @pipe_info [out]: pipe info struct
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t create_ipsec_encrypt_match_pipe(struct doca_flow_port *port,
+						    int expected_entries,
+						    struct ipsec_security_gw_config *app_cfg,
+						    enum doca_flow_l3_meta l3_type,
+						    struct doca_flow_pipe *ordered_list_pipe,
+						    struct security_gateway_pipe_info *pipe_info)
+{
+	struct doca_flow_match match;
+	struct doca_flow_match match_mask;
+	struct doca_flow_monitor monitor;
+	struct doca_flow_fwd fwd;
+	struct doca_flow_pipe_cfg *pipe_cfg;
+	doca_error_t result;
+	union security_gateway_pkt_meta meta = {0};
+
+	memset(&match, 0, sizeof(match));
+	memset(&match_mask, 0, sizeof(match_mask));
+	memset(&monitor, 0, sizeof(monitor));
+	memset(&fwd, 0, sizeof(fwd));
+
+	meta.rule_id = -1;
+	match_mask.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
+	match.meta.pkt_meta = 0xffffffff;
+	match_mask.parser_meta.outer_l3_type = l3_type;
+	match.parser_meta.outer_l3_type = l3_type;
+
+	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_pipe_cfg_set_name(pipe_cfg, "ENCRYPT_MATCH_PIPE");
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg name: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 	result = doca_flow_pipe_cfg_set_domain(pipe_cfg, DOCA_FLOW_PIPE_DOMAIN_SECURE_EGRESS);
@@ -864,17 +970,6 @@ static doca_error_t create_ipsec_encrypt_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	/* 2 actions only in tunnel mode */
-	result =
-		doca_flow_pipe_cfg_set_actions(pipe_cfg,
-					       actions_list,
-					       NULL,
-					       NULL,
-					       app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL ? nb_actions : nb_actions - 1);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
 	if (app_cfg->debug_mode) {
 		monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 		result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
@@ -884,22 +979,13 @@ static doca_error_t create_ipsec_encrypt_pipe(struct doca_flow_port *port,
 		}
 	}
 
-	if (!app_cfg->vxlan_encap) {
-		if (app_cfg->marker_encap && app_cfg->encrypt_pipes.marker_insert_pipe.pipe != NULL) {
-			fwd.type = DOCA_FLOW_FWD_PIPE;
-			fwd.next_pipe = app_cfg->encrypt_pipes.marker_insert_pipe.pipe;
-		} else {
-			fwd.type = DOCA_FLOW_FWD_PORT;
-			fwd.port_id = port_id;
-		}
-	} else {
-		fwd.type = DOCA_FLOW_FWD_PIPE;
-		fwd.next_pipe = app_cfg->encrypt_pipes.vxlan_encap_pipe.pipe;
-	}
+	fwd.type = DOCA_FLOW_FWD_ORDERED_LIST_PIPE;
+	fwd.ordered_list_pipe.pipe = ordered_list_pipe;
+	fwd.ordered_list_pipe.idx = 0xffffffff; /* changeable per entry */
 
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, &pipe_info->pipe);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create encrypt pipe: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to create encrypt match pipe: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 
@@ -1441,7 +1527,8 @@ static void create_ipsec_encrypt_shared_object_tunnel(struct doca_flow_crypto_en
  * @ipsec_id [in]: shared object ID
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t create_ipsec_encrypt_shared_object(struct ipsec_security_gw_sa_attrs *app_sa_attrs,
+static doca_error_t create_ipsec_encrypt_shared_object(struct doca_flow_port *secured_port,
+						       struct ipsec_security_gw_sa_attrs *app_sa_attrs,
 						       struct ipsec_security_gw_config *app_cfg,
 						       uint32_t ipsec_id)
 {
@@ -1462,7 +1549,10 @@ static doca_error_t create_ipsec_encrypt_shared_object(struct ipsec_security_gw_
 		cfg.ipsec_sa_cfg.lifetime_threshold = app_sa_attrs->lifetime_threshold;
 	}
 	/* config ipsec object */
-	result = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_IPSEC_SA, ipsec_id, &cfg);
+	result = doca_flow_port_shared_resource_set_cfg(secured_port,
+							DOCA_FLOW_SHARED_RESOURCE_IPSEC_SA,
+							ipsec_id,
+							&cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to cfg shared ipsec object: %s", doca_error_get_descr(result));
 		return result;
@@ -1554,6 +1644,7 @@ static doca_error_t add_src_ip6_entry(struct doca_flow_port *port,
 	result = doca_flow_pipe_add_entry(queue_id,
 					  pipe->pipe,
 					  &match,
+					  0,
 					  &actions,
 					  NULL,
 					  NULL,
@@ -1641,7 +1732,6 @@ static doca_error_t add_five_tuple_match_entry(struct doca_flow_port *port,
 	meta.encrypt = 1;
 	meta.rule_id = i;
 	actions.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
-	actions.action_idx = 0;
 
 	if (i == nb_rules - 1 || hairpin_status->entries_in_queue == QUEUE_DEPTH - 1)
 		flags = DOCA_FLOW_NO_WAIT;
@@ -1656,6 +1746,7 @@ static doca_error_t add_five_tuple_match_entry(struct doca_flow_port *port,
 	result = doca_flow_pipe_add_entry(queue_id,
 					  pipe->pipe,
 					  &match,
+					  0,
 					  &actions,
 					  NULL,
 					  NULL,
@@ -1682,13 +1773,18 @@ doca_error_t add_encrypt_entry(struct encrypt_rule *rule,
 			       struct ipsec_security_gw_config *app_cfg)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions;
 	struct doca_flow_pipe_entry **entry = NULL;
-	struct security_gateway_pipe_info *encrypt_pipe;
+	struct security_gateway_pipe_info *match_encrypt_pipe;
 	struct doca_flow_port *secured_port = NULL;
 	struct doca_flow_port *unsecured_port = NULL;
 	union security_gateway_pkt_meta meta = {0};
+	struct doca_flow_crypto crypto_actions = {};
+	struct doca_flow_ordered_list ordered_list = {};
+	struct doca_flow_ordered_list_element element = {0};
+	struct doca_flow_fwd fwd_to_ordered_list = {};
 	doca_error_t result;
+	uint32_t ipsec_id = IPSEC_ID(rule_id);
+	uint32_t sequence_id = ENCRYPT_IPV4_SEQ_IDX;
 
 	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_SWITCH) {
 		secured_port = doca_flow_port_switch_get(NULL);
@@ -1701,20 +1797,19 @@ doca_error_t add_encrypt_entry(struct encrypt_rule *rule,
 	memset(&app_cfg->unsecured_status[0], 0, sizeof(app_cfg->unsecured_status[0]));
 	memset(&app_cfg->secured_status[0], 0, sizeof(app_cfg->secured_status[0]));
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 
 	if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL && (app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_NONE ||
 							  app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_DECAP)) {
 		/* SW encap in tunnel mode */
 		if (rule->encap_l3_type == DOCA_FLOW_L3_TYPE_IP4)
-			encrypt_pipe = &app_cfg->encrypt_pipes.ipv4_encrypt_pipe;
+			match_encrypt_pipe = &app_cfg->encrypt_pipes.match_encrypt_ipv4_pipe;
 		else
-			encrypt_pipe = &app_cfg->encrypt_pipes.ipv6_encrypt_pipe;
+			match_encrypt_pipe = &app_cfg->encrypt_pipes.match_encrypt_ipv6_pipe;
 	} else {
 		if (rule->l3_type == DOCA_FLOW_L3_TYPE_IP4)
-			encrypt_pipe = &app_cfg->encrypt_pipes.ipv4_encrypt_pipe;
+			match_encrypt_pipe = &app_cfg->encrypt_pipes.match_encrypt_ipv4_pipe;
 		else
-			encrypt_pipe = &app_cfg->encrypt_pipes.ipv6_encrypt_pipe;
+			match_encrypt_pipe = &app_cfg->encrypt_pipes.match_encrypt_ipv6_pipe;
 	}
 	/* add entry to hairpin pipe*/
 	result = add_five_tuple_match_entry(unsecured_port,
@@ -1730,39 +1825,74 @@ doca_error_t add_encrypt_entry(struct encrypt_rule *rule,
 	}
 
 	/* create ipsec shared object */
-	result = create_ipsec_encrypt_shared_object(&rule->sa_attrs, app_cfg, rule_id);
+	result = create_ipsec_encrypt_shared_object(secured_port, &rule->sa_attrs, app_cfg, ipsec_id);
 	if (result != DOCA_SUCCESS)
 		return result;
 
-	memset(&match, 0, sizeof(match));
+	/* Add entry to ordered list pipe */
+	crypto_actions.crypto.action_type = DOCA_FLOW_CRYPTO_ACTION_ENCRYPT;
+	crypto_actions.crypto.resource_type = DOCA_FLOW_CRYPTO_RESOURCE_IPSEC_SA;
+	crypto_actions.crypto.crypto_id = ipsec_id;
+	if (!app_cfg->sw_sn_inc_enable) {
+		crypto_actions.crypto.ipsec_sa.sn_en = !app_cfg->sw_sn_inc_enable;
+	}
 
+	if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL) {
+		create_ipsec_encrypt_shared_object_tunnel(&crypto_actions.crypto_encap,
+							  rule,
+							  &ports[SECURED_IDX]->eth_header);
+		sequence_id = rule->encap_l3_type == DOCA_FLOW_L3_TYPE_IP4 ? ENCRYPT_IPV4_SEQ_IDX :
+									     ENCRYPT_IPV6_SEQ_IDX;
+	} else if (app_cfg->mode == IPSEC_SECURITY_GW_TRANSPORT) {
+		sequence_id = rule->l3_type == DOCA_FLOW_L3_TYPE_IP4 ? ENCRYPT_IPV4_SEQ_IDX : ENCRYPT_IPV6_SEQ_IDX;
+		create_ipsec_encrypt_shared_object_transport(&crypto_actions.crypto_encap, rule);
+	} else {
+		sequence_id = rule->l3_type == DOCA_FLOW_L3_TYPE_IP4 ? ENCRYPT_IPV4_SEQ_IDX : ENCRYPT_IPV6_SEQ_IDX;
+		create_ipsec_encrypt_shared_object_transport_over_udp(&crypto_actions.crypto_encap, rule);
+	}
+
+	element.type = DOCA_FLOW_ORDERED_LIST_ELEMENT_CRYPTO;
+	element.crypto = &crypto_actions;
+
+	ordered_list.idx = sequence_id;
+	ordered_list.size = 1;
+	ordered_list.elements = &element;
+
+	result = doca_flow_pipe_ordered_list_add_entry(0,
+						       app_cfg->encrypt_pipes.encrypt_pipe.pipe,
+						       rule_id,
+						       &ordered_list,
+						       NULL,
+						       DOCA_FLOW_WAIT_FOR_BATCH,
+						       &app_cfg->secured_status[0],
+						       NULL);
+	if (result != DOCA_SUCCESS)
+		return result;
+	app_cfg->secured_status[0].entries_in_queue += 1;
+
+	/* Add entry to match pipe */
 	meta.rule_id = rule_id;
 	match.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
 
-	actions.action_idx = 0;
-	actions.crypto.crypto_id = rule_id;
+	fwd_to_ordered_list.type = DOCA_FLOW_FWD_ORDERED_LIST_PIPE;
+	fwd_to_ordered_list.ordered_list_pipe.pipe = app_cfg->encrypt_pipes.encrypt_pipe.pipe;
+	fwd_to_ordered_list.ordered_list_pipe.idx = rule_id;
 
-	if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL) {
-		create_ipsec_encrypt_shared_object_tunnel(&actions.crypto_encap, rule, &ports[SECURED_IDX]->eth_header);
-		if (rule->encap_l3_type == DOCA_FLOW_L3_TYPE_IP4)
-			actions.action_idx = 0;
-		else
-			actions.action_idx = 1;
-	} else if (app_cfg->mode == IPSEC_SECURITY_GW_TRANSPORT)
-		create_ipsec_encrypt_shared_object_transport(&actions.crypto_encap, rule);
-	else
-		create_ipsec_encrypt_shared_object_transport_over_udp(&actions.crypto_encap, rule);
-	/* add entry to encrypt pipe*/
+	/* add entry to encrypt match pipe*/
 	if (app_cfg->debug_mode) {
-		snprintf(encrypt_pipe->entries_info[encrypt_pipe->nb_entries].name, MAX_NAME_LEN, "rule%d", rule_id);
-		entry = &encrypt_pipe->entries_info[encrypt_pipe->nb_entries++].entry;
+		snprintf(match_encrypt_pipe->entries_info[match_encrypt_pipe->nb_entries].name,
+			 MAX_NAME_LEN,
+			 "rule%d",
+			 rule_id);
+		entry = &match_encrypt_pipe->entries_info[match_encrypt_pipe->nb_entries++].entry;
 	}
 	result = doca_flow_pipe_add_entry(0,
-					  encrypt_pipe->pipe,
+					  match_encrypt_pipe->pipe,
 					  &match,
-					  &actions,
+					  0,
 					  NULL,
 					  NULL,
+					  &fwd_to_ordered_list,
 					  DOCA_FLOW_NO_WAIT,
 					  &app_cfg->secured_status[0],
 					  entry);
@@ -1788,32 +1918,22 @@ doca_error_t add_encrypt_entry(struct encrypt_rule *rule,
 	return DOCA_SUCCESS;
 }
 
-doca_error_t bind_encrypt_ids(int nb_rules, struct doca_flow_port *port)
+doca_error_t get_encrypt_ids(int nb_rules, struct doca_flow_port *port)
 {
 	doca_error_t result;
 	int i, array_len = nb_rules;
-	uint32_t *res_array;
 
 	if (array_len == 0)
 		return DOCA_SUCCESS;
-	res_array = (uint32_t *)malloc(array_len * sizeof(uint32_t));
-	if (res_array == NULL) {
-		DOCA_LOG_ERR("Failed to allocate ids array");
-		return DOCA_ERROR_NO_MEMORY;
-	}
 
 	for (i = 0; i < nb_rules; i++) {
-		res_array[i] = i;
+		result = doca_flow_port_shared_resource_get(port, DOCA_FLOW_SHARED_RESOURCE_IPSEC_SA, &IPSEC_ID(i));
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to allocate encrypt IDs to the port");
+			return result;
+		}
 	}
 
-	result = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_IPSEC_SA, res_array, array_len, port);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to bind encrypt IDs to the port");
-		free(res_array);
-		return result;
-	}
-
-	free(res_array);
 	return DOCA_SUCCESS;
 }
 
@@ -1824,17 +1944,22 @@ doca_error_t add_encrypt_entries(struct ipsec_security_gw_config *app_cfg,
 				 int rule_offset)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions;
 	struct doca_flow_pipe_entry **entry = NULL;
-	struct security_gateway_pipe_info *encrypt_pipe;
+	struct security_gateway_pipe_info *match_encrypt_pipe;
 	enum doca_flow_flags_type flags;
 	struct doca_flow_port *secured_port = NULL;
 	struct doca_flow_port *unsecured_port = NULL;
+	struct doca_flow_crypto crypto_actions = {};
+	struct doca_flow_ordered_list ordered_list = {};
+	struct doca_flow_ordered_list_element element = {0};
+	struct doca_flow_fwd fwd_to_ordered_list = {};
 	int i, rule_id;
 	doca_error_t result;
 	union security_gateway_pkt_meta meta = {0};
 	struct encrypt_rule *rules = app_cfg->app_rules.encrypt_rules;
 	struct encrypt_pipes *pipes = &app_cfg->encrypt_pipes;
+	uint32_t ipsec_id;
+	uint32_t sequence_id = ENCRYPT_IPV4_SEQ_IDX;
 
 	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_SWITCH) {
 		secured_port = doca_flow_port_switch_get(NULL);
@@ -1847,23 +1972,23 @@ doca_error_t add_encrypt_entries(struct ipsec_security_gw_config *app_cfg,
 	memset(&app_cfg->secured_status[queue_id], 0, sizeof(app_cfg->secured_status[queue_id]));
 	memset(&app_cfg->unsecured_status[queue_id], 0, sizeof(app_cfg->unsecured_status[queue_id]));
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 
 	for (i = 0; i < nb_rules; i++) {
 		rule_id = rule_offset + i;
+		ipsec_id = IPSEC_ID(rule_id);
 		if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL &&
 		    (app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_NONE ||
 		     app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_DECAP)) {
 			/* SW encap in tunnel mode */
 			if (rules[rule_id].encap_l3_type == DOCA_FLOW_L3_TYPE_IP4)
-				encrypt_pipe = &pipes->ipv4_encrypt_pipe;
+				match_encrypt_pipe = &pipes->match_encrypt_ipv4_pipe;
 			else
-				encrypt_pipe = &pipes->ipv6_encrypt_pipe;
+				match_encrypt_pipe = &pipes->match_encrypt_ipv6_pipe;
 		} else {
 			if (rules[rule_id].l3_type == DOCA_FLOW_L3_TYPE_IP4)
-				encrypt_pipe = &pipes->ipv4_encrypt_pipe;
+				match_encrypt_pipe = &pipes->match_encrypt_ipv4_pipe;
 			else
-				encrypt_pipe = &pipes->ipv6_encrypt_pipe;
+				match_encrypt_pipe = &pipes->match_encrypt_ipv6_pipe;
 		}
 		/* add entry to hairpin pipe*/
 		result = add_five_tuple_match_entry(unsecured_port,
@@ -1879,45 +2004,77 @@ doca_error_t add_encrypt_entries(struct ipsec_security_gw_config *app_cfg,
 		}
 
 		/* create ipsec shared object */
-		result = create_ipsec_encrypt_shared_object(&rules[rule_id].sa_attrs, app_cfg, rule_id);
+		result = create_ipsec_encrypt_shared_object(secured_port, &rules[rule_id].sa_attrs, app_cfg, ipsec_id);
 		if (result != DOCA_SUCCESS)
 			return result;
 
-		memset(&match, 0, sizeof(match));
+		/* Add entry to ordered list pipe */
+		crypto_actions.crypto.crypto_id = ipsec_id;
 
+		if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL) {
+			sequence_id = rules[rule_id].encap_l3_type == DOCA_FLOW_L3_TYPE_IP4 ? ENCRYPT_IPV4_SEQ_IDX :
+											      ENCRYPT_IPV6_SEQ_IDX;
+			create_ipsec_encrypt_shared_object_tunnel(&crypto_actions.crypto_encap,
+								  &rules[rule_id],
+								  &ports[SECURED_IDX]->eth_header);
+		} else if (app_cfg->mode == IPSEC_SECURITY_GW_TRANSPORT) {
+			sequence_id = rules[rule_id].l3_type == DOCA_FLOW_L3_TYPE_IP4 ? ENCRYPT_IPV4_SEQ_IDX :
+											ENCRYPT_IPV6_SEQ_IDX;
+			create_ipsec_encrypt_shared_object_transport(&crypto_actions.crypto_encap, &rules[rule_id]);
+		} else {
+			sequence_id = rules[rule_id].l3_type == DOCA_FLOW_L3_TYPE_IP4 ? ENCRYPT_IPV4_SEQ_IDX :
+											ENCRYPT_IPV6_SEQ_IDX;
+			create_ipsec_encrypt_shared_object_transport_over_udp(&crypto_actions.crypto_encap,
+									      &rules[rule_id]);
+		}
+
+		element.type = DOCA_FLOW_ORDERED_LIST_ELEMENT_CRYPTO;
+		element.crypto = &crypto_actions;
+
+		ordered_list.idx = sequence_id;
+		ordered_list.size = 1;
+		ordered_list.elements = &element;
+
+		result = doca_flow_pipe_ordered_list_add_entry(queue_id,
+							       pipes->encrypt_pipe.pipe,
+							       rule_id,
+							       &ordered_list,
+							       NULL,
+							       DOCA_FLOW_WAIT_FOR_BATCH,
+							       &app_cfg->secured_status[queue_id],
+							       NULL);
+		if (result != DOCA_SUCCESS)
+			return result;
+		app_cfg->secured_status[queue_id].entries_in_queue += 1;
+
+		/* Add entry to match pipe */
+		memset(&match, 0, sizeof(match));
 		meta.rule_id = rule_id;
 		match.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
 
-		actions.action_idx = 0;
-		actions.crypto.crypto_id = rule_id;
-		if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL) {
-			create_ipsec_encrypt_shared_object_tunnel(&actions.crypto_encap,
-								  &rules[rule_id],
-								  &ports[SECURED_IDX]->eth_header);
-			if (rules[rule_id].encap_l3_type == DOCA_FLOW_L3_TYPE_IP4)
-				actions.action_idx = 0;
-			else
-				actions.action_idx = 1;
-		} else if (app_cfg->mode == IPSEC_SECURITY_GW_TRANSPORT)
-			create_ipsec_encrypt_shared_object_transport(&actions.crypto_encap, &rules[rule_id]);
-		else
-			create_ipsec_encrypt_shared_object_transport_over_udp(&actions.crypto_encap, &rules[rule_id]);
+		fwd_to_ordered_list.type = DOCA_FLOW_FWD_ORDERED_LIST_PIPE;
+		fwd_to_ordered_list.ordered_list_pipe.pipe = pipes->encrypt_pipe.pipe;
+		fwd_to_ordered_list.ordered_list_pipe.idx = rule_id;
 
 		if (rule_id == nb_rules - 1 || app_cfg->secured_status[queue_id].entries_in_queue == QUEUE_DEPTH - 1)
 			flags = DOCA_FLOW_NO_WAIT;
 		else
 			flags = DOCA_FLOW_WAIT_FOR_BATCH;
-		/* add entry to encrypt pipe*/
+		/* add entry to encrypt match pipe*/
 		if (app_cfg->debug_mode) {
-			snprintf(encrypt_pipe->entries_info[encrypt_pipe->nb_entries].name, MAX_NAME_LEN, "rule%d", i);
-			entry = &encrypt_pipe->entries_info[encrypt_pipe->nb_entries++].entry;
+			snprintf(match_encrypt_pipe->entries_info[match_encrypt_pipe->nb_entries].name,
+				 MAX_NAME_LEN,
+				 "rule%d",
+				 i);
+			entry = &match_encrypt_pipe->entries_info[match_encrypt_pipe->nb_entries++].entry;
 		}
 		result = doca_flow_pipe_add_entry(queue_id,
-						  encrypt_pipe->pipe,
+						  match_encrypt_pipe->pipe,
 						  &match,
-						  &actions,
+						  0,
 						  NULL,
 						  NULL,
+						  &fwd_to_ordered_list,
 						  flags,
 						  &app_cfg->secured_status[queue_id],
 						  entry);
@@ -1996,23 +2153,32 @@ doca_error_t ipsec_security_gw_create_encrypt_egress(struct ipsec_security_gw_po
 		}
 	}
 
-	snprintf(app_cfg->encrypt_pipes.ipv4_encrypt_pipe.name, MAX_NAME_LEN, "IPv4_encrypt");
+	snprintf(app_cfg->encrypt_pipes.encrypt_pipe.name, MAX_NAME_LEN, "encrypt");
 	result = create_ipsec_encrypt_pipe(secured_port,
 					   ports[SECURED_IDX]->port_id,
 					   expected_entries,
 					   app_cfg,
-					   DOCA_FLOW_L3_META_IPV4,
-					   &app_cfg->encrypt_pipes.ipv4_encrypt_pipe);
+					   &app_cfg->encrypt_pipes.encrypt_pipe);
 	if (result != DOCA_SUCCESS)
 		return result;
 
-	snprintf(app_cfg->encrypt_pipes.ipv6_encrypt_pipe.name, MAX_NAME_LEN, "IPv6_encrypt");
-	result = create_ipsec_encrypt_pipe(secured_port,
-					   ports[SECURED_IDX]->port_id,
-					   expected_entries,
-					   app_cfg,
-					   DOCA_FLOW_L3_META_IPV6,
-					   &app_cfg->encrypt_pipes.ipv6_encrypt_pipe);
+	snprintf(app_cfg->encrypt_pipes.match_encrypt_ipv4_pipe.name, MAX_NAME_LEN, "IPv4_encrypt_match");
+	result = create_ipsec_encrypt_match_pipe(secured_port,
+						 expected_entries,
+						 app_cfg,
+						 DOCA_FLOW_L3_META_IPV4,
+						 app_cfg->encrypt_pipes.encrypt_pipe.pipe,
+						 &app_cfg->encrypt_pipes.match_encrypt_ipv4_pipe);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	snprintf(app_cfg->encrypt_pipes.match_encrypt_ipv6_pipe.name, MAX_NAME_LEN, "IPv6_encrypt_match");
+	result = create_ipsec_encrypt_match_pipe(secured_port,
+						 expected_entries,
+						 app_cfg,
+						 DOCA_FLOW_L3_META_IPV6,
+						 app_cfg->encrypt_pipes.encrypt_pipe.pipe,
+						 &app_cfg->encrypt_pipes.match_encrypt_ipv6_pipe);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -2408,5 +2574,8 @@ doca_error_t handle_unsecured_packets_received(struct rte_mbuf **packet, struct 
 		result = prepare_packet_tunnel(packet, ctx, rule_idx);
 	if (result != DOCA_SUCCESS)
 		return result;
-	return doca_flow_crypto_ipsec_update_sn(rule_idx, ctx->encrypt_rules[rule_idx].current_sn);
+	/* All SAs are created over the secured port, hence we should access them accordingly */
+	return doca_flow_port_crypto_ipsec_update_sn(ctx->ports[SECURED_IDX]->port,
+						     IPSEC_ID(rule_idx),
+						     ctx->encrypt_rules[rule_idx].current_sn);
 }

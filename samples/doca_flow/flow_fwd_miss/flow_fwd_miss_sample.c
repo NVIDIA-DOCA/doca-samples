@@ -223,8 +223,7 @@ static doca_error_t create_modify_pipe(struct doca_flow_port *port,
 	}
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
-	actions.action_idx = 0;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create modify pipe, IPv4 entry adding failed");
 		doca_flow_pipe_destroy(pipe);
@@ -232,8 +231,7 @@ static doca_error_t create_modify_pipe(struct doca_flow_port *port,
 	}
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV6;
-	actions.action_idx = 1;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create modify pipe, IPv6 entry adding failed");
 		doca_flow_pipe_destroy(pipe);
@@ -276,7 +274,7 @@ static doca_error_t create_push_pipe(struct doca_flow_port *port,
 		return result;
 	}
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create push pipe, entry adding failed");
 		doca_flow_pipe_destroy(pipe);
@@ -319,7 +317,7 @@ static doca_error_t create_ipv4_pipe(struct doca_flow_port *port,
 		return result;
 	}
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create IPv4 pipe, entry adding failed");
 		doca_flow_pipe_destroy(pipe);
@@ -370,7 +368,7 @@ static doca_error_t create_ip_selector_pipe(struct doca_flow_port *port,
 		return result;
 	}
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ip selector pipe, entry adding failed");
 		doca_flow_pipe_destroy(pipe);
@@ -409,7 +407,7 @@ static doca_error_t create_root_pipe(struct doca_flow_port *port,
 	}
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create root pipe, IPv4 entry adding failed");
 		doca_flow_pipe_destroy(pipe);
@@ -417,7 +415,7 @@ static doca_error_t create_root_pipe(struct doca_flow_port *port,
 	}
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV6;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create root pipe, IPv6 entry adding failed");
 		doca_flow_pipe_destroy(pipe);
@@ -522,7 +520,7 @@ doca_error_t flow_fwd_miss(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -28,7 +28,30 @@
 
 #include "gpunetio_common.h"
 
-DOCA_LOG_REGISTER(GPU_SEND_WAIT_TIME::MAIN);
+DOCA_LOG_REGISTER(GPU_SIMPLE_SEND::MAIN);
+
+/*
+ * ARGP Callback - Set shared QP execution mode (THREAD, WARP or BLOCK)
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t exec_scope_callback(void *param, void *config)
+{
+	struct sample_simple_send_cfg *sample_cfg = (struct sample_simple_send_cfg *)config;
+	const uint32_t exec_scope = *(uint32_t *)param;
+
+	if (exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD && exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP &&
+	    exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK) {
+		DOCA_LOG_ERR("Exec scope must be included between 0 and 2");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	sample_cfg->exec_scope = (uint32_t)exec_scope;
+
+	return DOCA_SUCCESS;
+}
 
 /*
  * Get GPU PCIe address input.
@@ -95,7 +118,47 @@ static doca_error_t packet_size_callback(void *param, void *config)
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	sample_cfg->pkt_size = pkt_size;
+	sample_cfg->pkt_size = (size_t)pkt_size;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Enable/Disable CPU proxy mode
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t proxy_callback(void *param, void *config)
+{
+	struct sample_simple_send_cfg *sample_cfg = (struct sample_simple_send_cfg *)config;
+	const int cpu_proxy = *(uint32_t *)param;
+
+	if (cpu_proxy == 0)
+		sample_cfg->nic_handler = DOCA_GPUNETIO_ETH_NIC_HANDLER_GPU_SM_DB;
+	else
+		sample_cfg->nic_handler = DOCA_GPUNETIO_ETH_NIC_HANDLER_CPU_PROXY;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Enable shared QP execution
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t shared_qp_callback(void *param, void *config)
+{
+	struct sample_simple_send_cfg *sample_cfg = (struct sample_simple_send_cfg *)config;
+	const uint32_t shared_qp = *(uint32_t *)param;
+
+	if (shared_qp == 1)
+		sample_cfg->shared_qp = true;
+	else
+		sample_cfg->shared_qp = false;
 
 	return DOCA_SUCCESS;
 }
@@ -130,7 +193,26 @@ static doca_error_t cuda_threads_callback(void *param, void *config)
 static doca_error_t register_sample_params(void)
 {
 	doca_error_t result;
-	struct doca_argp_param *gpu_param, *nic_param, *size_param, *thread_param;
+	struct doca_argp_param *exec_param, *gpu_param, *nic_param, *proxy_param, *shared_qp_param, *size_param,
+		*thread_param;
+
+	result = doca_argp_param_create(&exec_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(exec_param, "e");
+	doca_argp_param_set_long_name(exec_param, "exec-scope");
+	doca_argp_param_set_description(
+		exec_param,
+		"Shared QP mode to test: per-thread (0) per-warp (1) per-block (2). Used only if shared qp is enabled.");
+	doca_argp_param_set_callback(exec_param, exec_scope_callback);
+	doca_argp_param_set_type(exec_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(exec_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	result = doca_argp_param_create(&gpu_param);
 	if (result != DOCA_SUCCESS) {
@@ -165,6 +247,42 @@ static doca_error_t register_sample_params(void)
 	doca_argp_param_set_type(nic_param, DOCA_ARGP_TYPE_STRING);
 	doca_argp_param_set_mandatory(nic_param);
 	result = doca_argp_register_param(nic_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&proxy_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	doca_argp_param_set_short_name(proxy_param, "p");
+	doca_argp_param_set_long_name(proxy_param, "proxy");
+	doca_argp_param_set_arguments(proxy_param, "<Enable/disable CPU proxy mode>");
+	doca_argp_param_set_description(proxy_param, "CPU proxy mode (0: Off 1: On)>");
+	doca_argp_param_set_callback(proxy_param, proxy_callback);
+	doca_argp_param_set_type(proxy_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(proxy_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&shared_qp_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	doca_argp_param_set_short_name(shared_qp_param, "q");
+	doca_argp_param_set_long_name(shared_qp_param, "shared-qp");
+	doca_argp_param_set_arguments(shared_qp_param, "<shared qp mode, 0: disabled, 1:enabled>");
+	doca_argp_param_set_description(shared_qp_param, "Shared QP mode enabled/disabled");
+	doca_argp_param_set_callback(shared_qp_param, shared_qp_callback);
+	doca_argp_param_set_type(shared_qp_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(shared_qp_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register ARGP param: %s", doca_error_get_descr(result));
 		return result;
@@ -227,6 +345,8 @@ int main(int argc, char **argv)
 	int cuda_id;
 	cudaError_t cuda_ret;
 
+	memset(&sample_cfg, 0, sizeof(sample_cfg));
+
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
 	if (result != DOCA_SUCCESS)
@@ -241,6 +361,9 @@ int main(int argc, char **argv)
 		goto sample_exit;
 
 	DOCA_LOG_INFO("Starting the sample");
+
+	/* Default mode if not set from command line */
+	sample_cfg.exec_scope = DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK;
 
 	result = doca_argp_init(NULL, &sample_cfg);
 	if (result != DOCA_SUCCESS) {
@@ -260,21 +383,64 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
+	if (sample_cfg.shared_qp == true && sample_cfg.cuda_threads < (DOCA_GPUNETIO_ETH_WARP_SIZE * 2)) {
+		DOCA_LOG_ERR("Shared QP requires at least %d CUDA threads (%d CUDA threads per CUDA block)",
+			     (DOCA_GPUNETIO_ETH_WARP_SIZE * 2),
+			     DOCA_GPUNETIO_ETH_WARP_SIZE);
+		goto argp_cleanup;
+	}
+
+	if (sample_cfg.shared_qp == false && sample_cfg.cuda_threads < DOCA_GPUNETIO_ETH_WARP_SIZE) {
+		DOCA_LOG_ERR("Non-shared QP requires at least %d CUDA threads (%d CUDA threads per CUDA block)",
+			     DOCA_GPUNETIO_ETH_WARP_SIZE,
+			     DOCA_GPUNETIO_ETH_WARP_SIZE);
+		goto argp_cleanup;
+	}
+
+	if ((sample_cfg.cuda_threads % 32) != 0) {
+		DOCA_LOG_ERR("Sample requires a number of CUDA threads multiple of %d", DOCA_GPUNETIO_ETH_WARP_SIZE);
+		goto argp_cleanup;
+	}
+
+	/*
+	 * A CUDA context must be initialized before calling GPUNetIO functions.
+	 * cudaFree(0) triggers tje CUDA runtime initialization and report any errors.
+	 */
+	cuda_ret = cudaFree(0);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("CUDA initialization failed: %s\n", cudaGetErrorString(cuda_ret));
+		goto argp_cleanup;
+	}
+
 	/* In a multi-GPU system, ensure CUDA refers to the right GPU device */
 	cuda_ret = cudaDeviceGetByPCIBusId(&cuda_id, sample_cfg.gpu_pcie_addr);
 	if (cuda_ret != cudaSuccess) {
 		DOCA_LOG_ERR("Invalid GPU bus id provided %s", sample_cfg.gpu_pcie_addr);
-		return DOCA_ERROR_INVALID_VALUE;
+		goto argp_cleanup;
 	}
 
-	cudaFree(0);
 	cudaSetDevice(cuda_id);
 
-	DOCA_LOG_INFO("Sample configuration:\n\tGPU %s\n\tNIC %s\n\tPacket size %d\n\tCUDA threads %d\n\t",
-		      sample_cfg.gpu_pcie_addr,
-		      sample_cfg.nic_pcie_addr,
-		      sample_cfg.pkt_size,
-		      sample_cfg.cuda_threads);
+	if (sample_cfg.shared_qp == 0) {
+		DOCA_LOG_INFO(
+			"Sample configuration:\n\tGPU %s\n\tNIC %s\n\tPacket size %zd\n\tCUDA threads %d\n\tCPU Proxy %s\n\tShared QP No\n\t",
+			sample_cfg.gpu_pcie_addr,
+			sample_cfg.nic_pcie_addr,
+			sample_cfg.pkt_size,
+			sample_cfg.cuda_threads,
+			((sample_cfg.nic_handler == DOCA_GPUNETIO_ETH_NIC_HANDLER_CPU_PROXY) ? "Yes" : "No"));
+	} else {
+		DOCA_LOG_INFO(
+			"Sample configuration:\n\tGPU %s\n\tNIC %s\n\tPacket size %zd\n\tCUDA threads %d\n\tCPU Proxy %s\n\tShared QP Yes\n\tShared QP exec scope %s\n\t",
+			sample_cfg.gpu_pcie_addr,
+			sample_cfg.nic_pcie_addr,
+			sample_cfg.pkt_size,
+			sample_cfg.cuda_threads,
+			((sample_cfg.nic_handler == DOCA_GPUNETIO_ETH_NIC_HANDLER_CPU_PROXY) ? "Yes" : "No"),
+			((sample_cfg.exec_scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD) ?
+				 "Thread" :
+				 (sample_cfg.exec_scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP ? "Warp" : "Block")));
+	}
 
 	result = gpunetio_simple_send(&sample_cfg);
 	if (result != DOCA_SUCCESS) {

@@ -37,15 +37,6 @@
 
 DOCA_LOG_REGISTER(GPUVERBS::HIGH_LEVEL);
 
-static size_t get_page_size(void)
-{
-	long ret = sysconf(_SC_PAGESIZE);
-	if (ret == -1)
-		return 4096; // 4KB, default Linux page size
-
-	return (size_t)ret;
-}
-
 static doca_error_t create_uar(struct doca_dev *dev,
 			       enum doca_gpu_dev_verbs_nic_handler nic_handler,
 			       struct doca_uar **external_uar,
@@ -309,6 +300,8 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 
 	external_umem_size = calc_qp_external_umem_size(rq_nwqe, sq_nwqe);
 
+	ALIGN_SIZE(external_umem_size, get_page_size());
+
 	status = doca_gpu_mem_alloc(gpu_dev,
 				    external_umem_size,
 				    get_page_size(),
@@ -344,6 +337,17 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 			DOCA_LOG_ERR("Failed to alloc gpu memory for external umem qp");
 			goto destroy_resources;
 		}
+
+		status = doca_umem_create(dev,
+					  (*gpu_umem_dbr_dev_ptr),
+					  dbr_umem_align_sz,
+					  DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
+						  DOCA_ACCESS_FLAG_RDMA_READ | DOCA_ACCESS_FLAG_RDMA_ATOMIC,
+					  gpu_umem_dbr);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create gpu umem: %s", doca_error_get_descr(status));
+			goto destroy_resources;
+		}
 	} else {
 		status = doca_gpu_mem_alloc(gpu_dev,
 					    dbr_umem_align_sz,
@@ -355,18 +359,18 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 			DOCA_LOG_ERR("Failed to alloc gpu memory for external umem qp");
 			goto destroy_resources;
 		}
-	}
 
-	status = doca_umem_gpu_create(gpu_dev,
-				      dev,
-				      (*gpu_umem_dbr_dev_ptr),
-				      dbr_umem_align_sz,
-				      DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
-					      DOCA_ACCESS_FLAG_RDMA_READ | DOCA_ACCESS_FLAG_RDMA_ATOMIC,
-				      gpu_umem_dbr);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create gpu umem: %s", doca_error_get_descr(status));
-		goto destroy_resources;
+		status = doca_umem_gpu_create(gpu_dev,
+					      dev,
+					      (*gpu_umem_dbr_dev_ptr),
+					      dbr_umem_align_sz,
+					      DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
+						      DOCA_ACCESS_FLAG_RDMA_READ | DOCA_ACCESS_FLAG_RDMA_ATOMIC,
+					      gpu_umem_dbr);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create gpu umem: %s", doca_error_get_descr(status));
+			goto destroy_resources;
+		}
 	}
 
 	status = doca_verbs_qp_init_attr_set_external_dbr_umem(verbs_qp_init_attr, *gpu_umem_dbr, 0);

@@ -37,7 +37,7 @@
 #include <doca_pe.h>
 
 #include <samples/common.h>
-#include <samples/doca_eth/eth_rxq_common.h>
+#include <samples/doca_eth/eth_flow_common.h>
 
 #include "eth_l2_fwd_core.h"
 
@@ -637,12 +637,14 @@ static doca_error_t init_eth_rxq_ctx(struct eth_l2_fwd_cfg *cfg,
  * @dev_resrc [in]: Resources of the device to create the ETH TXQ context with
  * @pe [in]: DOCA progress engine to which the ETH TXQ context will be connected
  * @tx_success_cb [in]: TXQ task batch send successful completion callback to set in configuration
+ * @queue_id [in]: Queue ID for the ETH TXQ context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR_... otherwise
  */
 static doca_error_t init_eth_txq_ctx(struct eth_l2_fwd_cfg *cfg,
 				     struct eth_l2_fwd_dev_resources *dev_resrc,
 				     struct doca_pe *pe,
-				     doca_eth_txq_task_batch_send_completion_cb_t tx_success_cb)
+				     doca_eth_txq_task_batch_send_completion_cb_t tx_success_cb,
+				     uint16_t queue_id)
 {
 	doca_error_t result;
 	uint32_t max_burst_size;
@@ -699,6 +701,12 @@ static doca_error_t init_eth_txq_ctx(struct eth_l2_fwd_cfg *cfg,
 		return result;
 	}
 
+	result = doca_eth_txq_apply_queue_id(dev_resrc->eth_txq, queue_id);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to apply queue ID of TXQ: %s", doca_error_get_descr(result));
+		return result;
+	}
+
 	return DOCA_SUCCESS;
 }
 
@@ -738,7 +746,7 @@ static doca_error_t forward_pkts(struct doca_pe *pe)
 
 doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_resources *state)
 {
-	struct eth_rxq_flow_config flow_cfg;
+	struct eth_flow_common_config flow_cfg;
 	doca_error_t result;
 
 	result = open_doca_device_with_ibdev_name((uint8_t *)cfg->mlxdev_name1,
@@ -780,6 +788,12 @@ doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_re
 		return result;
 	}
 
+	result = eth_flow_common_init_flow();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to init flow, err: %s", doca_error_get_descr(result));
+		return result;
+	}
+
 	/* Check if forwarding from device 1 to device 2 is desired */
 	if (cfg->one_sided_fwd == 0 || cfg->one_sided_fwd == 1) {
 		state->dev_resrc1.mmap_resrc.mmap_size = recommended_size;
@@ -789,14 +803,7 @@ doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_re
 			return result;
 		}
 
-		result = rxq_common_init_doca_flow(state->dev_resrc1.mlxdev, 0, &state->dev_resrc1.flow_resrc);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to initialize DOCA flow port for device 1: %s",
-				     doca_error_get_descr(result));
-			return result;
-		}
-
-		result = init_eth_txq_ctx(cfg, &state->dev_resrc2, state->pe, tx_success_cb2);
+		result = init_eth_txq_ctx(cfg, &state->dev_resrc2, state->pe, tx_success_cb2, 0);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to initialize ETH TXQ context for device 2: %s",
 				     doca_error_get_descr(result));
@@ -817,14 +824,26 @@ doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_re
 			return result;
 		}
 
+		result = eth_flow_common_create_flow_port(state->dev_resrc1.mlxdev, 0, &state->dev_resrc1.flow_resrc);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create flow port for device 1: %s", doca_error_get_descr(result));
+			return result;
+		}
+
 		flow_cfg.dev = state->dev_resrc1.mlxdev;
 		flow_cfg.rxq_queue_ids = &(state->dev_resrc1.rxq_queue_id);
 		flow_cfg.nb_queues = 1;
 
-		result = allocate_eth_rxq_flow_resources(&flow_cfg, &state->dev_resrc1.flow_resrc);
+		result = eth_flow_common_create_flow_pipe(&flow_cfg, &state->dev_resrc1.flow_resrc);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to allocate ETH RXQ flow resources for device 1: %s",
-				     doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed to create flow pipe for device 1: %s", doca_error_get_descr(result));
+			return result;
+		}
+	} else { /* Even if we don't want to forward from device 1 to device 2, we still need to create the flow port
+		    for port 1 */
+		result = eth_flow_common_create_flow_port(state->dev_resrc1.mlxdev, 0, &state->dev_resrc1.flow_resrc);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create flow port for device 1: %s", doca_error_get_descr(result));
 			return result;
 		}
 	}
@@ -838,14 +857,7 @@ doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_re
 			return result;
 		}
 
-		result = rxq_common_init_doca_flow(state->dev_resrc2.mlxdev, 1, &state->dev_resrc2.flow_resrc);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to initialize DOCA flow port for device 2: %s",
-				     doca_error_get_descr(result));
-			return result;
-		}
-
-		result = init_eth_txq_ctx(cfg, &state->dev_resrc1, state->pe, tx_success_cb1);
+		result = init_eth_txq_ctx(cfg, &state->dev_resrc1, state->pe, tx_success_cb1, 1);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to initialize ETH TXQ context for device 1: %s",
 				     doca_error_get_descr(result));
@@ -866,14 +878,26 @@ doca_error_t eth_l2_fwd_execute(struct eth_l2_fwd_cfg *cfg, struct eth_l2_fwd_re
 			return result;
 		}
 
+		result = eth_flow_common_create_flow_port(state->dev_resrc2.mlxdev, 1, &state->dev_resrc2.flow_resrc);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create flow port for device 2: %s", doca_error_get_descr(result));
+			return result;
+		}
+
 		flow_cfg.dev = state->dev_resrc2.mlxdev;
 		flow_cfg.rxq_queue_ids = &(state->dev_resrc2.rxq_queue_id);
 		flow_cfg.nb_queues = 1;
 
-		result = allocate_eth_rxq_flow_resources(&flow_cfg, &state->dev_resrc2.flow_resrc);
+		result = eth_flow_common_create_flow_pipe(&flow_cfg, &state->dev_resrc2.flow_resrc);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to allocate ETH RXQ flow resources for device 2: %s",
-				     doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed to create flow pipe for device 2: %s", doca_error_get_descr(result));
+			return result;
+		}
+	} else { /* Even if we don't want to forward from device 2 to device 1, we still need to create the flow port
+		    for port 2 */
+		result = eth_flow_common_create_flow_port(state->dev_resrc2.mlxdev, 1, &state->dev_resrc2.flow_resrc);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create flow port for device 2: %s", doca_error_get_descr(result));
 			return result;
 		}
 	}
@@ -900,26 +924,28 @@ doca_error_t eth_l2_fwd_cleanup(struct eth_l2_fwd_resources *state)
 	uint8_t num_ctx_in_progress = 0;
 
 	if (state->dev_resrc1.flow_resrc.root_pipe != NULL)
-		doca_flow_pipe_destroy(state->dev_resrc1.flow_resrc.root_pipe);
+		eth_flow_common_destroy_flow_pipe(&(state->dev_resrc1.flow_resrc));
 
 	if (state->dev_resrc2.flow_resrc.root_pipe != NULL)
-		doca_flow_pipe_destroy(state->dev_resrc2.flow_resrc.root_pipe);
+		eth_flow_common_destroy_flow_pipe(&(state->dev_resrc2.flow_resrc));
 
 	if (state->dev_resrc1.flow_resrc.df_port != NULL) {
-		result = doca_flow_port_stop(state->dev_resrc1.flow_resrc.df_port);
+		result = eth_flow_common_destroy_flow_port(&(state->dev_resrc1.flow_resrc));
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to stop DOCA flow port for device 1: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed to cleanup DOCA flow for device 1: %s", doca_error_get_descr(result));
 			return result;
 		}
 	}
 
 	if (state->dev_resrc2.flow_resrc.df_port != NULL) {
-		result = doca_flow_port_stop(state->dev_resrc2.flow_resrc.df_port);
+		result = eth_flow_common_destroy_flow_port(&(state->dev_resrc2.flow_resrc));
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to stop DOCA flow port for device 1: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed to cleanup DOCA flow for device 2: %s", doca_error_get_descr(result));
 			return result;
 		}
 	}
+
+	eth_flow_common_cleanup_flow();
 
 	if (state->dev_resrc1.eth_rxq_ctx != NULL) {
 		result = doca_ctx_stop(state->dev_resrc1.eth_rxq_ctx);
@@ -1103,8 +1129,6 @@ doca_error_t eth_l2_fwd_cleanup(struct eth_l2_fwd_resources *state)
 			return result;
 		}
 	}
-
-	doca_flow_destroy();
 
 	DOCA_LOG_INFO("Ethernet L2 Forwarding Application resources cleanup finished successfully");
 	return DOCA_SUCCESS;

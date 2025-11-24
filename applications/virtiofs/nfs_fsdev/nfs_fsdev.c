@@ -23,10 +23,7 @@
  *
  */
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
+#define _GNU_SOURCE 1
 #include "priv_nfs_fsdev.h"
 #include "nfs_fsdev.h"
 #include "nfs_fsdev_io_device.h"
@@ -231,6 +228,7 @@ static size_t nfs_fsdev_fill_lookup_entry(struct fuse_entry_out *arg, fattr3 *re
 
 static void nfs_fsdev_getattr_cb(struct rpc_context *rpc, int status, void *data, void *private_data)
 {
+	(void)rpc;
 	struct async_context *ctx = private_data;
 	pthread_mutex_lock(&ctx->fsdev_global->lock);
 	struct fuse_in_header *hdr = (struct fuse_in_header *)(ctx->fuse_header);
@@ -295,6 +293,7 @@ static void nfs_fsdev_getattr(struct async_context *context)
 
 static void nfs_fsdev_setattr_cb(struct rpc_context *rpc, int status, void *data, void *private_data)
 {
+	(void)rpc;
 	struct async_context *ctx = private_data;
 	pthread_mutex_lock(&ctx->fsdev_global->lock);
 	struct fuse_in_header *hdr = (struct fuse_in_header *)(ctx->fuse_header);
@@ -442,6 +441,7 @@ static void nfs_fsdev_init(struct async_context *context)
 
 static void nfs_fsdev_lookup_cb(struct rpc_context *rpc, int status, void *data, void *private_data)
 {
+	(void)rpc;
 	struct async_context *ctx = private_data;
 	pthread_mutex_lock(&ctx->fsdev_global->lock);
 
@@ -503,11 +503,7 @@ static void nfs_fsdev_lookup_cb(struct rpc_context *rpc, int status, void *data,
 static void nfs_fsdev_lookup(struct async_context *context)
 {
 	struct fuse_in_header *hdr = (struct fuse_in_header *)(context->fuse_header);
-	char *name = strdup(context->datain);
-	if (name == NULL) {
-		DOCA_LOG_ERR("Failed to duplicate name");
-		exit(1);
-	}
+	char *name = (char *)context->datain;
 
 	if (hdr->nodeid == 0) {
 		DOCA_LOG_ERR("calling lookup with parent inode 0");
@@ -580,6 +576,7 @@ static size_t nfs_fsdev_fill_fuse_dirent(struct fuse_dirent *dirent,
 
 static void nfs_fsdev_readdir_cb_common(struct rpc_context *rpc, int status, void *data, void *private_data, bool isPlus)
 {
+	(void)rpc;
 	struct async_context *ctx = private_data;
 	pthread_mutex_lock(&ctx->fsdev_global->lock);
 
@@ -739,6 +736,7 @@ struct mknod_cb_data {
 
 static void nfs_fsdev_mknod_cb(struct rpc_context *rpc, int status, void *data, void *private_data)
 {
+	(void)rpc;
 	struct mknod_cb_data *cb_data = private_data;
 	struct async_context *ctx = cb_data->ctx;
 	pthread_mutex_lock(&ctx->fsdev_global->lock);
@@ -961,6 +959,7 @@ static void nfs_fsdev_releasedir(struct async_context *context)
 
 static void nfs_fsdev_delayed_unlink_cb(struct rpc_context *rpc, int status, void *data, void *private_data)
 {
+	(void)rpc;
 	struct async_context *context = private_data;
 	pthread_mutex_lock(&context->fsdev_global->lock);
 	struct fuse_in_header *hdr = (struct fuse_in_header *)(context->fuse_header);
@@ -1036,6 +1035,7 @@ COMPLETE:
 
 static void nfs_fsdev_write_cb(struct rpc_context *rpc, int status, void *data, void *private_data)
 {
+	(void)rpc;
 	struct async_context *context = private_data;
 	pthread_mutex_lock(&context->fsdev_global->lock);
 
@@ -1106,6 +1106,7 @@ static void nfs_fsdev_write(struct async_context *context)
 
 static void nfs_fsdev_read_cb(struct rpc_context *rpc, int status, void *data, void *private_data)
 {
+	(void)rpc;
 	struct async_context *context = private_data;
 	pthread_mutex_lock(&context->fsdev_global->lock);
 
@@ -1192,6 +1193,7 @@ static struct unlink_cb_data *allocate_and_initialize_unlink_cb_data(struct asyn
 
 static void nfs_fsdev_unlink_cb(struct rpc_context *rpc, int status, void *data, void *private_data)
 {
+	(void)rpc;
 	struct unlink_cb_data *cb_data = private_data;
 	pthread_mutex_lock(&cb_data->context->fsdev_global->lock);
 
@@ -1220,6 +1222,7 @@ static void nfs_fsdev_unlink_cb(struct rpc_context *rpc, int status, void *data,
 
 static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status, void *data, void *private_data)
 {
+	(void)rpc;
 	struct unlink_cb_data *cb_data = private_data;
 	pthread_mutex_lock(&cb_data->context->fsdev_global->lock);
 
@@ -1389,6 +1392,7 @@ static void nfs_fsdev_unlink(struct async_context *context)
 
 static void nfs_fsdev_mkdir_cb(struct rpc_context *rpc, int status, void *data, void *private_data)
 {
+	(void)rpc;
 	struct async_context *context = private_data;
 	pthread_mutex_lock(&context->fsdev_global->lock);
 
@@ -1625,14 +1629,18 @@ static void nfs_fsdev_complete(struct async_context *context, size_t len, int st
 	SLIST_INSERT_HEAD(&context->fsdev_perthread->free_ios, context, entry);
 }
 
-struct nfs_fsdev *nfs_fsdev_get(void *fsdev)
+struct nfs_fsdev *nfs_fsdev_get(struct nfs_fsdev_context *fsdev)
 {
 	return get_private_context_nfs_fsdev(fsdev);
 }
 
-void *nfs_fsdev_create(char *server, char *mount_point)
+struct nfs_fsdev_context *nfs_fsdev_create(char *server, char *mount_point)
 {
-	return allocate_and_init_nfs_fsdev_context(server, mount_point);
+	return create_nfs_fsdev_context(server, mount_point);
+}
+void nfs_fsdev_destroy(struct nfs_fsdev_context *nfs_fsdev_context)
+{
+	destroy_nfs_fsdev_context(nfs_fsdev_context);
 }
 
 void priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global)
@@ -1645,7 +1653,7 @@ void priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *globa
 		DOCA_LOG_ERR("Failed to allocate memory for %d async_context objects", NFS_FSDEV_IO_POOL_SIZE);
 		exit(1);
 	}
-
+	fsdev->ios_pool = ios;
 	for (int i = 0; i < NFS_FSDEV_IO_POOL_SIZE; i++)
 		SLIST_INSERT_HEAD(&fsdev->free_ios, &ios[i], entry);
 
@@ -1655,6 +1663,8 @@ void priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *globa
 	// For debug mode use: (NFS_FSDEV_DEBUG_RPC | NFS_FSDEV_DEBUG_NFS | NFS_FSDEV_DEBUG_STATE)
 	if (fsdev->nfs == NULL) {
 		DOCA_LOG_ERR("Failed to initialize NFS context");
+		free(fsdev->ios_pool);
+		pthread_mutex_unlock(&(global->lock));
 		exit(10);
 	}
 
@@ -1663,24 +1673,56 @@ void priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *globa
 	int ret = nfs_mount(fsdev->nfs, global->server, global->mount_point);
 	if (ret != 0) {
 		DOCA_LOG_ERR("Failed to mount NFS server '%s' export '%s'", global->server, global->mount_point);
+		nfs_destroy_context(fsdev->nfs);
+		free(fsdev->ios_pool);
+		pthread_mutex_unlock(&(global->lock));
 		exit(10);
 	}
 
 	struct nfsfh *root_fh = NULL;
 	ret = nfs_open(fsdev->nfs, "/", O_RDONLY, &root_fh);
+
 	if (ret != 0) {
 		DOCA_LOG_ERR("Failed to open root file handle on NFS server");
+		nfs_umount(fsdev->nfs);
+		nfs_destroy_context(fsdev->nfs);
+		free(fsdev->ios_pool);
+		pthread_mutex_unlock(&(global->lock));
 		exit(10);
 	}
 
 	if (!check_if_exist_by_left(global->db, 1)) {
 		if (!nfs_fsdev_db_init_new_root(1, nfs_get_fh(root_fh), global->db)) {
 			DOCA_LOG_ERR("Failed to insert root file handle into DB");
+			(void)nfs_close(fsdev->nfs, root_fh);
+			nfs_umount(fsdev->nfs);
+			nfs_destroy_context(fsdev->nfs);
+			free(fsdev->ios_pool);
+			pthread_mutex_unlock(&(global->lock));
 			exit(-1);
 		}
 	} else {
 		DOCA_LOG_WARN("Root file handle already exists in DB, restoring database");
 	}
 
+	(void)nfs_close(fsdev->nfs, root_fh);
 	pthread_mutex_unlock(&(global->lock));
+}
+
+void priv_nfs_fsdev_deinit(struct nfs_fsdev *fsdev)
+{
+	if (fsdev == NULL)
+		return;
+
+	if (fsdev->nfs != NULL) {
+		/* Ensure umount before destroying context */
+		nfs_umount(fsdev->nfs);
+		nfs_destroy_context(fsdev->nfs);
+		fsdev->nfs = NULL;
+	}
+
+	if (fsdev->ios_pool != NULL) {
+		free(fsdev->ios_pool);
+		fsdev->ios_pool = NULL;
+	}
 }

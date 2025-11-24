@@ -47,7 +47,7 @@ extern struct doca_dpa_app *dpa_sample_app;
 /**
  * Size of copy bytes latency microseconds
  */
-#define DPA_NVQUAL_COPY_BYTE_LATENCY_USEC (0.1f)
+#define DPA_NVQUAL_COPY_BYTE_LATENCY_USEC (0.009f)
 
 /**
  * Watchdog time seconds to be calculated for iteration duration
@@ -110,6 +110,35 @@ extern struct doca_dpa_app *dpa_sample_app;
 #define DPA_NVQUAL_SYNC_EVENT_MASK (0xffffffffffffffff)
 
 /**
+ * Number of EUs that will execute the Memory Stress Kernel
+ */
+#define DPA_NVQUAL_NUM_MEMORY_EUS_PER_CORE 3
+
+/**
+ * Number of EUs per core in DPA architecture
+ */
+#define DPA_NVQUAL_NUM_EUS_PER_CORE 16
+
+/**
+ * Number of bytes written per memory operation (32 writes × 8 bytes = 256 bytes) according to memory_kernel test
+ * This represents the actual bytes written in one iteration of the memory stress loop
+ */
+#define DPA_NVQUAL_MEMORY_BYTES_PER_OP 256
+
+/**
+ * Arithmetic kernel inner loop multiplier
+ * Increased to reduce operation count and avoid watchdog timeout
+ */
+#define DPA_NVQUAL_ARITHMETIC_OPS_MULTIPLIER 1000
+
+/**
+ * Average cycles per arithmetic operation (estimated based on complexity)
+ * Used to calculate equivalent workload for arithmetic stress kernel
+ * Tuned to prevent watchdog timeout
+ */
+#define DPA_NVQUAL_ARITHMETIC_CYCLES_PER_OP 400
+
+/**
  * DPA nvqual flow configuration struct
  */
 struct dpa_nvqual_flow_config {
@@ -137,7 +166,6 @@ struct dpa_nvqual_run_output {
 struct dpa_nvqual_tls {
 	unsigned int eu;
 	doca_dpa_dev_uintptr_t thread_ret;
-	doca_dpa_dev_uintptr_t src_buf;
 	doca_dpa_dev_uintptr_t dst_buf;
 	size_t buffers_size;
 	uint64_t num_ops;

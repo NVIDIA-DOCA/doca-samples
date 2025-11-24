@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -37,6 +37,9 @@
 #include "flow_encrypt.h"
 
 DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::flow_common);
+
+/* Array of allocated IPSEC ids */
+uint32_t *allocated_ipsec_id = NULL;
 
 /*
  * Entry processing callback
@@ -100,6 +103,7 @@ doca_error_t process_entries(struct doca_flow_port *port,
  * @port_id [in]: port ID
  * @dev [in]: DOCA device pointer
  * @dev_rep [in]: DOCA device representor pointer
+ * @app_cfg [in]: application configuration
  * @sn_offload_disable [in]: disable SN offload
  * @port [out]: pointer to port handler
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -107,6 +111,7 @@ doca_error_t process_entries(struct doca_flow_port *port,
 static doca_error_t create_doca_flow_port(int port_id,
 					  struct doca_dev *dev,
 					  struct doca_dev_rep *dev_rep,
+					  const struct ipsec_security_gw_config *app_cfg,
 					  bool sn_offload_disable,
 					  struct doca_flow_port **port)
 {
@@ -117,6 +122,32 @@ static doca_error_t create_doca_flow_port(int port_id,
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca_flow_port_cfg: %s", doca_error_get_descr(result));
 		return result;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(port_cfg,
+						     DOCA_FLOW_RESOURCE_COUNTER,
+						     MAX_NB_RULES * NUM_OF_SYNDROMES);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg nr_counters: %s", doca_error_get_descr(result));
+		goto destroy_port_cfg;
+	}
+
+	if (app_cfg) {
+		uint32_t nb_of_rules = app_cfg->app_rules.nb_decrypt_rules + app_cfg->app_rules.nb_encrypt_rules;
+		uint32_t nr_shared_resources = app_cfg->socket_ctx.socket_conf ? MAX_NB_RULES * 2 :
+										 nb_of_rules; /* for
+												 both
+												 encrypt
+												 and
+												 decrypt
+											       */
+		result =
+			doca_flow_port_cfg_set_nr_resources(port_cfg, DOCA_FLOW_RESOURCE_IPSEC_SA, nr_shared_resources);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_port_cfg nr_shared_resources: %s",
+				     doca_error_get_descr(result));
+			goto destroy_port_cfg;
+		}
 	}
 
 	result = doca_flow_port_cfg_set_port_id(port_cfg, port_id);
@@ -214,11 +245,10 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 	struct doca_dev_rep *rep;
 	struct doca_flow_cfg *flow_cfg;
 	struct doca_flow_tune_server_cfg *server_cfg;
-	struct doca_flow_resource_rss_cfg rss = {0};
-	uint16_t rss_queues[nb_queues];
 	char *mode_args;
 	doca_error_t result;
 	bool sn_offload_disable;
+	const struct ipsec_security_gw_config *secured_cfg;
 
 	memset(&flow_cfg, 0, sizeof(flow_cfg));
 
@@ -257,9 +287,9 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 		return result;
 	}
 
-	result = doca_flow_cfg_set_nr_counters(flow_cfg, MAX_NB_RULES * NUM_OF_SYNDROMES);
+	result = doca_flow_cfg_set_resource_mode(flow_cfg, DOCA_FLOW_RESOURCE_MODE_PORT);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_counters: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg resource mode port: %s", doca_error_get_descr(result));
 		doca_flow_cfg_destroy(flow_cfg);
 		return result;
 	}
@@ -271,27 +301,12 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 		return result;
 	}
 
-	uint32_t nb_of_rules = app_cfg->app_rules.nb_decrypt_rules + app_cfg->app_rules.nb_encrypt_rules;
-	uint32_t nr_shared_resources = app_cfg->socket_ctx.socket_conf ? MAX_NB_RULES * 2 : nb_of_rules; /* for both
-													    encrypt and
-													    decrypt */
-	result =
-		doca_flow_cfg_set_nr_shared_resource(flow_cfg, nr_shared_resources, DOCA_FLOW_SHARED_RESOURCE_IPSEC_SA);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_shared_resources: %s", doca_error_get_descr(result));
 		doca_flow_cfg_destroy(flow_cfg);
 		return result;
 	}
 
-	linear_array_init_u16(rss_queues, nb_queues);
-	rss.nr_queues = nb_queues;
-	rss.queues_array = rss_queues;
-	result = doca_flow_cfg_set_default_rss(flow_cfg, &rss);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg rss: %s", doca_error_get_descr(result));
-		doca_flow_cfg_destroy(flow_cfg);
-		return result;
-	}
 	result = doca_flow_init(flow_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -323,17 +338,23 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 				rep = app_cfg->objects.unsecured_dev.doca_dev_rep;
 			}
 		}
-
+		secured_cfg = (port_idx == SECURED_IDX) ? app_cfg : NULL;
 		ports[port_idx] = malloc(sizeof(struct ipsec_security_gw_ports_map));
 		if (ports[port_idx] == NULL) {
 			DOCA_LOG_ERR("malloc() failed");
 			doca_flow_cleanup(nb_ports, ports);
 			return DOCA_ERROR_NO_MEMORY;
 		}
-		result = create_doca_flow_port(port_id, dev, rep, sn_offload_disable, &ports[port_idx]->port);
+		result = create_doca_flow_port(port_id,
+					       dev,
+					       rep,
+					       secured_cfg,
+					       sn_offload_disable,
+					       &ports[port_idx]->port);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to init DOCA Flow port: %s", doca_error_get_descr(result));
 			free(ports[port_idx]);
+			ports[port_idx] = NULL;
 			doca_flow_cleanup(nb_ports, ports);
 			return result;
 		}
@@ -400,28 +421,36 @@ doca_error_t ipsec_security_gw_init_status(struct ipsec_security_gw_config *app_
 	return DOCA_SUCCESS;
 }
 
-doca_error_t ipsec_security_gw_bind(struct ipsec_security_gw_ports_map *ports[],
-				    struct ipsec_security_gw_config *app_cfg)
+doca_error_t ipsec_security_gw_ids_get(struct ipsec_security_gw_ports_map *ports[],
+				       struct ipsec_security_gw_config *app_cfg)
 {
 	struct doca_flow_port *secured_port;
 	doca_error_t result;
+	uint32_t total_ids = app_cfg->app_rules.nb_encrypt_rules + app_cfg->app_rules.nb_decrypt_rules;
+
+	allocated_ipsec_id = (uint32_t *)malloc(total_ids * sizeof(uint32_t));
+	if (allocated_ipsec_id == NULL) {
+		DOCA_LOG_ERR("Failed to malloc ids array");
+		return DOCA_ERROR_NO_MEMORY;
+	}
 
 	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_VNF) {
 		secured_port = ports[SECURED_IDX]->port;
 	} else {
 		secured_port = doca_flow_port_switch_get(NULL);
 	}
-	result = bind_encrypt_ids(app_cfg->app_rules.nb_encrypt_rules, secured_port);
+	result = get_encrypt_ids(app_cfg->app_rules.nb_encrypt_rules, secured_port);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to bind IDs: %s", doca_error_get_descr(result));
+		free(allocated_ipsec_id);
 		return result;
 	}
 
-	result = bind_decrypt_ids(app_cfg->app_rules.nb_decrypt_rules,
-				  app_cfg->app_rules.nb_encrypt_rules,
-				  secured_port);
+	result =
+		get_decrypt_ids(app_cfg->app_rules.nb_decrypt_rules, app_cfg->app_rules.nb_encrypt_rules, secured_port);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to bind IDs: %s", doca_error_get_descr(result));
+		free(allocated_ipsec_id);
 		return result;
 	}
 	return result;
@@ -532,6 +561,7 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 	result = doca_flow_pipe_add_entry(0,
 					  *rss_pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -549,6 +579,7 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 	result = doca_flow_pipe_add_entry(0,
 					  *rss_pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -569,6 +600,7 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 	result = doca_flow_pipe_add_entry(0,
 					  *rss_pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -586,6 +618,7 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 	result = doca_flow_pipe_add_entry(0,
 					  *rss_pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -748,6 +781,7 @@ static doca_error_t add_switch_port_meta_entries(struct ipsec_security_gw_ports_
 	result = doca_flow_pipe_add_entry(0,
 					  pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -768,6 +802,7 @@ static doca_error_t add_switch_port_meta_entries(struct ipsec_security_gw_ports_
 	result = doca_flow_pipe_add_entry(0,
 					  pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -907,6 +942,7 @@ static doca_error_t add_switch_pkt_meta_entries(struct ipsec_security_gw_ports_m
 	result = doca_flow_pipe_add_entry(0,
 					  pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -932,6 +968,7 @@ static doca_error_t add_switch_pkt_meta_entries(struct ipsec_security_gw_ports_m
 	result = doca_flow_pipe_add_entry(0,
 					  pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -1049,10 +1086,10 @@ static void security_gateway_free_encrypt_resources(struct encrypt_pipes *encryp
 		free(encrypt_pipes->encrypt_root.entries_info);
 	if (encrypt_pipes->egress_ip_classifier.entries_info)
 		free(encrypt_pipes->egress_ip_classifier.entries_info);
-	if (encrypt_pipes->ipv4_encrypt_pipe.entries_info)
-		free(encrypt_pipes->ipv4_encrypt_pipe.entries_info);
-	if (encrypt_pipes->ipv6_encrypt_pipe.entries_info)
-		free(encrypt_pipes->ipv6_encrypt_pipe.entries_info);
+	if (encrypt_pipes->match_encrypt_ipv4_pipe.entries_info)
+		free(encrypt_pipes->match_encrypt_ipv4_pipe.entries_info);
+	if (encrypt_pipes->match_encrypt_ipv6_pipe.entries_info)
+		free(encrypt_pipes->match_encrypt_ipv6_pipe.entries_info);
 	if (encrypt_pipes->ipv4_tcp_pipe.entries_info)
 		free(encrypt_pipes->ipv4_tcp_pipe.entries_info);
 	if (encrypt_pipes->ipv4_udp_pipe.entries_info)
@@ -1080,16 +1117,38 @@ static void security_gateway_free_decrypt_resources(struct decrypt_pipes *decryp
 		free(decrypt_pipes->marker_remove_pipe.entries_info);
 	if (decrypt_pipes->decrypt_root.entries_info)
 		free(decrypt_pipes->decrypt_root.entries_info);
-	if (decrypt_pipes->decrypt_ipv4_pipe.entries_info)
-		free(decrypt_pipes->decrypt_ipv4_pipe.entries_info);
-	if (decrypt_pipes->decrypt_ipv6_pipe.entries_info)
-		free(decrypt_pipes->decrypt_ipv6_pipe.entries_info);
+	if (decrypt_pipes->match_decrypt_ipv4_pipe.entries_info)
+		free(decrypt_pipes->match_decrypt_ipv4_pipe.entries_info);
+	if (decrypt_pipes->match_decrypt_ipv6_pipe.entries_info)
+		free(decrypt_pipes->match_decrypt_ipv6_pipe.entries_info);
+	if (decrypt_pipes->match_decap_pipe.entries_info)
+		free(decrypt_pipes->match_decap_pipe.entries_info);
 	if (decrypt_pipes->decap_pipe.entries_info)
 		free(decrypt_pipes->decap_pipe.entries_info);
 	if (decrypt_pipes->vxlan_decap_ipv4_pipe.entries_info)
 		free(decrypt_pipes->vxlan_decap_ipv4_pipe.entries_info);
 	if (decrypt_pipes->vxlan_decap_ipv6_pipe.entries_info)
 		free(decrypt_pipes->vxlan_decap_ipv6_pipe.entries_info);
+}
+
+/*
+ * Free switch pipes resources
+ *
+ * @switch_pipes [in]: switch pipes struct
+ */
+static void security_gateway_free_switch_pipes_resources(struct switch_pipes *switch_pipes)
+{
+	if (switch_pipes->pkt_meta_pipe.entries_info)
+		free(switch_pipes->pkt_meta_pipe.entries_info);
+}
+
+/*
+ * Free allocated ipsec ids
+ */
+static void security_gateway_free_allocated_ipsec_ids(void)
+{
+	if (allocated_ipsec_id)
+		free(allocated_ipsec_id);
 }
 
 void security_gateway_free_status_entries(struct ipsec_security_gw_config *app_cfg)
@@ -1102,4 +1161,6 @@ void security_gateway_free_resources(struct ipsec_security_gw_config *app_cfg)
 {
 	security_gateway_free_encrypt_resources(&app_cfg->encrypt_pipes);
 	security_gateway_free_decrypt_resources(&app_cfg->decrypt_pipes);
+	security_gateway_free_allocated_ipsec_ids();
+	security_gateway_free_switch_pipes_resources(&app_cfg->switch_pipes);
 }

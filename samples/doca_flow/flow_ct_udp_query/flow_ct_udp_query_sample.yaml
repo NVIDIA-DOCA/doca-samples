@@ -65,9 +65,7 @@ use_cases:
                   - Ether(src='aa:bb:cc:dd:ee:ff', dst='11:22:33:44:55:66')/IP(src='11.21.31.41', dst='81.81.81.81', ttl=17, id=0)/UDP(dport=4789, sport=0, chksum=0)/VXLAN(vni=11382189)/Ether()/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(dport=2, sport=3)/Raw(load='Sent to port 0, reply direction, forwarded from port 0')
           - type: dump
             expected_text:
-              - "Asymmetric counter:"
-              - "Origin Total packets: 1"
-              - "Reply Total packets: 1"
-              - "Shared counter:"
-              - "Origin Total packets: 2"
-              - "Reply Total packets: 2"
+              - "(Port 0) Asymmetric counter - Origin total packets: 1"
+              - "(Port 0) Asymmetric counter - Reply total packets: 1"
+              - "(Port 0) Shared counter - Origin total packets: 2"
+              - "(Port 0) Shared counter - Reply total packets: 2"

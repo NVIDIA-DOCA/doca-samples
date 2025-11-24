@@ -549,24 +549,6 @@ static doca_error_t handle_show_rss_rx_packets_param(void *param, void *config)
 }
 
 /**
- * @brief Indicates if the application should maintain the order of original packets.
- *
- * @param [in]: A pointer to a boolean flag
- * @config [in/out]: A void pointer to the application config struct
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t handle_maintain_order_param(void *param, void *config)
-{
-	auto *app_config = (struct psp_gw_app_config *)config;
-	bool *bool_param = (bool *)param;
-	app_config->maintain_order = *bool_param;
-	if (*bool_param) {
-		DOCA_LOG_INFO("The original order of the packets will be maintained");
-	}
-	return DOCA_SUCCESS;
-}
-
-/**
  * @brief Handle outer IP type param.
  *
  * @param [in]: A pointer to a string flag
@@ -1403,16 +1385,6 @@ static doca_error_t psp_gw_register_params(void)
 					      handle_config_file_param,
 					      DOCA_ARGP_TYPE_STRING,
 					      true,
-					      false);
-	if (result != DOCA_SUCCESS)
-		return result;
-
-	result = psp_gw_register_single_param(nullptr,
-					      "maintain-order",
-					      "maintain original packet ordering",
-					      handle_maintain_order_param,
-					      DOCA_ARGP_TYPE_BOOLEAN,
-					      false,
 					      false);
 	if (result != DOCA_SUCCESS)
 		return result;

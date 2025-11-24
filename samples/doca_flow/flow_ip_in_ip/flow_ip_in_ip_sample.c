@@ -23,6 +23,7 @@
  *
  */
 
+#include <endian.h>
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
@@ -136,7 +137,7 @@ static doca_error_t create_port_fwd_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
 	flags = DOCA_FLOW_NO_WAIT;
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, &actions, NULL, NULL, flags, status, &entry);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add port forwarding entry: %s", doca_error_get_descr(result));
 		return result;
@@ -174,26 +175,24 @@ static doca_error_t add_encap_pipe_entries(struct doca_flow_pipe *pipe,
 	memset(&actions, 0, sizeof(actions));
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
-	actions.action_idx = 0;
 	SET_MAC_ADDR(actions.encap_cfg.encap.outer.eth.src_mac, smac[0], smac[1], smac[2], smac[3], smac[4], smac[5]);
 	SET_MAC_ADDR(actions.encap_cfg.encap.outer.eth.dst_mac, dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5]);
 	SET_IPV6_ADDR(actions.encap_cfg.encap.outer.ip6.src_ip, ipv6_src[0], ipv6_src[1], ipv6_src[2], ipv6_src[3]);
 	SET_IPV6_ADDR(actions.encap_cfg.encap.outer.ip6.dst_ip, ipv6_dst[0], ipv6_dst[1], ipv6_dst[2], ipv6_dst[3]);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &encap_entries[0]);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &encap_entries[0]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry matching on ipv4: %s", doca_error_get_descr(result));
 		return result;
 	}
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV6;
-	actions.action_idx = 1;
 	SET_MAC_ADDR(actions.encap_cfg.encap.outer.eth.src_mac, smac[5], smac[4], smac[3], smac[2], smac[1], smac[0]);
 	SET_MAC_ADDR(actions.encap_cfg.encap.outer.eth.dst_mac, dmac[5], dmac[4], dmac[3], dmac[2], dmac[1], dmac[0]);
 	SET_IPV6_ADDR(actions.encap_cfg.encap.outer.ip6.src_ip, ipv6_src[3], ipv6_src[2], ipv6_src[1], ipv6_src[0]);
 	SET_IPV6_ADDR(actions.encap_cfg.encap.outer.ip6.dst_ip, ipv6_dst[3], ipv6_dst[2], ipv6_dst[1], ipv6_dst[0]);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &encap_entries[1]);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &encap_entries[1]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry matching on ipv6: %s", doca_error_get_descr(result));
 		return result;
@@ -337,7 +336,7 @@ static doca_error_t add_decap_pipe_entries(struct doca_flow_pipe *pipe,
 	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5]);
 	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &decap_entries[0]);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &decap_entries[0]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry matching on ipv4: %s", doca_error_get_descr(result));
 		return result;
@@ -348,7 +347,7 @@ static doca_error_t add_decap_pipe_entries(struct doca_flow_pipe *pipe,
 	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, dmac[5], dmac[4], dmac[3], dmac[2], dmac[1], dmac[0]);
 	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV6);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &decap_entries[1]);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &decap_entries[1]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry matching on ipv6: %s", doca_error_get_descr(result));
 		return result;
@@ -547,11 +546,66 @@ static doca_error_t prepare_decap_pipeline(struct doca_flow_port *ingress_port,
 }
 
 /*
- * Run flow_ip_in_ip sample.
+ * Run flow_ip_in_ip sample
  *
  * @nb_queues [in]: number of queues the sample will use.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
+/* Context structure for statistics printing */
+struct ip_in_ip_stats_context {
+	struct doca_flow_pipe_entry **encap_entries;
+	struct doca_flow_pipe_entry **decap_entries;
+};
+
+/*
+ * Print IP in IP statistics
+ *
+ * @encap_entries [in]: array of encap entries
+ * @decap_entries [in]: array of decap entries
+ */
+static void print_ip_in_ip_stats(struct doca_flow_pipe_entry *encap_entries[],
+				 struct doca_flow_pipe_entry *decap_entries[])
+{
+	doca_error_t result;
+	struct doca_flow_resource_query encap_ipv4_query_stats, decap_ipv4_query_stats, encap_ipv6_query_stats,
+		decap_ipv6_query_stats;
+
+	result = doca_flow_resource_query_entry(encap_entries[0], &encap_ipv4_query_stats);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
+	}
+	result = doca_flow_resource_query_entry(decap_entries[0], &decap_ipv4_query_stats);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
+	}
+	result = doca_flow_resource_query_entry(encap_entries[1], &encap_ipv6_query_stats);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
+	}
+	result = doca_flow_resource_query_entry(decap_entries[1], &decap_ipv6_query_stats);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
+	}
+	DOCA_LOG_INFO("Encap: counted %ld IPv4 packets, %ld IPv6 packets",
+		      encap_ipv4_query_stats.counter.total_pkts,
+		      encap_ipv6_query_stats.counter.total_pkts);
+	DOCA_LOG_INFO("Decap: counted %ld IPv4 packets, %ld IPv6 packets",
+		      decap_ipv4_query_stats.counter.total_pkts,
+		      decap_ipv6_query_stats.counter.total_pkts);
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: ip_in_ip_stats_context structure
+ */
+static void print_ip_in_ip_stats_wrapper(void *context)
+{
+	struct ip_in_ip_stats_context *ctx = (struct ip_in_ip_stats_context *)context;
+	print_ip_in_ip_stats(ctx->encap_entries, ctx->decap_entries);
+}
+
 doca_error_t flow_ip_in_ip(int nb_queues)
 {
 	const int nb_ports = 2;
@@ -565,10 +619,11 @@ doca_error_t flow_ip_in_ip(int nb_queues)
 	struct doca_flow_pipe_entry *encap_entries[NB_ENCAP_PIPE_ENTRIES];
 	struct doca_flow_pipe_entry *decap_entries[NB_DECAP_PIPE_ENTRIES];
 	struct entries_status entries_status = {0};
-	struct doca_flow_resource_query encap_ipv4_query_stats, encap_ipv6_query_stats, decap_ipv4_query_stats,
-		decap_ipv6_query_stats;
 
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = nb_ports * NB_PORT_FWD_PIPE_ENTRIES + NB_DECAP_PIPE_ENTRIES + NB_ENCAP_PIPE_ENTRIES;
+	resource.nr_encap = NB_ENCAP_PIPE_ENTRIES;
+	resource.nr_decap = NB_DECAP_PIPE_ENTRIES;
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -576,7 +631,7 @@ doca_error_t flow_ip_in_ip(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(TOTAL_ENTRIES));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -606,31 +661,10 @@ doca_error_t flow_ip_in_ip(int nb_queues)
 		return result;
 	}
 
-	DOCA_LOG_INFO("Wait %u seconds for packets to arrive", WAITING_TIME);
-	sleep(WAITING_TIME);
+	/* Setup statistics context and wait for packets */
+	struct ip_in_ip_stats_context stats_ctx = {.encap_entries = encap_entries, .decap_entries = decap_entries};
 
-	result = doca_flow_resource_query_entry(encap_entries[0], &encap_ipv4_query_stats);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
-	}
-	result = doca_flow_resource_query_entry(decap_entries[0], &decap_ipv4_query_stats);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
-	}
-	result = doca_flow_resource_query_entry(encap_entries[1], &encap_ipv6_query_stats);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
-	}
-	result = doca_flow_resource_query_entry(decap_entries[1], &decap_ipv6_query_stats);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
-	}
-	DOCA_LOG_INFO("Encap: counted %ld IPv4 packets, %ld IPv6 packets",
-		      encap_ipv4_query_stats.counter.total_pkts,
-		      encap_ipv6_query_stats.counter.total_pkts);
-	DOCA_LOG_INFO("Decap: counted %ld IPv4 packets, %ld IPv6 packets",
-		      decap_ipv4_query_stats.counter.total_pkts,
-		      decap_ipv6_query_stats.counter.total_pkts);
+	flow_wait_for_packets(WAITING_TIME, print_ip_in_ip_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

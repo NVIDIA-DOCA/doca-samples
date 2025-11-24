@@ -30,10 +30,29 @@ mode_args:
 ports_description:
   port_0: doca_dev
   port_1: doca_rep_dev
-description: "This sample illustrates how to create a simple pipeline on two standalone e-switches. Multi-port e-switch must be disabled.
-              Sample Command Line: ./build/doca_flow_ct_2_ports  -- -l 60 -a pci/08:00.0 -a pci/08:00.1"
+description: "This sample demonstrates DOCA Flow Connection Tracking (CT) with two separate e-switches operating independently.
+              Each port has its own standalone e-switch with independent CT state and packet processing pipelines.
+              Multi-port e-switch must be disabled to ensure proper dual e-switch operation.
+              Dual E-Switch Architecture:
+              - Port 0: Independent e-switch with its own CT state and processing pipeline
+              - Port 1: Independent e-switch with its own CT state and processing pipeline
+              - Each e-switch maintains separate CT tables and counter statistics
+              Pipeline Structure (per e-switch):
+              - UDP Root Pipe: Filters UDP packets and forwards to CT pipe
+              - CT Pipe: Tracks connection state and forwards based on match/miss
+              - CT Match Path: counter-match pipe -> port-forward pipe -> forward back to same port (RX to TX immediately)
+              - CT Miss Path: counter-miss pipe -> RSS software pipe -> software processing (packet consumed, never sent out)
+              Packet Flow (per e-switch):
+              1. First packet of a new connection: CT miss -> software processing -> packet consumed (creates CT entry)
+                 * From TG perspective: Packet is received but never sent back out
+              2. Subsequent packets of same connection: CT match -> forwarded back to same port (RX to TX immediately)
+                 * From TG perspective: Packet is received and immediately sent back out on the same port
+              The sample includes unified traffic counter reporting showing distribution between:
+              - miss counter: Packets consumed by software processing (received but not sent out)
+              - match counter: Packets forwarded back to same port (RX to TX immediately)
+              Sample Command Line: ./build/doca_flow_ct_2_ports -- -l 60 -a pci/08:00.0 -a pci/08:00.1"
 use_cases:
-  - name: "Flow ct 2 ports use case #1"
+  - name: "Flow ct 2 ports - only create connections, no port to port traffic"
     args: ""
     stages:
       - name: "Sending packets iteration 1"
@@ -41,17 +60,51 @@ use_cases:
           - receiving_port: 0
             packets:
               - Ether()/IP(dst="2.2.2.2")/TCP()/Raw(load=b'Sent to port 0, dropped')
-              - Ether()/IP(dst="1.1.1.1")/UDP()/Raw(load=b'Sent to port 0, forwarded to RSS')
+              - Ether()/IP(src="2.2.2.1", dst="1.1.1.1")/UDP(sport=1, dport=2)/Raw(load=b'Sent to port 0, origin direction, forwarded to RSS')
           - receiving_port: 1
             packets:
               - Ether()/IP(dst="2.2.2.2")/TCP()/Raw(load=b'Sent to port 1, dropped')
-              - Ether()/IP(dst="1.1.1.1")/UDP()/Raw(load=b'Sent to port 1, forwarded to RSS')
+              - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/UDP(sport=1, dport=2)/Raw(load=b'Sent to port 0, origin direction, forwarded to RSS')
         validation:
           - type: dump
             expected_text:
-              - "Sample received 1 packets on port 0"
-              - "1 CT connections created"
-              - "1 CT connections processed"
-              - "Sample received 1 packets on port 1"
-              - "1 CT connections created"
-              - "1 CT connections processed"
+              - "1 CT connections created and processed on port 0"
+              - "1 CT connections created and processed on port 1"
+              - "(Port 0) Miss counter - Total packets: 1"
+              - "(Port 0) Shared counter - Total packets: 0"
+              - "(Port 1) Miss counter - Total packets: 1"
+              - "(Port 1) Shared counter - Total packets: 0"
+  - name: "Flow ct 2 ports - create connections and send traffic"
+    args: ""
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(src="2.2.2.1", dst="1.1.1.1")/UDP(sport=1, dport=2)/Raw(load=b'Sent to port 0, origin direction, forwarded to RSS')
+              - Ether()/IP(src="2.2.2.1", dst="1.1.1.1")/UDP(sport=1, dport=2)/Raw(load=b'Sent to port 0, origin direction, forwarded from port 0')
+              - Ether()/IP(src="1.1.1.1", dst="2.2.2.1")/UDP(sport=2, dport=1)/Raw(load=b'Sent to port 0, reply direction, forwarded from port 0')
+          - receiving_port: 1
+            packets:
+              - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/UDP(sport=1, dport=2)/Raw(load=b'Sent to port 1, origin direction, forwarded to RSS')
+              - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/UDP(sport=1, dport=2)/Raw(load=b'Sent to port 1, origin direction, forwarded from port 1')
+              - Ether()/IP(src="1.1.1.1", dst="2.2.2.2")/UDP(sport=2, dport=1)/Raw(load=b'Sent to port 1, reply direction, forwarded from port 1')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 0
+                packets:
+                  - Ether()/IP(src="2.2.2.1", dst="1.1.1.1")/UDP(sport=1, dport=2)/Raw(load=b'Sent to port 0, origin direction, forwarded from port 0')
+                  - Ether()/IP(src="1.1.1.1", dst="2.2.2.1")/UDP(sport=2, dport=1)/Raw(load=b'Sent to port 0, reply direction, forwarded from port 0')
+              - forwarding_port: 1
+                packets:
+                  - Ether()/IP(src="2.2.2.2", dst="1.1.1.1")/UDP(sport=1, dport=2)/Raw(load=b'Sent to port 1, origin direction, forwarded from port 1')
+                  - Ether()/IP(src="1.1.1.1", dst="2.2.2.2")/UDP(sport=2, dport=1)/Raw(load=b'Sent to port 1, reply direction, forwarded from port 1')
+          - type: dump
+            expected_text:
+              - "1 CT connections created and processed on port 0"
+              - "1 CT connections created and processed on port 1"
+              - "(Port 0) Miss counter - Total packets: 1"
+              - "(Port 0) Shared counter - Total packets: 2"
+              - "(Port 1) Miss counter - Total packets: 1"
+              - "(Port 1) Shared counter - Total packets: 2"

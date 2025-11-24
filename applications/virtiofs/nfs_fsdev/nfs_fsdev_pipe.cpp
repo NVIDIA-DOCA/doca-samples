@@ -24,15 +24,44 @@
  */
 
 #include <filesystem>
+#include <string>
 #include "nfs_fsdev_pipe.h"
 #include "nfs_fsdev_gpm.hpp"
 #include <doca_log.h>
 
 DOCA_LOG_REGISTER(NFS_FSDEV_PIPE)
 
+struct database {
+public:
+	PersistentMap<struct NfsFsdevEntry> *map;
+	database(int fd_, void *shmem_, size_t full_sz)
+		: map(new PersistentMap<struct NfsFsdevEntry>(shmem_)),
+		  fd(fd_),
+		  shmem(shmem_),
+		  full_size(full_sz)
+	{
+	}
+
+	~database()
+	{
+		delete map;
+		if (shmem && shmem != MAP_FAILED) {
+			munmap(shmem, full_size);
+		}
+		if (fd != -1) {
+			close(fd);
+		}
+	}
+
+private:
+	int fd;
+	void *shmem;
+	size_t full_size;
+};
+
 extern "C" {
 
-void *allocate_and_init_map(const char *filename)
+struct database *allocate_and_init_map(const char *filename)
 {
 	std::filesystem::create_directories(std::filesystem::path(filename).parent_path());
 
@@ -56,71 +85,65 @@ void *allocate_and_init_map(const char *filename)
 		return NULL;
 	}
 
-	return new PersistentMap<struct NfsFsdevEntry>(shmem);
+	return new database(fd, shmem, full_size);
+}
+void close_map(struct database *db)
+{
+	delete db;
 }
 
-bool insert_entry(void *data_base, struct NfsFsdevEntry *entry, unsigned long left, struct persistent_nfs_fh3 *right)
+bool insert_entry(struct database *db, struct NfsFsdevEntry *entry, unsigned long left, struct persistent_nfs_fh3 *right)
 {
-	PersistentMap<struct NfsFsdevEntry> *db = static_cast<PersistentMap<struct NfsFsdevEntry> *>(data_base);
 	std::string temp(right->data.data_val, right->data.data_len);
-	return db->InsertEntry(*entry, left, temp);
+	return db->map->InsertEntry(*entry, left, temp);
 }
 
-bool update_entry_by_left(void *data_base, struct NfsFsdevEntry *entry, unsigned long left)
+bool update_entry_by_left(struct database *db, struct NfsFsdevEntry *entry, unsigned long left)
 {
-	PersistentMap<struct NfsFsdevEntry> *db = static_cast<PersistentMap<struct NfsFsdevEntry> *>(data_base);
-	return db->UpdateEntryByLeft(*entry, left);
+	return db->map->UpdateEntryByLeft(*entry, left);
 }
 
-bool update_entry_by_right(void *data_base, struct NfsFsdevEntry *entry, struct persistent_nfs_fh3 *right)
+bool update_entry_by_right(struct database *db, struct NfsFsdevEntry *entry, struct persistent_nfs_fh3 *right)
 {
-	PersistentMap<struct NfsFsdevEntry> *db = static_cast<PersistentMap<struct NfsFsdevEntry> *>(data_base);
 	std::string temp((char *)right->data.data_val, right->data.data_len);
-	return db->UpdateEntryByRight(*entry, temp);
+	return db->map->UpdateEntryByRight(*entry, temp);
 }
 
-bool remove_entry_by_left(void *data_base, unsigned long left)
+bool remove_entry_by_left(struct database *db, unsigned long left)
 {
-	PersistentMap<struct NfsFsdevEntry> *db = static_cast<PersistentMap<struct NfsFsdevEntry> *>(data_base);
-	return db->RemoveEntryByLeft(left);
+	return db->map->RemoveEntryByLeft(left);
 }
 
-bool remove_entry_by_right(void *data_base, struct persistent_nfs_fh3 *right)
+bool remove_entry_by_right(struct database *db, struct persistent_nfs_fh3 *right)
 {
-	PersistentMap<struct NfsFsdevEntry> *db = static_cast<PersistentMap<struct NfsFsdevEntry> *>(data_base);
 	std::string temp((char *)right->data.data_val, right->data.data_len);
-	return db->RemoveEntryByRight(temp);
+	return db->map->RemoveEntryByRight(temp);
 }
 
-struct NfsFsdevEntry get_entry_by_left(void *data_base, unsigned long left)
+struct NfsFsdevEntry get_entry_by_left(struct database *db, unsigned long left)
 {
-	PersistentMap<struct NfsFsdevEntry> *db = static_cast<PersistentMap<struct NfsFsdevEntry> *>(data_base);
-	return db->GetEntryByLeft(left);
+	return db->map->GetEntryByLeft(left);
 }
 
-struct NfsFsdevEntry get_entry_by_right(void *data_base, struct persistent_nfs_fh3 *right)
+struct NfsFsdevEntry get_entry_by_right(struct database *db, struct persistent_nfs_fh3 *right)
 {
-	PersistentMap<struct NfsFsdevEntry> *db = static_cast<PersistentMap<struct NfsFsdevEntry> *>(data_base);
 	std::string temp((char *)right->data.data_val, right->data.data_len);
-	return db->GetEntryByRight(temp);
+	return db->map->GetEntryByRight(temp);
 }
 
-unsigned long generate_left_key(void *data_base)
+unsigned long generate_left_key(struct database *db)
 {
-	PersistentMap<struct NfsFsdevEntry> *db = static_cast<PersistentMap<struct NfsFsdevEntry> *>(data_base);
-	return db->GenerateLeftKey();
+	return db->map->GenerateLeftKey();
 }
 
-bool check_if_exist_by_left(void *data_base, unsigned long left)
+bool check_if_exist_by_left(struct database *db, unsigned long left)
 {
-	PersistentMap<struct NfsFsdevEntry> *db = static_cast<PersistentMap<struct NfsFsdevEntry> *>(data_base);
-	return db->CheckEntryExistByLeftKey(left);
+	return db->map->CheckEntryExistByLeftKey(left);
 }
 
-bool check_if_exist_by_right(void *data_base, struct persistent_nfs_fh3 *right)
+bool check_if_exist_by_right(struct database *db, struct persistent_nfs_fh3 *right)
 {
-	PersistentMap<struct NfsFsdevEntry> *db = static_cast<PersistentMap<struct NfsFsdevEntry> *>(data_base);
 	std::string temp((char *)right->data.data_val, right->data.data_len);
-	return db->CheckEntryExistByRightKey(temp);
+	return db->map->CheckEntryExistByRightKey(temp);
 }
 }

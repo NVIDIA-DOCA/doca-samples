@@ -175,8 +175,8 @@ static void query_encrypt_pipes(struct ipsec_security_gw_config *app_cfg)
 	changed |= query_pipe_info(&app_cfg->encrypt_pipes.ipv6_src_tcp_pipe);
 	changed |= query_pipe_info(&app_cfg->encrypt_pipes.ipv6_src_udp_pipe);
 	changed |= query_pipe_info(&app_cfg->encrypt_pipes.egress_ip_classifier);
-	changed |= query_pipe_info(&app_cfg->encrypt_pipes.ipv4_encrypt_pipe);
-	changed |= query_pipe_info(&app_cfg->encrypt_pipes.ipv6_encrypt_pipe);
+	changed |= query_pipe_info(&app_cfg->encrypt_pipes.match_encrypt_ipv4_pipe);
+	changed |= query_pipe_info(&app_cfg->encrypt_pipes.match_encrypt_ipv6_pipe);
 	changed |= query_pipe_info(&app_cfg->encrypt_pipes.marker_insert_pipe);
 	if (app_cfg->vxlan_encap)
 		changed |= query_pipe_info(&app_cfg->encrypt_pipes.vxlan_encap_pipe);
@@ -197,9 +197,9 @@ static void query_decrypt_pipes(struct ipsec_security_gw_config *app_cfg)
 
 	changed |= query_pipe_info(&app_cfg->decrypt_pipes.vxlan_decap_ipv4_pipe);
 	changed |= query_pipe_info(&app_cfg->decrypt_pipes.vxlan_decap_ipv6_pipe);
-	changed |= query_pipe_info(&app_cfg->decrypt_pipes.decrypt_ipv4_pipe);
-	changed |= query_pipe_info(&app_cfg->decrypt_pipes.decrypt_ipv6_pipe);
-	changed |= query_pipe_info(&app_cfg->decrypt_pipes.decap_pipe);
+	changed |= query_pipe_info(&app_cfg->decrypt_pipes.match_decrypt_ipv4_pipe);
+	changed |= query_pipe_info(&app_cfg->decrypt_pipes.match_decrypt_ipv6_pipe);
+	changed |= query_pipe_info(&app_cfg->decrypt_pipes.match_decap_pipe);
 	changed |= query_pipe_info(&app_cfg->decrypt_pipes.marker_remove_pipe);
 	if (changed) {
 		printf("\n");
@@ -327,6 +327,11 @@ static void process_queue_packets(void *args)
 	struct ipsec_security_gw_core_ctx *ctx = (struct ipsec_security_gw_core_ctx *)args;
 	uint16_t nb_ports = ctx->config->dpdk_config->port_config.nb_ports;
 	uint16_t tx_port;
+
+	/* In switch mode, we only have one port we can RX burst from, which is the first one */
+	if (ctx->config->flow_mode == IPSEC_SECURITY_GW_SWITCH) {
+		nb_ports = 1;
+	}
 
 	DOCA_LOG_DBG("Core %u is receiving packets", rte_lcore_id());
 	while (!force_quit) {
@@ -1190,7 +1195,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	result = ipsec_security_gw_bind(ports, &app_cfg);
+	result = ipsec_security_gw_ids_get(ports, &app_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to bind encrypt and decrypt rules");
 		exit_status = EXIT_FAILURE;

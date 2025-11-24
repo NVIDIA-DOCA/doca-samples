@@ -31,7 +31,7 @@ ports_description:
 description: "This sample shows how to use a DOCA Flow ordered list pipe. It shows the different outcome when using counter action before meter action and after.
               When sending each packet about 100 times (for example), the first order will output a count of less than 100 packets while the second order will output a count
               of exactly 100 packets.
-              Sample Command Line: ./build/doca_flow_ordered_list  -a auxiliary:mlx5_core.sf.2,dv_flow_en=2 -a auxiliary:mlx5_core.sf.3,dv_flow_en=2 -- -l 60"
+              Sample Command Line: ./build/doca_flow_ordered_list  -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Flow ordered list case #1"
     args: ""
@@ -42,11 +42,15 @@ use_cases:
             packets:
               - Ether()/IP(src='1.1.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, TCP source and destination ports modified, src IP modified, forwarded from port 1')
               - Ether()/IP(src='2.2.2.2', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')
+              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, TCP source and destination ports modified, src IP modified, forwarded from port 1')
+              - Ether()/IP(src='4.4.4.4', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')
               - Ether()/IP(src='2.2.2.2', dst='1.1.1.1')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, dropped')
           - receiving_port: 1
             packets:
               - Ether()/IP(src='1.1.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, TCP source and destination ports modified, src IP modified, forwarded from port 0')
               - Ether()/IP(src='2.2.2.2', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
+              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, TCP source and destination ports modified, src IP modified, forwarded from port 0')
+              - Ether()/IP(src='4.4.4.4', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
               - Ether()/IP(src='2.2.2.2', dst='1.1.1.1')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, dropped')
         validation:
           - type: packet
@@ -55,7 +59,11 @@ use_cases:
                 packets:
                   - Ether()/IP(src='192.168.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, TCP source and destination ports modified, src IP modified, forwarded from port 0')
                   - Ether()/IP(src='192.168.2.2', dst='8.8.8.8')/TCP(sport=555, dport=70)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
+                  - Ether()/IP(src='192.168.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, TCP source and destination ports modified, src IP modified, forwarded from port 0')
+                  - Ether()/IP(src='192.168.4.4', dst='8.8.8.8')/TCP(sport=555, dport=70)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
               - forwarding_port: 1
                 packets:
                   - Ether()/IP(src='192.168.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, TCP source and destination ports modified, src IP modified, forwarded from port 1')
                   - Ether()/IP(src='192.168.2.2', dst='8.8.8.8')/TCP(sport=555, dport=70)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')
+                  - Ether()/IP(src='192.168.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, TCP source and destination ports modified, src IP modified, forwarded from port 1')
+                  - Ether()/IP(src='192.168.4.4', dst='8.8.8.8')/TCP(sport=555, dport=70)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')

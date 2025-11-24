@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -24,11 +24,32 @@
  */
 
 #include <doca_argp.h>
-#include <doca_log.h>
-
 #include "gpunetio_common.h"
 
-DOCA_LOG_REGISTER(GPU_SEND_WAIT_TIME::MAIN);
+DOCA_LOG_REGISTER(GPUNETIO_SIMPLE_RECEIVE::MAIN);
+
+/*
+ * ARGP Callback - Set shared QP execution mode (THREAD, WARP or BLOCK)
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t exec_scope_callback(void *param, void *config)
+{
+	struct sample_simple_recv_cfg *sample_cfg = (struct sample_simple_recv_cfg *)config;
+	const uint32_t exec_scope = *(uint32_t *)param;
+
+	if (exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD && exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP &&
+	    exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK) {
+		DOCA_LOG_ERR("Exec scope must be included between 0 and 2");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	sample_cfg->exec_scope = (uint32_t)exec_scope;
+
+	return DOCA_SUCCESS;
+}
 
 /*
  * Get GPU PCIe address input.
@@ -39,7 +60,7 @@ DOCA_LOG_REGISTER(GPU_SEND_WAIT_TIME::MAIN);
  */
 static doca_error_t gpu_pci_address_callback(void *param, void *config)
 {
-	struct sample_send_wait_cfg *sample_cfg = (struct sample_send_wait_cfg *)config;
+	struct sample_simple_recv_cfg *sample_cfg = (struct sample_simple_recv_cfg *)config;
 	char *pci_address = (char *)param;
 	size_t len;
 
@@ -63,7 +84,7 @@ static doca_error_t gpu_pci_address_callback(void *param, void *config)
  */
 static doca_error_t nic_pci_address_callback(void *param, void *config)
 {
-	struct sample_send_wait_cfg *sample_cfg = (struct sample_send_wait_cfg *)config;
+	struct sample_simple_recv_cfg *sample_cfg = (struct sample_simple_recv_cfg *)config;
 	char *pci_address = (char *)param;
 	size_t len;
 
@@ -86,7 +107,24 @@ static doca_error_t nic_pci_address_callback(void *param, void *config)
 static doca_error_t register_sample_params(void)
 {
 	doca_error_t result;
-	struct doca_argp_param *gpu_param, *nic_param;
+	struct doca_argp_param *exec_param, *gpu_param, *nic_param;
+
+	result = doca_argp_param_create(&exec_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(exec_param, "e");
+	doca_argp_param_set_long_name(exec_param, "exec-scope");
+	doca_argp_param_set_description(exec_param,
+					"Shared QP mode to test: per-thread (0) per-warp (1) per-block (2).");
+	doca_argp_param_set_callback(exec_param, exec_scope_callback);
+	doca_argp_param_set_type(exec_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(exec_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	result = doca_argp_param_create(&gpu_param);
 	if (result != DOCA_SUCCESS) {
@@ -140,9 +178,8 @@ int main(int argc, char **argv)
 {
 	doca_error_t result;
 	struct doca_log_backend *sdk_log;
-	struct sample_send_wait_cfg sample_cfg;
+	struct sample_simple_recv_cfg sample_cfg;
 	int exit_status = EXIT_FAILURE;
-	int cuda_id;
 	cudaError_t cuda_ret;
 
 	/* Register a logger backend */
@@ -159,6 +196,9 @@ int main(int argc, char **argv)
 		goto sample_exit;
 
 	DOCA_LOG_INFO("Starting the sample");
+
+	/* Default mode if not set from command line */
+	sample_cfg.exec_scope = DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK;
 
 	result = doca_argp_init(NULL, &sample_cfg);
 	if (result != DOCA_SUCCESS) {
@@ -178,19 +218,31 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
-	/* In a multi-GPU system, ensure CUDA refers to the right GPU device */
-	cuda_ret = cudaDeviceGetByPCIBusId(&cuda_id, sample_cfg.gpu_pcie_addr);
+	/*
+	 * A CUDA context must be initialized before calling GPUNetIO functions.
+	 * cudaFree(0) triggers tje CUDA runtime initialization and report any errors.
+	 */
+	cuda_ret = cudaFree(0);
 	if (cuda_ret != cudaSuccess) {
-		DOCA_LOG_ERR("Invalid GPU bus id provided %s", sample_cfg.gpu_pcie_addr);
-		return DOCA_ERROR_INVALID_VALUE;
+		DOCA_LOG_ERR("CUDA initialization failed: %s\n", cudaGetErrorString(cuda_ret));
+		goto argp_cleanup;
 	}
 
-	cudaFree(0);
-	cudaSetDevice(cuda_id);
+	/* In a multi-GPU system, ensure CUDA refers to the right GPU device */
+	cuda_ret = cudaDeviceGetByPCIBusId(&sample_cfg.cuda_id, sample_cfg.gpu_pcie_addr);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("Invalid GPU bus id provided %s", sample_cfg.gpu_pcie_addr);
+		goto argp_cleanup;
+	}
 
-	DOCA_LOG_INFO("Sample configuration:\n\tGPU %s\n\tNIC %s\n\t",
+	cudaSetDevice(sample_cfg.cuda_id);
+
+	DOCA_LOG_INFO("Sample configuration:\n\tGPU %s\n\tNIC %s\n\tShared QP exec scope %s\n\t",
 		      sample_cfg.gpu_pcie_addr,
-		      sample_cfg.nic_pcie_addr);
+		      sample_cfg.nic_pcie_addr,
+		      ((sample_cfg.exec_scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD) ?
+			       "Thread" :
+			       (sample_cfg.exec_scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP ? "Warp" : "Block")));
 
 	result = gpunetio_simple_receive(&sample_cfg);
 	if (result != DOCA_SUCCESS) {

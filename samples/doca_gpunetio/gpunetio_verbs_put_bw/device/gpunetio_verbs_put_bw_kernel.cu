@@ -76,7 +76,7 @@ __global__ void put_bw(struct doca_gpu_dev_verbs_qp *qp,
 		}
 
 		if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP) {
-			if (lane_idx == 0) {
+			if (lane_idx == (DOCA_GPUNETIO_VERBS_WARP_SIZE - 1)) {
 				if (doca_gpu_dev_verbs_poll_cq_at(doca_gpu_dev_verbs_qp_get_cq_sq(qp), out_ticket) != 0)
 					printf("Error CQE!\n");
 			}

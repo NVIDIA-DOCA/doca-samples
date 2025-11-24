@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,7 +23,6 @@
  *
  */
 
-#include <doca_gpunetio_dev_buf.cuh>
 #include <doca_gpunetio_dev_eth_txq.cuh>
 #include <doca_log.h>
 
@@ -31,49 +30,51 @@
 
 DOCA_LOG_REGISTER(GPU_SEND_WAIT_TIME::KERNEL);
 
-__global__ void send_wait_on_time(struct doca_gpu_eth_txq *eth_txq_gpu,
-				  struct doca_gpu_buf_arr *buf_arr_gpu,
+__global__ void send_wait_on_time(struct doca_gpu_eth_txq *txq,
+				  uint8_t *pkt_buff_addr,
+				  const uint32_t pkt_buff_mkey,
+				  const size_t pkt_size,
 				  uint64_t *intervals_gpu)
 {
-	doca_error_t result;
-	struct doca_gpu_buf *buf_ptr = NULL;
-	uint32_t lane_id = threadIdx.x % WARP_SIZE;
-	uint32_t warp_id = threadIdx.x / WARP_SIZE;
-	uint64_t doca_gpu_buf_idx = lane_id;
+	doca_error_t status;
+	doca_gpu_dev_eth_ticket_t out_ticket;
+	enum doca_gpu_eth_send_flags flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NONE;
+	uint64_t addr;
+	uint32_t num_completed;
 	__shared__ uint32_t exit_cond[1];
+	const uint64_t burst_size = pkt_size * blockDim.x;
 
-	/* For simplicity, only 1 warp is allowed */
-	if (warp_id > 0)
-		return;
-
-	if (lane_id == 0)
-		DOCA_GPUNETIO_VOLATILE(exit_cond[0]) = 0;
+	if (threadIdx.x == (blockDim.x - 1))
+		flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NOTIFY;
+	if (threadIdx.x == 0)
+		DOCA_GPUNETIO_VOLATILE(*exit_cond) = 0;
+	__syncthreads();
 
 	for (int idx = 0; idx < NUM_BURST_SEND && exit_cond[0] == 0; idx++) {
-		/* First thread in warp enqueue time barrier */
-		if (lane_id == 0) {
-			result = doca_gpu_dev_eth_txq_wait_time_enqueue_strong(eth_txq_gpu, intervals_gpu[idx], 0);
-			if (result != DOCA_SUCCESS) {
-				printf("Error %d doca gpunetio enqueue wait on time thread %d\n", result, lane_id);
-				DOCA_GPUNETIO_VOLATILE(exit_cond[0]) = 1;
-			}
+		addr = ((uint64_t)pkt_buff_addr) + (uint64_t)(burst_size * idx) + (uint64_t)(pkt_size * threadIdx.x);
+		// Only one block is using this QP, function can use CTA scope
+		doca_gpu_dev_eth_txq_wait_send<DOCA_GPUNETIO_ETH_RESOURCE_SHARING_MODE_CTA,
+					       DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA,
+					       DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
+					       DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK>(txq,
+										   intervals_gpu[idx],
+										   addr,
+										   pkt_buff_mkey,
+										   pkt_size,
+										   flags,
+										   &out_ticket);
+
+		// __syncthreads already present in wait_send with BLOCK scope
+		if (threadIdx.x == 0) {
+			status = doca_gpu_dev_eth_txq_poll_completion<DOCA_GPUNETIO_ETH_CQ_POLL_LAST>(
+				txq,
+				1,
+				DOCA_GPUNETIO_ETH_WAIT_FLAG_B,
+				&num_completed);
+			if (status != DOCA_SUCCESS)
+				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 		}
-		__syncwarp();
-
-		/* All threads in the warp enqueue a different packet (32 packets per burst) */
-		doca_gpu_dev_buf_get_buf(buf_arr_gpu, doca_gpu_buf_idx, &buf_ptr);
-
-		doca_gpu_dev_eth_txq_send_enqueue_strong(eth_txq_gpu, buf_ptr, PACKET_SIZE, 0);
-		__syncwarp();
-
-		/* First thread in warp flushes send queue */
-		if (lane_id == 0) {
-			doca_gpu_dev_eth_txq_commit_strong(eth_txq_gpu);
-			doca_gpu_dev_eth_txq_push(eth_txq_gpu);
-		}
-		__syncwarp();
-
-		doca_gpu_buf_idx += WARP_SIZE;
+		__syncthreads();
 	}
 }
 
@@ -95,7 +96,12 @@ doca_error_t kernel_send_wait_on_time(cudaStream_t stream, struct txq_queue *txq
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	send_wait_on_time<<<1, WARP_SIZE, 0, stream>>>(txq->eth_txq_gpu, txq->txbuf.buf_arr_gpu, intervals_gpu);
+	/* For simplicity, 1 thread per packet in burst */
+	send_wait_on_time<<<1, NUM_PACKETS_X_BURST, 0, stream>>>(txq->eth_txq_gpu,
+								 txq->pkt_buff_addr,
+								 txq->pkt_buff_mkey,
+								 PACKET_SIZE,
+								 intervals_gpu);
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
 		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));

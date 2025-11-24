@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -184,6 +184,8 @@ app_device_srcs = files([
 	'device/doca_transport_dev.c',
 ])
 
+app_attributes_file = files(['device/doca_transport_attributes.yaml'])
+
 # Prepare include flags
 dpa_include_dir = dependency_dpa.get_variable(pkgconfig : 'includedir')
 dpa_device_include_flags = [
@@ -221,6 +223,7 @@ dpa_code = custom_target(
 		nvme_emu_dpacc_mcpu_flag,
 		dpa_device_link_flags,
 		dpa_app_name,
+		app_attributes_file,
 		'@OUTPUT@',
 		'@INPUT@',
 	],

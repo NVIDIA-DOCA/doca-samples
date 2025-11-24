@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -42,11 +42,12 @@ doca_error_t rmax_create_stream_hds(struct rmax_program_state *state, struct rma
 static void init_config(struct rmax_stream_config *config)
 {
 	config->scatter_all = false;
+	config->order_by_rtp_seqn = false;
 	config->src_ip.s_addr = 0;
 	config->dst_ip.s_addr = 0;
 	config->dst_port = 5200;
-	config->hdr_size = 8;
-	config->data_size = 150;
+	config->hdr_size = 12;
+	config->data_size = 1208;
 	config->num_elements = 1024;
 
 	strcpy(config->pci_address, "03:00.0");

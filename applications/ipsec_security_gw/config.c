@@ -370,8 +370,13 @@ doca_error_t parse_ipv6_str(const char *str_ip, doca_be32_t ipv6_addr[])
 		DOCA_LOG_ERR("Wrong format of ipv6 address");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
-	for (i = 0; i < 4; i++)
+	for (i = 0; i < 4; i++) {
+#if defined(__GLIBC__)
 		ipv6_addr[i] = ip.__in6_u.__u6_addr32[i];
+#else
+		ipv6_addr[i] = ip.s6_addr32[i];
+#endif
+	}
 	return DOCA_SUCCESS;
 }
 
@@ -1176,6 +1181,11 @@ static doca_error_t validate_config(struct ipsec_security_gw_config *app_cfg)
 		return DOCA_ERROR_INVALID_VALUE;
 	} else if (app_cfg->flow_mode == IPSEC_SECURITY_GW_SWITCH && !app_cfg->objects.unsecured_dev.is_representor) {
 		DOCA_LOG_ERR("Please specify the representor parameter for the unsecured device: -ur");
+		return DOCA_ERROR_INVALID_VALUE;
+	} else if (app_cfg->flow_mode == IPSEC_SECURITY_GW_SWITCH &&
+		   app_cfg->objects.unsecured_dev.doca_dev != app_cfg->objects.secured_dev.doca_dev) {
+		DOCA_LOG_ERR(
+			"Please specify an unsecured device representor that is associated with the same device parameter for the secured devices: -ur");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 

@@ -141,7 +141,7 @@ static doca_error_t add_monitor_meter_pipe_entry(struct doca_flow_pipe *pipe, st
 	monitor.meter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 	monitor.non_shared_meter.cir = 1024;
 	monitor.non_shared_meter.cbs = 1024;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, &monitor, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, &monitor, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -167,6 +167,7 @@ doca_error_t flow_monitor_meter(int nb_queues)
 	doca_error_t result;
 	int port_id;
 
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_meters = 1;
 
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
@@ -176,7 +177,7 @@ doca_error_t flow_monitor_meter(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

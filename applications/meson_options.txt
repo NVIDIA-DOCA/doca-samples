@@ -53,16 +53,20 @@ option('spdk_isal_prefix', type : 'string', value : '/opt/mellanox/spdk/lib',
 	description : 'SPDK ISA-L installation prefix.')
 
 # DPACC options
-option('dpacc_mcpu', type : 'string', value : 'nv-dpa-bf3,nv-dpa-cx7,nv-dpa-cx8',
+option('dpacc_mcpu', type : 'string', value : 'nv-dpa-bf3,nv-dpa-cx7,nv-dpa-cx8,nv-dpa-cx9',
 	description : 'Set the supported architecture for DPA related application.')
 
 # Enables per application - turned off by default
 option('enable_app_shield_agent', type: 'boolean', value: false,
 	description: 'Enable the App Shield Agent application.')
+option('enable_bifurcated_driver_model', type: 'boolean', value: false,
+	description: 'Enable the Bifurcated Driver Model application.')
 option('enable_dma_copy', type: 'boolean', value: false,
 	description: 'Enable the DMA copy application.')
 option('enable_dpa_all_to_all', type: 'boolean', value: false,
 	description: 'Enable DPA All to All application.')
+option('enable_dpu_gpu_remote_offload', type: 'boolean', value: false,
+	   description: 'Enable DPU GPU remote offload application.')
 option('enable_eth_l2_fwd', type: 'boolean', value: false,
 	description: 'Enable the Ethernet L2 Forwarding application.')
 option('enable_file_compression', type: 'boolean', value: false,

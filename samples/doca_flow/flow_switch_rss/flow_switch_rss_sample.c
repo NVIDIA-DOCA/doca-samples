@@ -125,6 +125,8 @@ static uint16_t control_queue_map[SWITCH_RSS_PIPE_DOM_MAX][SWITCH_RSS_CONTROL_MA
 
 #define MAX_RSS_QUEUE 10
 
+static uint32_t shared_rss_ids[MAX_RSS_QUEUE];
+
 /* array for storing created egress entries */
 static struct doca_flow_pipe_entry *egress_entries[NB_EGRESS_ENTRIES];
 
@@ -252,9 +254,7 @@ static doca_error_t add_rss_pipe_entry(struct doca_flow_pipe *pipe, struct entri
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
 
-	actions.action_idx = 0;
-
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &rss_entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &rss_entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -644,6 +644,7 @@ static doca_error_t add_switch_egress_pipe_entries(struct doca_flow_pipe *pipe, 
 		result = doca_flow_pipe_add_entry(0,
 						  pipe,
 						  &match,
+						  0,
 						  NULL,
 						  NULL,
 						  &fwd,
@@ -698,6 +699,7 @@ static doca_error_t add_switch_ingress_pipe_entries(struct doca_flow_pipe *pipe,
 		result = doca_flow_pipe_add_entry(0,
 						  pipe,
 						  &match,
+						  0,
 						  NULL,
 						  NULL,
 						  &fwd,
@@ -747,6 +749,7 @@ static doca_error_t add_switch_vport_pipe_entries(struct doca_flow_pipe *pipe, s
 		result = doca_flow_pipe_add_entry(0,
 						  pipe,
 						  &match,
+						  0,
 						  NULL,
 						  NULL,
 						  &fwd,
@@ -825,7 +828,7 @@ static int add_switch_rss_pipe_entries(enum switch_rss_pipe_dom_type dir, struct
 		if (entry_index == SWITCH_RSS_BASIC_PIPE_SHARED_RSS) {
 			fwd.type = DOCA_FLOW_FWD_RSS;
 			fwd.rss_type = DOCA_FLOW_RESOURCE_TYPE_SHARED;
-			fwd.shared_rss_id = basic_queue_map[dir][entry_index];
+			fwd.shared_rss_id = shared_rss_ids[basic_queue_map[dir][entry_index]];
 		} else {
 			rss_queues[0] = basic_queue_map[dir][entry_index];
 			fwd.type = DOCA_FLOW_FWD_RSS;
@@ -838,6 +841,7 @@ static int add_switch_rss_pipe_entries(enum switch_rss_pipe_dom_type dir, struct
 		result = doca_flow_pipe_add_entry(0,
 						  pipe_basic_switch_rss[dir][entry_index],
 						  &match,
+						  0,
 						  NULL,
 						  NULL,
 						  efwd,
@@ -869,7 +873,7 @@ static int add_switch_rss_pipe_entries(enum switch_rss_pipe_dom_type dir, struct
 		} else if (entry_index == SWITCH_RSS_CONTROL_SHARED_RSS) {
 			fwd.type = DOCA_FLOW_FWD_RSS;
 			fwd.rss_type = DOCA_FLOW_RESOURCE_TYPE_SHARED;
-			fwd.shared_rss_id = control_queue_map[dir][entry_index];
+			fwd.shared_rss_id = shared_rss_ids[control_queue_map[dir][entry_index]];
 		}
 		result = doca_flow_pipe_control_add_entry(0,
 							  entry_index,
@@ -911,7 +915,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	struct entries_status status;
 	doca_error_t result;
 	int entry_idx;
-	uint32_t shared_rss_ids;
+	uint32_t shared_rss_id;
 	struct doca_flow_shared_resource_cfg cfg = {0};
 	struct doca_flow_resource_rss_cfg rss_cfg = {0};
 	const char *start_str;
@@ -920,8 +924,9 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	uint16_t queues[1];
 
 	memset(&status, 0, sizeof(status));
-	nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_RSS] = 10;
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 2 * NB_TOTAL_ENTRIES; /* counter per entry */
+	resource.nr_rss = 10;
 	/* Use isolated mode as we will create the RSS pipe later */
 	if (is_expert)
 		start_str = "switch,hws,isolated,hairpinq_num=4,expert";
@@ -938,7 +943,8 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -952,22 +958,26 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	/* config shared rss with dest */
 	for (i = 0; i < MAX_RSS_QUEUE; i++) {
 		queues[0] = i;
-		shared_rss_ids = i;
-		result = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_RSS, shared_rss_ids, &cfg);
+		result = doca_flow_port_shared_resource_get(doca_flow_port_switch_get(ports[0]),
+							    DOCA_FLOW_SHARED_RESOURCE_RSS,
+							    &shared_rss_id);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get shared resource RSS %d", i);
+			stop_doca_flow_ports(nb_ports, ports);
+			doca_flow_destroy();
+			return result;
+		}
+		result = doca_flow_port_shared_resource_set_cfg(doca_flow_port_switch_get(ports[0]),
+								DOCA_FLOW_SHARED_RESOURCE_RSS,
+								shared_rss_id,
+								&cfg);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to cfg shared rss %d", i);
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;
 		}
-		/* bind shared rss to port */
-		result = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_RSS, &shared_rss_ids, 1, ports[0]);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to bind shared rss %d to port", i);
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
+		shared_rss_ids[i] = i;
 	}
 
 	/* Create rss pipe and entry */

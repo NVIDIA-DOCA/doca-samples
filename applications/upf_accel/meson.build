@@ -28,6 +28,7 @@ app_srcs = [
 	APP_NAME + '_json_parser.c',
 	APP_NAME + '_flow_processing.c',
 	APP_NAME + '_print_header.c',
+	APP_NAME + '_smf_default_init.c',
 	common_dir_path + '/dpdk_utils.c',
 	common_dir_path + '/packet_parser.c',
 	samples_dir_path + '/common.c',

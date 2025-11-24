@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -25,13 +25,14 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <rte_ethdev.h>
+#include <pthread.h>
 
 #include "common.h"
-#include "dpdk_tcp/tcp_session_table.h"
-#include "dpdk_tcp/tcp_cpu_rss_func.h"
+#include "tcp_cpu/tcp_session_table.h"
+#include "tcp_cpu/tcp_cpu_rss_func.h"
 
 #define SLEEP_IN_NANOS (10 * 1000) /* Sample the PE every 10 microseconds  */
+#define FLOW_PORT_0 0
 
 DOCA_LOG_REGISTER(GPU_PACKET_PROCESSING);
 
@@ -39,7 +40,7 @@ bool force_quit;
 static struct doca_gpu *gpu_dev;
 static struct app_gpu_cfg app_cfg = {0};
 static struct doca_dev *ddev;
-static uint16_t dpdk_dev_port_id;
+static uint16_t flow_port_id;
 static struct rxq_udp_queues udp_queues;
 static struct rxq_tcp_queues tcp_queues;
 static struct rxq_icmp_queues icmp_queues;
@@ -120,7 +121,7 @@ static uint64_t get_ns(uint64_t *sec)
  *
  * @args [in]: thread input args
  */
-static void stats_core(void *args)
+static void *stats_core(void *args)
 {
 	(void)args;
 
@@ -135,8 +136,9 @@ static void stats_core(void *args)
 	uint64_t interval_sec = 0;
 	struct stats_udp *custom_udp_st;
 	struct stats_tcp *custom_tcp_st;
+	pthread_t self_id = pthread_self();
 
-	DOCA_LOG_INFO("Core %u is reporting filter stats", rte_lcore_id());
+	DOCA_LOG_INFO("Thread %lu is reporting filter stats", (unsigned long)self_id);
 	get_ns(&start_time_sec);
 	interval_print = get_ns(&interval_sec);
 	while (DOCA_GPUNETIO_VOLATILE(force_quit) == false) {
@@ -145,8 +147,7 @@ static void stats_core(void *args)
 			result = doca_gpu_semaphore_get_status(udp_queues.sem_cpu[idxq], sem_idx_udp[idxq], &status);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("UDP semaphore error");
-				DOCA_GPUNETIO_VOLATILE(force_quit) = true;
-				return;
+				goto error;
 			}
 
 			if (status == DOCA_GPU_SEMAPHORE_STATUS_READY) {
@@ -155,8 +156,7 @@ static void stats_core(void *args)
 										 (void **)&(custom_udp_st));
 				if (result != DOCA_SUCCESS) {
 					DOCA_LOG_ERR("UDP semaphore get address error");
-					DOCA_GPUNETIO_VOLATILE(force_quit) = true;
-					return;
+					goto error;
 				}
 
 				udp_st[idxq].dns += custom_udp_st->dns;
@@ -168,8 +168,7 @@ static void stats_core(void *args)
 								       DOCA_GPU_SEMAPHORE_STATUS_FREE);
 				if (result != DOCA_SUCCESS) {
 					DOCA_LOG_ERR("UDP semaphore %d error", sem_idx_udp[idxq]);
-					DOCA_GPUNETIO_VOLATILE(force_quit) = true;
-					return;
+					goto error;
 				}
 
 				sem_idx_udp[idxq] = (sem_idx_udp[idxq] + 1) % udp_queues.nums;
@@ -181,8 +180,7 @@ static void stats_core(void *args)
 			result = doca_gpu_semaphore_get_status(tcp_queues.sem_cpu[idxq], sem_idx_tcp[idxq], &status);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("TCP semaphore error");
-				DOCA_GPUNETIO_VOLATILE(force_quit) = true;
-				return;
+				goto error;
 			}
 
 			if (status == DOCA_GPU_SEMAPHORE_STATUS_READY) {
@@ -191,8 +189,7 @@ static void stats_core(void *args)
 										 (void **)&(custom_tcp_st));
 				if (result != DOCA_SUCCESS) {
 					DOCA_LOG_ERR("TCP semaphore get address error");
-					DOCA_GPUNETIO_VOLATILE(force_quit) = true;
-					return;
+					goto error;
 				}
 
 				tcp_st[idxq].http += custom_tcp_st->http;
@@ -210,8 +207,7 @@ static void stats_core(void *args)
 								       DOCA_GPU_SEMAPHORE_STATUS_FREE);
 				if (result != DOCA_SUCCESS) {
 					DOCA_LOG_ERR("TCP semaphore %d error", sem_idx_tcp[idxq]);
-					DOCA_GPUNETIO_VOLATILE(force_quit) = true;
-					return;
+					goto error;
 				}
 
 				sem_idx_tcp[idxq] = (sem_idx_tcp[idxq] + 1) % tcp_queues.nums;
@@ -246,6 +242,12 @@ static void stats_core(void *args)
 			interval_print = get_ns(&interval_sec);
 		}
 	}
+
+	return NULL;
+
+error:
+	DOCA_GPUNETIO_VOLATILE(force_quit) = true;
+	return NULL;
 }
 
 /*
@@ -271,9 +273,15 @@ static void signal_handler(int signum)
 int main(int argc, char **argv)
 {
 	doca_error_t result;
-	int current_lcore = 0;
 	int cuda_id;
 	cudaError_t cuda_ret;
+	cudaStream_t rx_tcp_stream, rx_udp_stream, rx_icmp_stream, tx_http_server;
+	cudaError_t res_rt = cudaSuccess;
+	uint32_t *cpu_exit_condition;
+	uint32_t *gpu_exit_condition;
+	pthread_t stat_thread_id;
+	pthread_t tcp_thread_id[MAX_QUEUES];
+	struct thread_args targs[MAX_QUEUES];
 	struct doca_log_backend *sdk_log;
 	struct timespec ts = {
 		.tv_sec = 0,
@@ -331,8 +339,10 @@ int main(int argc, char **argv)
 
 	cudaFree(0);
 	cudaSetDevice(cuda_id);
+	/* DOCA Flow requires a port logical ID for each doca flow port decided by the application */
+	flow_port_id = FLOW_PORT_0;
 
-	result = init_doca_device(app_cfg.nic_pcie_addr, &ddev, &dpdk_dev_port_id);
+	result = init_doca_device(app_cfg.nic_pcie_addr, &ddev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function init_doca_device returned %s", doca_error_get_descr(result));
 		return EXIT_FAILURE;
@@ -345,7 +355,7 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	df_port = init_doca_flow(dpdk_dev_port_id, app_cfg.queue_num);
+	df_port = init_doca_flow(ddev, flow_port_id, app_cfg.queue_num);
 	if (df_port == NULL) {
 		DOCA_LOG_ERR("FAILED: init_doca_flow");
 		return EXIT_FAILURE;
@@ -402,11 +412,6 @@ int main(int argc, char **argv)
 	DOCA_GPUNETIO_VOLATILE(force_quit) = false;
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
-
-	cudaStream_t rx_tcp_stream, rx_udp_stream, rx_icmp_stream, tx_http_server;
-	cudaError_t res_rt = cudaSuccess;
-	uint32_t *cpu_exit_condition;
-	uint32_t *gpu_exit_condition;
 
 	res_rt = cudaStreamCreateWithFlags(&rx_udp_stream, cudaStreamNonBlocking);
 	if (res_rt != cudaSuccess) {
@@ -472,31 +477,20 @@ int main(int argc, char **argv)
 	if (app_cfg.http_server)
 		kernel_http_server(tx_http_server, gpu_exit_condition, &tcp_queues, &http_queues);
 
-	/* Launch stats proxy thread to report pipeline status */
-	current_lcore = rte_get_next_lcore(current_lcore, true, false);
-	if (rte_eal_remote_launch((void *)stats_core, NULL, current_lcore) != 0) {
-		DOCA_LOG_ERR("Remote launch failed");
+	/* Launch stats thread to report pipeline status */
+	if (pthread_create(&stat_thread_id, NULL, &stats_core, NULL) != 0) {
+		DOCA_LOG_ERR("Thread stats launch failed");
 		goto exit;
 	}
 
 	if (app_cfg.http_server) {
-		tcp_queues.tcp_ack_pkt_pool = rte_pktmbuf_pool_create("tcp_ack_pkt_pool",
-								      1023,
-								      0,
-								      0,
-								      RTE_MBUF_DEFAULT_BUF_SIZE,
-								      rte_socket_id());
-		if (!tcp_queues.tcp_ack_pkt_pool) {
-			DOCA_LOG_ERR("%s: failed to allocate tcp-ack packet pool", __func__);
-			goto exit;
-		}
-
 		/* Start the CPU RSS threads to address new TCP connections */
-		tcp_queues.lcore_idx_start = rte_get_next_lcore(current_lcore, true, false);
+		/* Assume numq_cpu_rss is <= to MAX_QUEUES */
 		for (int i = 0; i < tcp_queues.numq_cpu_rss; i++) {
-			current_lcore = rte_get_next_lcore(current_lcore, true, false);
-			if (rte_eal_remote_launch(tcp_cpu_rss_func, &tcp_queues, current_lcore) != 0) {
-				DOCA_LOG_ERR("Remote launch failed");
+			targs[i].queue_id = i;
+			targs[i].args = &tcp_queues;
+			if (pthread_create(&tcp_thread_id[i], NULL, &tcp_cpu_rss_func, &targs[i]) != 0) {
+				DOCA_LOG_ERR("Thread TCP launch failed");
 				goto exit;
 			}
 		}
@@ -525,12 +519,18 @@ int main(int argc, char **argv)
 
 	DOCA_LOG_INFO("GPU work ended");
 
-	current_lcore = 0;
-	RTE_LCORE_FOREACH_WORKER(current_lcore)
-	{
-		if (rte_eal_wait_lcore(current_lcore) < 0) {
-			DOCA_LOG_ERR("Bad exit for coreid: %d", current_lcore);
-			break;
+	if (pthread_join(stat_thread_id, NULL) != 0) {
+		DOCA_LOG_ERR("Thread stat wait failed");
+		goto exit;
+	}
+
+	if (app_cfg.http_server) {
+		/* Assume numq_cpu_rss is <= to MAX_QUEUES */
+		for (int i = 0; i < tcp_queues.numq_cpu_rss; i++) {
+			if (pthread_join(tcp_thread_id[i], NULL) != 0) {
+				DOCA_LOG_ERR("Thread TCP wait failed");
+				goto exit;
+			}
 		}
 	}
 

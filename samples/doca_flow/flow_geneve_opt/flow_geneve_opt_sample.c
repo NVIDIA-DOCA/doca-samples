@@ -296,9 +296,8 @@ static doca_error_t add_geneve_opt_pipe_entries(struct doca_flow_pipe *pipe, str
 	match.tun.geneve_options[8].data = DOCA_HTOBE32(0x00abcdef);
 	/* Third option - data example */
 	match.tun.geneve_options[13].data = DOCA_HTOBE32(0x00abcdef);
-	actions.action_idx = 0;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -310,12 +309,11 @@ static doca_error_t add_geneve_opt_pipe_entries(struct doca_flow_pipe *pipe, str
 	match.tun.geneve_options[8].data = DOCA_HTOBE32(0x00123456);
 	/* Third option - data example */
 	match.tun.geneve_options[13].data = DOCA_HTOBE32(0x00123456);
-	actions.action_idx = 1;
 	SET_MAC_ADDR(actions.decap_cfg.eth.src_mac, mac1[0], mac1[1], mac1[2], mac1[3], mac1[4], mac1[5]);
 	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, mac2[0], mac2[1], mac2[2], mac2[3], mac2[4], mac2[5]);
 	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV6);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -327,12 +325,11 @@ static doca_error_t add_geneve_opt_pipe_entries(struct doca_flow_pipe *pipe, str
 	match.tun.geneve_options[8].data = DOCA_HTOBE32(0x00778899);
 	/* Third option - data example */
 	match.tun.geneve_options[13].data = DOCA_HTOBE32(0x00778899);
-	actions.action_idx = 1;
 	SET_MAC_ADDR(actions.decap_cfg.eth.src_mac, mac1[5], mac1[4], mac1[3], mac1[2], mac1[1], mac1[0]);
 	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, mac2[5], mac2[4], mac2[3], mac2[2], mac2[1], mac2[0]);
 	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -361,6 +358,8 @@ doca_error_t flow_geneve_opt(int nb_queues)
 	doca_error_t result;
 	int port_id;
 
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_decap = num_of_entries;
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -368,7 +367,7 @@ doca_error_t flow_geneve_opt(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

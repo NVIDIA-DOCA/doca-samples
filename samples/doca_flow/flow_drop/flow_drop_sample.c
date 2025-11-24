@@ -195,7 +195,7 @@ static doca_error_t add_pipe_entry(struct doca_flow_pipe *pipe,
 	 */
 	memset(&match, 0, sizeof(match));
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, 0, status, entry);
+	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
 }
 
 /*
@@ -316,7 +316,7 @@ static doca_error_t add_drop_pipe_entry(struct doca_flow_pipe *pipe,
 	match.outer.tcp.l4_port.dst_port = dst_port;
 	match.outer.tcp.l4_port.src_port = src_port;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -329,6 +329,71 @@ static doca_error_t add_drop_pipe_entry(struct doca_flow_pipe *pipe,
  * @nb_queues [in]: number of queues the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
+/* Context structure for statistics printing */
+struct drop_stats_context {
+	int nb_ports;
+	struct doca_flow_pipe_entry *(*entry)[3];
+};
+
+/*
+ * Print drop pipe statistics
+ *
+ * @nb_ports [in]: number of ports
+ * @entry [in]: array of flow entries
+ */
+static void print_drop_stats(int nb_ports, struct doca_flow_pipe_entry *entry[][3])
+{
+	doca_error_t result;
+	struct doca_flow_resource_query query_stats;
+	int port_id;
+
+	DOCA_LOG_INFO("===================================================");
+	for (port_id = 0; port_id < nb_ports; port_id++) {
+		result = doca_flow_resource_query_entry(entry[port_id][CLASSIFIER_PIPE_ENTRY], &query_stats);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
+			return;
+		}
+		DOCA_LOG_INFO("Port %d:", port_id);
+		DOCA_LOG_INFO("Classifier pipe:");
+		DOCA_LOG_INFO("\tTotal bytes: %ld", query_stats.counter.total_bytes);
+		DOCA_LOG_INFO("\tTotal packets: %ld", query_stats.counter.total_pkts);
+		DOCA_LOG_INFO("--------------");
+
+		result = doca_flow_resource_query_entry(entry[port_id][DROP_PIPE_ENTRY], &query_stats);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
+			return;
+		}
+		DOCA_LOG_INFO("Drop pipe:");
+		DOCA_LOG_INFO("\tTotal bytes: %ld", query_stats.counter.total_bytes);
+		DOCA_LOG_INFO("\tTotal packets: %ld", query_stats.counter.total_pkts);
+		DOCA_LOG_INFO("--------------");
+
+		result = doca_flow_resource_query_entry(entry[port_id][PORT_FWD_PIPE_ENTRY], &query_stats);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
+			return;
+		}
+		DOCA_LOG_INFO("Port forwarding pipe:");
+		DOCA_LOG_INFO("\tTotal bytes: %ld", query_stats.counter.total_bytes);
+		DOCA_LOG_INFO("\tTotal packets: %ld", query_stats.counter.total_pkts);
+		DOCA_LOG_INFO("===================================================");
+	}
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: drop_stats_context structure
+ */
+static void print_drop_stats_wrapper(void *context)
+{
+	struct drop_stats_context *ctx = (struct drop_stats_context *)context;
+	print_drop_stats(ctx->nb_ports, ctx->entry);
+}
+
 doca_error_t flow_drop(int nb_queues)
 {
 	const int nb_ports = 2;
@@ -347,12 +412,12 @@ doca_error_t flow_drop(int nb_queues)
 	 */
 	const int nb_entries = 3;
 	struct doca_flow_pipe_entry *entry[nb_ports][nb_entries];
-	struct doca_flow_resource_query query_stats;
 	struct entries_status status;
 	doca_error_t result;
 	int port_id;
 
-	resource.nr_counters = nb_ports * nb_entries;
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_counters = nb_entries;
 
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
@@ -361,7 +426,7 @@ doca_error_t flow_drop(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -435,49 +500,10 @@ doca_error_t flow_drop(int nb_queues)
 		}
 	}
 
-	/* wait few seconds for packets to arrive so query will not return zero */
-	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
-	sleep(5);
-	DOCA_LOG_INFO("===================================================");
+	/* Setup statistics context and wait for packets */
+	struct drop_stats_context ctx = {.nb_ports = nb_ports, .entry = entry};
 
-	for (port_id = 0; port_id < nb_ports; port_id++) {
-		result = doca_flow_resource_query_entry(entry[port_id][CLASSIFIER_PIPE_ENTRY], &query_stats);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
-		DOCA_LOG_INFO("Port %d:", port_id);
-		DOCA_LOG_INFO("Classifier pipe:");
-		DOCA_LOG_INFO("\tTotal bytes: %ld", query_stats.counter.total_bytes);
-		DOCA_LOG_INFO("\tTotal packets: %ld", query_stats.counter.total_pkts);
-		DOCA_LOG_INFO("--------------");
-
-		result = doca_flow_resource_query_entry(entry[port_id][DROP_PIPE_ENTRY], &query_stats);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
-		DOCA_LOG_INFO("Drop pipe:");
-		DOCA_LOG_INFO("\tTotal bytes: %ld", query_stats.counter.total_bytes);
-		DOCA_LOG_INFO("\tTotal packets: %ld", query_stats.counter.total_pkts);
-		DOCA_LOG_INFO("--------------");
-
-		result = doca_flow_resource_query_entry(entry[port_id][PORT_FWD_PIPE_ENTRY], &query_stats);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
-		DOCA_LOG_INFO("Port forwarding pipe:");
-		DOCA_LOG_INFO("\tTotal bytes: %ld", query_stats.counter.total_bytes);
-		DOCA_LOG_INFO("\tTotal packets: %ld", query_stats.counter.total_pkts);
-		DOCA_LOG_INFO("===================================================");
-	}
+	flow_wait_for_packets(5, print_drop_stats_wrapper, &ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

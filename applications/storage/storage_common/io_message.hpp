@@ -106,30 +106,6 @@ public:
 	}
 
 	/*
-	 * Get the message correlation id
-	 *
-	 * @buf [in]: Pointer to the message buffer
-	 * @return: Message correlation id
-	 */
-	static inline uint32_t get_correlation_id(char const *buf)
-	{
-		uint32_t ret{};
-		static_cast<void>(storage::from_buffer(buf + offsetof(layout, correlation_id), ret));
-		return ret;
-	}
-
-	/*
-	 * Set the message correlation id
-	 *
-	 * @correlation_id [in]: Correlation id value
-	 * @buf [in/out]: Pointer to the message buffer
-	 */
-	static inline void set_correlation_id(uint32_t correlation_id, char *buf)
-	{
-		storage::to_buffer(buf + offsetof(layout, correlation_id), correlation_id);
-	}
-
-	/*
 	 * Get the message result
 	 *
 	 * @buf [in]: Pointer to the message buffer
@@ -232,7 +208,6 @@ private:
 	 */
 	struct alignas(storage::cache_line_size) layout {
 		uint32_t type; /* use 4 bytes for the layout to keep data members aligned */
-		uint32_t correlation_id;
 		doca_data user_data;
 		doca_error_t result;
 		uint32_t io_size;

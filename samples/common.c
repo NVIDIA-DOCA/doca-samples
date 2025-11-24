@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -128,7 +128,7 @@ doca_error_t open_doca_device_with_ibdev_name(const uint8_t *value,
 	/* Search */
 	for (i = 0; i < nb_devs; i++) {
 		res = doca_devinfo_get_ibdev_name(dev_list[i], buf, DOCA_DEVINFO_IBDEV_NAME_SIZE);
-		if (res == DOCA_SUCCESS && strncmp(buf, val_copy, val_size) == 0) {
+		if (res == DOCA_SUCCESS && strncmp(buf, val_copy, DOCA_DEVINFO_IBDEV_NAME_SIZE) == 0) {
 			/* If any special capabilities are needed */
 			if (func != NULL && func(dev_list[i]) != DOCA_SUCCESS)
 				continue;

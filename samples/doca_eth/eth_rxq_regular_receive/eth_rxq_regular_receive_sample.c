@@ -37,7 +37,7 @@
 
 #include "common.h"
 #include "eth_common.h"
-#include "eth_rxq_common.h"
+#include "eth_flow_common.h"
 
 DOCA_LOG_REGISTER(ETH_RXQ_REGULAR_RECEIVE);
 
@@ -49,14 +49,14 @@ DOCA_LOG_REGISTER(ETH_RXQ_REGULAR_RECEIVE);
 #define RECV_TASK_USER_DATA 0x43210 /* User data for receive task */
 
 struct eth_rxq_sample_objects {
-	struct eth_core_resources core_resources;     /* A struct to hold ETH core resources */
-	struct eth_rxq_flow_resources flow_resources; /* A struct to hold DOCA flow resources */
-	struct doca_eth_rxq *eth_rxq;		      /* DOCA ETH RXQ context */
-	struct doca_buf *packet_buf;		      /* DOCA buffer to contain received packet */
-	struct doca_eth_rxq_task_recv *recv_task;     /* Receive task */
-	uint32_t inflight_tasks;		      /* Inflight tasks count */
-	uint16_t rxq_queue_id;			      /* DOCA ETH RXQ's queue ID */
-	bool timestamp_enable;			      /* timestamp enable */
+	struct eth_core_resources core_resources;	 /* A struct to hold ETH core resources */
+	struct eth_flow_common_resources flow_resources; /* A struct to hold flow resources */
+	struct doca_eth_rxq *eth_rxq;			 /* DOCA ETH RXQ context */
+	struct doca_buf *packet_buf;			 /* DOCA buffer to contain received packet */
+	struct doca_eth_rxq_task_recv *recv_task;	 /* Receive task */
+	uint32_t inflight_tasks;			 /* Inflight tasks count */
+	uint16_t rxq_queue_id;				 /* DOCA ETH RXQ's queue ID */
+	bool timestamp_enable;				 /* timestamp enable */
 };
 
 /*
@@ -396,15 +396,17 @@ static void eth_rxq_cleanup(struct eth_rxq_sample_objects *state)
 	doca_error_t status;
 
 	if (state->flow_resources.root_pipe != NULL)
-		doca_flow_pipe_destroy(state->flow_resources.root_pipe);
+		eth_flow_common_destroy_flow_pipe(&(state->flow_resources));
 
 	if (state->flow_resources.df_port != NULL) {
-		status = doca_flow_port_stop(state->flow_resources.df_port);
+		status = eth_flow_common_destroy_flow_port(&(state->flow_resources));
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to stop DOCA flow port, err: %s", doca_error_get_name(status));
+			DOCA_LOG_ERR("Failed to destroy flow port, err: %s", doca_error_get_name(status));
 			return;
 		}
 	}
+
+	eth_flow_common_cleanup_flow();
 
 	if (state->eth_rxq != NULL) {
 		status = destroy_eth_rxq_ctx(state);
@@ -421,9 +423,6 @@ static void eth_rxq_cleanup(struct eth_rxq_sample_objects *state)
 			return;
 		}
 	}
-
-	if (state->flow_resources.df_port != NULL)
-		doca_flow_destroy();
 }
 
 /*
@@ -481,19 +480,11 @@ doca_error_t eth_rxq_regular_receive(const char *ib_dev_name, bool timestamp_ena
 				      .inventory_num_elements = BUFS_NUM,
 				      .check_device = check_device,
 				      .ibdev_name = ib_dev_name};
-	struct eth_rxq_flow_config flow_cfg = {};
+	struct eth_flow_common_config flow_cfg = {};
 
 	status = allocate_eth_core_resources(&cfg, &(state.core_resources));
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed allocate core resources, err: %s", doca_error_get_name(status));
-		goto rxq_cleanup;
-	}
-
-	flow_cfg.dev = state.core_resources.core_objs.dev;
-
-	status = rxq_common_init_doca_flow(flow_cfg.dev, 0, &(state.flow_resources));
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to init doca flow, err: %s", doca_error_get_name(status));
 		goto rxq_cleanup;
 	}
 
@@ -503,12 +494,26 @@ doca_error_t eth_rxq_regular_receive(const char *ib_dev_name, bool timestamp_ena
 		goto rxq_cleanup;
 	}
 
+	status = eth_flow_common_init_flow();
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to init flow, err: %s", doca_error_get_name(status));
+		goto rxq_cleanup;
+	}
+
+	flow_cfg.dev = state.core_resources.core_objs.dev;
+
+	status = eth_flow_common_create_flow_port(flow_cfg.dev, 0, &(state.flow_resources));
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create flow port, err: %s", doca_error_get_name(status));
+		goto rxq_cleanup;
+	}
+
 	flow_cfg.rxq_queue_ids = &(state.rxq_queue_id);
 	flow_cfg.nb_queues = 1;
 
-	status = allocate_eth_rxq_flow_resources(&flow_cfg, &(state.flow_resources));
+	status = eth_flow_common_create_flow_pipe(&flow_cfg, &(state.flow_resources));
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to allocate flow resources, err: %s", doca_error_get_name(status));
+		DOCA_LOG_ERR("Failed to create flow pipe, err: %s", doca_error_get_name(status));
 		goto rxq_cleanup;
 	}
 

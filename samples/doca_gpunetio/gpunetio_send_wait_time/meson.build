@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -47,23 +47,26 @@ sample_dependencies += dependency('doca-argp')
 # Additional DOCA library that is relevant for this sample
 sample_dependencies += dependency('doca-eth')
 # Additional DOCA library that is relevant for this sample
-sample_dependencies += dependency('doca-dpdk-bridge')
-# Additional DOCA library that is relevant for this sample
 sample_dependencies += dependency('doca-flow')
 # Additional DOCA library that is relevant for this sample
 sample_dependencies += dependency('doca-rdma')
-# Required DOCA Driver
-dependency_dpdk = dependency('libdpdk')
-sample_dependencies += dependency_dpdk
 
 cuda = import('unstable-cuda')
 nvcc = meson.get_compiler('cuda')
 
+cuda_dep = dependency('cuda', version: '>= 12-1', modules: ['cudart', 'cuda'])
+cuda_version = cuda_dep.version()
+
 nvcc_flags = []
-nvcc_flags += ['-gencode', 'arch=compute_70,code=sm_70']
+if cuda_version.version_compare('< 13-0')
+	nvcc_flags += ['-gencode', 'arch=compute_70,code=sm_70']
+endif
 nvcc_flags += ['-gencode', 'arch=compute_75,code=sm_75']
 nvcc_flags += ['-gencode', 'arch=compute_80,code=sm_80']
 nvcc_flags += ['-gencode', 'arch=compute_90,code=sm_90']
+if cuda_version.version_compare('>= 12-8')
+	nvcc_flags += ['-gencode', 'arch=compute_100,code=sm_100']
+endif
 add_project_arguments(nvcc_flags, language: 'cuda')
 
 # Refer to https://mesonbuild.com/Cuda-module.html
@@ -71,13 +74,18 @@ add_project_arguments('-forward-unknown-to-host-compiler', language: 'cuda')
 add_project_arguments('-rdc=true', language: 'cuda')
 
 gpu_dependencies = []
-gpu_dependencies += dependency('cuda', version: '>= 12-1', modules: ['cudart', 'cuda'])
+gpu_dependencies += cuda_dep
 
 nvcc_flags_link = []
-nvcc_flags_link += ['-gencode=arch=compute_70,code=sm_70']
+if cuda_version.version_compare('< 13-0')
+	nvcc_flags_link += ['-gencode=arch=compute_70,code=sm_70']
+endif
 nvcc_flags_link += ['-gencode=arch=compute_75,code=sm_75']
 nvcc_flags_link += ['-gencode=arch=compute_80,code=sm_80']
 nvcc_flags_link += ['-gencode=arch=compute_90,code=sm_90']
+if cuda_version.version_compare('>= 12-8')
+	nvcc_flags_link += ['-gencode=arch=compute_100,code=sm_100']
+endif
 add_project_link_arguments(nvcc_flags_link, language: 'cuda')
 
 sample_dependencies += gpu_dependencies
@@ -86,11 +94,6 @@ gpunetio_device_path = doca_gpu_dep.get_variable(pkgconfig : 'libdir')
 dependency_gpunetio_device = declare_dependency(compile_args : '-Wl,--whole-archive',
                                                 link_args : ['-L' + gpunetio_device_path , '-ldoca_gpunetio_device'],)
 sample_dependencies += dependency_gpunetio_device
-
-# This enables Wait on Time on CX6Dx using DPDK
-dpdk_libdir = dependency_dpdk.get_variable(pkgconfig : 'libdir')
-dependency_libdpdk_pmd_mlx5 = declare_dependency(link_args : ['-L' + dpdk_libdir , '-lrte_net_mlx5'],)
-sample_dependencies += dependency_libdpdk_pmd_mlx5
 
 sample_srcs = [
 	# The sample itself

@@ -168,13 +168,41 @@ static doca_error_t add_rss_meta_pipe_entry(struct doca_flow_pipe *pipe, struct 
 
 	/* set meta value */
 	actions.meta.pkt_meta = DOCA_HTOBE32(10);
-	actions.action_idx = 0;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
 	return DOCA_SUCCESS;
+}
+
+/* Context structure for statistics printing */
+struct rss_meta_stats_context {
+	int nb_ports;
+};
+
+/*
+ * Print RSS meta statistics
+ *
+ * @nb_ports [in]: number of ports
+ */
+static void print_rss_meta_stats(int nb_ports)
+{
+	int port_id;
+
+	for (port_id = 0; port_id < nb_ports; port_id++)
+		process_packets(port_id);
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: rss_meta_stats_context structure
+ */
+static void print_rss_meta_stats_wrapper(void *context)
+{
+	struct rss_meta_stats_context *ctx = (struct rss_meta_stats_context *)context;
+	print_rss_meta_stats(ctx->nb_ports);
 }
 
 /*
@@ -203,7 +231,9 @@ doca_error_t flow_rss_meta(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_rss = num_of_entries;
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -246,9 +276,11 @@ doca_error_t flow_rss_meta(int nb_queues)
 	}
 
 	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
-	sleep(5);
-	for (port_id = 0; port_id < nb_ports; port_id++)
-		process_packets(port_id);
+
+	/* Setup statistics context and wait for packets */
+	struct rss_meta_stats_context stats_ctx = {.nb_ports = nb_ports};
+
+	flow_wait_for_packets(5, print_rss_meta_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

@@ -35,6 +35,7 @@
 #include <virtiofs_request.h>
 #include <virtiofs_device.h>
 #include <nfs_fsdev.h>
+#include "priv_nfs_fsdev.h"
 
 DOCA_LOG_REGISTER(VIRTIOFS_DEVICE)
 
@@ -112,6 +113,7 @@ static struct doca_devinfo_rep *virtiofs_get_devinfo_rep_from_vuid(struct doca_d
 								   struct doca_dev *dev,
 								   char *vuid)
 {
+	(void)dev;
 	uint32_t idx;
 	doca_error_t err;
 	char buf[DOCA_DEVINFO_REP_VUID_SIZE] = {0};
@@ -274,6 +276,7 @@ static void virtiofs_device_reset_stop_done(void *arg, doca_error_t status)
 
 static void virtiofs_reset_event_cb(struct doca_devemu_virtio_dev *virtio_dev, union doca_data event_user_data)
 {
+	(void)virtio_dev;
 	struct virtiofs_device *dev = event_user_data.ptr;
 
 	DOCA_LOG_INFO("%s", dev->config.name);
@@ -283,6 +286,7 @@ static void virtiofs_reset_event_cb(struct doca_devemu_virtio_dev *virtio_dev, u
 
 static void virtiofs_flr_event_cb(struct doca_devemu_pci_dev *pci_dev, union doca_data event_user_data)
 {
+	(void)pci_dev;
 	struct virtiofs_device *dev = event_user_data.ptr;
 
 	DOCA_LOG_INFO("%s", dev->config.name);
@@ -318,6 +322,7 @@ static void virtiofs_dev_state_change_cb(const union doca_data user_data,
 					 enum doca_ctx_states prev_state,
 					 enum doca_ctx_states next_state)
 {
+	(void)ctx;
 	struct virtiofs_device *dev = user_data.ptr;
 
 	DOCA_LOG_INFO("%s, state change %d->%d", dev->config.name, prev_state, next_state);
@@ -393,6 +398,12 @@ static doca_error_t virtiofs_device_vfs_dev_create(struct virtiofs_thread *threa
 		goto vfs_destroy;
 	}
 
+	err = doca_devemu_vfs_dev_set_fuse_client_arch(dev->vfs_dev, DOCA_DEVEMU_VFS_FUSE_CLIENT_ARCH_X86_64);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set fuse_client_arch, err: %s\n", doca_error_get_name(err));
+		goto vfs_destroy;
+	}
+
 	return DOCA_SUCCESS;
 
 vfs_destroy:
@@ -431,20 +442,24 @@ doca_error_t virtiofs_device_create(struct virtiofs_resources *ctx,
 	dev->manager = virtiofs_manager_get_by_name(ctx, manager);
 	if (dev->manager == NULL) {
 		DOCA_LOG_ERR("Failed to find manager %s", manager);
+		free(dev);
 		return DOCA_ERROR_NOT_FOUND;
 	}
 
 	dev->fsdev = virtiofs_fsdev_get_by_name(ctx, fsdev);
 	if (dev->fsdev == NULL) {
 		DOCA_LOG_ERR("Failed to find fsdev %s", fsdev);
+		free(dev);
 		return DOCA_ERROR_NOT_FOUND;
 	}
 
 	err = virtiofs_thread_exec(ctx->threads[0].thread,
 				   (virtiofs_thread_exec_fn_t)virtiofs_device_vfs_dev_create,
-				   dev);
+				   dev,
+				   true);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("%s: Failed to create vfs dev", config->name);
+		free(dev);
 		return err;
 	}
 
@@ -503,6 +518,12 @@ static doca_error_t virtiofs_dma_resources_create(struct virtiofs_device_io_ctx 
 		goto destroy_dma;
 	}
 
+	err = doca_dma_set_ordered_completions(dio->dma_ctx, 1);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set ordered completions, err: [%s]", doca_error_get_name(err));
+		goto destroy_dma;
+	}
+
 	err = doca_devemu_virtio_dev_get_queue_size(doca_devemu_vfs_dev_as_virtio_dev(dio->dev->vfs_dev), &queue_size);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get queue size: %s\n", doca_error_get_name(err));
@@ -546,17 +567,21 @@ static void virtiofs_io_state_change_cb(const union doca_data user_data,
 					enum doca_ctx_states prev_state,
 					enum doca_ctx_states next_state)
 {
+	(void)doca_ctx;
 	struct virtiofs_device_io_ctx *dio = user_data.ptr;
 
-	DOCA_LOG_INFO("%s, state change: %d->%d", dio->dev->config.name, prev_state, next_state);
+	DOCA_LOG_INFO("io ctx %p, state change: %d->%d", (void *)dio, prev_state, next_state);
 
 	if (prev_state == DOCA_CTX_STATE_STOPPING && next_state == DOCA_CTX_STATE_IDLE) {
+		struct virtiofs_device *dev = dio->dev;
 		if (dio->fsdev_tctx)
 			dio->fsdev_tctx->fsdev->ops->thread_ctx_put(dio->fsdev_tctx);
 		virtiofs_dma_resources_destroy(dio);
 		doca_devemu_vfs_io_destroy(dio->vfs_io);
 		dio->vfs_io = NULL;
 		free(dio);
+		if (dev && dev->io_ctxs_alive > 0)
+			dev->io_ctxs_alive--;
 	}
 }
 
@@ -812,7 +837,7 @@ static doca_error_t virtiofs_device_io_ctx_start(struct virtiofs_thread *thread,
 
 	/* start vfs_io's doca_ctx */
 	err = doca_ctx_start(doca_devemu_vfs_io_as_ctx(dio->vfs_io));
-	if (err != DOCA_ERROR_IN_PROGRESS) {
+	if (err != DOCA_ERROR_IN_PROGRESS && err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to start doca_ctx for vfs_io, err: %s\n", doca_error_get_name(err));
 		goto out_dma_destroy;
 	}
@@ -842,15 +867,18 @@ static doca_error_t virtiofs_device_io_ctxs_start(struct virtiofs_resources *ctx
 		dev->io_ctxs[i]->dev = dev;
 		dev->io_ctxs[i]->mpool_set = ctx->threads[i].mpool_set;
 		dev->io_ctxs[i]->thread = ctx->threads[i].thread;
+		TAILQ_INIT(&dev->io_ctxs[i]->order);
 		TAILQ_INIT(&dev->io_ctxs[i]->pending);
 
 		err = virtiofs_thread_exec(ctx->threads[i].thread,
 					   (virtiofs_thread_exec_fn_t)virtiofs_device_io_ctx_start,
-					   dev->io_ctxs[i]);
+					   dev->io_ctxs[i],
+					   false);
 		if (err != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to start io ctx for thread %d", i);
 			return err;
 		}
+		dev->io_ctxs_alive++;
 	}
 
 	return DOCA_SUCCESS;
@@ -858,6 +886,7 @@ static doca_error_t virtiofs_device_io_ctxs_start(struct virtiofs_resources *ctx
 
 static doca_error_t virtiofs_device_vfs_dev_start(struct virtiofs_thread *thread, struct virtiofs_device *dev)
 {
+	(void)thread;
 	return doca_ctx_start(doca_devemu_vfs_dev_as_ctx(dev->vfs_dev));
 }
 
@@ -883,8 +912,9 @@ doca_error_t virtiofs_device_start(struct virtiofs_resources *ctx, char *dev_nam
 
 	err = virtiofs_thread_exec(ctx->threads[0].thread,
 				   (virtiofs_thread_exec_fn_t)virtiofs_device_vfs_dev_start,
-				   dev);
-	if (err != DOCA_ERROR_IN_PROGRESS) {
+				   dev,
+				   true);
+	if (err != DOCA_ERROR_IN_PROGRESS && err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to start device vfs dev, err: %s", doca_error_get_name(err));
 		return err;
 	}
@@ -900,11 +930,13 @@ doca_error_t virtiofs_device_start(struct virtiofs_resources *ctx, char *dev_nam
 
 static doca_error_t virtiofs_device_io_ctx_stop(struct virtiofs_thread *thread, struct virtiofs_device_io_ctx *dio)
 {
+	(void)thread;
 	return doca_ctx_stop(doca_devemu_vfs_io_as_ctx(dio->vfs_io));
 }
 
 static doca_error_t virtiofs_device_vfs_dev_stop(struct virtiofs_thread *thread, struct virtiofs_device *dev)
 {
+	(void)thread;
 	return doca_ctx_stop(doca_devemu_vfs_dev_as_ctx(dev->vfs_dev));
 }
 
@@ -931,8 +963,9 @@ doca_error_t virtiofs_device_stop(struct virtiofs_resources *ctx, char *dev_name
 
 	err = virtiofs_thread_exec(ctx->threads[0].thread,
 				   (virtiofs_thread_exec_fn_t)(virtiofs_device_vfs_dev_stop),
-				   dev);
-	if (err != DOCA_ERROR_IN_PROGRESS) {
+				   dev,
+				   true);
+	if (err != DOCA_ERROR_IN_PROGRESS && err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("%s: Couldn't stop vfs dev, err: %s", dev_name, doca_error_get_name(err));
 		return err;
 	}
@@ -940,8 +973,9 @@ doca_error_t virtiofs_device_stop(struct virtiofs_resources *ctx, char *dev_name
 	for (i = 0; i < dev->num_threads; i++) {
 		err = virtiofs_thread_exec(ctx->threads[i].thread,
 					   (virtiofs_thread_exec_fn_t)(virtiofs_device_io_ctx_stop),
-					   dev->io_ctxs[i]);
-		if (err != DOCA_ERROR_IN_PROGRESS) {
+					   dev->io_ctxs[i],
+					   false);
+		if (err != DOCA_ERROR_IN_PROGRESS && err != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("%s: Couldn't stop vfs dev io ctx %d, err: %s",
 				     dev_name,
 				     i,
@@ -1027,7 +1061,7 @@ struct virtiofs_nfs_fsdev_thread_ctx {
 };
 
 struct virtiofs_nfs_fsdev {
-	void *nfs_fsdev;
+	struct nfs_fsdev_context *nfs_fsdev;
 	struct virtiofs_fsdev base;
 };
 
@@ -1080,18 +1114,21 @@ static struct virtiofs_fsdev_thread_ctx *virtiofs_nfs_fsdev_thread_ctx_get(struc
 	err = virtiofs_fsdev_thread_ctx_init(fsdev, &tctx->base);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init nfs thread ctx");
+		free(tctx);
 		return NULL;
 	}
 
 	tctx->nfs_fsdev_priv = nfs_fsdev_get(nfs_fsdev->nfs_fsdev);
 	if (tctx->nfs_fsdev_priv == NULL) {
 		DOCA_LOG_ERR("Failed to get nfs private");
+		free(tctx);
 		return NULL;
 	}
 
 	err = virtiofs_thread_poller_add(virtiofs_thread_get(fsdev->ctx), virtiofs_nfs_fsdev_progress, tctx);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add thread poller, err: %s", doca_error_get_name(err));
+		free(tctx);
 		return NULL;
 	}
 
@@ -1110,6 +1147,8 @@ static doca_error_t virtiofs_nfs_fsdev_thread_ctx_put(struct virtiofs_fsdev_thre
 		DOCA_LOG_ERR("Failed to unregister nfs progress poller, err: %s", doca_error_get_name(err));
 		return err;
 	}
+
+	priv_nfs_fsdev_deinit(nfs_tctx->nfs_fsdev_priv);
 
 	err = virtiofs_fsdev_thread_ctx_destroy(&nfs_tctx->base);
 	if (err != DOCA_SUCCESS) {
@@ -1132,6 +1171,7 @@ static doca_error_t virtiofs_nfs_fsdev_destroy(struct virtiofs_fsdev *fsdev)
 		return err;
 	}
 
+	nfs_fsdev_destroy(nfs_fsdev->nfs_fsdev);
 	free(nfs_fsdev);
 	return DOCA_SUCCESS;
 }
@@ -1157,12 +1197,14 @@ doca_error_t virtiofs_nfs_fsdev_create(struct virtiofs_resources *ctx, char *nam
 	err = virtiofs_fsdev_init(ctx, &fsdev->base, name, &ops);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init doca fsdev, err: %s", doca_error_get_name(err));
+		free(fsdev);
 		return err;
 	}
 
 	fsdev->nfs_fsdev = nfs_fsdev_create(server, mount_point);
 	if (fsdev->nfs_fsdev == NULL) {
 		DOCA_LOG_ERR("Failed to allocate doca fsdev");
+		free(fsdev);
 		return DOCA_ERROR_NO_MEMORY;
 	}
 

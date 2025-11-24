@@ -281,6 +281,7 @@ static doca_error_t add_resizable_pipe_entries(struct doca_flow_pipe *pipe,
 			result = doca_flow_pipe_add_entry(0,
 							  pipe,
 							  &match,
+							  0,
 							  &actions,
 							  NULL /* monitor */,
 							  NULL /* fwd */,
@@ -456,7 +457,8 @@ doca_error_t flow_pipe_resize(uint16_t nb_queues, struct flow_switch_ctx *ctx, b
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

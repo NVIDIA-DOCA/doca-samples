@@ -24,6 +24,7 @@
  */
 
 #include <unistd.h>
+#include <sys/time.h>
 
 #include <rte_ethdev.h>
 
@@ -36,6 +37,7 @@
 #include "flow_switch_common.h"
 
 #define PACKET_BURST 128
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 DOCA_LOG_REGISTER(FLOW_CT_2_PORTS);
 
@@ -86,7 +88,7 @@ static doca_error_t create_pipe_and_entry(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, NULL, NULL, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, NULL, 0, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add RSS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -221,7 +223,7 @@ static doca_error_t create_counter_pipe(struct doca_flow_port *port,
 	}
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
-	result = doca_flow_pipe_add_entry(0, *pipe, NULL, NULL, &monitor, NULL, 0, status, entry);
+	result = doca_flow_pipe_add_entry(0, *pipe, NULL, 0, NULL, &monitor, NULL, 0, status, entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add counter pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -280,95 +282,153 @@ static void parse_packet(struct rte_mbuf *packet,
  * @ct_queue [in]: DOCA Flow CT queue number
  * @ct_pipe [in]: Pipe of CT
  * @ct_status [in]: User context for adding CT entry
+ * @entry [out]: Pointer to CT entry to create
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t process_packets(struct doca_flow_port *port,
 				    uint16_t port_id,
 				    uint16_t ct_queue,
 				    struct doca_flow_pipe *ct_pipe,
-				    struct entries_status *ct_status)
+				    struct entries_status *ct_status,
+				    struct doca_flow_pipe_entry **entry)
 {
 	struct rte_mbuf *packets[PACKET_BURST];
 	struct doca_flow_ct_match match_o;
 	struct doca_flow_ct_match match_r;
-	struct doca_flow_pipe_entry *entry;
-	uint32_t flags;
+	uint32_t prepare_flags = DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS | DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN |
+				 DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_REPLY;
+	uint32_t entry_flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
+			       DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN |
+			       DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_SHARED;
 	doca_error_t result;
-	int i, entries, nb_packets = 0;
-	bool conn_found = false;
+	int i, nb_packets = 0, total_packets_processed = 0;
+	uint64_t timeout_s = 5; /* Timeout in seconds */
+	time_t end_time, max_end_time;
 
 	memset(&match_o, 0, sizeof(match_o));
 	memset(&match_r, 0, sizeof(match_r));
 
-	DOCA_LOG_INFO("send UDP packet with DIP 1.1.1.1 on port %u. wait a few seconds for packet to arrive", port_id);
+	max_end_time = time(NULL) + timeout_s; /* Absolute maximum timeout */
+	end_time = max_end_time;	       /* Current timeout */
+
 	do {
 		nb_packets = rte_eth_rx_burst(port_id, 0, packets, PACKET_BURST);
-	} while (nb_packets == 0);
-
-	DOCA_LOG_INFO("%d packets received", nb_packets);
-
-	entries = 0;
-	DOCA_LOG_INFO("Sample received %d packets on port %d", nb_packets, port_id);
-	for (i = 0; i < PACKET_BURST && i < nb_packets; i++) {
-		parse_packet(packets[i], &match_o, &match_r);
-		flags = DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS | DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN |
-			DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_REPLY;
-		/* Allocate CT entry */
-		result = doca_flow_ct_entry_prepare(ct_queue,
-						    ct_pipe,
-						    flags,
-						    &match_o,
-						    packets[i]->hash.rss,
-						    &match_r,
-						    packets[i]->hash.rss,
-						    &entry,
-						    &conn_found);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to prepare CT entry\n");
-			return result;
+		if (nb_packets == 0) {
+			/* No packets received, continue immediately without blocking */
+			continue;
 		}
+		total_packets_processed += nb_packets;
+		/* Updated timeout */
+		end_time = MIN(time(NULL) + 2, max_end_time);
 
-		if (!conn_found) {
-			flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
-				DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY;
-			result = doca_flow_ct_add_entry(ct_queue,
-							ct_pipe,
-							flags,
-							&match_o,
-							&match_r,
-							NULL,
-							NULL,
-							0,
-							0,
-							0,
-							ct_status,
-							entry);
+		DOCA_LOG_INFO("Sample received %d packets on port %d", nb_packets, port_id);
+		for (i = 0; i < PACKET_BURST && i < nb_packets; i++) {
+			parse_packet(packets[i], &match_o, &match_r);
+			/* Create CT entry with shared counter (one counter for both origin and reply directions) */
+			result = flow_ct_create_entry(port,
+						      ct_queue,
+						      ct_pipe,
+						      prepare_flags,
+						      entry_flags,
+						      &match_o,
+						      &match_r,
+						      packets[i]->hash.rss,
+						      packets[i]->hash.rss,
+						      NULL,
+						      NULL,
+						      0,
+						      0,
+						      0,
+						      ct_status,
+						      entry);
 			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to add CT pipe an entry: %s", doca_error_get_descr(result));
+				DOCA_LOG_ERR("Failed to create CT entry\n");
 				return result;
 			}
-			entries++;
 		}
+	} while (time(NULL) < end_time);
+
+	if (total_packets_processed == 0) {
+		DOCA_LOG_INFO("Sample didn't receive packets within 5 seconds timeout");
+		return DOCA_ERROR_BAD_STATE;
 	}
 
-	DOCA_LOG_INFO("%d CT connections created", nb_packets);
-
-	while (ct_status->nb_processed != entries) {
-		result = doca_flow_ct_entries_process(port, ct_queue, 0, 0, NULL);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to process Flow CT entries: %s", doca_error_get_descr(result));
-			return result;
-		}
-
-		if (ct_status->failure) {
-			DOCA_LOG_ERR("Flow CT entries process returned with a failure");
-			return DOCA_ERROR_BAD_STATE;
-		}
-	}
-
-	DOCA_LOG_INFO("%d CT connections processed\n", ct_status->nb_processed);
-
+	DOCA_LOG_INFO("%d CT connections created and processed on port %d", total_packets_processed, port_id);
 	return DOCA_SUCCESS;
+}
+
+/* Context structure for statistics printing */
+struct ct_2_ports_stats_context {
+	int nb_ports;
+	struct doca_flow_pipe_entry **counter_miss_entries;
+	struct doca_flow_pipe **ct_pipes;
+	struct doca_flow_pipe_entry **ct_entries;
+	uint16_t ct_queue;
+};
+
+/*
+ * Print CT 2 ports statistics
+ *
+ * @nb_ports [in]: number of ports
+ * @counter_miss_entries [in]: array of counter miss entries
+ * @ct_pipes [in]: array of CT pipes
+ * @ct_entries [in]: array of CT entries
+ * @ct_queue [in]: CT queue
+ */
+static void print_ct_2_ports_stats(int nb_ports,
+				   struct doca_flow_pipe_entry *counter_miss_entries[],
+				   struct doca_flow_pipe *ct_pipes[],
+				   struct doca_flow_pipe_entry *ct_entries[],
+				   uint16_t ct_queue)
+{
+	doca_error_t result;
+	struct doca_flow_resource_query query_miss, query_o_shared, query_r_shared;
+	uint64_t last_hit_time;
+	int i;
+
+	/* Query traffic counters for miss packets and CT match packets */
+	for (i = 0; i < nb_ports; i++) {
+		result = doca_flow_resource_query_entry(counter_miss_entries[i], &query_miss);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query PIPE counter-miss (port %d): %s",
+				     i,
+				     doca_error_get_descr(result));
+			return;
+		}
+		DOCA_LOG_INFO("(Port %d) Miss counter - Total packets: %ld, Total bytes: %ld",
+			      i,
+			      query_miss.counter.total_pkts,
+			      query_miss.counter.total_bytes);
+
+		/* Query ct entries */
+		result = doca_flow_ct_query_entry(ct_queue,
+						  ct_pipes[i],
+						  DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT,
+						  ct_entries[i],
+						  &query_o_shared,
+						  &query_r_shared,
+						  &last_hit_time);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query CT entry: %s", doca_error_get_descr(result));
+			return;
+		}
+		/* With shared counters, origin and reply stats are identical, so just use origin stats */
+		DOCA_LOG_INFO("(Port %d) Shared counter - total packets: %ld, total bytes: %ld",
+			      i,
+			      query_o_shared.counter.total_pkts,
+			      query_o_shared.counter.total_bytes);
+	}
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: ct_2_ports_stats_context structure
+ */
+static void print_ct_2_ports_stats_wrapper(void *context)
+{
+	struct ct_2_ports_stats_context *ctx = (struct ct_2_ports_stats_context *)context;
+	print_ct_2_ports_stats(ctx->nb_ports, ctx->counter_miss_entries, ctx->ct_pipes, ctx->ct_entries, ctx->ct_queue);
 }
 
 /*
@@ -386,17 +446,23 @@ static doca_error_t process_packets(struct doca_flow_port *port,
  * With direct port forwarding, packets that match CT entries are sent straight to the port for transmission,
  * while packets that miss are redirected to software for further handling.
  *
+ *  Counter Configuration:
+ * - CT entries use shared counters (one counter per connection for both directions)
+ * - Miss packets use separate counter_miss_pipe for tracking unknown connections
+ *
  * flow_ct_2_ports
  *
  * @nb_queues [in]: number of queues the sample will use
  * @ctx [in]: flow device context the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
 doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 {
 	const int nb_entries = 6;
 	int nb_ports = ctx->nb_ports;
 	struct flow_resources resource;
+	struct doca_flow_pipe_entry *ct_entries[nb_ports];
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_pipe *rss_software_pipes[nb_ports]; /* RSS pipe for miss packets -> software RX queue */
 	struct doca_flow_pipe *port_forward_pipes[nb_ports]; /* Port fwd pipe for match packets -> direct port fwd */
@@ -415,6 +481,11 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 	struct doca_flow_pipe_entry *counter_miss_entries[nb_ports];
 	doca_error_t result;
 	int i;
+	struct ct_2_ports_stats_context stats_ctx = {.nb_ports = nb_ports,
+						     .counter_miss_entries = counter_miss_entries,
+						     .ct_pipes = ct_pipes,
+						     .ct_entries = ct_entries,
+						     .ct_queue = ct_queue};
 
 	/*
 	 * Queue configuration:
@@ -443,7 +514,9 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 	rss_software_fwd.rss.queues_array = &SOFTWARE_RX_QUEUE;
 	rss_software_fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV4 | DOCA_FLOW_RSS_UDP;
 
-	resource.nr_counters = 1;
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_counters = 2; /* Need 2 counters: 1 for CT pipe (matches) and 1 for counter_miss_pipe */
+	resource.nr_rss = 1;
 
 	result = init_doca_flow(nb_queues, "switch,hws,isolated", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
@@ -457,7 +530,7 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 	memset(&r_zone_mask, 0, sizeof(r_zone_mask));
 	memset(&r_modify_mask, 0, sizeof(r_modify_mask));
 
-	ct_flags = DOCA_FLOW_CT_FLAG_NO_AGING | DOCA_FLOW_CT_FLAG_NO_COUNTER;
+	ct_flags = DOCA_FLOW_CT_FLAG_NO_AGING;
 	result = init_doca_flow_ct(ct_flags,
 				   nb_arm_queues,
 				   nb_ctrl_queues,
@@ -465,7 +538,7 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 				   NULL,
 				   nb_ipv4_sessions,
 				   nb_ipv6_sessions,
-				   0,
+				   0, /* Number of asymmetric counters - using all shared counters */
 				   DUP_FILTER_CONN_NUM,
 				   false,
 				   &o_zone_mask,
@@ -479,7 +552,12 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_entries));
-	result = init_doca_flow_switch_ports(ctx->devs_manager, ctx->nb_devs, ports, nb_ports, actions_mem_size);
+	result = init_doca_flow_switch_ports(ctx->devs_manager,
+					     ctx->nb_devs,
+					     ports,
+					     nb_ports,
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_ct_destroy();
@@ -519,7 +597,7 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 		if (result != DOCA_SUCCESS)
 			goto cleanup;
 
-		/* Create CT pipe: match->port_forward (direct) and miss->counter_miss */
+		/* Create CT pipe with built-in counter: match->port_forward (direct) and miss->counter_miss */
 		result = create_ct_pipe(ports[i], port_forward_pipes[i], counter_miss_pipes[i], &ct_pipes[i]);
 		if (result != DOCA_SUCCESS)
 			goto cleanup;
@@ -544,12 +622,14 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 	DOCA_LOG_INFO("Please send same UDP packets to see the CT entries being created\n");
 	for (i = 0; i < nb_ports; i++) {
 		memset(&ct_status, 0, sizeof(ct_status));
-		result = process_packets(ports[i], i, ct_queue, ct_pipes[i], &ct_status);
+		DOCA_LOG_INFO("send UDP packet with DIP 1.1.1.1 on port %u. wait a few seconds for packets to arrive",
+			      i);
+		result = process_packets(ports[i], i, ct_queue, ct_pipes[i], &ct_status, &ct_entries[i]);
 		if (result != DOCA_SUCCESS)
 			goto cleanup;
 	}
 
-	sleep(3);
+	flow_wait_for_packets(3, print_ct_2_ports_stats_wrapper, &stats_ctx);
 
 cleanup:
 	for (i = 0; i < nb_ports; i++) {

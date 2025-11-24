@@ -40,6 +40,7 @@ Usage: doca_dpa_initiator_target [DOCA Flags] [Program Flags]
 - `-v, --version`                           Print program version information
 - `-l, --log-level`                         Set the (numeric) log level for the program <10=DISABLE, 20=CRITICAL, 30=ERROR, 40=WARNING, 50=INFO, 60=DEBUG, 70=TRACE>
 - `--sdk-log-level`                         Set the SDK (numeric) log level for the program <10=DISABLE, 20=CRITICAL, 30=ERROR, 40=WARNING, 50=INFO, 60=DEBUG, 70=TRACE>
+- `-j, --json <path>`                       Parse command line flags from an input json file
 
 ### Program Flags:
 - `-pf_dev, --pf-device <PF DOCA device name>` PF device name that supports DPA (optional). If not provided, then a random device will be chosen.
@@ -175,6 +176,45 @@ This sample illustrates how to launch a DOCA DPA kernel with wait and completion
 - `doca_dpa/dpa_wait_kernel_launch/host/dpa_wait_kernel_launch_sample.c`
 - `doca_dpa/dpa_wait_kernel_launch/device/dpa_wait_kernel_launch_kernels_dev.c`
 - `doca_dpa/dpa_wait_kernel_launch/meson.build`
+- `doca_dpa/dpa_common.h`
+- `doca_dpa/dpa_common.c`
+- `doca_dpa/build_dpacc_samples.sh`
+
+# Verbs Initiator Target
+This sample illustrates how to perform RDMA operations using DOCA Verbs API.
+
+## Sample Logic
+- Allocating DOCA DPA resources, including:
+        - Initializing and configuring DPA threads and kernels.
+	- Initializing buffer on DPA heap for Verbs operations and attaching mmap.
+	- Initializing DPA completion context, that will be used instead of CQ.
+	- Initializing DOCA sync event to synchronize host and DPA when data path is finished.
+- Allocating Verbs resources, including – verbs context, verbs QP attached to DPA completion context, verbs PD, verbs AH.
+- Connection Establishment between initiator and target using TCP socket
+- RDMA Parameters Exchange - initiator and target exchange local buffer addresses, MKEYs, QP numbers and GID addresses
+- QP Connection - set QP attributes, Modify QP states from Reset to Ready to Send.
+- Trigger RPC for first iteration, and then data path starting for number of iterations:
+        Initiator
+	- Wait for completion
+	- Poll local buffer value to sync with target's Write operation
+	- Increase buffer’s value by 1
+	- Post Send work request
+	- Acknowledgement completion
+	Target
+	- Wait for completion
+	- Post Receive work request
+	- Increase buffer’s value from what it received by 1
+	- Post Write work request
+	- Acknowledgement 2 completions
+- In the last operation, initiator verify that the end value in the buffer is as expected. Both initiator and target updating sync event to threshold value to sync host.
+- Printing sample data summary.
+- Destroying all resources.
+
+### Reference
+- `doca_dpa/dpa_verbs_initiator_target/dpa_verbs_initiator_target_main.c`
+- `doca_dpa/dpa_verbs_initiator_target/host/dpa_verbs_initiator_target_sample.c`
+- `doca_dpa/dpa_verbs_initiator_target/device/dpa_verbs_initiator_target_kernels_dev.c`
+- `doca_dpa/dpa_verbs_initiator_target/meson.build`
 - `doca_dpa/dpa_common.h`
 - `doca_dpa/dpa_common.c`
 - `doca_dpa/build_dpacc_samples.sh`

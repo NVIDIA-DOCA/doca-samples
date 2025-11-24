@@ -49,7 +49,7 @@ use_cases:
             expected_packets:
               - forwarding_port: 0
                 packets:
-                  - Ether(dst='11:22:33:44:55:66', src='aa:bb:cc:dd:ee:ff')/IP(id=0, flags=2, ttl=17, src='11.21.31.41', dst='81.81.81.81')/UDP(sport=0, dport=4789, chksum=0)/VXLAN(flags=8, vni=11382189)/Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1235, dport=80)/Raw(load=b'Sent to port 1, encaped, forwarded from port 0')
+                  - Ether(dst='11:22:33:44:55:66', src='aa:bb:cc:dd:ee:ff')/IP(id=0, flags=2, ttl=17, src='11.21.31.41', dst='81.81.81.81')/UDP(sport=0, dport=4789, chksum=0)/VXLAN(flags=8, vni=11382189, reserved2=100)/Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1235, dport=80)/Raw(load=b'Sent to port 1, encaped, forwarded from port 0')
               - forwarding_port: 1
                 packets:
-                  - Ether(dst='11:22:33:44:55:66', src='aa:bb:cc:dd:ee:ff')/IP(id=0, flags=2, ttl=17, src='11.21.31.41', dst='81.81.81.81')/UDP(sport=0, dport=4789, chksum=0)/VXLAN(flags=8, vni=11382189)/Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1235, dport=80)/Raw(load=b'Sent to port 0, encaped, forwarded from port 1')
+                  - Ether(dst='11:22:33:44:55:66', src='aa:bb:cc:dd:ee:ff')/IP(id=0, flags=2, ttl=17, src='11.21.31.41', dst='81.81.81.81')/UDP(sport=0, dport=4789, chksum=0)/VXLAN(flags=8, vni=11382189, reserved2=100)/Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1235, dport=80)/Raw(load=b'Sent to port 0, encaped, forwarded from port 1')

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -738,9 +738,9 @@ void host_recv_event_cb(struct doca_comch_event_msg_recv *event,
 			struct doca_comch_connection *comch_connection)
 {
 	struct dma_copy_cfg *cfg = comch_utils_get_user_data(comch_connection);
-	struct comch_msg_dma_status *status;
-	struct comch_msg *comch_msg;
-	doca_error_t result;
+	struct comch_msg_dma_status *status = NULL;
+	struct comch_msg *comch_msg = NULL;
+	doca_error_t result = DOCA_ERROR_UNKNOWN;
 
 	(void)event;
 
@@ -1002,6 +1002,7 @@ static doca_error_t dpu_process_export_descriptor(struct dma_copy_cfg *cfg,
 {
 	size_t desc_len = ntohq(des_msg->export_desc_len);
 
+	/* desc_len bounded by msg_len validation in dpu_recv_event_cb() */
 	cfg->exported_mmap = malloc(desc_len);
 	if (cfg->exported_mmap == NULL) {
 		DOCA_LOG_ERR("Failed to allocate export descriptor memory");
@@ -1021,9 +1022,10 @@ void dpu_recv_event_cb(struct doca_comch_event_msg_recv *event,
 		       struct doca_comch_connection *comch_connection)
 {
 	struct dma_copy_cfg *cfg = comch_utils_get_user_data(comch_connection);
-	struct comch_msg_dma_status *status;
-	struct comch_msg *comch_msg;
-	doca_error_t result;
+	struct comch_msg_dma_export_discriptor *comch_msg_export = NULL;
+	struct comch_msg_dma_status *status = NULL;
+	struct comch_msg *comch_msg = NULL;
+	doca_error_t result = DOCA_ERROR_UNKNOWN;
 
 	(void)event;
 
@@ -1072,7 +1074,7 @@ void dpu_recv_event_cb(struct doca_comch_event_msg_recv *event,
 		break;
 	case COMCH_MSG_EXPORT_DESCRIPTOR:
 		if (msg_len <= sizeof(struct comch_msg_dma_export_discriptor)) {
-			DOCA_LOG_ERR("Direction message has bad length. Length: %u, expected at least: %lu",
+			DOCA_LOG_ERR("Export descriptor message has bad length. Length: %u, expected at least: %lu",
 				     msg_len,
 				     sizeof(struct comch_msg_dma_direction));
 			send_status_msg(comch_connection, STATUS_FAILURE);
@@ -1080,7 +1082,18 @@ void dpu_recv_event_cb(struct doca_comch_event_msg_recv *event,
 			return;
 		}
 
-		result = dpu_process_export_descriptor(cfg, (struct comch_msg_dma_export_discriptor *)recv_buffer);
+		comch_msg_export = (struct comch_msg_dma_export_discriptor *)recv_buffer;
+		if (ntohq(comch_msg_export->export_desc_len) > msg_len) {
+			DOCA_LOG_ERR(
+				"Export descriptor message validation failed: declared length: %lu exceeds message buffer size :%u",
+				ntohq(comch_msg_export->export_desc_len),
+				msg_len);
+			send_status_msg(comch_connection, STATUS_FAILURE);
+			cfg->comch_state = COMCH_ERROR;
+			return;
+		}
+
+		result = dpu_process_export_descriptor(cfg, comch_msg_export);
 		if (result != DOCA_SUCCESS) {
 			send_status_msg(comch_connection, STATUS_FAILURE);
 			cfg->comch_state = COMCH_ERROR;
@@ -1145,7 +1158,11 @@ doca_error_t dpu_start_dma_copy(struct dma_copy_cfg *dma_cfg, struct comch_cfg *
 
 	/* Include tasks counter in user data of context to be decremented in callbacks */
 	ctx_user_data.ptr = &num_remaining_tasks;
-	doca_ctx_set_user_data(state->ctx, ctx_user_data);
+	result = doca_ctx_set_user_data(state->ctx, ctx_user_data);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Unable to set user data: %s", doca_error_get_descr(result));
+		goto destroy_dma_resources;
+	}
 
 	result = doca_ctx_start(state->ctx);
 	if (result != DOCA_SUCCESS) {

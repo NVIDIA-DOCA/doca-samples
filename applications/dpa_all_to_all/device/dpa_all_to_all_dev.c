@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -34,7 +34,7 @@
  * Alltoall kernel function.
  * Performs RDMA write operations using doca_dpa_dev_rdma_write() from local buffer to remote buffer.
  *
- * @rdma_dpa_ctx_handle [in]: Extended DPA context handle for RDMA DOCA device. Needed when running from DPU
+ * @rdma_dpa_ctx_handle [in]: Extended DPA context handle for RDMA DOCA device
  * @rdmas_dev_ptr [in]: An array of DOCA DPA RDMA handles
  * @local_buf_addr [in]: local buffer address for alltoall
  * @local_buf_mmap_handle [in]: local buffer mmap handle for alltoall

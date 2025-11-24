@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -83,32 +83,37 @@ static __device__ uint16_t icmp_checksum(const uint16_t *icmph, int len)
 	return (~sum);
 }
 
-__global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond,
-					 struct doca_gpu_eth_rxq *rxq,
-					 struct doca_gpu_eth_txq *txq)
+__global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond, struct doca_gpu_eth_rxq *rxq, struct doca_gpu_eth_txq *txq)
 {
-	__shared__ uint32_t rx_pkt_num;
-	__shared__ uint64_t rx_buf_idx;
+	__shared__ uint64_t out_first_pkt_idx;
+	__shared__ uint32_t out_pkt_num;
 
 	doca_error_t ret;
 	uint64_t buf_idx = 0;
 	uintptr_t buf_addr;
-	struct doca_gpu_buf *buf_ptr;
 	struct eth_ip_icmp_hdr *hdr;
 	uint8_t *payload;
 	uint32_t nbytes;
-	uint32_t lane_id = threadIdx.x % WARP_SIZE;
+	uint32_t lane_id = doca_gpu_dev_eth_get_lane_id();
 	uint32_t warp_id = threadIdx.x / WARP_SIZE;
+	doca_gpu_dev_eth_ticket_t out_ticket;
+	uint32_t buf_mkey = doca_gpu_dev_eth_rxq_get_pkt_mkey(rxq);
 
+	// Code in this CUDA Kernel works only if the CUDA block side has a single warp
 	if (warp_id > 0)
 		return;
 
 	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
-		ret = doca_gpu_dev_eth_rxq_receive_warp(rxq,
-							MAX_RX_NUM_PKTS_ICMP,
-							MAX_RX_TIMEOUT_NS_ICMP,
-							&rx_pkt_num,
-							&rx_buf_idx);
+		ret = doca_gpu_dev_eth_rxq_recv<DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP,
+									DOCA_GPUNETIO_ETH_MCST_AUTO,
+									DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
+									false>(
+								rxq,
+								MAX_RX_NUM_PKTS_ICMP,
+								MAX_RX_TIMEOUT_NS_ICMP,
+								&out_first_pkt_idx,
+								&out_pkt_num,
+								NULL);
 		/* If any thread returns receive error, the whole execution stops */
 		if (ret != DOCA_SUCCESS) {
 			if (lane_id == 0) {
@@ -120,21 +125,19 @@ __global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond,
 				printf("Receive ICMP kernel error %d warp %d lane %d error %d\n",
 				       ret,
 				       warp_id,
-				       rx_pkt_num,
+				       out_pkt_num,
 				       ret);
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 			}
 			break;
 		}
 
-		if (rx_pkt_num == 0)
+		if (out_pkt_num == 0)
 			continue;
 
 		buf_idx = lane_id;
-		while (buf_idx < rx_pkt_num) {
-			doca_gpu_dev_eth_rxq_get_buf(rxq, rx_buf_idx + buf_idx, &buf_ptr);
-			doca_gpu_dev_buf_get_addr(buf_ptr, &buf_addr);
-
+		while (buf_idx < out_pkt_num) {
+			buf_addr = doca_gpu_dev_eth_rxq_get_pkt_addr(rxq, out_first_pkt_idx + buf_idx);
 			raw_to_icmp(buf_addr, &hdr, &payload);
 
 			if (hdr->l4_hdr.type == ICMP_ECHO_REQUEST && hdr->l4_hdr.code == 0) {
@@ -149,11 +152,15 @@ __global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond,
 				hdr->l4_hdr.cksum =
 					icmp_checksum((uint16_t *)&(hdr->l4_hdr),
 						      nbytes - (sizeof(struct ether_hdr) - sizeof(struct ipv4_hdr)));
-				/* Will translate in a notification caught by DOCA PE on the CPU side. */
-				doca_gpu_dev_eth_txq_send_enqueue_strong(txq,
-									 buf_ptr,
-									 nbytes,
-									 DOCA_GPU_SEND_FLAG_NOTIFY);
+
+				// Will translate in a notification caught by DOCA PE on the CPU side.
+				// DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA: 1 QP per CUDA block
+				// DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD: For every receiver timeout, not every thread in the warp may receive an ICMP message to reply
+				doca_gpu_dev_eth_txq_send<DOCA_GPUNETIO_ETH_RESOURCE_SHARING_MODE_CTA,
+										DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA,
+										DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
+										DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD>(txq, buf_addr, buf_mkey, nbytes,
+											DOCA_GPUNETIO_ETH_SEND_FLAG_NOTIFY, &out_ticket);
 			} else
 				printf("Unknown ICMP type %d code %d id %d seq %d\n",
 				       hdr->l4_hdr.type,
@@ -162,12 +169,6 @@ __global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond,
 				       BYTE_SWAP16(hdr->l4_hdr.seq_nb));
 
 			buf_idx += WARP_SIZE;
-		}
-		__syncwarp();
-
-		if (lane_id == 0) {
-			doca_gpu_dev_eth_txq_commit_strong(txq);
-			doca_gpu_dev_eth_txq_push(txq);
 		}
 		__syncwarp();
 	}

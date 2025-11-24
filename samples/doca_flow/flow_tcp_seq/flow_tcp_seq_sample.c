@@ -255,7 +255,7 @@ doca_error_t flow_tcp_seq(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -273,7 +273,7 @@ doca_error_t flow_tcp_seq(int nb_queues)
 			return result;
 		}
 
-		result = doca_flow_pipe_add_entry(0, action_pipe, NULL, NULL, NULL, NULL, 0, &status, NULL);
+		result = doca_flow_pipe_add_entry(0, action_pipe, NULL, 0, NULL, NULL, NULL, 0, &status, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add action pipe entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
@@ -305,7 +305,7 @@ doca_error_t flow_tcp_seq(int nb_queues)
 			return result;
 		}
 
-		result = doca_flow_pipe_add_entry(0, root_pipe, NULL, NULL, NULL, NULL, 0, &status, NULL);
+		result = doca_flow_pipe_add_entry(0, root_pipe, NULL, 0, NULL, NULL, NULL, 0, &status, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add root pipeentry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);

@@ -79,6 +79,7 @@ enum upf_accel_port {
 
 #define UPF_ACCEL_LOG_MAX_PDR_NUM_RATE_METERS 2
 #define UPF_ACCEL_MAX_PDR_NUM_RATE_METERS (1ul << UPF_ACCEL_LOG_MAX_PDR_NUM_RATE_METERS)
+#define UPF_ACCEL_NUM_METERS_PER_PORT (UPF_ACCEL_MAX_PDR_NUM_RATE_METERS * UPF_ACCEL_MAX_NUM_PDR)
 
 #define UPF_ACCEL_META_PKT_DIR_OFFSET (UPF_ACCEL_LOG_MAX_NUM_PDR)
 #define UPF_ACCEL_META_PKT_DIR_UL (0x1 << UPF_ACCEL_META_PKT_DIR_OFFSET)
@@ -301,6 +302,7 @@ struct upf_accel_config {
 	uint32_t sw_aging_time_sec;	    /* Amount of seconds before deleting an unaccelerated flow */
 	uint32_t dpi_threshold;		    /* Number of packets handled in SW before deciding to accelerate */
 	uint32_t fixed_port;		    /* UL port number in fixed port mode */
+	bool dry_run;			    /* Dry run mode */
 	struct flow_dev_ctx flow_devs;	    /* Flow device context */
 };
 
@@ -407,6 +409,8 @@ struct upf_accel_ctx {
 	struct upf_accel_entry_ctx static_entry_ctx[UPF_ACCEL_PORTS_MAX]; /* Static entries contexs */
 	uint32_t num_static_entries[UPF_ACCEL_PORTS_MAX];		  /* Number of static entries */
 	upf_accel_get_forwarding_port get_fwd_port;			  /* Function pointer to get fwd port */
+	uint32_t shared_counter_id_to_res[UPF_ACCEL_PORTS_MAX][UPF_ACCEL_NUM_QUOTA_COUNTERS_PER_PORT]; /* id -> res */
+	uint32_t shared_meter_id_to_res[UPF_ACCEL_PORTS_MAX][UPF_ACCEL_NUM_METERS_PER_PORT];	       /* id -> res */
 };
 
 struct upf_accel_action_cfg {
@@ -439,6 +443,7 @@ struct upf_accel_entry_cfg {
 	enum upf_accel_port port_id;	   /* Port ID */
 	enum doca_flow_pipe_domain domain; /* Domain (RX/TX) */
 	uint32_t entry_idx;		   /* Entry index */
+	uint8_t action_idx;		   /* Action index */
 };
 
 /*
@@ -479,6 +484,50 @@ static inline enum upf_accel_port upf_accel_get_opposite_port(enum upf_accel_por
 	assert(opposite_port == UPF_ACCEL_PORT0 || opposite_port == UPF_ACCEL_PORT1);
 
 	return opposite_port;
+}
+
+/*
+ * Cleanup items were created by upf_accel_pdr_parse
+ *
+ * @cfg [out]: UPF Acceleration configuration
+ */
+static inline void upf_accel_pdr_cleanup(struct upf_accel_config *cfg)
+{
+	rte_free(cfg->pdrs);
+	cfg->pdrs = NULL;
+}
+
+/*
+ * Cleanup items were created by upf_accel_far_parse
+ *
+ * @cfg [out]: UPF Acceleration configuration
+ */
+static inline void upf_accel_far_cleanup(struct upf_accel_config *cfg)
+{
+	rte_free(cfg->fars);
+	cfg->fars = NULL;
+}
+
+/*
+ * Cleanup items were created by upf_accel_urr_parse
+ *
+ * @cfg [out]: UPF Acceleration configuration
+ */
+static inline void upf_accel_urr_cleanup(struct upf_accel_config *cfg)
+{
+	rte_free(cfg->urrs);
+	cfg->urrs = NULL;
+}
+
+/*
+ * Cleanup items were created by upf_accel_qer_parse
+ *
+ * @cfg [out]: UPF Acceleration configuration
+ */
+static inline void upf_accel_qer_cleanup(struct upf_accel_config *cfg)
+{
+	rte_free(cfg->qers);
+	cfg->qers = NULL;
 }
 
 /*

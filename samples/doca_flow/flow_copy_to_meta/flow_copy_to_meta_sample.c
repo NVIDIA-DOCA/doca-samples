@@ -120,7 +120,7 @@ static doca_error_t add_match_meta_pipe_entry(struct doca_flow_pipe *pipe, struc
 	match.meta.u32[0] = DOCA_HTOBE32(0xccddeeff);
 	match.meta.u32[1] |= DOCA_BE32_SET(META_DMAC_47_32_FIELD, 0xaabb);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -249,7 +249,7 @@ static doca_error_t add_copy_to_meta_pipe_entry(struct doca_flow_pipe *pipe, str
 
 	SET_MAC_ADDR(match.outer.eth.src_mac, src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -283,7 +283,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

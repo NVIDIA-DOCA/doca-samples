@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -25,13 +25,28 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <rte_ethdev.h>
 
 #include "common.h"
-#include "dpdk_tcp/tcp_session_table.h"
-#include "dpdk_tcp/tcp_cpu_rss_func.h"
+#include "tcp_cpu/tcp_session_table.h"
+#include "tcp_cpu/tcp_cpu_rss_func.h"
+
+/* Since DPDK and ETH queues should have different IDs, we define a range for DPDK queues */
+#define MAX_DPDK_QUEUE_NUM 128
 
 DOCA_LOG_REGISTER(GPU_PACKET_PROCESSING_TCP);
+
+/*
+ * Retrieve host page size
+ *
+ * @return: host page size
+ */
+static size_t get_host_page_size(void)
+{
+	long ret = sysconf(_SC_PAGESIZE);
+	if (ret == -1)
+		return 4096; // 4KB, default Linux page size
+	return (size_t)ret;
+}
 
 doca_error_t create_tcp_queues(struct rxq_tcp_queues *tcp_queues,
 			       struct doca_flow_port *df_port,
@@ -108,9 +123,11 @@ doca_error_t create_tcp_queues(struct rxq_tcp_queues *tcp_queues,
 			return DOCA_ERROR_BAD_STATE;
 		}
 
+		ALIGN_SIZE(cyclic_buffer_size, get_host_page_size());
+
 		result = doca_gpu_mem_alloc(tcp_queues->gpu_dev,
 					    cyclic_buffer_size,
-					    GPU_PAGE_SIZE,
+					    get_host_page_size(),
 					    DOCA_GPU_MEM_TYPE_GPU,
 					    &tcp_queues->gpu_pkt_addr[idx],
 					    NULL);
@@ -394,6 +411,13 @@ doca_error_t create_tcp_queues(struct rxq_tcp_queues *tcp_queues,
 				return DOCA_ERROR_BAD_STATE;
 			}
 
+			result = doca_eth_txq_apply_queue_id(http_queues->eth_txq_cpu[idx], QUEUE_ID_HTTP_0 + idx);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed doca_eth_txq_apply_queue_id: %s", doca_error_get_descr(result));
+				destroy_tcp_queues(tcp_queues, http_server, http_queues);
+				return DOCA_ERROR_BAD_STATE;
+			}
+
 			result = doca_eth_txq_get_gpu_handle(http_queues->eth_txq_cpu[idx],
 							     &(http_queues->eth_txq_gpu[idx]));
 			if (result != DOCA_SUCCESS) {
@@ -460,6 +484,35 @@ doca_error_t create_tcp_queues(struct rxq_tcp_queues *tcp_queues,
 			DOCA_LOG_ERR("Failed prepare buf_page_not_found: %s", doca_error_get_descr(result));
 			destroy_tcp_queues(tcp_queues, http_server, http_queues);
 			return DOCA_ERROR_BAD_STATE;
+		}
+
+		for (int i = 0; i < tcp_queues->numq_cpu_rss; i++) {
+			result = create_pe_cpu_rss(tcp_queues, i);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to create PE CPU RSS on queue %u (err=%s)",
+					     i,
+					     doca_error_get_name(result));
+				destroy_tcp_queues(tcp_queues, http_server, http_queues);
+				return DOCA_ERROR_BAD_STATE;
+			}
+
+			result = create_txq_cpu_rss(tcp_queues, i);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to create TXQ CPU RSS on queue %u (err=%s)",
+					     i,
+					     doca_error_get_name(result));
+				destroy_tcp_queues(tcp_queues, http_server, http_queues);
+				return DOCA_ERROR_BAD_STATE;
+			}
+
+			result = create_rxq_cpu_rss(tcp_queues, i);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to create RXQ CPU RSS on queue %u (err=%s)",
+					     i,
+					     doca_error_get_name(result));
+				destroy_tcp_queues(tcp_queues, http_server, http_queues);
+				return DOCA_ERROR_BAD_STATE;
+			}
 		}
 
 		/* Create TCP based flow pipes */
@@ -550,6 +603,31 @@ doca_error_t destroy_tcp_queues(struct rxq_tcp_queues *tcp_queues,
 
 		if (http_server) {
 			DOCA_LOG_INFO("Destroying HTTP queue %d", idx);
+
+			result = destroy_rxq_cpu_rss(tcp_queues, idx);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy RXQ CPU RSS on queue %u (err=%s)",
+					     idx,
+					     doca_error_get_name(result));
+				return DOCA_ERROR_BAD_STATE;
+			}
+
+			result = destroy_txq_cpu_rss(tcp_queues, idx);
+			destroy_pe_cpu_rss(tcp_queues, idx);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy TXQ CPU RSS on queue %u (err=%s)",
+					     idx,
+					     doca_error_get_name(result));
+				return DOCA_ERROR_BAD_STATE;
+			}
+
+			result = destroy_pe_cpu_rss(tcp_queues, idx);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy PE CPU RSS on queue %u (err=%s)",
+					     idx,
+					     doca_error_get_name(result));
+				return DOCA_ERROR_BAD_STATE;
+			}
 
 			if (tcp_queues->sem_http_cpu[idx]) {
 				result = doca_gpu_semaphore_stop(tcp_queues->sem_http_cpu[idx]);

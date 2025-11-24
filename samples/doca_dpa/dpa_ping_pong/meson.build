@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -67,13 +67,14 @@ dpacc_build_script_name = 'build_dpacc_samples.sh'
 dpacc_build_script = meson.current_source_dir() + '/../' + dpacc_build_script_name
 # Sample device source code absolute path to be compiled by the DPACC
 sample_device_src = meson.project_source_root() + '/device/' +  SAMPLE_NAME + '_kernels_dev.c'
+sample_manifest = meson.project_source_root() + '/device/' +  SAMPLE_NAME + '_attributes.yaml'
 doca_dep = dependency('doca-dpa')
 doca_lib_dir = doca_dep.get_variable(pkgconfig : 'libdir')
-dpacc_mcpu_flag = 'nv-dpa-bf3,nv-dpa-cx7,nv-dpa-cx8'
+dpacc_mcpu_flag = 'nv-dpa-bf3,nv-dpa-cx7,nv-dpa-cx8,nv-dpa-cx9'
 
 # Run DPA compiler
 run_command(dpacc_build_script, meson.project_build_root(), sample_device_src, SAMPLE_NAME,
-	    sample_program_name, dpacc_mcpu_flag, doca_lib_dir, check: true)
+	    sample_program_name, dpacc_mcpu_flag, doca_lib_dir, sample_manifest, check: true)
 
 # Dependencies
 sample_device_build_dir = meson.project_build_root() + '/' + SAMPLE_NAME + '/device/build_dpacc'

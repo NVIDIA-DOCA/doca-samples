@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -34,6 +34,9 @@ struct simple_fwd_port_cfg {
 	uint16_t nb_queues;   /* Number of initialized queues descriptors (RX/TX) of the port */
 	uint32_t nb_meters;   /* Number of meters of the port used by the application */
 	uint32_t nb_counters; /* Number of counters for the port used by the application */
+	uint32_t nb_rss;      /* Number of RSS for the port used by the application */
+	uint32_t nb_encap;    /* Number of encap for the port used by the application */
+	uint32_t nb_decap;    /* Number of decap for the port used by the application */
 	bool is_hairpin;      /* Number of hairpin queues */
 	bool age_thread;      /* Whether or not aging is handled by a dedicated thread */
 };

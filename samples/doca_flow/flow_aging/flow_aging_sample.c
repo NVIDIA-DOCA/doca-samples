@@ -230,8 +230,16 @@ static doca_error_t add_aging_pipe_entries(struct doca_flow_pipe *pipe,
 			flags = DOCA_FLOW_NO_WAIT; /* send the last entry with DOCA_FLOW_NO_WAIT flag for pushing all
 						      the entries */
 
-		result =
-			doca_flow_pipe_add_entry(0, pipe, &match, &actions, &monitor, NULL, flags, &user_data[i], NULL);
+		result = doca_flow_pipe_add_entry(0,
+						  pipe,
+						  &match,
+						  0,
+						  &actions,
+						  &monitor,
+						  NULL,
+						  flags,
+						  &user_data[i],
+						  NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			return result;
@@ -344,7 +352,7 @@ doca_error_t flow_aging(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_aging_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

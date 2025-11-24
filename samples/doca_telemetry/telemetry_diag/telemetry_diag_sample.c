@@ -307,6 +307,8 @@ static inline uint64_t telemetry_diag_sample_time_diff_nsec(struct timespec star
  * @log_max_num_samples [in]: log max num of samples to be used
  * @sample_mode [in]: sample mode to use
  * @output_format [in]: output format to use
+ * @sync_mode [in]: sync mode to use
+ * @timestamp_source [in]: timestamp source to use
  * @force_ownership [in]: force ownership when creating diag context
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
  */
@@ -317,12 +319,12 @@ static doca_error_t telemetry_diag_sample_context_init(struct telemetry_diag_sam
 						       uint8_t log_max_num_samples,
 						       enum doca_telemetry_diag_sample_mode sample_mode,
 						       enum doca_telemetry_diag_output_format output_format,
+						       enum doca_telemetry_diag_sync_mode sync_mode,
+						       enum doca_telemetry_diag_timestamp_source timestamp_source,
 						       uint8_t force_ownership)
 {
 	uint8_t data_clear = 0;
 	uint32_t max_num_data_ids = num_data_ids;
-	enum doca_telemetry_diag_timestamp_source timestamp_source = DOCA_TELEMETRY_DIAG_TIMESTAMP_SOURCE_RTC;
-	enum doca_telemetry_diag_sync_mode sync_mode = DOCA_TELEMETRY_DIAG_SYNC_MODE_NO_SYNC;
 
 	doca_error_t result, teardown_result;
 	uint64_t counter_id_failure = 0;
@@ -396,39 +398,151 @@ teardown_init:
 	return result;
 }
 
+static inline int write_timestamp_to_file(FILE *file,
+					  uint32_t timestamp_h,
+					  uint32_t timestamp_l,
+					  enum doca_telemetry_diag_timestamp_source timestamp_source)
+{
+	if (timestamp_source == DOCA_TELEMETRY_DIAG_TIMESTAMP_SOURCE_RTC) {
+		/* Write rtc timestamp to csv file. The below timestamp print is only valid for RTC timestamp format
+		 * The timestamp_h is seconds, the timestamp_l is sub-second time, given in nanoseconds, thus,
+		 * (timestamp_h * NSEC_IN_SEC + timestamp_l) is the timestamp in nanseconds.
+		 */
+		return fprintf(file, ", %u.%09u", timestamp_h, timestamp_l);
+	} else {
+		/* Write frc timestamp to csv file. */
+		return fprintf(file, ", %lu", ((uint64_t)timestamp_h << 32) | timestamp_l);
+	}
+}
+
+/*
+ * Process and write the results of a single query to the output file when using output format 0
+ *
+ * @sample_objects [in]: sample objects struct for the sample
+ * @num_actual_samples [in]: the number of samples that were returned from the query
+ * @size_of_sample [in]: size of a single sample in the result buf
+ * @timestamp_source [in]: the timestamp source to use
+ * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
+ */
+static inline doca_error_t telemetry_diag_sample_write_sample_format_0(
+	struct telemetry_diag_sample_objects *sample_objects,
+	uint32_t num_actual_samples,
+	uint32_t size_of_sample,
+	enum doca_telemetry_diag_timestamp_source timestamp_source)
+{
+	int write_result = 0;
+
+	struct doca_telemetry_diag_data_sample_format_0 *current_sample =
+		(struct doca_telemetry_diag_data_sample_format_0 *)sample_objects->buf;
+	for (uint32_t sample_index = 0; sample_index < num_actual_samples; sample_index++) {
+		write_result = fprintf(sample_objects->output_file, "\n%u", current_sample->sample_id);
+		if (write_result < 0) {
+			DOCA_LOG_ERR("Failed to write to output file with errno=%s (%d)", strerror(errno), errno);
+			return DOCA_ERROR_IO_FAILED;
+		}
+
+		for (uint32_t j = 0; j < sample_objects->num_data_ids; j++) {
+			write_result =
+				fprintf(sample_objects->output_file, ", 0x%016lx", current_sample->value[j].data_id);
+			if (write_result < 0) {
+				DOCA_LOG_ERR("Failed to write data_id to output file with errno=%s (%d)",
+					     strerror(errno),
+					     errno);
+				return DOCA_ERROR_IO_FAILED;
+			}
+			write_result = write_timestamp_to_file(sample_objects->output_file,
+							       current_sample->value[j].timestamp_h,
+							       current_sample->value[j].timestamp_l,
+							       timestamp_source);
+			if (write_result < 0) {
+				DOCA_LOG_ERR("Failed to write timestamp to output file with errno=%s (%d)",
+					     strerror(errno),
+					     errno);
+				return DOCA_ERROR_IO_FAILED;
+			}
+			write_result =
+				fprintf(sample_objects->output_file, ", %lu", current_sample->value[j].data_value);
+			if (write_result < 0) {
+				DOCA_LOG_ERR("Failed to write counter value to output file with errno=%s (%d)",
+					     strerror(errno),
+					     errno);
+				return DOCA_ERROR_IO_FAILED;
+			}
+		}
+
+		/* Update the pointer to the next sample location */
+		current_sample =
+			(doca_telemetry_diag_data_sample_format_0 *)((uint8_t *)current_sample + size_of_sample);
+	}
+	return DOCA_SUCCESS;
+}
+
+static inline int write_format_1_and_2_sample_id_and_timestamp_to_file(
+	FILE *file,
+	uint32_t sample_id,
+	uint32_t earliest_data_timestamp_h,
+	uint32_t earliest_data_timestamp_l,
+	uint32_t latest_data_timestamp_l,
+	enum doca_telemetry_diag_timestamp_source timestamp_source)
+{
+	int write_result = 0;
+	uint32_t latest_timestamp_h;
+
+	/* If the end timestamp lower bits is smaller than the start timestamp lower bits, it means the upper
+	 * bits need to be advanced
+	 */
+	latest_timestamp_h = earliest_data_timestamp_h;
+	if (latest_data_timestamp_l < earliest_data_timestamp_l)
+		latest_timestamp_h++;
+
+	write_result = fprintf(file, "\n%u", sample_id);
+	if (write_result < 0) {
+		DOCA_LOG_ERR("Failed to write sample_id to output file with errno=%s (%d)", strerror(errno), errno);
+		return write_result;
+	};
+	write_result =
+		write_timestamp_to_file(file, earliest_data_timestamp_h, earliest_data_timestamp_l, timestamp_source);
+	if (write_result < 0) {
+		DOCA_LOG_ERR("Failed to write start timestamp to output file with errno=%s (%d)",
+			     strerror(errno),
+			     errno);
+		return write_result;
+	};
+	write_result = write_timestamp_to_file(file, latest_timestamp_h, latest_data_timestamp_l, timestamp_source);
+	if (write_result < 0) {
+		DOCA_LOG_ERR("Failed to write end timestamp to output file with errno=%s (%d)", strerror(errno), errno);
+		return write_result;
+	};
+	return write_result;
+}
+
 /*
  * Process and write the results of a single query to the output file when using output format 1
  *
  * @sample_objects [in]: sample objects struct for the sample
  * @num_actual_samples [in]: the number of samples that were returned from the query
  * @size_of_sample [in]: size of a single sample in the result buf
+ * @timestamp_source [in]: the timestamp source to use
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
  */
 static inline doca_error_t telemetry_diag_sample_write_sample_format_1(
 	struct telemetry_diag_sample_objects *sample_objects,
 	uint32_t num_actual_samples,
-	uint32_t size_of_sample)
+	uint32_t size_of_sample,
+	enum doca_telemetry_diag_timestamp_source timestamp_source)
 {
-	uint32_t latest_timestamp_h;
 	int write_result = 0;
 
 	struct doca_telemetry_diag_data_sample_format_1 *current_sample =
 		(struct doca_telemetry_diag_data_sample_format_1 *)sample_objects->buf;
 	for (uint32_t sample_index = 0; sample_index < num_actual_samples; sample_index++) {
-		/* If the end timestamp lower bits is smaller than the start timestamp lower bits, it means the upper
-		 * bits need to be advanced*/
-		latest_timestamp_h = current_sample->earliest_data_timestamp_h;
-		if (current_sample->latest_data_timestamp_l < current_sample->earliest_data_timestamp_l)
-			latest_timestamp_h++;
-
-		/* Write counters to csv file. The below timestamp print is only valid for RTC timestamp format*/
-		write_result = fprintf(sample_objects->output_file,
-				       "\n%u,%u.%u,%u.%u",
-				       current_sample->sample_id,
-				       current_sample->earliest_data_timestamp_h,
-				       current_sample->earliest_data_timestamp_l,
-				       latest_timestamp_h,
-				       current_sample->latest_data_timestamp_l);
+		write_result =
+			write_format_1_and_2_sample_id_and_timestamp_to_file(sample_objects->output_file,
+									     current_sample->sample_id,
+									     current_sample->earliest_data_timestamp_h,
+									     current_sample->earliest_data_timestamp_l,
+									     current_sample->latest_data_timestamp_l,
+									     timestamp_source);
 		if (write_result < 0) {
 			DOCA_LOG_ERR("Failed to write to output file with errno=%s (%d)", strerror(errno), errno);
 			return DOCA_ERROR_IO_FAILED;
@@ -457,33 +571,27 @@ static inline doca_error_t telemetry_diag_sample_write_sample_format_1(
  * @sample_objects [in]: sample objects struct for the sample
  * @num_actual_samples [in]: the number of samples that were returned from the query
  * @size_of_sample [in]: size of a single sample in the result buf
+ * @timestamp_source [in]: the timestamp source to use
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
  */
 static inline doca_error_t telemetry_diag_sample_write_sample_format_2(
 	struct telemetry_diag_sample_objects *sample_objects,
 	uint32_t num_actual_samples,
-	uint32_t size_of_sample)
+	uint32_t size_of_sample,
+	enum doca_telemetry_diag_timestamp_source timestamp_source)
 {
-	uint32_t latest_timestamp_h;
 	int write_result = 0;
 
 	struct doca_telemetry_diag_data_sample_format_2 *current_sample =
 		(struct doca_telemetry_diag_data_sample_format_2 *)sample_objects->buf;
 	for (uint32_t sample_index = 0; sample_index < num_actual_samples; sample_index++) {
-		/* If the end timestamp lower bits is smaller than the start timestamp lower bits, it means the upper
-		 * bits need to be advanced*/
-		latest_timestamp_h = current_sample->earliest_data_timestamp_h;
-		if (current_sample->latest_data_timestamp_l < current_sample->earliest_data_timestamp_l)
-			latest_timestamp_h++;
-
-		/* Write counters to csv file. The below timestamp print is only valid for RTC timestamp format*/
-		write_result = fprintf(sample_objects->output_file,
-				       "\n%u,%u.%u,%u.%u",
-				       current_sample->sample_id,
-				       current_sample->earliest_data_timestamp_h,
-				       current_sample->earliest_data_timestamp_l,
-				       latest_timestamp_h,
-				       current_sample->latest_data_timestamp_l);
+		write_result =
+			write_format_1_and_2_sample_id_and_timestamp_to_file(sample_objects->output_file,
+									     current_sample->sample_id,
+									     current_sample->earliest_data_timestamp_h,
+									     current_sample->earliest_data_timestamp_l,
+									     current_sample->latest_data_timestamp_l,
+									     timestamp_source);
 		if (write_result < 0) {
 			DOCA_LOG_ERR("Failed to write to output file with errno=%s (%d)", strerror(errno), errno);
 			return DOCA_ERROR_IO_FAILED;
@@ -513,21 +621,31 @@ static inline doca_error_t telemetry_diag_sample_write_sample_format_2(
  * @num_actual_samples [in]: the number of samples that were returned from the query
  * @size_of_sample [in]: size of a single sample in the result buf
  * @output_format [in]: the output format used by the sample
+ * @timestamp_source [in]: the timestamp source used by the sample
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
  */
 static doca_error_t telemetry_diag_sample_write_output(struct telemetry_diag_sample_objects *sample_objects,
 						       uint32_t num_actual_samples,
 						       uint32_t size_of_sample,
-						       enum doca_telemetry_diag_output_format output_format)
+						       enum doca_telemetry_diag_output_format output_format,
+						       enum doca_telemetry_diag_timestamp_source timestamp_source)
 {
 	switch (output_format) {
 	case DOCA_TELEMETRY_DIAG_OUTPUT_FORMAT_0:
-		DOCA_LOG_ERR("Failed to write output: format not supported in sample");
-		return DOCA_ERROR_NOT_SUPPORTED;
+		return telemetry_diag_sample_write_sample_format_0(sample_objects,
+								   num_actual_samples,
+								   size_of_sample,
+								   timestamp_source);
 	case DOCA_TELEMETRY_DIAG_OUTPUT_FORMAT_1:
-		return telemetry_diag_sample_write_sample_format_1(sample_objects, num_actual_samples, size_of_sample);
+		return telemetry_diag_sample_write_sample_format_1(sample_objects,
+								   num_actual_samples,
+								   size_of_sample,
+								   timestamp_source);
 	case DOCA_TELEMETRY_DIAG_OUTPUT_FORMAT_2:
-		return telemetry_diag_sample_write_sample_format_2(sample_objects, num_actual_samples, size_of_sample);
+		return telemetry_diag_sample_write_sample_format_2(sample_objects,
+								   num_actual_samples,
+								   size_of_sample,
+								   timestamp_source);
 	default:
 		DOCA_LOG_ERR("Output format %d not recognized", output_format);
 		return DOCA_ERROR_NOT_SUPPORTED;
@@ -543,6 +661,7 @@ static doca_error_t telemetry_diag_sample_write_output(struct telemetry_diag_sam
  * @size_of_sample [in]: size of a single sample in the result buf
  * @poll_interval [in]: Average time between calls to read samples
  * @output_format [in]: the output format to use
+ * @timestamp_source [in]: the timestamp source to use
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
  */
 static doca_error_t telemetry_diag_sample_run_query_counters_repetitive(
@@ -551,7 +670,8 @@ static doca_error_t telemetry_diag_sample_run_query_counters_repetitive(
 	uint64_t total_run_time_nsec,
 	uint32_t size_of_sample,
 	uint64_t poll_interval,
-	enum doca_telemetry_diag_output_format output_format)
+	enum doca_telemetry_diag_output_format output_format,
+	enum doca_telemetry_diag_timestamp_source timestamp_source)
 {
 	uint64_t process_period_nsec;
 	struct timespec t_period_start = {0, 0};			      /* Will be used per sample */
@@ -584,7 +704,8 @@ static doca_error_t telemetry_diag_sample_run_query_counters_repetitive(
 		result = telemetry_diag_sample_write_output(sample_objects,
 							    num_actual_samples,
 							    size_of_sample,
-							    output_format);
+							    output_format,
+							    timestamp_source);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process samples with error=%s", doca_error_get_name(result));
 			return result;
@@ -611,6 +732,7 @@ static doca_error_t telemetry_diag_sample_run_query_counters_repetitive(
  * @max_num_samples_per_read [in]: max number of samples per read
  * @size_of_sample [in]: size of a single sample in the result buf
  * @output_format [in]: the output format to use
+ * @timestamp_source [in]: the timestamp source to use
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
  */
 static doca_error_t telemetry_diag_sample_run_query_counters_by_max_samples(
@@ -618,7 +740,8 @@ static doca_error_t telemetry_diag_sample_run_query_counters_by_max_samples(
 	uint32_t num_samples_to_read,
 	uint32_t max_num_samples_per_read,
 	uint32_t size_of_sample,
-	enum doca_telemetry_diag_output_format output_format)
+	enum doca_telemetry_diag_output_format output_format,
+	enum doca_telemetry_diag_timestamp_source timestamp_source)
 {
 	uint32_t num_actual_samples = 0;
 	uint32_t total_num_samples_read = 0;
@@ -642,7 +765,8 @@ static doca_error_t telemetry_diag_sample_run_query_counters_by_max_samples(
 		result = telemetry_diag_sample_write_output(sample_objects,
 							    num_actual_samples,
 							    size_of_sample,
-							    output_format);
+							    output_format,
+							    timestamp_source);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process samples with error=%s", doca_error_get_name(result));
 			return result;
@@ -711,6 +835,8 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 	DOCA_LOG_DBG("	max_samples_per_read=%u", cfg->max_num_samples_per_read);
 	DOCA_LOG_DBG("	sample_mode=%u", cfg->sample_mode);
 	DOCA_LOG_DBG("	output_format=%u", cfg->output_format);
+	DOCA_LOG_DBG("	sync_mode=%u", cfg->sync_mode);
+	DOCA_LOG_DBG("	timestamp_source=%u", cfg->timestamp_source);
 	DOCA_LOG_DBG("	force_ownership=%u", cfg->force_ownership);
 	DOCA_LOG_DBG("	data_ids='%s'", cfg->data_ids_input_path);
 	DOCA_LOG_DBG("	num_data_id=%u", cfg->num_data_ids);
@@ -722,8 +848,18 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 			     cfg->data_ids_struct[i].name);
 	}
 
-	if (cfg->output_format == DOCA_TELEMETRY_DIAG_OUTPUT_FORMAT_0) {
+	if (cfg->output_format > DOCA_TELEMETRY_DIAG_OUTPUT_FORMAT_2) {
 		DOCA_LOG_ERR("Output format %u is currently not supported by the sample", cfg->output_format);
+		return DOCA_ERROR_NOT_SUPPORTED;
+	}
+
+	if (cfg->sync_mode > DOCA_TELEMETRY_DIAG_SYNC_MODE_SYNC_START) {
+		DOCA_LOG_ERR("Sync mode %u is currently not supported by the sample", cfg->sync_mode);
+		return DOCA_ERROR_NOT_SUPPORTED;
+	}
+
+	if (cfg->timestamp_source > DOCA_TELEMETRY_DIAG_TIMESTAMP_SOURCE_RTC) {
+		DOCA_LOG_ERR("Timestamp source %u is currently not supported by the sample", cfg->timestamp_source);
 		return DOCA_ERROR_NOT_SUPPORTED;
 	}
 
@@ -740,6 +876,8 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 						    cfg->log_max_num_samples,
 						    cfg->sample_mode,
 						    cfg->output_format,
+						    cfg->sync_mode,
+						    cfg->timestamp_source,
 						    cfg->force_ownership);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init sample objects with error=%s", doca_error_get_name(result));
@@ -757,9 +895,16 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 	}
 
 	/* Write first line of CSV output file*/
-	fprintf(sample_objects.output_file, "sample_id, sample_time_start, sample_time_end");
-	for (uint32_t i = 0; i < cfg->num_data_ids; i++) {
-		fprintf(sample_objects.output_file, ", %s", cfg->data_ids_struct[i].name);
+	if (cfg->output_format == DOCA_TELEMETRY_DIAG_OUTPUT_FORMAT_0) {
+		fprintf(sample_objects.output_file, "sample_id");
+		for (uint32_t i = 0; i < cfg->num_data_ids; i++) {
+			fprintf(sample_objects.output_file, ", data_id, sample_time, %s", cfg->data_ids_struct[i].name);
+		}
+	} else {
+		fprintf(sample_objects.output_file, "sample_id, sample_time_start, sample_time_end");
+		for (uint32_t i = 0; i < cfg->num_data_ids; i++) {
+			fprintf(sample_objects.output_file, ", %s", cfg->data_ids_struct[i].name);
+		}
 	}
 
 	result = doca_telemetry_diag_start(sample_objects.telemetry_diag_obj);
@@ -801,7 +946,8 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 										 (1U << cfg->log_max_num_samples),
 										 cfg->max_num_samples_per_read,
 										 size_of_sample,
-										 cfg->output_format);
+										 cfg->output_format,
+										 cfg->timestamp_source);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to run query counters with error=%s", doca_error_get_name(result));
 			goto teardown;
@@ -822,7 +968,8 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 											  << cfg->log_max_num_samples),
 											 cfg->max_num_samples_per_read,
 											 size_of_sample,
-											 cfg->output_format);
+											 cfg->output_format,
+											 cfg->timestamp_source);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR(
 					"Failed to run query counters after reconfig new sample period with error=%s",
@@ -838,7 +985,8 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 									     total_run_time_nsec,
 									     size_of_sample,
 									     poll_interval,
-									     cfg->output_format);
+									     cfg->output_format,
+									     cfg->timestamp_source);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to run query counters with error=%s", doca_error_get_name(result));
 			goto teardown;
@@ -857,7 +1005,8 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 										     total_run_time_nsec,
 										     size_of_sample,
 										     poll_interval,
-										     cfg->output_format);
+										     cfg->output_format,
+										     cfg->timestamp_source);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR(
 					"Failed to run query counters after reconfig new sample period with error=%s",

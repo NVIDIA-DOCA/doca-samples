@@ -115,7 +115,7 @@ doca_error_t add_multi_fwd_pipe_entries(struct doca_flow_pipe *pipe, int port_id
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = port_id ^ 1;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, &fwd, 0, status, &entry0);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, &fwd, 0, status, &entry0);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add first entry: %s", doca_error_get_descr(result));
 		return result;
@@ -127,7 +127,7 @@ doca_error_t add_multi_fwd_pipe_entries(struct doca_flow_pipe *pipe, int port_id
 	/* add the second entry with fwd drop */
 	fwd.type = DOCA_FLOW_FWD_DROP;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, &fwd, 0, status, &entry1);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, &fwd, 0, status, &entry1);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add second entry: %s", doca_error_get_descr(result));
 		return result;
@@ -162,7 +162,7 @@ doca_error_t flow_multi_fwd(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports");
 		doca_flow_destroy();

@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -46,8 +46,8 @@ app_srcs = files([
 	'config_queues/udp_queues.c',
 	'config_queues/tcp_queues.c',
 	'config_queues/icmp_queues.c',
-	'dpdk_tcp/tcp_cpu_rss_func.c',
-	'dpdk_tcp/tcp_session_table.c',
+	'tcp_cpu/tcp_cpu_rss_func.c',
+	'tcp_cpu/tcp_session_table.c',
 ])
 
 app_srcs += [

@@ -1,0 +1,55 @@
+#
+# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+number_of_ports: 3
+min_supported_nic:
+  - ConnectX-7
+mode_args:
+  - switch
+ports_description:
+  port_0: doca_dev
+  port_1: doca_rep_dev
+  port_2: doca_rep_dev
+description: "This sample shows how to use definition API by matching and modifying PSP extension fields.
+              Sample Command Line: ./build/doca_flow_psp_ext -- -l 60 -r pci/08:00.0,pf0sf[0-1]"
+use_cases:
+  - name: "Flow psp ext use case #1"
+    args: ""
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP()/UDP(dport=1000)/PSP(hdrextlen=4, cryptoffset=6, version=0, is_virt=1, one_bit=1, spi=0xBEAFC0DE, sectoken=0x12345678, data=bytes.fromhex('123456781234567812345678'))/Raw(load=b'Sent to port 0, forwarded from port 1')
+              - Ether()/IP()/UDP(dport=1000)/PSP(hdrextlen=4, cryptoffset=6, version=0, is_virt=1, one_bit=1, spi=0xBEAFC0DE, sectoken=0xabcdef90, data=bytes.fromhex('abcdef90abcdef90abcdef90'))/Raw(load=b'Sent to port 0, forwarded from port 2')
+              - Ether()/IP()/UDP(dport=1000)/PSP(hdrextlen=4, cryptoffset=6, version=0, is_virt=1, one_bit=1, spi=0xBEAFC0DE, sectoken=0x12345678, data=bytes.fromhex('abcdef9012345678abcdef90'))/Raw(load=b'Sent to port 0, dropped')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether()/IP()/UDP(dport=1000)/PSP(hdrextlen=4, cryptoffset=6, version=0, is_virt=1, one_bit=1, spi=0xBEAFC0DE, sectoken=0x22222221, data=bytes.fromhex('333333314444444155555551'))/Raw(load=b'Sent to port 0, forwarded from port 1')
+              - forwarding_port: 2
+                packets:
+                  - Ether()/IP()/UDP(dport=1000)/PSP(hdrextlen=4, cryptoffset=6, version=0, is_virt=1, one_bit=1, spi=0xBEAFC0DE, sectoken=0xaaaaaaa2, data=bytes.fromhex('bbbbbbb2ccccccc2ddddddd2'))/Raw(load=b'Sent to port 0, forwarded from port 2')

@@ -27,6 +27,7 @@
 #define PRIV_NFS_FSDEV_H
 
 #include "nfs_fsdev_pipe.h"
+#include <sys/time.h>
 #include <nfsc/libnfs.h>
 #include <nfsc/libnfs-raw.h>
 #include <pthread.h>
@@ -122,10 +123,12 @@ struct async_context {
 	uint32_t req_id;		       /**< Request ID. */
 };
 
-struct nfs_fsdev_recovery *nfs_fsdev_create_recovery(const char *filename, void *db);
+struct nfs_fsdev_recovery *nfs_fsdev_create_recovery(const char *filename, struct database *db);
+void nfs_fsdev_destroy_recovery(struct nfs_fsdev_recovery *recovery);
 void priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global);
-bool nfs_fsdev_db_insert(void *db, int state, int ref_count, int inode, struct nfs_fh3 *fh);
-bool nfs_fsdev_db_init_new_root(unsigned long inode, const struct nfs_fh *fh, void *db);
+void priv_nfs_fsdev_deinit(struct nfs_fsdev *fsdev);
+bool nfs_fsdev_db_insert(struct database *db, int state, int ref_count, int inode, struct nfs_fh3 *fh);
+bool nfs_fsdev_db_init_new_root(unsigned long inode, const struct nfs_fh *fh, struct database *db);
 
 /**
  * @brief Global context for NFS fsdev operations.
@@ -135,7 +138,7 @@ struct nfs_fsdev_global {
 	const char *mount_point;	     /**< NFS export path. */
 	const char *db_name;		     /**< Path to the persistent DB file. */
 	const char *recovery_file_name;	     /**< Path to the open/close replay log. */
-	void *db;			     /**< Opaque pointer to the DB. */
+	struct database *db;		     /**< Opaque pointer to the DB. */
 	pthread_mutex_t lock;		     /**< Mutex for synchronizing access. */
 	struct nfs_fsdev_recovery *recovery; /**< Pointer to replay struct. */
 
@@ -155,6 +158,11 @@ struct nfs_fsdev_global {
 		db = allocate_and_init_map(db_name);
 		recovery = nfs_fsdev_create_recovery(recovery_file_name, db);
 	}
+	~nfs_fsdev_global()
+	{
+		close_map(db);
+		nfs_fsdev_destroy_recovery(recovery);
+	}
 #endif
 };
 
@@ -165,7 +173,7 @@ struct nfs_fsdev {
 	struct nfs_fsdev_global *nfs_global;  /**< Pointer to global context. */
 	SLIST_HEAD(, async_context) free_ios; /**< List of free async_context objects. */
 	struct nfs_context *nfs;	      /**< Pointer to NFS context. */
-
+	struct async_context *ios_pool;	      /**< Pointer to IO pool. */
 #ifdef __cplusplus
 	nfs_fsdev(struct nfs_fsdev_global *_global) : nfs_global(_global)
 	{

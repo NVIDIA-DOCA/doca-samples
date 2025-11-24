@@ -284,6 +284,7 @@ static doca_error_t add_const_fwd_pipe_entries(struct doca_flow_pipe *pipe,
 			result = doca_flow_pipe_hash_add_entry(0,
 							       pipe,
 							       entry_index,
+							       0,
 							       NULL,
 							       NULL,
 							       NULL,
@@ -294,6 +295,7 @@ static doca_error_t add_const_fwd_pipe_entries(struct doca_flow_pipe *pipe,
 			result = doca_flow_pipe_add_entry(0,
 							  pipe,
 							  &match,
+							  0,
 							  NULL,
 							  NULL,
 							  NULL,
@@ -405,6 +407,7 @@ static doca_error_t add_egress_hash_pipe_entries(struct doca_flow_pipe *pipe,
 		result = doca_flow_pipe_hash_add_entry(0,
 						       pipe,
 						       entry_index,
+						       0,
 						       NULL,
 						       NULL,
 						       &fwd,
@@ -516,6 +519,7 @@ static doca_error_t add_egress_root_pipe_entries(struct doca_flow_pipe *pipe, st
 		result = doca_flow_pipe_add_entry(0,
 						  pipe,
 						  &match,
+						  0,
 						  NULL,
 						  NULL,
 						  &fwd,
@@ -536,10 +540,51 @@ static doca_error_t add_egress_root_pipe_entries(struct doca_flow_pipe *pipe, st
  * Run flow_hash_flooding_pipe sample
  *
  * @nb_queues [in]: number of queues the sample will use
- * @nb_ports [in]: number of ports the sample will use
- * @ctx [in]: flow switch context the sample will use
+ * @ctx [in]: flow switch context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
+/* Context structure for statistics printing */
+struct hash_flooding_stats_context {
+	struct doca_flow_pipe_entry **egress_root_entries;
+};
+
+/*
+ * Print hash flooding statistics
+ *
+ * @egress_root_entries [in]: array of egress root entries
+ */
+static void print_hash_flooding_stats(struct doca_flow_pipe_entry *egress_root_entries[])
+{
+	doca_error_t result;
+	struct doca_flow_resource_query query_stats;
+	int entry_idx;
+
+	/* dump entries counters */
+	DOCA_LOG_INFO("Egress root statistics");
+	for (entry_idx = 0; entry_idx < NB_EGRESS_ROOT; entry_idx++) {
+		result = doca_flow_resource_query_entry(egress_root_entries[entry_idx], &query_stats);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
+			return;
+		}
+		DOCA_LOG_INFO("Entry in index: %d", entry_idx);
+		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
+		DOCA_LOG_INFO("Total packets: %ld", query_stats.counter.total_pkts);
+	}
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: hash_flooding_stats_context structure
+ */
+static void print_hash_flooding_stats_wrapper(void *context)
+{
+	struct hash_flooding_stats_context *ctx = (struct hash_flooding_stats_context *)context;
+	print_hash_flooding_stats(ctx->egress_root_entries);
+}
+
 doca_error_t flow_hash_flooding_pipe(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 {
 	struct flow_resources resource = {0};
@@ -547,14 +592,13 @@ doca_error_t flow_hash_flooding_pipe(int nb_queues, int nb_ports, struct flow_sw
 	struct doca_flow_port *ports[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *hash_pipe;
-	struct doca_flow_resource_query query_stats;
 	struct entries_status status;
 	doca_error_t result;
 	uint32_t nb_entries;
-	int entry_idx;
 	int i;
 
 	memset(&status, 0, sizeof(status));
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = NB_TOTAL; /* counter per entry */
 
 	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
@@ -568,7 +612,8 @@ doca_error_t flow_hash_flooding_pipe(int nb_queues, int nb_ports, struct flow_sw
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -686,23 +731,10 @@ doca_error_t flow_hash_flooding_pipe(int nb_queues, int nb_ports, struct flow_sw
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
-	sleep(15);
+	/* Setup statistics context and wait for packets */
+	struct hash_flooding_stats_context stats_ctx = {.egress_root_entries = egress_root_entries};
 
-	/* dump entries counters */
-	DOCA_LOG_INFO("Egress root statistics");
-	for (entry_idx = 0; entry_idx < NB_EGRESS_ROOT; entry_idx++) {
-		result = doca_flow_resource_query_entry(egress_root_entries[entry_idx], &query_stats);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
-		}
-		DOCA_LOG_INFO("Entry in index: %d", entry_idx);
-		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
-		DOCA_LOG_INFO("Total packets: %ld", query_stats.counter.total_pkts);
-	}
+	flow_wait_for_packets(15, print_hash_flooding_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

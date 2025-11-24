@@ -23,9 +23,11 @@
  *
  */
 #include <string.h>
+#include <unistd.h>
 
 #include <doca_log.h>
 #include <doca_dpdk.h>
+#include <doca_argp.h>
 
 #include <rte_eal.h>
 
@@ -35,6 +37,107 @@ DOCA_LOG_REGISTER(flow_common);
 
 /* Hold the converter function for the flow_param_dev_callback (if exists) */
 static flow_dev_ctx_from_user_ctx_t global_user_ctx_converter = NULL;
+
+static doca_error_t set_system_level_resources(struct doca_flow_cfg *cfg,
+					       struct flow_resources *resource,
+					       uint32_t nr_shared_resources[])
+{
+	doca_error_t result;
+
+	if (resource == NULL)
+		return DOCA_SUCCESS;
+
+	result = doca_flow_cfg_set_nr_counters(cfg, resource->nr_counters);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_counters: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_cfg_set_nr_meters(cfg, resource->nr_meters);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_meters: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	for (int i = 0; i < SHARED_RESOURCE_NUM_VALUES; i++) {
+		result = doca_flow_cfg_set_nr_shared_resource(cfg, nr_shared_resources[i], i);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_shared_resources: %s",
+				     doca_error_get_descr(result));
+			return result;
+		}
+	}
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t set_port_level_resources(struct doca_flow_port_cfg *cfg, struct flow_resources *resource)
+{
+	doca_error_t result;
+
+	if (resource == NULL)
+		return DOCA_SUCCESS;
+
+	result = doca_flow_port_cfg_set_nr_resources(cfg, DOCA_FLOW_RESOURCE_COUNTER, resource->nr_counters);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level counter resource to %d: %s",
+			     resource->nr_counters,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(cfg, DOCA_FLOW_RESOURCE_METER, resource->nr_meters);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level meter resource to %d: %s",
+			     resource->nr_meters,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(cfg, DOCA_FLOW_RESOURCE_RSS, resource->nr_rss);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level rss resource to %d: %s",
+			     resource->nr_rss,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(cfg, DOCA_FLOW_RESOURCE_PSP, resource->nr_psp);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level psp resource to %d: %s",
+			     resource->nr_psp,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(cfg, DOCA_FLOW_RESOURCE_ENCAP, resource->nr_encap);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level encap resource to %d: %s",
+			     resource->nr_encap,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(cfg, DOCA_FLOW_RESOURCE_DECAP, resource->nr_decap);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level decap resource to %d: %s",
+			     resource->nr_decap,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(cfg, DOCA_FLOW_RESOURCE_IPSEC_SA, resource->nr_ipsec_sa);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level ipsec_sa resource to %d: %s",
+			     resource->nr_ipsec_sa,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+/* Global statistics interval variable */
+static int g_flow_stats_interval = 0;
 
 /*
  * Entry processing callback
@@ -89,24 +192,12 @@ doca_error_t init_doca_flow_cb(int nb_queues,
 			       struct doca_flow_definitions *defs)
 {
 	struct doca_flow_cfg *flow_cfg;
-	uint16_t qidx, rss_queues[nb_queues];
-	struct doca_flow_resource_rss_cfg rss = {0};
 	doca_error_t result, tmp_result;
 
 	result = doca_flow_cfg_create(&flow_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca_flow_cfg: %s", doca_error_get_descr(result));
 		return result;
-	}
-
-	rss.nr_queues = nb_queues;
-	for (qidx = 0; qidx < nb_queues; qidx++)
-		rss_queues[qidx] = qidx;
-	rss.queues_array = rss_queues;
-	result = doca_flow_cfg_set_default_rss(flow_cfg, &rss);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg rss: %s", doca_error_get_descr(result));
-		goto destroy_cfg;
 	}
 
 	result = doca_flow_cfg_set_pipe_queues(flow_cfg, nb_queues);
@@ -118,18 +209,6 @@ doca_error_t init_doca_flow_cb(int nb_queues,
 	result = doca_flow_cfg_set_mode_args(flow_cfg, mode);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg mode_args: %s", doca_error_get_descr(result));
-		goto destroy_cfg;
-	}
-
-	result = doca_flow_cfg_set_nr_counters(flow_cfg, resource->nr_counters);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_counters: %s", doca_error_get_descr(result));
-		goto destroy_cfg;
-	}
-
-	result = doca_flow_cfg_set_nr_meters(flow_cfg, resource->nr_meters);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_meters: %s", doca_error_get_descr(result));
 		goto destroy_cfg;
 	}
 
@@ -146,11 +225,15 @@ doca_error_t init_doca_flow_cb(int nb_queues,
 		goto destroy_cfg;
 	}
 
-	for (int i = 0; i < SHARED_RESOURCE_NUM_VALUES; i++) {
-		result = doca_flow_cfg_set_nr_shared_resource(flow_cfg, nr_shared_resources[i], i);
+	if (resource && resource->mode == DOCA_FLOW_RESOURCE_MODE_PORT) {
+		result = doca_flow_cfg_set_resource_mode(flow_cfg, resource->mode);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_shared_resources: %s",
-				     doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed to set doca_flow_cfg resource_mode: %s", doca_error_get_descr(result));
+			goto destroy_cfg;
+		}
+	} else {
+		result = set_system_level_resources(flow_cfg, resource, nr_shared_resources);
+		if (result != DOCA_SUCCESS) {
 			goto destroy_cfg;
 		}
 	}
@@ -185,7 +268,10 @@ destroy_cfg:
  * @cfg [out]: the port configuration structure
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t create_doca_flow_port_cfg(int port_id, uint32_t actions_mem_size, struct doca_flow_port_cfg **cfg)
+static doca_error_t create_doca_flow_port_cfg(int port_id,
+					      uint32_t actions_mem_size,
+					      struct flow_resources *resources,
+					      struct doca_flow_port_cfg **cfg)
 {
 	struct doca_flow_port_cfg *port_cfg;
 	doca_error_t result;
@@ -210,6 +296,15 @@ static doca_error_t create_doca_flow_port_cfg(int port_id, uint32_t actions_mem_
 		return result;
 	}
 
+	if (resources && resources->mode == DOCA_FLOW_RESOURCE_MODE_PORT) {
+		result = set_port_level_resources(port_cfg, resources);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set port levle resources: %s", doca_error_get_descr(result));
+			doca_flow_port_cfg_destroy(port_cfg);
+			return result;
+		}
+	}
+
 	*cfg = port_cfg;
 	return DOCA_SUCCESS;
 }
@@ -227,13 +322,15 @@ static doca_error_t create_doca_flow_port_cfg(int port_id, uint32_t actions_mem_
 static doca_error_t create_doca_flow_port(int port_id,
 					  uint32_t actions_mem_size,
 					  struct doca_dev *dev,
-					  enum doca_flow_port_operation_state state,
+					  port_config_cb port_config_cb,
+					  void *config_cb_ctx,
+					  struct flow_resources *resources,
 					  struct doca_flow_port **port)
 {
 	struct doca_flow_port_cfg *port_cfg;
 	doca_error_t result, tmp_result;
 
-	result = create_doca_flow_port_cfg(port_id, actions_mem_size, &port_cfg);
+	result = create_doca_flow_port_cfg(port_id, actions_mem_size, resources, &port_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca_flow_port_cfg: %s", doca_error_get_descr(result));
 		return result;
@@ -245,10 +342,13 @@ static doca_error_t create_doca_flow_port(int port_id,
 		goto destroy_port_cfg;
 	}
 
-	result = doca_flow_port_cfg_set_operation_state(port_cfg, state);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg operation state: %s", doca_error_get_descr(result));
-		goto destroy_port_cfg;
+	if (port_config_cb) {
+		result = port_config_cb(port_cfg, port_id, config_cb_ctx);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_port_cfg operation state: %s",
+				     doca_error_get_descr(result));
+			goto destroy_port_cfg;
+		}
 	}
 
 	result = doca_flow_port_start(port_cfg, port);
@@ -279,12 +379,15 @@ destroy_port_cfg:
 static doca_error_t create_doca_flow_port_representor(int port_id,
 						      uint32_t actions_mem_size,
 						      struct doca_dev_rep *dev_rep,
+						      port_config_cb port_rep_config_cb,
+						      void *config_cb_ctx,
+						      struct flow_resources *resources,
 						      struct doca_flow_port **port)
 {
 	struct doca_flow_port_cfg *port_cfg;
 	doca_error_t result, tmp_result;
 
-	result = create_doca_flow_port_cfg(port_id, actions_mem_size, &port_cfg);
+	result = create_doca_flow_port_cfg(port_id, actions_mem_size, resources, &port_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca_flow_port_cfg: %s", doca_error_get_descr(result));
 		return result;
@@ -294,6 +397,15 @@ static doca_error_t create_doca_flow_port_representor(int port_id,
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg dev: %s", doca_error_get_descr(result));
 		goto destroy_port_cfg;
+	}
+
+	if (port_rep_config_cb) {
+		result = port_rep_config_cb(port_cfg, port_id, config_cb_ctx);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_port_cfg operation state: %s",
+				     doca_error_get_descr(result));
+			goto destroy_port_cfg;
+		}
 	}
 
 	result = doca_flow_port_start(port_cfg, port);
@@ -335,17 +447,19 @@ doca_error_t stop_doca_flow_ports(int nb_ports, struct doca_flow_port *ports[])
 	return doca_error;
 }
 
-doca_error_t init_doca_flow_ports_with_op_state(int nb_ports,
-						struct doca_flow_port *ports[],
-						bool is_port_fwd,
-						struct doca_dev *dev_arr[],
-						struct doca_dev_rep *dev_rep_arr[],
-						enum doca_flow_port_operation_state *states,
-						uint32_t actions_mem_size[])
+doca_error_t init_doca_flow_ports_with_custom_config(int nb_ports,
+						     struct doca_flow_port *ports[],
+						     bool is_port_fwd,
+						     struct doca_dev *dev_arr[],
+						     struct doca_dev_rep *dev_rep_arr[],
+						     port_config_cb port_cb,
+						     port_config_cb port_rep_cb,
+						     void *config_cb_ctx,
+						     uint32_t actions_mem_size[],
+						     struct flow_resources *resources)
 {
 	int portid;
 	doca_error_t result;
-	enum doca_flow_port_operation_state state;
 
 	for (portid = 0; portid < nb_ports; portid++) {
 		if (dev_rep_arr && dev_rep_arr[portid]) {
@@ -353,14 +467,18 @@ doca_error_t init_doca_flow_ports_with_op_state(int nb_ports,
 			result = create_doca_flow_port_representor(portid,
 								   actions_mem_size[portid],
 								   dev_rep_arr[portid],
+								   port_rep_cb,
+								   config_cb_ctx,
+								   resources,
 								   &ports[portid]);
 		} else {
-			state = states ? states[portid] : DOCA_FLOW_PORT_OPERATION_STATE_ACTIVE;
 			/* Create doca flow port */
 			result = create_doca_flow_port(portid,
 						       actions_mem_size[portid],
 						       dev_arr[portid],
-						       state,
+						       port_cb,
+						       config_cb_ctx,
+						       resources,
 						       &ports[portid]);
 		}
 		if (result != DOCA_SUCCESS) {
@@ -399,12 +517,25 @@ doca_error_t init_doca_flow_ports(int nb_ports,
 				  struct doca_flow_port *ports[],
 				  bool is_port_fwd,
 				  struct doca_dev *dev_arr[],
-				  uint32_t actions_mem_size[])
+				  uint32_t actions_mem_size[],
+				  struct flow_resources *resources)
 {
-	return init_doca_flow_ports_with_op_state(nb_ports, ports, is_port_fwd, dev_arr, NULL, NULL, actions_mem_size);
+	return init_doca_flow_ports_with_custom_config(nb_ports,
+						       ports,
+						       is_port_fwd,
+						       dev_arr,
+						       NULL /* dev_rep_arr */,
+						       NULL /* port_cb */,
+						       NULL /* port_rep_cb */,
+						       NULL /* config_cb_ctx */,
+						       actions_mem_size,
+						       resources);
 }
 
-doca_error_t init_doca_flow_vnf_ports(int nb_ports, struct doca_flow_port *ports[], uint32_t actions_mem_size[])
+doca_error_t init_doca_flow_vnf_ports(int nb_ports,
+				      struct doca_flow_port *ports[],
+				      uint32_t actions_mem_size[],
+				      struct flow_resources *resources)
 {
 	struct doca_dev *dev_arr[nb_ports];
 	doca_error_t result;
@@ -419,7 +550,7 @@ doca_error_t init_doca_flow_vnf_ports(int nb_ports, struct doca_flow_port *ports
 		}
 	}
 
-	return init_doca_flow_ports_with_op_state(nb_ports, ports, true, dev_arr, NULL, NULL, actions_mem_size);
+	return init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size, resources);
 }
 
 doca_error_t set_flow_pipe_cfg(struct doca_flow_pipe_cfg *cfg,
@@ -482,6 +613,7 @@ doca_error_t flow_param_dev_callback(void *param, void *config)
 {
 	struct flow_dev_ctx *ctx = (struct flow_dev_ctx *)config;
 	struct doca_argp_device_ctx *dev_ctx = (struct doca_argp_device_ctx *)param;
+	doca_error_t result;
 
 	if (FLOW_COMMON_PORTS_MAX <= ctx->nb_ports) {
 		DOCA_LOG_ERR("Encountered too many ports, maximal number of ports is: %d", FLOW_COMMON_PORTS_MAX);
@@ -493,7 +625,24 @@ doca_error_t flow_param_dev_callback(void *param, void *config)
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
+	/* Possible that the same device was passed twice, warn about such cases */
+	for (int i = 0; i < ctx->nb_devs; i++) {
+		if (ctx->devs_manager[i].doca_dev == dev_ctx->dev) {
+			DOCA_LOG_WARN("Device %p already exists", dev_ctx->dev);
+			result = doca_dev_close(dev_ctx->dev);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to close doca dev: %p: %s",
+					     dev_ctx->dev,
+					     doca_error_get_descr(result));
+				return result;
+			}
+			/* Nothing to be done */
+			return DOCA_SUCCESS;
+		}
+	}
+
 	ctx->devs_manager[ctx->nb_devs].doca_dev = dev_ctx->dev;
+	ctx->devs_manager[ctx->nb_devs].device_opened_without_reps = true;
 	if (dev_ctx->devargs != NULL)
 		ctx->devs_manager[ctx->nb_devs].dev_arg = dev_ctx->devargs;
 	else
@@ -558,6 +707,8 @@ doca_error_t flow_param_rep_callback(void *param, void *config)
 				     FLOW_COMMON_REPS_MAX);
 			return DOCA_ERROR_INVALID_VALUE;
 		}
+
+		/* We can't catch passing the same representor twice, as they will look like different representors */
 	}
 
 	ctx->devs_manager[dev_idx].doca_dev_rep[ctx->devs_manager[dev_idx].nb_reps++] = rep_ctx->dev_rep;
@@ -731,8 +882,82 @@ void destroy_doca_flow_devs(struct flow_dev_ctx *ctx)
 		if (ctx->devs_manager[i].doca_dev) {
 			close_doca_dev_reps(ctx->devs_manager[i].doca_dev_rep, ctx->devs_manager[i].nb_reps);
 			ctx->devs_manager[i].nb_reps = 0;
-			doca_dev_close(ctx->devs_manager[i].doca_dev);
+			if (ctx->devs_manager[i].device_opened_without_reps)
+				doca_dev_close(ctx->devs_manager[i].doca_dev);
 			ctx->devs_manager[i].doca_dev = NULL;
 		}
+	}
+}
+
+/*
+ * Callback function for stats interval parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context (unused)
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t flow_stats_interval_callback(void *param, void *config)
+{
+	(void)config;
+	int *value = (int *)param;
+
+	if (*value < 0) {
+		DOCA_LOG_ERR("Stats interval must be non-negative");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	g_flow_stats_interval = *value;
+	return DOCA_SUCCESS;
+}
+
+doca_error_t register_flow_stats_params(void)
+{
+	doca_error_t result;
+	struct doca_argp_param *stats_interval_param;
+
+	result = doca_argp_param_create(&stats_interval_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(stats_interval_param, "i");
+	doca_argp_param_set_long_name(stats_interval_param, "stats-interval");
+	doca_argp_param_set_description(stats_interval_param,
+					"Statistics printing interval in microseconds (0 = print only at end)");
+	doca_argp_param_set_callback(stats_interval_param, flow_stats_interval_callback);
+	doca_argp_param_set_type(stats_interval_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(stats_interval_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register stats_interval argument: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+int get_flow_stats_interval(void)
+{
+	return g_flow_stats_interval;
+}
+
+void flow_wait_for_packets(int total_wait_sec, void (*stats_print_func)(void *), void *stats_context)
+{
+	DOCA_LOG_INFO("Wait %d seconds for packets to arrive", total_wait_sec);
+
+	if (g_flow_stats_interval > 0 && stats_print_func != NULL) {
+		uint64_t waited = 0;
+		const uint64_t total_wait = total_wait_sec * 1000000ULL; /* Convert seconds to microseconds */
+		while (waited < total_wait) {
+			usleep(g_flow_stats_interval);
+			waited += g_flow_stats_interval;
+			stats_print_func(stats_context);
+		}
+	} else {
+		sleep(total_wait_sec);
+	}
+
+	/* Print final stats if function is provided */
+	if (stats_print_func != NULL) {
+		stats_print_func(stats_context);
 	}
 }

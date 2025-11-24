@@ -26,9 +26,12 @@
 #ifndef COMMON_DPDK_UTILS_H_
 #define COMMON_DPDK_UTILS_H_
 
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 #include <rte_mbuf.h>
@@ -44,6 +47,34 @@ extern "C" {
 #define TX_RING_SIZE 1024    /* TX ring size */
 #define NUM_MBUFS (8 * 1024) /* Number of mbufs to be allocated in the mempool */
 #define MBUF_CACHE_SIZE 250  /* mempool cache size */
+#define MAC_ADDR_LEN 6	     /* MAC address length in bytes */
+#define MAC_ADDR_STR_LEN 18  /* MAC address length in string format */
+#define IPV6_ADDRESS_LEN 16  /* IPv6 address length */
+#define MAC_STRING_TO_BIN_ARRAY(mac_str, mac_array) \
+	do { \
+		if (!sscanf(mac_str, \
+			    "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", \
+			    &mac_array[0], \
+			    &mac_array[1], \
+			    &mac_array[2], \
+			    &mac_array[3], \
+			    &mac_array[4], \
+			    &mac_array[5])) \
+			DOCA_LOG_ERR("Failed while parsing MAC address"); \
+	} while (0) /* create source mac address */
+
+#define BIN_ARRAY_TO_MAC_STRING(mac_array, mac_str) \
+	do { \
+		snprintf(mac_str, \
+			 18, \
+			 "%02x:%02x:%02x:%02x:%02x:%02x", \
+			 mac_array[0], \
+			 mac_array[1], \
+			 mac_array[2], \
+			 mac_array[3], \
+			 mac_array[4], \
+			 mac_array[5]); \
+	} while (0)
 
 struct doca_dev;
 struct dpdk_mempool_shadow;
@@ -162,6 +193,25 @@ void dpdk_mempool_shadow_destroy(struct dpdk_mempool_shadow *mempool_shadow);
  * @l4 [in]: if true the function prints l4 header
  */
 void print_header_info(const struct rte_mbuf *packet, const bool l2, const bool l3, const bool l4);
+
+/*
+ * Detect VF MAC address
+ *
+ * @vf_if_name [in]: VF interface name
+ * @vf_mac_address [out]: VF mac address
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t detect_vf_mac_address(char *vf_if_name, uint8_t *vf_mac_address);
+
+/*
+ * Detect VF IP addresses
+ *
+ * @vf_if_name [in]: VF interface name
+ * @vf_ip_local_address [out]: VF IP local address
+ * @vf_ip_global_address [out]: VF IP global address
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t detect_vf_ip_address(char *vf_if_name, uint8_t *vf_ip_local_address, uint8_t *vf_ip_global_address);
 
 #ifdef __cplusplus
 } /* extern "C" */

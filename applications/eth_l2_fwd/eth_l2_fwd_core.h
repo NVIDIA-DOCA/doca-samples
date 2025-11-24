@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,7 +29,7 @@
 #include <doca_dev.h>
 #include <doca_mmap.h>
 
-#include <samples/doca_eth/eth_rxq_common.h>
+#include <samples/doca_eth/eth_flow_common.h>
 
 #define ETH_L2_FWD_MAX_PKT_SIZE_DEFAULT 1600
 #define ETH_L2_FWD_PKTS_RECV_RATE_DEFAULT 12500
@@ -71,7 +71,7 @@ struct eth_l2_fwd_dev_resources {
 	struct doca_eth_txq *eth_txq; /* DOCA Ethernet TXQ context */
 	struct doca_ctx *eth_txq_ctx; /* DOCA Ethernet TXQ context as DOCA context */
 
-	struct eth_rxq_flow_resources flow_resrc; /* DOCA flow resources for mlxdev */
+	struct eth_flow_common_resources flow_resrc; /* Flow resources for mlxdev */
 
 	struct mmap_resources mmap_resrc; /* Memory resources to set for the ETH RXQ context */
 

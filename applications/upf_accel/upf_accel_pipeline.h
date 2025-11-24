@@ -57,6 +57,7 @@
  * @pipe_queue [in]: Queue identifier.
  * @pipe [in]: Pointer to pipe.
  * @match [in]: Pointer to match, indicate specific packet match information.
+ * @action_idx [in]: Action index.
  * @actions [in]: Pointer to modify actions, indicate specific modify information.
  * @mon [in]: Pointer to monitor actions.
  * @fwd [in]: Pointer to fwd actions.
@@ -70,6 +71,7 @@ doca_error_t upf_accel_pipe_static_entry_add(struct upf_accel_ctx *upf_accel_ctx
 					     uint16_t pipe_queue,
 					     struct doca_flow_pipe *pipe,
 					     const struct doca_flow_match *match,
+					     uint8_t action_idx,
 					     const struct doca_flow_actions *actions,
 					     const struct doca_flow_monitor *mon,
 					     const struct doca_flow_fwd *fwd,

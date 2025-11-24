@@ -76,6 +76,7 @@ struct virtiofs_device_io_ctx {
 	struct virtiofs_fsdev_thread_ctx *fsdev_tctx; /* VirtioFS fsdev thread context */
 	uint32_t reqs_avail;			      /* Number of available requests */
 	TAILQ_HEAD(, virtiofs_request) pending;
+	TAILQ_HEAD(, virtiofs_request) order;
 } CL_ALIGNED;
 
 /* VirtioFS device */
@@ -93,6 +94,7 @@ struct virtiofs_device {
 	virtiofs_cb_t stop_cb;		       /* Stop callback */
 	void *stop_cb_arg;		       /* Stop callback argument */
 	int num_threads;		       /* Number of threads */
+	uint8_t io_ctxs_alive;		       /* Number of IO ctxs alive */
 	enum virtiofs_device_state state;
 	bool skip_rw;
 	struct virtiofs_device_io_ctx *io_ctxs[];

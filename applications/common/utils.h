@@ -73,7 +73,13 @@ void linear_array_init_u16(uint16_t *array, uint16_t n);
 
 #include <bsd/string.h>
 
-#elif !defined(DOCA_USE_LIBC_STRING_L_FUNC)
+#elif !defined(DOCA_USE_LIBC_STRING_L_FUNC) && !defined(strlcpy)
+#ifdef __cplusplus
+#define DOCA_NOEXCEPT noexcept
+#else
+#define DOCA_NOEXCEPT
+#endif
+
 /*
  * This method wraps our implementation of strlcpy when libbsd is missing
  * @dst [in]: destination string
@@ -81,7 +87,7 @@ void linear_array_init_u16(uint16_t *array, uint16_t n);
  * @size [in]: size, in bytes, of the destination buffer
  * @return: total length of the string (src) we tried to create
  */
-size_t strlcpy(char *dst, const char *src, size_t size);
+size_t strlcpy(char *dst, const char *src, size_t size) DOCA_NOEXCEPT;
 
 /*
  * This method wraps our implementation of strlcat when libbsd is missing
@@ -90,7 +96,7 @@ size_t strlcpy(char *dst, const char *src, size_t size);
  * @size [in]: size, in bytes, of the destination buffer
  * @return: total length of the string (src) we tried to create
  */
-size_t strlcat(char *dst, const char *src, size_t size);
+size_t strlcat(char *dst, const char *src, size_t size) DOCA_NOEXCEPT;
 
 #endif /* DOCA_USE_STRING_L_FUNC */
 

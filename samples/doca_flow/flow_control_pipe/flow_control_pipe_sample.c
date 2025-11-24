@@ -116,11 +116,11 @@ static doca_error_t add_vxlan_pipe_entry(struct doca_flow_pipe *pipe, struct ent
 	memset(&actions, 0, sizeof(actions));
 
 	match.tun.vxlan_tun_id = vxlan_tun_id;
-	actions.action_idx = 0;
 
 	result = doca_flow_pipe_add_entry(0,
 					  pipe,
 					  &match,
+					  0,
 					  &actions,
 					  NULL,
 					  NULL,
@@ -236,7 +236,8 @@ static doca_error_t add_vxlan_gpe_pipe_entry(struct doca_flow_pipe *pipe, struct
 	match.tun.vxlan_gpe_next_protocol = DOCA_FLOW_VXLAN_GPE_TYPE_IPV4;
 	match.tun.vxlan_gpe_flags = 0xF;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, DOCA_FLOW_WAIT_FOR_BATCH, status, &entry);
+	result =
+		doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, DOCA_FLOW_WAIT_FOR_BATCH, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -344,8 +345,6 @@ static doca_error_t add_mpls_pipe_entry(struct doca_flow_pipe *pipe, struct entr
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
 
-	actions.action_idx = 0;
-
 	result = doca_flow_mpls_label_encode(0xababa, 0, 0, true, &match.tun.mpls[2]);
 	if (result != DOCA_SUCCESS)
 		return result;
@@ -353,6 +352,7 @@ static doca_error_t add_mpls_pipe_entry(struct doca_flow_pipe *pipe, struct entr
 	result = doca_flow_pipe_add_entry(0,
 					  pipe,
 					  &match,
+					  0,
 					  &actions,
 					  NULL,
 					  NULL,
@@ -462,9 +462,8 @@ static doca_error_t add_gre_pipe_entry(struct doca_flow_pipe *pipe, struct entri
 	memset(&actions, 0, sizeof(actions));
 
 	match.tun.gre_key = gre_key;
-	actions.action_idx = 0;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -548,9 +547,8 @@ static doca_error_t create_nvgre_pipe_and_entry(struct doca_flow_port *port,
 
 	match.tun.nvgre_vs_id = DOCA_HTOBE32((uint32_t)0x123456 << 8);
 	match.tun.nvgre_flow_id = 0x78;
-	actions.action_idx = 0;
 
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, &actions, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
 	if (result == DOCA_SUCCESS) {
 		(*num_of_entries)++;
 	}
@@ -803,12 +801,69 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	return DOCA_SUCCESS;
 }
 
+/* Context structure for statistics printing */
+struct control_pipe_stats_context {
+	int nb_ports;
+	struct doca_flow_port **ports;
+	uint32_t *shared_counter_ids;
+	struct doca_flow_resource_query *query_results_array;
+};
+
+/*
+ * Print control pipe statistics
+ *
+ * @nb_ports [in]: number of ports
+ * @ports [in]: array of DOCA flow ports
+ * @shared_counter_ids [in]: array of shared counter IDs
+ * @query_results_array [in]: array of query results
+ */
+static void print_control_pipe_stats(int nb_ports,
+				     struct doca_flow_port *ports[],
+				     uint32_t *shared_counter_ids,
+				     struct doca_flow_resource_query *query_results_array)
+{
+	doca_error_t result;
+	int port_id;
+
+	for (port_id = 0; port_id < nb_ports; port_id++) {
+		result = doca_flow_port_shared_resources_query(ports[port_id],
+							       DOCA_FLOW_SHARED_RESOURCE_COUNTER,
+							       &shared_counter_ids[port_id],
+							       &query_results_array[port_id],
+							       1);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query shared counter resource: %s", doca_error_get_descr(result));
+			stop_doca_flow_ports(nb_ports, ports);
+			doca_flow_destroy();
+			return;
+		}
+	}
+
+	for (port_id = 0; port_id < nb_ports; port_id++) {
+		DOCA_LOG_INFO("Port %d:", port_id);
+		DOCA_LOG_INFO("Total bytes: %ld", query_results_array[port_id].counter.total_bytes);
+		DOCA_LOG_INFO("Total packets: %ld", query_results_array[port_id].counter.total_pkts);
+	}
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: control_pipe_stats_context structure
+ */
+static void print_control_pipe_stats_wrapper(void *context)
+{
+	struct control_pipe_stats_context *ctx = (struct control_pipe_stats_context *)context;
+	print_control_pipe_stats(ctx->nb_ports, ctx->ports, ctx->shared_counter_ids, ctx->query_results_array);
+}
+
 /*
  * Run flow_control_pipe sample
  *
  * @nb_queues [in]: number of queues the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
 doca_error_t flow_control_pipe(int nb_queues)
 {
 	int nb_ports = 2;
@@ -826,11 +881,13 @@ doca_error_t flow_control_pipe(int nb_queues)
 	int num_of_entries = 0;
 	doca_error_t result;
 	int port_id;
-	uint32_t shared_counter_ids[] = {0, 1};
+	uint32_t shared_counter_ids[] = {UINT32_MAX, UINT32_MAX}; /* Invalid counter id */
 	struct doca_flow_shared_resource_cfg cfg = {0};
 	struct doca_flow_resource_query query_results_array[nb_ports];
 
-	nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_COUNTER] = 2;
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_counters = 2;
+	resource.nr_decap = 5;
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -838,7 +895,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(DEFAULT_CTRL_PIPE_SIZE));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -849,20 +906,22 @@ doca_error_t flow_control_pipe(int nb_queues)
 		memset(&status, 0, sizeof(status));
 
 		/* config and bind shared counter to port */
-		result = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_COUNTER, port_id, &cfg);
+		result = doca_flow_port_shared_resource_get(ports[port_id],
+							    DOCA_FLOW_SHARED_RESOURCE_COUNTER,
+							    &shared_counter_ids[port_id]);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to configure shared counter to port %d", port_id);
+			DOCA_LOG_ERR("Failed to get shared counter id from port %d", port_id);
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;
 		}
-
-		result = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_COUNTER,
-							 &shared_counter_ids[port_id],
-							 1,
-							 ports[port_id]);
+		/* config and bind shared counter to port */
+		result = doca_flow_port_shared_resource_set_cfg(ports[port_id],
+								DOCA_FLOW_SHARED_RESOURCE_COUNTER,
+								shared_counter_ids[port_id],
+								&cfg);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to bind shared counter to pipe");
+			DOCA_LOG_ERR("Failed to configure shared counter to port %d", port_id);
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;
@@ -983,25 +1042,13 @@ doca_error_t flow_control_pipe(int nb_queues)
 		}
 	}
 
-	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
-	sleep(10);
+	/* Setup statistics context and wait for packets */
+	struct control_pipe_stats_context ctx = {.nb_ports = nb_ports,
+						 .ports = ports,
+						 .shared_counter_ids = shared_counter_ids,
+						 .query_results_array = query_results_array};
 
-	result = doca_flow_shared_resources_query(DOCA_FLOW_SHARED_RESOURCE_COUNTER,
-						  shared_counter_ids,
-						  query_results_array,
-						  nb_ports);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
-	}
-
-	for (port_id = 0; port_id < nb_ports; port_id++) {
-		DOCA_LOG_INFO("Port %d:", port_id);
-		DOCA_LOG_INFO("Total bytes: %ld", query_results_array[port_id].counter.total_bytes);
-		DOCA_LOG_INFO("Total packets: %ld", query_results_array[port_id].counter.total_pkts);
-	}
+	flow_wait_for_packets(10, print_control_pipe_stats_wrapper, &ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

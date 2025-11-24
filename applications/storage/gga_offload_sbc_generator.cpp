@@ -32,8 +32,6 @@
 #include <thread>
 #include <vector>
 
-#include <lz4frame.h>
-
 #include <doca_argp.h>
 #include <doca_buf_inventory.h>
 #include <doca_ctx.h>
@@ -50,6 +48,7 @@
 #include <storage_common/definitions.hpp>
 #include <storage_common/doca_utils.hpp>
 #include <storage_common/file_utils.hpp>
+#include <storage_common/lz4_sw_context.hpp>
 #include <storage_common/os_utils.hpp>
 
 DOCA_LOG_REGISTER(SBC_GEN);
@@ -79,25 +78,6 @@ struct gga_offload_sbc_gen_result {
 	std::vector<uint8_t> data_p_content;
 };
 
-struct lz4_context {
-	LZ4F_preferences_t const cfg;
-	LZ4F_cctx *ctx;
-
-	~lz4_context();
-
-	lz4_context();
-
-	lz4_context(lz4_context const &) = delete;
-
-	lz4_context(lz4_context &&) noexcept = delete;
-
-	lz4_context &operator=(lz4_context const &) = delete;
-
-	lz4_context &operator=(lz4_context &&) noexcept = delete;
-
-	uint32_t compress(uint8_t const *in_bytes, uint32_t in_byte_count, uint8_t *out_bytes, uint32_t out_bytes_size);
-};
-
 class gga_offload_sbc_gen_app {
 public:
 	~gga_offload_sbc_gen_app();
@@ -117,7 +97,7 @@ public:
 	gga_offload_sbc_gen_result generate_binary_content(std::vector<uint8_t> input_data);
 
 private:
-	lz4_context m_lz4_ctx;
+	storage::lz4_sw_context m_lz4_ctx;
 	doca_dev *m_dev;
 	std::vector<uint8_t> m_compressed_bytes_buffer;
 	std::vector<uint8_t> m_gga_output_buffer_bytes;
@@ -190,18 +170,19 @@ int main(int argc, char **argv)
 		printf("\tBlock size: %u\n", cfg.block_size);
 		printf("\tOut block count: %u\n", results.block_count);
 
+		auto const half_block_size = cfg.block_size / 2;
 		storage::write_binary_content_to_file(cfg.data_1_file_name,
-						      storage::binary_content{cfg.block_size,
+						      storage::binary_content{half_block_size,
 									      results.block_count,
 									      std::move(results.data_1_content)});
 		printf("\tData 1(%s) created successfully\n", cfg.data_1_file_name.c_str());
 		storage::write_binary_content_to_file(cfg.data_2_file_name,
-						      storage::binary_content{cfg.block_size,
+						      storage::binary_content{half_block_size,
 									      results.block_count,
 									      std::move(results.data_2_content)});
 		printf("\tData 2(%s) created successfully\n", cfg.data_2_file_name.c_str());
 		storage::write_binary_content_to_file(cfg.data_p_file_name,
-						      storage::binary_content{cfg.block_size,
+						      storage::binary_content{half_block_size,
 									      results.block_count,
 									      std::move(results.data_p_content)});
 		printf("\tData p(%s) created successfully\n", cfg.data_p_file_name.c_str());
@@ -340,80 +321,6 @@ void pad_input_to_multiple_of_block_size(std::vector<uint8_t> &input, uint32_t b
 		auto const block_count = 1 + (input.size() / block_size);
 		input.resize(block_count * block_size, padding_byte);
 	}
-}
-
-LZ4F_preferences_t make_lz4_cfg()
-{
-	LZ4F_preferences_t cfg{};
-	::memset(&cfg, 0, sizeof(cfg));
-	cfg.frameInfo.blockSizeID = LZ4F_max64KB;
-	cfg.frameInfo.blockMode = LZ4F_blockIndependent;
-	cfg.frameInfo.contentChecksumFlag = LZ4F_noContentChecksum;
-	cfg.frameInfo.frameType = LZ4F_frame;
-	cfg.frameInfo.blockChecksumFlag = LZ4F_noBlockChecksum;
-	cfg.compressionLevel = 1;
-	cfg.autoFlush = 1;
-
-	return cfg;
-}
-
-lz4_context::~lz4_context()
-{
-	auto const ret = LZ4F_freeCompressionContext(ctx);
-	if (LZ4F_isError(ret)) {
-		DOCA_LOG_ERR("Failed to release LZ4 compression context: %s\n", LZ4F_getErrorName(ret));
-	}
-}
-
-lz4_context::lz4_context() : cfg{make_lz4_cfg()}, ctx{nullptr}
-{
-	auto const ret = LZ4F_createCompressionContext(&ctx, LZ4F_VERSION);
-	if (LZ4F_isError(ret)) {
-		throw storage::runtime_error{DOCA_ERROR_UNKNOWN,
-					     "Failed to create LZ4 compression context: "s + LZ4F_getErrorName(ret)};
-	}
-}
-
-uint32_t lz4_context::compress(uint8_t const *in_bytes,
-			       uint32_t in_byte_count,
-			       uint8_t *out_bytes,
-			       uint32_t out_bytes_size)
-{
-	uint32_t constexpr trailer_byte_count = 4; // doca_compress does not want the 4 byte trailer at the end of the
-	// data
-
-	// Create header
-	auto const header_len = LZ4F_compressBegin(ctx, out_bytes, out_bytes_size, &cfg);
-	if (LZ4F_isError(header_len)) {
-		throw storage::runtime_error{DOCA_ERROR_UNKNOWN,
-					     "Failed to start compression: "s +
-						     LZ4F_getErrorName(static_cast<LZ4F_errorCode_t>(header_len))};
-	}
-
-	// Skip writing header bytes to any output as doca_compress does not want them
-
-	// do the compression
-	auto const compressed_byte_count =
-		LZ4F_compressUpdate(ctx, out_bytes, out_bytes_size, in_bytes, in_byte_count, nullptr);
-	if (LZ4F_isError(compressed_byte_count)) {
-		throw storage::runtime_error{DOCA_ERROR_UNKNOWN,
-					     "Failed to compress: "s + LZ4F_getErrorName(static_cast<LZ4F_errorCode_t>(
-									       compressed_byte_count))};
-	}
-
-	// Finalise (may flush any remaining out bytes)
-	auto const final_byte_count = LZ4F_compressEnd(ctx,
-						       out_bytes + compressed_byte_count,
-						       out_bytes_size - compressed_byte_count,
-						       nullptr);
-	if (LZ4F_isError(final_byte_count)) {
-		throw storage::runtime_error{
-			DOCA_ERROR_UNKNOWN,
-			"Failed to complete compression. Error: "s +
-				LZ4F_getErrorName(static_cast<LZ4F_errorCode_t>(final_byte_count))};
-	}
-
-	return (compressed_byte_count + final_byte_count) - trailer_byte_count;
 }
 
 gga_offload_sbc_gen_app::~gga_offload_sbc_gen_app()
@@ -560,8 +467,14 @@ gga_offload_sbc_gen_app::gga_offload_sbc_gen_app(std::string const &device_id,
 
 	ret = doca_ec_task_create_set_conf(
 		m_ec,
-		[](doca_ec_task_create *task, doca_data task_user_data, doca_data ctx_user_data) {},
 		[](doca_ec_task_create *task, doca_data task_user_data, doca_data ctx_user_data) {
+			static_cast<void>(task);
+			static_cast<void>(task_user_data);
+			static_cast<void>(ctx_user_data);
+		},
+		[](doca_ec_task_create *task, doca_data task_user_data, doca_data ctx_user_data) {
+			static_cast<void>(task);
+			static_cast<void>(task_user_data);
 			reinterpret_cast<gga_offload_sbc_gen_app *>(ctx_user_data.ptr)->m_error_flag = true;
 		},
 		num_ec_tasks);
@@ -597,12 +510,14 @@ gga_offload_sbc_gen_app::gga_offload_sbc_gen_app(std::string const &device_id,
 	m_input_mmap = storage::make_mmap(m_dev,
 					  reinterpret_cast<char *>(m_compressed_bytes_buffer.data()),
 					  m_compressed_bytes_buffer.size(),
-					  DOCA_ACCESS_FLAG_LOCAL_READ_WRITE);
+					  DOCA_ACCESS_FLAG_LOCAL_READ_WRITE,
+					  storage::thread_safety::no);
 
 	m_output_mmap = storage::make_mmap(m_dev,
 					   reinterpret_cast<char *>(m_gga_output_buffer_bytes.data()),
 					   m_gga_output_buffer_bytes.size(),
-					   DOCA_ACCESS_FLAG_LOCAL_READ_WRITE);
+					   DOCA_ACCESS_FLAG_LOCAL_READ_WRITE,
+					   storage::thread_safety::no);
 
 	m_buf_inv = storage::make_buf_inventory(num_ec_buffers);
 
@@ -655,48 +570,56 @@ gga_offload_sbc_gen_result gga_offload_sbc_gen_app::generate_binary_content(std:
 
 	for (uint32_t ii = 0; ii != total_block_count; ++ii) {
 		// Compress the data
-		auto const compresed_size =
+		auto const compressed_size =
 			m_lz4_ctx.compress(input_data.data() + (ii * m_block_size),
 					   m_block_size,
 					   m_compressed_bytes_buffer.data() + metadata_header_size,
 					   m_compressed_bytes_buffer.size() - metadata_overhead_size);
 
-		if (compresed_size + metadata_overhead_size > m_block_size) {
+		if (compressed_size + metadata_overhead_size > m_block_size) {
 			throw storage::runtime_error{
 				DOCA_ERROR_INVALID_VALUE,
 				"Data was not compressible enough to be held in internal storage format. Max compressed size of a block is : " +
 					std::to_string(m_block_size - metadata_overhead_size) +
-					". Block compressed to a size of: " + std::to_string(compresed_size)};
+					". Block compressed to a size of: " + std::to_string(compressed_size)};
 		}
 
+		/* Set header padding and trailer into the compressed bytes buffer to prepare it for partitioning
+		 * between data 1 and data 2 partitions */
+		auto *data_position = m_compressed_bytes_buffer.data();
+		auto remaining_bytes = m_block_size;
+
+		/* Write the header */
 		storage::compressed_block_header const hdr{
 			htobe32(m_block_size),
-			htobe32(compresed_size),
+			htobe32(compressed_size),
 		};
-		std::copy(reinterpret_cast<char const *>(&hdr),
-			  reinterpret_cast<char const *>(&hdr) + sizeof(hdr),
-			  m_compressed_bytes_buffer.data());
+		::memcpy(data_position, &hdr, sizeof(storage::compressed_block_header));
+		data_position += sizeof(storage::compressed_block_header);
+		remaining_bytes -= sizeof(storage::compressed_block_header);
 
-		// apply padding
-		{
-			::memset(m_compressed_bytes_buffer.data() + metadata_header_size + compresed_size,
-				 0,
-				 m_compressed_bytes_buffer.size() -
-					 (metadata_header_size + compresed_size + metadata_trailer_size));
-		}
+		/* Skip past the data (it's already in place during compression above) */
+		data_position += compressed_size;
+		remaining_bytes -= compressed_size;
 
-		// auto half_way_iter = std::begin(m_gga_input_buffer_bytes) + (m_gga_input_buffer_bytes.size() / 2);
+		/* Zero out the unused bytes */
+		auto const padding_len = remaining_bytes - sizeof(storage::compressed_block_trailer);
+		::memset(data_position, 0, padding_len);
+		data_position += padding_len;
+		remaining_bytes -= padding_len;
 
-		// TMP: write the full compressed data to both data files, and duplicate data in the party file to
-		// simplify address translation in the DPU
+		/* Write the trailer */
+		storage::compressed_block_trailer const tlr{0};
+		::memcpy(data_position, &tlr, sizeof(storage::compressed_block_trailer));
 
-		// write first compressed half
-		std::copy(m_compressed_bytes_buffer.data(),
-			  m_compressed_bytes_buffer.data() + m_block_size,
+		// Copy first half block to data 1 partition buffer
+		std::copy(std::begin(m_compressed_bytes_buffer),
+			  std::begin(m_compressed_bytes_buffer) + (m_block_size / 2),
 			  std::back_inserter(out_data.data_1_content));
-		// write second compressed half
-		std::copy(m_compressed_bytes_buffer.data(),
-			  m_compressed_bytes_buffer.data() + m_block_size,
+
+		// Copy second half block to data 2 partition buffer
+		std::copy(std::begin(m_compressed_bytes_buffer) + (m_block_size / 2),
+			  std::begin(m_compressed_bytes_buffer) + m_block_size,
 			  std::back_inserter(out_data.data_2_content));
 
 		// generate EC blocks
@@ -725,9 +648,6 @@ gga_offload_sbc_gen_result gga_offload_sbc_gen_app::generate_binary_content(std:
 			throw std::runtime_error{"doca_ec task return invalid result"};
 		}
 
-		std::copy(std::begin(m_gga_output_buffer_bytes),
-			  std::begin(m_gga_output_buffer_bytes) + (m_block_size / 2),
-			  std::back_inserter(out_data.data_p_content));
 		std::copy(std::begin(m_gga_output_buffer_bytes),
 			  std::begin(m_gga_output_buffer_bytes) + (m_block_size / 2),
 			  std::back_inserter(out_data.data_p_content));

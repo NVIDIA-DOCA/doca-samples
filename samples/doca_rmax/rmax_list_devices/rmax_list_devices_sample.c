@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -46,6 +46,8 @@ doca_error_t rmax_list_devices(void)
 	uint32_t nb_devs, i;
 	uint8_t addr[4];
 	bool has_ptp = true;
+	bool has_rtp_reorder = true;
+	bool has_st2110_20_reorder = true;
 	struct doca_devinfo **devinfo;
 	char dev_pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE];
 
@@ -72,27 +74,59 @@ doca_error_t rmax_list_devices(void)
 		result = doca_devinfo_get_ipv4_addr(devinfo[i], addr, 4);
 		if (result != DOCA_SUCCESS) {
 			memset(&addr, 0, sizeof(addr));
+			/* capabilities can be queried only if IP address is set */
+			has_ptp = false;
+			has_rtp_reorder = false;
+			has_st2110_20_reorder = false;
 		} else {
-			/* query PTP capability can be queried if IPv4 address is configured */
+			/* query PTP capability */
 			result = doca_rmax_get_ptp_clock_supported(devinfo[i]);
-			if (result != DOCA_SUCCESS) {
+			if (result == DOCA_SUCCESS)
+				has_ptp = true;
+			else {
 				if (result != DOCA_ERROR_NOT_SUPPORTED) {
 					DOCA_LOG_ERR("Failed to get PTP clock capability: %s",
 						     doca_error_get_descr(result));
 					return result;
 				}
 				has_ptp = false;
-			} else
-				has_ptp = true;
+			}
+			/* query RTP reordering capability */
+			result = doca_rmax_get_packet_placement_order_rtp_seqn_supported(devinfo[i]);
+			if (result == DOCA_SUCCESS)
+				has_rtp_reorder = true;
+			else {
+				if (result != DOCA_ERROR_NOT_SUPPORTED) {
+					DOCA_LOG_ERR("Failed to get RTP reordering capability: %s",
+						     doca_error_get_descr(result));
+					return result;
+				}
+				has_rtp_reorder = false;
+			}
+			/* query RTP reordering capability */
+			result = doca_rmax_get_packet_placement_order_st2110_20_seqn_supported(devinfo[i]);
+			if (result == DOCA_SUCCESS)
+				has_st2110_20_reorder = true;
+			else {
+				if (result != DOCA_ERROR_NOT_SUPPORTED) {
+					DOCA_LOG_ERR("Failed to get SMPTE ST 2110-20 reordering capability: %s",
+						     doca_error_get_descr(result));
+					return result;
+				}
+				has_st2110_20_reorder = false;
+			}
 		}
 
-		DOCA_LOG_INFO("PCI address: %s, IP: %d.%d.%d.%d, PTP: %c",
-			      dev_pci_addr,
-			      addr[0],
-			      addr[1],
-			      addr[2],
-			      addr[3],
-			      (has_ptp) ? 'y' : 'n');
+		DOCA_LOG_INFO(
+			"PCI address: %s, IP: %d.%d.%d.%d, PTP: %c, RTP reorder: %c, SMPTE ST 2110-20 reorder: %c",
+			dev_pci_addr,
+			addr[0],
+			addr[1],
+			addr[2],
+			addr[3],
+			(has_ptp) ? 'y' : 'n',
+			(has_rtp_reorder) ? 'y' : 'n',
+			(has_st2110_20_reorder) ? 'y' : 'n');
 	}
 
 	result = doca_devinfo_destroy_list(devinfo);

@@ -28,6 +28,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Opaque handle for the NFS fsdev context.
  */
@@ -46,14 +50,20 @@ typedef void (*nfs_fsdev_io_cb)(void *context, int status);
  * @param [in] mount_point The NFS mount point.
  * @return Pointer to the context, or NULL on failure.
  */
-void *nfs_fsdev_create(char *server, char *mount_point);
+struct nfs_fsdev_context *nfs_fsdev_create(char *server, char *mount_point);
+
+/**
+ * @brief Destroy an existing NFS fsdev context and free all resources.
+ * @param [in] ctx The NFS fsdev context to destroy.
+ */
+void nfs_fsdev_destroy(struct nfs_fsdev_context *ctx);
 
 /**
  * @brief Get the NFS fsdev handle from a context pointer.
  * @param [in] fsdev Context pointer.
  * @return Pointer to the NFS fsdev handle.
  */
-struct nfs_fsdev *nfs_fsdev_get(void *fsdev);
+struct nfs_fsdev *nfs_fsdev_get(struct nfs_fsdev_context *fsdev_context);
 
 /**
  * @brief Submit an I/O operation to the NFS fsdev.
@@ -83,5 +93,9 @@ void nfs_fsdev_submit(struct nfs_fsdev *fsdev_priv,
  * @param [in] fsdev_priv NFS fsdev handle.
  */
 void nfs_fsdev_progress(struct nfs_fsdev *fsdev_priv);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* NFS_FSDEV_PUBLIC_H */

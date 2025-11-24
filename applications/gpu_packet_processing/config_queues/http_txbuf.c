@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -24,7 +24,6 @@
  */
 
 #include <arpa/inet.h>
-#include <rte_ethdev.h>
 #include <doca_flow.h>
 #include <doca_mmap.h>
 #include <doca_gpunetio.h>
@@ -32,7 +31,7 @@
 
 #include "common.h"
 #include "packets.h"
-#include "dpdk_tcp/tcp_session_table.h"
+#include "tcp_cpu/tcp_session_table.h"
 
 DOCA_LOG_REGISTER(GPU_PACKET_PROCESSING_TXBUF);
 
@@ -94,6 +93,19 @@ const char *payload_page_not_found = "HTTP/1.1 404 Not Found\r\n"
 				     "</html>\r\n"
 				     "\r\n";
 
+/*
+ * Retrieve host page size
+ *
+ * @return: host page size
+ */
+static size_t get_host_page_size(void)
+{
+	long ret = sysconf(_SC_PAGESIZE);
+	if (ret == -1)
+		return 4096; // 4KB, default Linux page size
+	return (size_t)ret;
+}
+
 doca_error_t create_tx_buf(struct tx_buf *buf,
 			   struct doca_gpu *gpu_dev,
 			   struct doca_dev *ddev,
@@ -101,6 +113,7 @@ doca_error_t create_tx_buf(struct tx_buf *buf,
 			   uint32_t max_pkt_sz)
 {
 	doca_error_t status;
+	size_t size;
 
 	if (buf == NULL || gpu_dev == NULL || ddev == NULL || num_packets == 0 || max_pkt_sz == 0) {
 		DOCA_LOG_ERR("Invalid input arguments");
@@ -111,6 +124,9 @@ doca_error_t create_tx_buf(struct tx_buf *buf,
 	buf->ddev = ddev;
 	buf->num_packets = num_packets;
 	buf->max_pkt_sz = max_pkt_sz;
+
+	size = buf->num_packets * buf->max_pkt_sz;
+	ALIGN_SIZE(size, get_host_page_size());
 
 	status = doca_mmap_create(&(buf->mmap));
 	if (status != DOCA_SUCCESS) {
@@ -125,8 +141,8 @@ doca_error_t create_tx_buf(struct tx_buf *buf,
 	}
 
 	status = doca_gpu_mem_alloc(buf->gpu_dev,
-				    buf->num_packets * buf->max_pkt_sz,
-				    4096,
+				    size,
+				    get_host_page_size(),
 				    DOCA_GPU_MEM_TYPE_GPU,
 				    (void **)&(buf->gpu_pkt_addr),
 				    NULL);
@@ -136,32 +152,25 @@ doca_error_t create_tx_buf(struct tx_buf *buf,
 	}
 
 	/* Map GPU memory buffer used to send packets with DMABuf */
-	status = doca_gpu_dmabuf_fd(buf->gpu_dev,
-				    buf->gpu_pkt_addr,
-				    buf->num_packets * buf->max_pkt_sz,
-				    &(buf->dmabuf_fd));
+	status = doca_gpu_dmabuf_fd(buf->gpu_dev, buf->gpu_pkt_addr, size, &(buf->dmabuf_fd));
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_INFO("Mapping send queue buffer (0x%p size %dB) with legacy nvidia-peermem mode",
+		DOCA_LOG_INFO("Mapping send queue buffer (0x%p size %zdB) with legacy nvidia-peermem mode",
 			      buf->gpu_pkt_addr,
-			      buf->num_packets * buf->max_pkt_sz);
+			      size);
 
 		/* If failed, use nvidia-peermem legacy method */
-		status = doca_mmap_set_memrange(buf->mmap, buf->gpu_pkt_addr, (buf->num_packets * buf->max_pkt_sz));
+		status = doca_mmap_set_memrange(buf->mmap, buf->gpu_pkt_addr, (size));
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Unable to start buf: doca mmap internal error");
 			return status;
 		}
 	} else {
-		DOCA_LOG_INFO("Mapping send queue buffer (0x%p size %dB dmabuf fd %d) with dmabuf mode",
+		DOCA_LOG_INFO("Mapping send queue buffer (0x%p size %zdB dmabuf fd %d) with dmabuf mode",
 			      buf->gpu_pkt_addr,
-			      (buf->num_packets * buf->max_pkt_sz),
+			      size,
 			      buf->dmabuf_fd);
 
-		status = doca_mmap_set_dmabuf_memrange(buf->mmap,
-						       buf->dmabuf_fd,
-						       buf->gpu_pkt_addr,
-						       0,
-						       (buf->num_packets * buf->max_pkt_sz));
+		status = doca_mmap_set_dmabuf_memrange(buf->mmap, buf->dmabuf_fd, buf->gpu_pkt_addr, 0, size);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set dmabuf memrange for mmap %s", doca_error_get_descr(status));
 			return status;
@@ -241,7 +250,7 @@ doca_error_t prepare_tx_buf(struct tx_buf *buf, enum http_page_get page_type)
 		pkt = cpu_pkt_addr + (idx * buf->max_pkt_sz);
 		hdr = (struct eth_ip_tcp_hdr *)pkt;
 
-		hdr->l2_hdr.ether_type = rte_cpu_to_be_16(DOCA_FLOW_ETHER_TYPE_IPV4);
+		hdr->l2_hdr.ether_type = htons(DOCA_FLOW_ETHER_TYPE_IPV4);
 
 		hdr->l3_hdr.version_ihl = 0x45;
 		hdr->l3_hdr.type_of_service = 0x0;
@@ -260,7 +269,7 @@ doca_error_t prepare_tx_buf(struct tx_buf *buf, enum http_page_get page_type)
 		hdr->l4_hdr.sent_seq = 0;
 		hdr->l4_hdr.recv_ack = 0;
 		/* Assuming no TCP flags needed */
-		hdr->l4_hdr.dt_off = 0x50; // 5 << 4;
+		hdr->l4_hdr.dt_off = 0x5;
 		/* Assuming no TCP flags needed */
 		hdr->l4_hdr.tcp_flags = TCP_FLAG_PSH | TCP_FLAG_ACK; //| TCP_FLAG_FIN;
 		hdr->l4_hdr.rx_win = BYTE_SWAP16(6000);

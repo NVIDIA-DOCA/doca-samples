@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #
-# Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -54,6 +54,7 @@ ALL_TO_ALL_HOST_DIR="${ALL_TO_ALL_DIR}/host"
 ALL_TO_ALL_HOST_SRC_FILES="${ALL_TO_ALL_HOST_DIR}/${APP_NAME}.c ${ALL_TO_ALL_HOST_DIR}/${APP_NAME}_core.c"
 ALL_TO_ALL_DEVICE_SRC_DIR="${ALL_TO_ALL_DIR}/device"
 ALL_TO_ALL_DEVICE_SRC_FILES="${ALL_TO_ALL_DEVICE_SRC_DIR}/${APP_NAME}_dev.c"
+ALL_TO_ALL_DEVICE_ATTRIBUTES="${ALL_TO_ALL_DEVICE_SRC_DIR}/${APP_NAME}_attributes.yaml"
 ALL_TO_ALL_APP_EXE="${DOCA_BUILD_DIR}/${APP_NAME}/doca_${APP_NAME}"
 DEVICE_CODE_BUILD_SCRIPT="${ALL_TO_ALL_DIR}/build_device_code.sh"
 DEVICE_CODE_LIB="${DOCA_BUILD_DIR}/${APP_NAME}/device/build_dpacc/${APP_NAME}_program.a "
@@ -84,7 +85,7 @@ FLEXIO_LIBS_DIR="${MLNX_INSTALL_PATH}/flexio/lib/"
 ##################
 
 # Compile device code
-/bin/bash $DEVICE_CODE_BUILD_SCRIPT $DOCA_BUILD_DIR $ALL_TO_ALL_DEVICE_SRC_FILES $DPACC_MCPU_FLAG $DOCA_LIB_DIR
+/bin/bash $DEVICE_CODE_BUILD_SCRIPT $DOCA_BUILD_DIR $ALL_TO_ALL_DEVICE_SRC_FILES $DPACC_MCPU_FLAG $DOCA_LIB_DIR $ALL_TO_ALL_DEVICE_ATTRIBUTES
 
 # Compile application using MPI compiler
 $MPI_COMPILER $ALL_TO_ALL_HOST_SRC_FILES -o $ALL_TO_ALL_APP_EXE $DEVICE_CODE_LIB -I$ALL_TO_ALL_HOST_DIR \

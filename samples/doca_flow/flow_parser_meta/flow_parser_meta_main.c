@@ -23,8 +23,6 @@
  *
  */
 
-#include <stdlib.h>
-
 #include <doca_argp.h>
 #include <doca_flow.h>
 #include <doca_log.h>
@@ -36,7 +34,9 @@
 DOCA_LOG_REGISTER(FLOW_PARSER_META::MAIN);
 
 /* Sample's Logic */
-doca_error_t flow_parser_meta(int nb_queues);
+doca_error_t flow_parser_meta(int nb_queues, int stats_interval);
+
+/* Global variables */
 
 /*
  * Sample main function
@@ -76,6 +76,13 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
 		goto sample_exit;
 	}
+	/* Register common flow statistics parameters */
+	result = register_flow_stats_params();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register stats parameters: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+
 	result = register_flow_device_params(NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register flow device params: %s", doca_error_get_descr(result));
@@ -103,7 +110,7 @@ int main(int argc, char **argv)
 	}
 
 	/* run sample */
-	result = flow_parser_meta(dpdk_config.port_config.nb_queues);
+	result = flow_parser_meta(dpdk_config.port_config.nb_queues, get_flow_stats_interval());
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("flow_parser_meta() encountered an error: %s", doca_error_get_descr(result));
 		goto dpdk_ports_queues_cleanup;

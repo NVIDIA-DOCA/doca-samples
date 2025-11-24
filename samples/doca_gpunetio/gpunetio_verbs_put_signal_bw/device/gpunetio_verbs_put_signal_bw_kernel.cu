@@ -72,19 +72,14 @@ __global__ void put_signal_bw(struct doca_gpu_dev_verbs_qp *qp,
 	// Can re-use previous flag value where the atomic operation assigns (updated_value - 1).
 	if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD) {
 		do {
-			doca_gpu_dev_verbs_fence_acquire<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU>();
-			final_val =
-				doca_gpu_dev_verbs_atomic_read<uint64_t, DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-					&prev_flag_buf[tidx]);
+			final_val = doca_gpu_dev_verbs_atomic_read<uint64_t, DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(&prev_flag_buf[tidx]);
+			doca_gpu_dev_verbs_fence_acquire<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS>();
 		} while ((final_val != (iter_thread - 1)) && (final_val != ((iter_thread * 2) - 1)));
 	} else {
 		if (doca_gpu_dev_verbs_get_lane_id() == 0) {
 			do {
-				doca_gpu_dev_verbs_fence_acquire<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU>();
-				final_val =
-					doca_gpu_dev_verbs_atomic_read<uint64_t,
-								       DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-						&prev_flag_buf[tidx]);
+				final_val = doca_gpu_dev_verbs_atomic_read<uint64_t, DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(&prev_flag_buf[tidx]);
+				doca_gpu_dev_verbs_fence_acquire<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS>();
 			} while ((final_val != (iter_thread - 1)) && (final_val != ((iter_thread * 2) - 1)));
 		}
 		__syncwarp();

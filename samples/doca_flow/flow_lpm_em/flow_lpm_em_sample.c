@@ -126,7 +126,7 @@ static doca_error_t add_classifier_pipe_entry(struct doca_flow_pipe *pipe,
 	 */
 	memset(&match, 0, sizeof(match));
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, 0, status, entry);
+	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
 }
 
 /*
@@ -233,7 +233,7 @@ static doca_error_t add_main_pipe_entry(struct doca_flow_pipe *pipe,
 
 	memset(&match, 0, sizeof(match));
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, status, entry);
+	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, status, entry);
 }
 
 /*
@@ -355,7 +355,7 @@ static doca_error_t add_lpm_one_entry(struct doca_flow_pipe *pipe,
 		fwd.port_id = port_id ^ 1;
 	}
 
-	rc = doca_flow_pipe_lpm_add_entry(0, pipe, &match, &match_mask, NULL, NULL, &fwd, flag, status, entry);
+	rc = doca_flow_pipe_lpm_add_entry(0, pipe, &match, &match_mask, 0, NULL, NULL, &fwd, flag, status, entry);
 	if (rc != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add lpm pipe entry: %s", doca_error_get_descr(rc));
 		return rc;
@@ -463,6 +463,94 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
  * @nb_queues [in]: number of queues the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
+/* Context structure for statistics printing */
+struct lpm_em_stats_context {
+	int nb_ports;
+	int num_of_entries;
+	int classifier_entry_idx;
+	int main_entry_idx;
+	int lpm_entries_idx;
+	struct doca_flow_pipe_entry *(*entries)[6];
+};
+
+/*
+ * Print LPM EM statistics
+ *
+ * @nb_ports [in]: number of ports
+ * @num_of_entries [in]: number of entries per port
+ * @classifier_entry_idx [in]: classifier entry index
+ * @main_entry_idx [in]: main entry index
+ * @lpm_entries_idx [in]: LPM entries start index
+ * @entries [in]: array of flow entries
+ */
+static void print_lpm_em_stats(int nb_ports,
+			       int num_of_entries,
+			       int classifier_entry_idx,
+			       int main_entry_idx,
+			       int lpm_entries_idx,
+			       struct doca_flow_pipe_entry *entries[][6])
+{
+	doca_error_t result;
+	struct doca_flow_resource_query stats;
+	int port_id, lpm_entry_id;
+
+	DOCA_LOG_INFO("===================================================");
+	for (port_id = 0; port_id < nb_ports; port_id++) {
+		DOCA_LOG_INFO("Port %d:", port_id);
+		result = doca_flow_resource_query_entry(entries[port_id][classifier_entry_idx], &stats);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Port %d failed to query classifier pipe entry: %s",
+				     port_id,
+				     doca_error_get_descr(result));
+			return;
+		}
+		DOCA_LOG_INFO("\tClassifier pipe: %lu packets", stats.counter.total_pkts);
+		DOCA_LOG_INFO("--------------");
+
+		result = doca_flow_resource_query_entry(entries[port_id][main_entry_idx], &stats);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Port %d failed to query main pipe entry: %s",
+				     port_id,
+				     doca_error_get_descr(result));
+			return;
+		}
+		DOCA_LOG_INFO("\tMain pipe: %lu packets", stats.counter.total_pkts);
+		DOCA_LOG_INFO("--------------");
+
+		DOCA_LOG_INFO("LPM with EM pipe:");
+		for (lpm_entry_id = lpm_entries_idx; lpm_entry_id < num_of_entries; lpm_entry_id++) {
+			result = doca_flow_resource_query_entry(entries[port_id][lpm_entry_id], &stats);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Port %d failed to query LPM entry %d: %s",
+					     port_id,
+					     lpm_entry_id - 1,
+					     doca_error_get_descr(result));
+				return;
+			}
+
+			DOCA_LOG_INFO("\tEntry %d received %lu packets", lpm_entry_id - 1, stats.counter.total_pkts);
+		}
+		DOCA_LOG_INFO("===================================================");
+	}
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: lpm_em_stats_context structure
+ */
+static void print_lpm_em_stats_wrapper(void *context)
+{
+	struct lpm_em_stats_context *ctx = (struct lpm_em_stats_context *)context;
+	print_lpm_em_stats(ctx->nb_ports,
+			   ctx->num_of_entries,
+			   ctx->classifier_entry_idx,
+			   ctx->main_entry_idx,
+			   ctx->lpm_entries_idx,
+			   ctx->entries);
+}
+
 doca_error_t flow_lpm_em(int nb_queues)
 {
 	const int nb_ports = 2;
@@ -476,7 +564,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 	const int classifier_entry_idx = 0;
 	const int main_entry_idx = 1;
 	const int lpm_entries_idx = 2;
-	struct flow_resources resource = {.nr_counters = 64};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT, .nr_counters = 64};
 	uint32_t actions_mem_size[nb_ports];
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
@@ -485,9 +573,8 @@ doca_error_t flow_lpm_em(int nb_queues)
 	struct doca_flow_pipe *lpm_pipe;
 	struct entries_status status;
 	struct doca_flow_pipe_entry *entries[nb_ports][num_of_entries];
-	struct doca_flow_resource_query stats;
 	doca_error_t result;
-	int port_id, lpm_entry_id;
+	int port_id;
 
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
@@ -496,7 +583,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -568,47 +655,15 @@ doca_error_t flow_lpm_em(int nb_queues)
 			return DOCA_ERROR_BAD_STATE;
 		}
 	}
-	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
-	sleep(10);
-	DOCA_LOG_INFO("===================================================");
+	/* Setup statistics context and wait for packets */
+	struct lpm_em_stats_context stats_ctx = {.nb_ports = nb_ports,
+						 .num_of_entries = num_of_entries,
+						 .classifier_entry_idx = classifier_entry_idx,
+						 .main_entry_idx = main_entry_idx,
+						 .lpm_entries_idx = lpm_entries_idx,
+						 .entries = entries};
 
-	for (port_id = 0; port_id < nb_ports; port_id++) {
-		DOCA_LOG_INFO("Port %d:", port_id);
-		result = doca_flow_resource_query_entry(entries[port_id][classifier_entry_idx], &stats);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Port %d failed to query classifier pipe entry: %s",
-				     port_id,
-				     doca_error_get_descr(result));
-			return result;
-		}
-		DOCA_LOG_INFO("\tClassifier pipe: %lu packets", stats.counter.total_pkts);
-		DOCA_LOG_INFO("--------------");
-
-		result = doca_flow_resource_query_entry(entries[port_id][main_entry_idx], &stats);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Port %d failed to query main pipe entry: %s",
-				     port_id,
-				     doca_error_get_descr(result));
-			return result;
-		}
-		DOCA_LOG_INFO("\tMain pipe: %lu packets", stats.counter.total_pkts);
-		DOCA_LOG_INFO("--------------");
-
-		DOCA_LOG_INFO("LPM with EM pipe:");
-		for (lpm_entry_id = lpm_entries_idx; lpm_entry_id < num_of_entries; lpm_entry_id++) {
-			result = doca_flow_resource_query_entry(entries[port_id][lpm_entry_id], &stats);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Port %d failed to query LPM entry %d: %s",
-					     port_id,
-					     lpm_entry_id - 1,
-					     doca_error_get_descr(result));
-				return result;
-			}
-
-			DOCA_LOG_INFO("\tEntry %d received %lu packets", lpm_entry_id - 1, stats.counter.total_pkts);
-		}
-		DOCA_LOG_INFO("===================================================");
-	}
+	flow_wait_for_packets(10, print_lpm_em_stats_wrapper, &stats_ctx);
 
 	stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

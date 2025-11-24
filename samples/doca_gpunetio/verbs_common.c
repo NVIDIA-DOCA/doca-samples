@@ -359,6 +359,12 @@ void oob_verbs_connection_client_close(int oob_sock_fd)
 		close(oob_sock_fd);
 }
 
+/*
+ * Open IB device via device name (e.g. mlx5_0)
+ *
+ * @name [in]: Device name
+ * @return: doca context object
+ */
 static struct doca_verbs_context *open_ib_device(char *name)
 {
 	int nb_ibdevs = 0;
@@ -415,10 +421,12 @@ static doca_error_t create_verbs_ah_attr(struct doca_verbs_context *verbs_contex
 		goto destroy_verbs_ah;
 	}
 
-	status = doca_verbs_ah_attr_set_hop_limit(new_ah_attr, VERBS_TEST_HOP_LIMIT);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set hop limit: %s", doca_error_get_descr(status));
-		goto destroy_verbs_ah;
+	if (addr_type == DOCA_VERBS_ADDR_TYPE_IPv4 || addr_type == DOCA_VERBS_ADDR_TYPE_IPv6) {
+		status = doca_verbs_ah_attr_set_hop_limit(new_ah_attr, VERBS_TEST_HOP_LIMIT);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set hop limit: %s", doca_error_get_descr(status));
+			goto destroy_verbs_ah;
+		}
 	}
 
 	*verbs_ah_attr = new_ah_attr;
@@ -440,8 +448,29 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 	int ret = 0;
 	struct ibv_port_attr port_attr;
 	struct doca_gpu_verbs_qp_init_attr_hl qp_init;
+	int cuda_id = 0;
+	cudaError_t cuda_ret;
 
 	resources->cfg = cfg;
+
+	/*
+	 * A CUDA context must be initialized before calling GPUNetIO functions.
+	 * cudaFree(0) triggers tje CUDA runtime initialization and report any errors.
+	 */
+	cuda_ret = cudaFree(0);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("CUDA initialization failed: %s\n", cudaGetErrorString(cuda_ret));
+		return DOCA_ERROR_INITIALIZATION;
+	}
+
+	/* In a multi-GPU system, ensure CUDA refers to the right GPU device */
+	cuda_ret = cudaDeviceGetByPCIBusId(&cuda_id, cfg->gpu_pcie_addr);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("Invalid GPU bus id provided %s", cfg->gpu_pcie_addr);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	cudaSetDevice(cuda_id);
 
 	status = doca_gpu_create(cfg->gpu_pcie_addr, &resources->gpu_dev);
 	if (status != DOCA_SUCCESS) {
@@ -614,10 +643,20 @@ doca_error_t destroy_verbs_resources(struct verbs_resources *resources)
 	return DOCA_SUCCESS;
 }
 
+/*
+ * Connect a DOCA Verbs QP with a remote QP
+ *
+ * @resources [in]: Sample resources
+ * @return: doca error value
+ */
 doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 {
 	doca_error_t status = DOCA_SUCCESS, tmp_status = DOCA_SUCCESS;
 	struct doca_verbs_qp_attr *verbs_qp_attr = NULL;
+	int ret;
+	struct ibv_port_attr port_attr;
+	uint8_t max_dest_rd_atomic, max_rd_atomic;
+	struct doca_verbs_device_attr *verbs_device_attr;
 
 	status = doca_verbs_ah_attr_set_gid(resources->verbs_ah_attr, resources->remote_gid);
 	if (status != DOCA_SUCCESS) {
@@ -625,10 +664,20 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 		return status;
 	}
 
-	status = doca_verbs_ah_attr_set_dlid(resources->verbs_ah_attr, resources->dlid);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set dlid");
+	ret = ibv_query_port(resources->pd->context, 1, &port_attr);
+	if (ret) {
+		DOCA_LOG_ERR("Failed to query ibv port attributes");
+		status = DOCA_ERROR_DRIVER;
 		return status;
+	}
+
+	/* IB only parameter */
+	if (port_attr.link_layer == 1) {
+		status = doca_verbs_ah_attr_set_dlid(resources->verbs_ah_attr, resources->dlid);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set dlid");
+			return status;
+		}
 	}
 
 	status = doca_verbs_qp_attr_create(&verbs_qp_attr);
@@ -709,6 +758,26 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 		goto destroy_verbs_qp_attr;
 	}
 
+	status = doca_verbs_query_device(resources->verbs_context, &verbs_device_attr);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to query device attributes: %s", doca_error_get_descr(status));
+		goto destroy_verbs_qp_attr;
+	}
+
+	max_rd_atomic = doca_verbs_device_attr_get_max_qp_rd_atom(verbs_device_attr);
+	status = doca_verbs_qp_attr_set_max_rd_atomic(verbs_qp_attr, max_rd_atomic);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set max_rd_atomic: %s", doca_error_get_descr(status));
+		goto destroy_verbs_qp_attr;
+	}
+
+	max_dest_rd_atomic = doca_verbs_device_attr_get_max_qp_init_rd_atom(verbs_device_attr);
+	status = doca_verbs_qp_attr_set_max_dest_rd_atomic(verbs_qp_attr, max_dest_rd_atomic);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set max_dest_rd_atomic: %s", doca_error_get_descr(status));
+		goto destroy_verbs_qp_attr;
+	}
+
 	status = doca_verbs_qp_attr_set_ah_attr(verbs_qp_attr, resources->verbs_ah_attr);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set address handle: %s", doca_error_get_descr(status));
@@ -779,10 +848,7 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 
 		status = doca_verbs_qp_modify(resources->qpg->qp_companion.qp,
 					      verbs_qp_attr,
-					      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE |
-						      DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_READ |
-						      DOCA_VERBS_QP_ATTR_ATOMIC_MODE | DOCA_VERBS_QP_ATTR_PKEY_INDEX |
-						      DOCA_VERBS_QP_ATTR_PORT_NUM);
+					      RC_QP_RST2INIT_REQ_ATTR_MASK);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to modify QP: %s", doca_error_get_descr(status));
 			goto destroy_verbs_qp_attr;
@@ -796,9 +862,7 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 
 		status = doca_verbs_qp_modify(resources->qpg->qp_companion.qp,
 					      verbs_qp_attr,
-					      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_RQ_PSN |
-						      DOCA_VERBS_QP_ATTR_DEST_QP_NUM | DOCA_VERBS_QP_ATTR_PATH_MTU |
-						      DOCA_VERBS_QP_ATTR_AH_ATTR | DOCA_VERBS_QP_ATTR_MIN_RNR_TIMER);
+					      RC_QP_INIT2RTR_REQ_ATTR_MASK);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to modify QP: %s", doca_error_get_descr(status));
 			goto destroy_verbs_qp_attr;
@@ -812,9 +876,7 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 
 		status = doca_verbs_qp_modify(resources->qpg->qp_companion.qp,
 					      verbs_qp_attr,
-					      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_SQ_PSN |
-						      DOCA_VERBS_QP_ATTR_ACK_TIMEOUT | DOCA_VERBS_QP_ATTR_RETRY_CNT |
-						      DOCA_VERBS_QP_ATTR_RNR_RETRY);
+					      RC_QP_RTR2RTS_REQ_ATTR_MASK);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to modify QP: %s", doca_error_get_descr(status));
 			goto destroy_verbs_qp_attr;
@@ -903,4 +965,13 @@ void *progress_cpu_proxy(void *args_)
 	}
 
 	return NULL;
+}
+
+size_t get_page_size(void)
+{
+	long ret = sysconf(_SC_PAGESIZE);
+	if (ret == -1)
+		return 4096; // 4KB, default Linux page size
+
+	return (size_t)ret;
 }

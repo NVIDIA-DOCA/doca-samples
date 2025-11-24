@@ -35,8 +35,10 @@ use_cases:
   - name: "Flow entropy use case #1"
     args: ""
     stages:
-      - name: "validating entropy calculation for the following pattern (src_ip='8.8.8.8',dst_ip='7.7.7.7', src_port=1234, dst_port=5678)"
+      - name: "validating entropy calculation for the following pattern (src_ip='8.8.8.8',dst_ip='7.7.7.7', src_port=1234, dst_port=5678).
+               validating entropy calculation for the following pattern (src_ip='10.11.12.13',dst_ip='255.255.255.255', next_proto=47)"
         validation:
           - type: dump
             expected_text:
               - "The entropy for the given packet header is:0xdb9e"
+              - "The entropy for the given packet with GRE header is:0xde18"

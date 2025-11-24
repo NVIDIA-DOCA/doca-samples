@@ -94,7 +94,7 @@ static inline uint32_t upf_accel_shared_meters_table_offset_get(enum upf_accel_p
 								uint32_t pdr_idx,
 								uint32_t meter_idx)
 {
-	const uint32_t num_meters_per_port = UPF_ACCEL_MAX_PDR_NUM_RATE_METERS * UPF_ACCEL_MAX_NUM_PDR;
+	const uint32_t num_meters_per_port = UPF_ACCEL_NUM_METERS_PER_PORT;
 
 	return (port_id * num_meters_per_port) + UPF_ACCEL_MAX_PDR_NUM_RATE_METERS * pdr_idx + meter_idx;
 }
@@ -167,13 +167,13 @@ static doca_error_t upf_accel_shared_meters_dev_init(struct upf_accel_ctx *upf_a
 {
 	struct doca_flow_port *port = upf_accel_ctx->ports[port_id];
 	struct upf_accel_qers *qers = upf_accel_ctx->upf_accel_cfg->qers;
-	uint32_t ids_array[UPF_ACCEL_MAX_NUM_PDR] = {0};
 	struct upf_accel_qer *qer;
 	uint64_t ul_cir_cbs;
 	uint64_t dl_cir_cbs;
 	doca_error_t result;
 	uint32_t meter_idx;
 	uint32_t i;
+	uint32_t *shared_meter_id;
 
 	for (i = 0; i < pdr->qerids_num; ++i) {
 		qer = upf_accel_get_qer_by_qer_id(qers, pdr->qerids[i]);
@@ -191,20 +191,22 @@ static doca_error_t upf_accel_shared_meters_dev_init(struct upf_accel_ctx *upf_a
 			i);
 		cfg->meter_cfg.cir = cfg->meter_cfg.cbs = (pdr->pdi_si == UPF_ACCEL_PDR_PDI_SI_UL) ? ul_cir_cbs :
 												     dl_cir_cbs;
-		result = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_METER, meter_idx, cfg);
+		shared_meter_id = &upf_accel_ctx->shared_meter_id_to_res[port_id][meter_idx];
+		result = doca_flow_port_shared_resource_get(port, DOCA_FLOW_SHARED_RESOURCE_METER, shared_meter_id);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to cfg shared meter");
+			DOCA_LOG_ERR("Failed to get shared meter resource from port %d", port_id);
 			doca_flow_destroy();
 			return result;
 		}
-
-		ids_array[i] = meter_idx;
-	}
-
-	result = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_METER, ids_array, pdr->qerids_num, port);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to bind shared meters to port");
-		return result;
+		result = doca_flow_port_shared_resource_set_cfg(port,
+								DOCA_FLOW_SHARED_RESOURCE_METER,
+								*shared_meter_id,
+								cfg);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to config shared meter with id %d on port %d", *shared_meter_id, port_id);
+			doca_flow_destroy();
+			return result;
+		}
 	}
 
 	return DOCA_SUCCESS;
@@ -285,6 +287,7 @@ static doca_error_t pipe_pdr_insert(struct upf_accel_ctx *upf_accel_ctx,
 								    0,
 								    cfg->pipe,
 								    cfg->match,
+								    cfg->action_idx,
 								    cfg->action,
 								    cfg->mon,
 								    cfg->fwd,
@@ -339,11 +342,14 @@ static doca_error_t upf_accel_pipe_encap_counter_insert(struct upf_accel_ctx *up
 {
 	const struct upf_accel_far *far = upf_accel_get_far_by_id(upf_accel_ctx->upf_accel_cfg->fars, far_id);
 	struct doca_flow_actions act_enc = {.encap_cfg.encap.tun.gtp_ext_psc_qfi = qfi & 0x3f};
-	struct doca_flow_actions act_none = {.action_idx = UPF_ACCEL_ENCAP_ACTION_NONE};
+	struct doca_flow_actions act_none;
 	struct doca_flow_monitor mon = {
-		.shared_counter = {.shared_counter_id = port_id_and_idx_to_quota_counter(port_id, pdr_idx)}};
+		.shared_counter = {.shared_counter_id =
+					   upf_accel_ctx->shared_counter_id_to_res
+						   [port_id][port_id_and_idx_to_quota_counter(port_id, pdr_idx)]}};
 	struct doca_flow_match match = {.meta.pkt_meta = DOCA_HTOBE32(pdr_id)};
 	struct upf_accel_entry_cfg entry_cfg = {.match = &match,
+						.action_idx = UPF_ACCEL_ENCAP_ACTION_NONE,
 						.fwd = NULL,
 						.domain = DOCA_FLOW_PIPE_DOMAIN_EGRESS,
 						.entry_idx = pdr_id,
@@ -357,16 +363,16 @@ static doca_error_t upf_accel_pipe_encap_counter_insert(struct upf_accel_ctx *up
 	}
 
 	if (far->fp_oh_ip.ip_version == DOCA_FLOW_L3_TYPE_IP4 && !!qfi) { /* Encap with IPv4 5G */
-		act_enc.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV4_5G;
+		entry_cfg.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV4_5G;
 		act_enc.encap_cfg.encap.outer.ip4.dst_ip = DOCA_HTOBE32(far->fp_oh_ip.addr.v4);
 	} else if (far->fp_oh_ip.ip_version == DOCA_FLOW_L3_TYPE_IP6 && !!qfi) { /* Encap with IPv6 5G */
-		act_enc.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV6_5G;
+		entry_cfg.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV6_5G;
 		memcpy(act_enc.encap_cfg.encap.outer.ip6.dst_ip, far->fp_oh_ip.addr.v6, UPF_ACCEL_NUM_BYTES_IPV6);
 	} else if (far->fp_oh_ip.ip_version == DOCA_FLOW_L3_TYPE_IP4 && !qfi) { /* Encap with IPv4 4G */
-		act_enc.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV4_4G;
+		entry_cfg.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV4_4G;
 		act_enc.encap_cfg.encap.outer.ip4.dst_ip = DOCA_HTOBE32(far->fp_oh_ip.addr.v4);
 	} else if (far->fp_oh_ip.ip_version == DOCA_FLOW_L3_TYPE_IP6 && !qfi) { /* Encap with IPv6 4G */
-		act_enc.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV6_4G;
+		entry_cfg.action_idx = UPF_ACCEL_ENCAP_ACTION_IPV6_4G;
 		memcpy(act_enc.encap_cfg.encap.outer.ip6.dst_ip, far->fp_oh_ip.addr.v6, UPF_ACCEL_NUM_BYTES_IPV6);
 	}
 
@@ -455,7 +461,10 @@ static doca_error_t pipe_shared_meter_common_insert(struct upf_accel_ctx *upf_ac
 		.entry_idx = pdr->id,
 		.port_id = port_id};
 
-	mon.shared_meter.shared_meter_id = upf_accel_shared_meters_table_offset_get(port_id, pdr_idx, qer_idx);
+	mon.shared_meter.shared_meter_id =
+		upf_accel_ctx
+			->shared_meter_id_to_res[port_id]
+						[upf_accel_shared_meters_table_offset_get(port_id, pdr_idx, qer_idx)];
 
 	if (pipe_pdr_insert(upf_accel_ctx, &entry_cfg, NULL)) {
 		DOCA_LOG_ERR("Failed to insert p%d tx meter %u entry: %u", port_id, qer_idx, pdr->id);
@@ -655,21 +664,27 @@ static doca_error_t upf_accel_init_quota_counters(struct upf_accel_ctx *upf_acce
 
 	for (port_id = 0; port_id < upf_accel_ctx->num_ports; port_id++) {
 		for (i = 0; i < upf_accel_ctx->upf_accel_cfg->pdrs->num_pdrs; ++i) {
-			result = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_COUNTER,
-								   shared_counter_ids.ids[port_id][i],
-								   &cfg);
+			struct doca_flow_port *port = upf_accel_ctx->ports[port_id];
+			uint32_t shared_res_idx = shared_counter_ids.ids[port_id][i];
+			uint32_t *shared_cnt_id = &upf_accel_ctx->shared_counter_id_to_res[port_id][shared_res_idx];
+
+			result = doca_flow_port_shared_resource_get(port,
+								    DOCA_FLOW_SHARED_RESOURCE_COUNTER,
+								    shared_cnt_id);
 			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to configure shared counter %u to port %d", i, port_id);
+				DOCA_LOG_ERR("Failed to get shared resource of counter type from port %d", port_id);
 				goto cleanup;
 			}
-		}
-		result = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_COUNTER,
-							 shared_counter_ids.ids[port_id],
-							 upf_accel_ctx->upf_accel_cfg->pdrs->num_pdrs,
-							 upf_accel_ctx->ports[port_id]);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to bind shared counter to port %d", port_id);
-			goto cleanup;
+			result = doca_flow_port_shared_resource_set_cfg(port,
+									DOCA_FLOW_SHARED_RESOURCE_COUNTER,
+									*shared_cnt_id,
+									&cfg);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to configure shared counter with id %u on port %d",
+					     *shared_cnt_id,
+					     port_id);
+				goto cleanup;
+			}
 		}
 	}
 
@@ -1220,35 +1235,17 @@ static enum upf_accel_port upf_accel_single_port_get_fwd_port(enum upf_accel_por
  *
  * @nb_queues [in]: number of queues
  * @mode [in]: HW running mode
- * @resource [in]: flow resources
- * @nr_shared_resources [in]: number of shared flow resources
  * @cb [in]: callback function for processing flow entries
  */
-static doca_error_t upf_accel_doca_flow_init(int nb_queues,
-					     const char *mode,
-					     struct flow_resources *resource,
-					     uint32_t nr_shared_resources[],
-					     doca_flow_entry_process_cb cb)
+static doca_error_t upf_accel_doca_flow_init(int nb_queues, const char *mode, doca_flow_entry_process_cb cb)
 {
 	struct doca_flow_cfg *flow_cfg;
-	uint16_t qidx, rss_queues[nb_queues];
-	struct doca_flow_resource_rss_cfg rss = {0};
 	doca_error_t result, tmp_result;
 
 	result = doca_flow_cfg_create(&flow_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca_flow_cfg: %s", doca_error_get_descr(result));
 		return result;
-	}
-
-	rss.nr_queues = nb_queues;
-	for (qidx = 0; qidx < nb_queues; qidx++)
-		rss_queues[qidx] = qidx;
-	rss.queues_array = rss_queues;
-	result = doca_flow_cfg_set_default_rss(flow_cfg, &rss);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg rss: %s", doca_error_get_descr(result));
-		goto destroy_cfg;
 	}
 
 	result = doca_flow_cfg_set_pipe_queues(flow_cfg, nb_queues);
@@ -1263,15 +1260,9 @@ static doca_error_t upf_accel_doca_flow_init(int nb_queues,
 		goto destroy_cfg;
 	}
 
-	result = doca_flow_cfg_set_nr_counters(flow_cfg, resource->nr_counters);
+	result = doca_flow_cfg_set_resource_mode(flow_cfg, DOCA_FLOW_RESOURCE_MODE_PORT);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_counters: %s", doca_error_get_descr(result));
-		goto destroy_cfg;
-	}
-
-	result = doca_flow_cfg_set_nr_meters(flow_cfg, resource->nr_meters);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_meters: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg resource mode: %s", doca_error_get_descr(result));
 		goto destroy_cfg;
 	}
 
@@ -1280,15 +1271,6 @@ static doca_error_t upf_accel_doca_flow_init(int nb_queues,
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg doca_flow_entry_process_cb: %s",
 			     doca_error_get_descr(result));
 		goto destroy_cfg;
-	}
-
-	for (int i = 0; i < SHARED_RESOURCE_NUM_VALUES; i++) {
-		result = doca_flow_cfg_set_nr_shared_resource(flow_cfg, nr_shared_resources[i], i);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_shared_resources: %s",
-				     doca_error_get_descr(result));
-			goto destroy_cfg;
-		}
 	}
 
 	result = doca_flow_cfg_set_rss_key(flow_cfg, upf_accel_rss_hash_key, UPF_ACCEL_RSS_KEY_LEN);
@@ -1346,11 +1328,7 @@ static doca_error_t init_upf_accel(struct upf_accel_ctx *upf_accel_ctx, struct u
 	doca_error_t result, tmp_result;
 	enum upf_accel_port port_id;
 
-	result = upf_accel_doca_flow_init(upf_accel_ctx->num_queues,
-					  "vnf,hws",
-					  &upf_accel_ctx->resource,
-					  upf_accel_ctx->num_shared_resources,
-					  upf_accel_check_for_valid_entry_aging);
+	result = upf_accel_doca_flow_init(upf_accel_ctx->num_queues, "vnf,hws", upf_accel_check_for_valid_entry_aging);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -1373,7 +1351,8 @@ static doca_error_t init_upf_accel(struct upf_accel_ctx *upf_accel_ctx, struct u
 				      upf_accel_ctx->ports,
 				      true,
 				      upf_accel_ctx->dev_arr,
-				      actions_mem_size);
+				      actions_mem_size,
+				      &upf_accel_ctx->resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		goto cleanup_fp_data;
@@ -1463,6 +1442,13 @@ static doca_error_t run_upf_accel(struct upf_accel_ctx *upf_accel_ctx, struct up
 
 	DOCA_LOG_INFO("Waiting for traffic, press Ctrl+C for termination");
 
+	if (upf_accel_ctx->upf_accel_cfg->dry_run) {
+		DOCA_LOG_INFO("Dry run mode, exiting in 3 seconds");
+		sleep(3);
+		force_quit = true;
+		goto upf_accel_exit;
+	}
+
 	while (!force_quit) {
 		ret = sigwait(&sigset, &sig);
 		if (ret) {
@@ -1484,6 +1470,7 @@ static doca_error_t run_upf_accel(struct upf_accel_ctx *upf_accel_ctx, struct up
 		}
 	}
 
+upf_accel_exit:
 	rte_eal_mp_wait_lcore();
 
 	upf_accel_debug_counters_print(upf_accel_ctx, fp_data_arr);
@@ -1600,6 +1587,26 @@ static doca_error_t fixed_port_callback(void *param, void *config)
 }
 
 /*
+ * Callback to handle dry run mode
+ *
+ * This mode is necessary for application validity testing.
+ * It sets up the application and then exits without running the flow processing.
+ *
+ * @param [in]: input param (ignored).
+ * @config [in]: UPF Acceleration configuration.
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t dry_run_callback(void *param, void *config)
+{
+	(void)param; /* Suppress unused parameter warning */
+	struct upf_accel_config *cfg = (struct upf_accel_config *)config;
+
+	cfg->dry_run = true;
+
+	return DOCA_SUCCESS;
+}
+
+/*
  * Convert the user context to the flow_dev_ctx struct
  *
  * @user_ctx [in]: User context
@@ -1622,6 +1629,7 @@ static doca_error_t upf_accel_register_params(void)
 	struct doca_argp_param *aging_time_sec_param;
 	struct doca_argp_param *pkts_before_accel_param;
 	struct doca_argp_param *fixed_port_param;
+	struct doca_argp_param *dry_run_param;
 	doca_error_t result;
 
 	/* Register flow device params */
@@ -1642,7 +1650,6 @@ static doca_error_t upf_accel_register_params(void)
 	doca_argp_param_set_description(pdr_file_path_param, "SMF JSON definitions file path");
 	doca_argp_param_set_callback(pdr_file_path_param, smf_config_file_path_callback);
 	doca_argp_param_set_type(pdr_file_path_param, DOCA_ARGP_TYPE_STRING);
-	doca_argp_param_set_mandatory(pdr_file_path_param);
 	result = doca_argp_register_param(pdr_file_path_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
@@ -1719,6 +1726,22 @@ static doca_error_t upf_accel_register_params(void)
 		return result;
 	}
 
+	/* Create and register UPF Acceleration dry run mode */
+	result = doca_argp_param_create(&dry_run_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(dry_run_param, "dry-run");
+	doca_argp_param_set_description(dry_run_param, "Perform setup and validation without processing traffic");
+	doca_argp_param_set_callback(dry_run_param, dry_run_callback);
+	doca_argp_param_set_type(dry_run_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(dry_run_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
 	return DOCA_SUCCESS;
 }
 
@@ -1752,6 +1775,7 @@ int main(int argc, char **argv)
 		.sw_aging_time_sec = UPF_ACCEL_SW_AGING_TIME_DEFAULT_SEC,
 		.dpi_threshold = UPF_ACCEL_DEFAULT_DPI_THRESHOLD,
 		.fixed_port = UPF_ACCEL_FIXED_PORT_NONE,
+		.dry_run = false,
 	};
 	struct application_dpdk_config dpdk_config = {
 		.port_config.enable_mbuf_metadata = 1,
@@ -1791,6 +1815,12 @@ int main(int argc, char **argv)
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse app input: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+
+	if (!upf_accel_cfg.dry_run && !upf_accel_cfg.smf_config_file_path) {
+		DOCA_LOG_ERR(
+			"SMF config file path is mandatory in non-dry-run mode. Set it with --smf-config-file-path");
 		goto argp_cleanup;
 	}
 
@@ -1835,6 +1865,10 @@ int main(int argc, char **argv)
 		upf_accel_calc_num_shared_meters(upf_accel_ctx.num_ports);
 	upf_accel_ctx.num_shared_resources[DOCA_FLOW_SHARED_RESOURCE_COUNTER] =
 		upf_accel_calc_num_shared_counters(upf_accel_ctx.num_ports);
+	/* port level resource mode set total number of resource (non-shared + shared) */
+	upf_accel_ctx.resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	upf_accel_ctx.resource.nr_counters += upf_accel_ctx.num_shared_resources[DOCA_FLOW_SHARED_RESOURCE_COUNTER];
+	upf_accel_ctx.resource.nr_meters += upf_accel_ctx.num_shared_resources[DOCA_FLOW_SHARED_RESOURCE_METER];
 	upf_accel_ctx.get_fwd_port = (upf_accel_ctx.num_ports == 1) ? upf_accel_single_port_get_fwd_port :
 								      upf_accel_get_opposite_port;
 	upf_accel_ctx.upf_accel_cfg = &upf_accel_cfg;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -260,6 +260,7 @@ static doca_error_t add_entry(uint16_t pipe_queue, uint32_t flag, struct flow_sk
 		result = doca_flow_pipe_add_entry(pipe_queue,
 						  entry->ctx.pipe,
 						  entry->ctx.match,
+						  entry->ctx.actions_idx,
 						  entry->ctx.actions,
 						  entry->ctx.monitor,
 						  entry->ctx.fwd,
@@ -287,6 +288,7 @@ static doca_error_t add_entry(uint16_t pipe_queue, uint32_t flag, struct flow_sk
 						      entry->ctx.pipe,
 						      entry->ctx.match,
 						      entry->ctx.match_mask,
+						      entry->ctx.actions_idx,
 						      entry->ctx.actions,
 						      entry->ctx.monitor,
 						      entry->ctx.fwd,
@@ -299,6 +301,7 @@ static doca_error_t add_entry(uint16_t pipe_queue, uint32_t flag, struct flow_sk
 						      entry->ctx.pipe,
 						      entry->ctx.match,
 						      entry->ctx.match_mask,
+						      entry->ctx.actions,
 						      entry->ctx.priority,
 						      entry->ctx.fwd,
 						      flag,
@@ -319,6 +322,7 @@ static doca_error_t add_entry(uint16_t pipe_queue, uint32_t flag, struct flow_sk
 		result = doca_flow_pipe_hash_add_entry(pipe_queue,
 						       entry->ctx.pipe,
 						       entry->ctx.idx,
+						       entry->ctx.actions_idx,
 						       entry->ctx.actions,
 						       entry->ctx.monitor,
 						       entry->ctx.fwd,

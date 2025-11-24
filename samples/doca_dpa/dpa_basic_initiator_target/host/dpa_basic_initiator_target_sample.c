@@ -268,7 +268,7 @@ doca_error_t dpa_basic_initiator_target(struct dpa_resources *resources)
 	dpa_mmap_obj.permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
 				   DOCA_ACCESS_FLAG_RDMA_READ | DOCA_ACCESS_FLAG_RDMA_ATOMIC;
 	dpa_mmap_obj.memrange_addr = (void *)received_buf_dev_ptr;
-	dpa_mmap_obj.memrange_len = sizeof(uint64_t);
+	dpa_mmap_obj.memrange_len = (uint64_t)sizeof(uint64_t);
 	doca_err = doca_mmap_obj_init(&dpa_mmap_obj);
 	if (doca_err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function doca_mmap_obj_init failed (%s)", doca_error_get_descr(doca_err));
@@ -296,7 +296,7 @@ doca_error_t dpa_basic_initiator_target(struct dpa_resources *resources)
 	host_mmap_obj.permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
 				    DOCA_ACCESS_FLAG_RDMA_READ | DOCA_ACCESS_FLAG_RDMA_ATOMIC;
 	host_mmap_obj.memrange_addr = (void *)&send_val;
-	host_mmap_obj.memrange_len = sizeof(uint64_t);
+	host_mmap_obj.memrange_len = (uint64_t)sizeof(uint64_t);
 	doca_err = doca_mmap_obj_init(&host_mmap_obj);
 	if (doca_err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function doca_mmap_obj_init failed (%s)", doca_error_get_descr(doca_err));

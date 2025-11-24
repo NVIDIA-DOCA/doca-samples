@@ -506,8 +506,6 @@ private:
 	{
 		doca_error_t ret;
 
-		create_pe();
-
 		ret = doca_comch_server_create(dev, dev_rep, channel_name, &m_comch_server);
 		if (ret != DOCA_SUCCESS) {
 			throw storage::runtime_error{ret, "Failed to create doca_comch_server"};

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -52,10 +52,11 @@ struct rmax_stream_config {
 	char pci_address[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* device PCI address */
 
 	/* used when setting stream attributes */
-	bool scatter_all;      /* scatter all packet data including network headers */
-	uint16_t hdr_size;     /* header size */
-	uint16_t data_size;    /* payload size */
-	uint32_t num_elements; /* number of elements in the stream buffer */
+	bool scatter_all;	/* scatter all packet data including network headers */
+	bool order_by_rtp_seqn; /* enable packet ordering by RTP sequence number */
+	uint16_t hdr_size;	/* header size */
+	uint16_t data_size;	/* payload size */
+	uint32_t num_elements;	/* number of elements in the stream buffer */
 
 	/* used when setting flow attributes */
 	struct in_addr dst_ip; /* destination IP address */

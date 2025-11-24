@@ -29,33 +29,925 @@ ports_decription:
   port_0: doca_dev
   port_1: doca_dev
 description: "This sample uses parser meta to filter non frag packets, check for inner and outer chksum and match on inner and outer packet layers.
-              Sample Command Line: ./build/doca_flow_parser_meta -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
+              Note: The use cases below do not differ in arguments or configurations. Each highlights a different aspect of the functionality for easier understanding.
+              Sample Command Line: ./build/doca_flow_parser_meta -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60 --stats-interval 0"
 use_cases:
-  - name: "Flow control pipe use case #1"
+  - name: "Flow integrity valid packets use case"
     args: ""
     stages:
-      - name: "Sending packets iteration 1"
+      - name: "Sending valid packets"
         packets_to_send:
           - receiving_port: 0
             packets:
-              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to ok pipe -> goes to type pipe -> forwarded to port 1')
-              - Ether()/IP(flags=1)/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> hit frag entry -> forwarded to port 1')
-              - Ether()/IP(chksum=44439)/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> misses on ok pipe -> dropped')
-              - Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> misses on ok pipe -> dropped')
+              - Ether()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 0 -> forwarded to port 1')
+              - Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 1 -> forwarded to port 1')
+              - Ether()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 2 -> forwarded to port 1')
+              - Ether()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 3 -> forwarded to port 1')
+              - Ether()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 4 -> forwarded to port 1')
+              - Ether()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 5 -> forwarded to port 1')
+              - Ether()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 6 -> forwarded to port 1')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 7 -> forwarded to port 1')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 8 -> forwarded to port 1')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 9 -> forwarded to port 1')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 10 -> forwarded to port 1')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 11 -> forwarded to port 1')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 12 -> forwarded to port 1')
+              - Ether()/IP()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 13 -> forwarded to port 1')
+              - Ether()/IP()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 14 -> forwarded to port 1')
+              - Ether()/IP()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 15 -> forwarded to port 1')
+              - Ether()/IP()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 16 -> forwarded to port 1')
+              - Ether()/IP()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 17 -> forwarded to port 1')
+              - Ether()/IP()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 18 -> forwarded to port 1')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 19 -> forwarded to port 1')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 20 -> forwarded to port 1')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 21 -> forwarded to port 1')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 22 -> forwarded to port 1')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 23 -> forwarded to port 1')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 24 -> forwarded to port 1')
+              - Ether()/IPv6()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 25 -> forwarded to port 1')
+              - Ether()/IPv6()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 26 -> forwarded to port 1')
+              - Ether()/IPv6()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 27 -> forwarded to port 1')
+              - Ether()/IPv6()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 28 -> forwarded to port 1')
+              - Ether()/IPv6()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 1')
+              - Ether()/IPv6()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 30 -> forwarded to port 1')
           - receiving_port: 1
             packets:
-              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to ok pipe -> goes to type pipe -> forwarded to port 0')
-              - Ether()/IP(flags=1)/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> hit frag entry -> forwarded to port 0')
-              - Ether()/IP(chksum=44439)/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> misses on ok pipe -> dropped')
-              - Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> misses on ok pipe -> dropped')
+              - Ether()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 0 -> forwarded to port 0')
+              - Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 1 -> forwarded to port 0')
+              - Ether()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 2 -> forwarded to port 0')
+              - Ether()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 3 -> forwarded to port 0')
+              - Ether()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 4 -> forwarded to port 0')
+              - Ether()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 5 -> forwarded to port 0')
+              - Ether()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 6 -> forwarded to port 0')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 7 -> forwarded to port 0')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 8 -> forwarded to port 0')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 9 -> forwarded to port 0')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 10 -> forwarded to port 0')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 11 -> forwarded to port 0')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 12 -> forwarded to port 0')
+              - Ether()/IP()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 13 -> forwarded to port 0')
+              - Ether()/IP()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 14 -> forwarded to port 0')
+              - Ether()/IP()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 15 -> forwarded to port 0')
+              - Ether()/IP()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 16 -> forwarded to port 0')
+              - Ether()/IP()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 17 -> forwarded to port 0')
+              - Ether()/IP()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 18 -> forwarded to port 0')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 19 -> forwarded to port 0')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 20 -> forwarded to port 0')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 21 -> forwarded to port 0')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 22 -> forwarded to port 0')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 23 -> forwarded to port 0')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 24 -> forwarded to port 0')
+              - Ether()/IPv6()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 25 -> forwarded to port 0')
+              - Ether()/IPv6()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 26 -> forwarded to port 0')
+              - Ether()/IPv6()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 27 -> forwarded to port 0')
+              - Ether()/IPv6()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 28 -> forwarded to port 0')
+              - Ether()/IPv6()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 0')
+              - Ether()/IPv6()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 30 -> forwarded to port 0')
         validation:
           - type: packet
             expected_packets:
               - forwarding_port: 0
                 packets:
-                  - Ether()/IP(flags=0, chksum=31807)/UDP()/VXLAN()/Ether()/IP(chksum=31868)/TCP()/Raw(load=b'Received on port 1 -> goes to ok pipe -> goes to type pipe -> forwarded to port 0')
-                  - Ether()/IP(flags=1)/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> hit frag entry -> forwarded to port 0')
+                  - Ether()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 0 -> forwarded to port 0')
+                  - Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 1 -> forwarded to port 0')
+                  - Ether()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 2 -> forwarded to port 0')
+                  - Ether()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 3 -> forwarded to port 0')
+                  - Ether()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 4 -> forwarded to port 0')
+                  - Ether()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 5 -> forwarded to port 0')
+                  - Ether()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 6 -> forwarded to port 0')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 7 -> forwarded to port 0')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 8 -> forwarded to port 0')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 9 -> forwarded to port 0')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 10 -> forwarded to port 0')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 11 -> forwarded to port 0')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 12 -> forwarded to port 0')
+                  - Ether()/IP()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 13 -> forwarded to port 0')
+                  - Ether()/IP()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 14 -> forwarded to port 0')
+                  - Ether()/IP()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 15 -> forwarded to port 0')
+                  - Ether()/IP()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 16 -> forwarded to port 0')
+                  - Ether()/IP()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 17 -> forwarded to port 0')
+                  - Ether()/IP()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 18 -> forwarded to port 0')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 19 -> forwarded to port 0')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 20 -> forwarded to port 0')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 21 -> forwarded to port 0')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 22 -> forwarded to port 0')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 23 -> forwarded to port 0')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 24 -> forwarded to port 0')
+                  - Ether()/IPv6()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 25 -> forwarded to port 0')
+                  - Ether()/IPv6()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 26 -> forwarded to port 0')
+                  - Ether()/IPv6()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 27 -> forwarded to port 0')
+                  - Ether()/IPv6()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 28 -> forwarded to port 0')
+                  - Ether()/IPv6()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 0')
+                  - Ether()/IPv6()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 30 -> forwarded to port 0')
               - forwarding_port: 1
                 packets:
-                  - Ether()/IP(flags=0, chksum=31807)/UDP()/VXLAN()/Ether()/IP(chksum=31868)/TCP()/Raw(load=b'Received on port 0 -> goes to ok pipe -> goes to type pipe -> forwarded to port 1')
-                  - Ether()/IP(flags=1)/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> hit frag entry -> forwarded to port 1')
+                  - Ether()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 0 -> forwarded to port 1')
+                  - Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 1 -> forwarded to port 1')
+                  - Ether()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 2 -> forwarded to port 1')
+                  - Ether()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 3 -> forwarded to port 1')
+                  - Ether()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 4 -> forwarded to port 1')
+                  - Ether()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 5 -> forwarded to port 1')
+                  - Ether()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 6 -> forwarded to port 1')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 7 -> forwarded to port 1')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 8 -> forwarded to port 1')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 9 -> forwarded to port 1')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 10 -> forwarded to port 1')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 11 -> forwarded to port 1')
+                  - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 12 -> forwarded to port 1')
+                  - Ether()/IP()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 13 -> forwarded to port 1')
+                  - Ether()/IP()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 14 -> forwarded to port 1')
+                  - Ether()/IP()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 15 -> forwarded to port 1')
+                  - Ether()/IP()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 16 -> forwarded to port 1')
+                  - Ether()/IP()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 17 -> forwarded to port 1')
+                  - Ether()/IP()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 18 -> forwarded to port 1')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 19 -> forwarded to port 1')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 20 -> forwarded to port 1')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 21 -> forwarded to port 1')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 22 -> forwarded to port 1')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 23 -> forwarded to port 1')
+                  - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 24 -> forwarded to port 1')
+                  - Ether()/IPv6()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 25 -> forwarded to port 1')
+                  - Ether()/IPv6()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 26 -> forwarded to port 1')
+                  - Ether()/IPv6()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 27 -> forwarded to port 1')
+                  - Ether()/IPv6()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 28 -> forwarded to port 1')
+                  - Ether()/IPv6()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 1')
+                  - Ether()/IPv6()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 30 -> forwarded to port 1')
+          - type: dump
+            expected_text:
+              - "Port 0 Entry 0 (VALID L2): Total packets: 1"
+              - "Port 0 Entry 1 (VALID IPV4 TCP): Total packets: 1"
+              - "Port 0 Entry 2 (VALID IPV4 UDP): Total packets: 1"
+              - "Port 0 Entry 3 (VALID IPV4): Total packets: 1"
+              - "Port 0 Entry 4 (VALID IPV6 TCP): Total packets: 1"
+              - "Port 0 Entry 5 (VALID IPV6 UDP): Total packets: 1"
+              - "Port 0 Entry 6 (VALID IPV6): Total packets: 1"
+              - "Port 0 Entry 7 (VALID IPV4 UDP/VALID IPV4 TCP): Total packets: 1"
+              - "Port 0 Entry 8 (VALID IPV4 UDP/VALID IPV4 UDP): Total packets: 1"
+              - "Port 0 Entry 9 (VALID IPV4 UDP/VALID IPV4): Total packets: 1"
+              - "Port 0 Entry 10 (VALID IPV4 UDP/VALID IPV6 TCP): Total packets: 1"
+              - "Port 0 Entry 11 (VALID IPV4 UDP/VALID IPV6 UDP): Total packets: 1"
+              - "Port 0 Entry 12 (VALID IPV4 UDP/VALID IPV6): Total packets: 1"
+              - "Port 0 Entry 13 (VALID IPV4/VALID IPV4 TCP): Total packets: 1"
+              - "Port 0 Entry 14 (VALID IPV4/VALID IPV4 UDP): Total packets: 1"
+              - "Port 0 Entry 15 (VALID IPV4/VALID IPV4): Total packets: 1"
+              - "Port 0 Entry 16 (VALID IPV4/VALID IPV6 TCP): Total packets: 1"
+              - "Port 0 Entry 17 (VALID IPV4/VALID IPV6 UDP): Total packets: 1"
+              - "Port 0 Entry 18 (VALID IPV4/VALID IPV6): Total packets: 1"
+              - "Port 0 Entry 19 (VALID IPV6 UDP/VALID IPV4 TCP): Total packets: 1"
+              - "Port 0 Entry 20 (VALID IPV6 UDP/VALID IPV4 UDP): Total packets: 1"
+              - "Port 0 Entry 21 (VALID IPV6 UDP/VALID IPV4): Total packets: 1"
+              - "Port 0 Entry 22 (VALID IPV6 UDP/VALID IPV6 TCP): Total packets: 1"
+              - "Port 0 Entry 23 (VALID IPV6 UDP/VALID IPV6 UDP): Total packets: 1"
+              - "Port 0 Entry 24 (VALID IPV6 UDP/VALID IPV6): Total packets: 1"
+              - "Port 0 Entry 25 (VALID IPV6/VALID IPV4 TCP): Total packets: 1"
+              - "Port 0 Entry 26 (VALID IPV6/VALID IPV4 UDP): Total packets: 1"
+              - "Port 0 Entry 27 (VALID IPV6/VALID IPV4): Total packets: 1"
+              - "Port 0 Entry 28 (VALID IPV6/VALID IPV6 TCP): Total packets: 1"
+              - "Port 0 Entry 29 (VALID IPV6/VALID IPV6 UDP): Total packets: 1"
+              - "Port 0 Entry 30 (VALID IPV6/VALID IPV6): Total packets: 1"
+              - "Port 1 Entry 0 (VALID L2): Total packets: 1"
+              - "Port 1 Entry 1 (VALID IPV4 TCP): Total packets: 1"
+              - "Port 1 Entry 2 (VALID IPV4 UDP): Total packets: 1"
+              - "Port 1 Entry 3 (VALID IPV4): Total packets: 1"
+              - "Port 1 Entry 4 (VALID IPV6 TCP): Total packets: 1"
+              - "Port 1 Entry 5 (VALID IPV6 UDP): Total packets: 1"
+              - "Port 1 Entry 6 (VALID IPV6): Total packets: 1"
+              - "Port 1 Entry 7 (VALID IPV4 UDP/VALID IPV4 TCP): Total packets: 1"
+              - "Port 1 Entry 8 (VALID IPV4 UDP/VALID IPV4 UDP): Total packets: 1"
+              - "Port 1 Entry 9 (VALID IPV4 UDP/VALID IPV4): Total packets: 1"
+              - "Port 1 Entry 10 (VALID IPV4 UDP/VALID IPV6 TCP): Total packets: 1"
+              - "Port 1 Entry 11 (VALID IPV4 UDP/VALID IPV6 UDP): Total packets: 1"
+              - "Port 1 Entry 12 (VALID IPV4 UDP/VALID IPV6): Total packets: 1"
+              - "Port 1 Entry 13 (VALID IPV4/VALID IPV4 TCP): Total packets: 1"
+              - "Port 1 Entry 14 (VALID IPV4/VALID IPV4 UDP): Total packets: 1"
+              - "Port 1 Entry 15 (VALID IPV4/VALID IPV4): Total packets: 1"
+              - "Port 1 Entry 16 (VALID IPV4/VALID IPV6 TCP): Total packets: 1"
+              - "Port 1 Entry 17 (VALID IPV4/VALID IPV6 UDP): Total packets: 1"
+              - "Port 1 Entry 18 (VALID IPV4/VALID IPV6): Total packets: 1"
+              - "Port 1 Entry 19 (VALID IPV6 UDP/VALID IPV4 TCP): Total packets: 1"
+              - "Port 1 Entry 20 (VALID IPV6 UDP/VALID IPV4 UDP): Total packets: 1"
+              - "Port 1 Entry 21 (VALID IPV6 UDP/VALID IPV4): Total packets: 1"
+              - "Port 1 Entry 22 (VALID IPV6 UDP/VALID IPV6 TCP): Total packets: 1"
+              - "Port 1 Entry 23 (VALID IPV6 UDP/VALID IPV6 UDP): Total packets: 1"
+              - "Port 1 Entry 24 (VALID IPV6 UDP/VALID IPV6): Total packets: 1"
+              - "Port 1 Entry 25 (VALID IPV6/VALID IPV4 TCP): Total packets: 1"
+              - "Port 1 Entry 26 (VALID IPV6/VALID IPV4 UDP): Total packets: 1"
+              - "Port 1 Entry 27 (VALID IPV6/VALID IPV4): Total packets: 1"
+              - "Port 1 Entry 28 (VALID IPV6/VALID IPV6 TCP): Total packets: 1"
+              - "Port 1 Entry 29 (VALID IPV6/VALID IPV6 UDP): Total packets: 1"
+              - "Port 1 Entry 30 (VALID IPV6/VALID IPV6): Total packets: 1"
+  - name: "Flow integrity RSS packets use case"
+    args: ""
+    stages:
+      - name: "Sending fragmented packets"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(flags=1)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to entry idx 31 -> forwarded to RSS')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(flags=1)/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to entry idx 32 -> forwarded to RSS')
+          - receiving_port: 1
+            packets:
+              - Ether()/IP(flags=1)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to entry idx 31 -> forwarded to RSS')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(flags=1)/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to entry idx 32 -> forwarded to RSS')
+        validation:
+          - type: dump
+            expected_text:
+              - "Port 0 Entry 31 (Fragmented packet): Total packets: 1"
+              - "Port 0 Entry 32 (Fragmented inner packet): Total packets: 1"
+              - "Port 1 Entry 31 (Fragmented packet): Total packets: 1"
+              - "Port 1 Entry 32 (Fragmented inner packet): Total packets: 1"
+  - name: "Flow integrity invalid checksum packets use case"
+    args: ""
+    stages:
+      - name: "Sending invalid checksum packets"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 33-> dropped')
+              - Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 34-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 35-> dropped')
+              - Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 36-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 37-> dropped')
+              - Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 38-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 39-> dropped')
+              - Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 40-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 41-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 42-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 43-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 44-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 45-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 46-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 47-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 48-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 49-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 50-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 51-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 52-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 53-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 54-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 55-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 56-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 57-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 58-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 59-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 60-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 61-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 62-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 63-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 64-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 65-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 66-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 67-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 68-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 69-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 70-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 71-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 72-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 73-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 74-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 75-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 76-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 77-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 78-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 79-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 80-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 81-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 82-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 83-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 84-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 85-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 86-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 87-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 88-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 89-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 90-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 91-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 92-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 93-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 94-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 95-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 96-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 97-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 98-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 99-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 100-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 101-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 102-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 103-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 104-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 105-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 106-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 107-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 108-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 109-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 110-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 111-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 112-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 113-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 114-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 115-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 116-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 117-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 118-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 119-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 120-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 121-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 122-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 123-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 124-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 125-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 126-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 127-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 128-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 129-> dropped')
+              - Ether()/IP(chksum=0x1234)/IPv6()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 130-> dropped')
+              - Ether()/IP(chksum=0x1234)/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 131-> dropped')
+              - Ether()/IP(chksum=0x1234)/IPv6()/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 132-> dropped')
+              - Ether()/IP(chksum=0x1234)/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 133-> dropped')
+              - Ether()/IP(chksum=0x1234)/IPv6()/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 134-> dropped')
+              - Ether()/IP()/IP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 135-> dropped')
+              - Ether()/IP()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 136-> dropped')
+              - Ether()/IP()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 137-> dropped')
+              - Ether()/IP()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 138-> dropped')
+              - Ether()/IP()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 139-> dropped')
+              - Ether()/IP()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 140-> dropped')
+              - Ether()/IP()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 141-> dropped')
+              - Ether()/IP()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 142-> dropped')
+              - Ether()/IP()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 143-> dropped')
+              - Ether()/IPv6()/IP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 144-> dropped')
+              - Ether()/IPv6()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 145-> dropped')
+              - Ether()/IPv6()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 146-> dropped')
+              - Ether()/IPv6()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 147-> dropped')
+              - Ether()/IPv6()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 148-> dropped')
+              - Ether()/IPv6()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 149-> dropped')
+              - Ether()/IPv6()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 150-> dropped')
+              - Ether()/IPv6()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 151-> dropped')
+              - Ether()/IPv6()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 152-> dropped')
+          - receiving_port: 1
+            packets:
+              - Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 33-> dropped')
+              - Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 34-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 35-> dropped')
+              - Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 36-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 37-> dropped')
+              - Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 38-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 39-> dropped')
+              - Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 40-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 41-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 42-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 43-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 44-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 45-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 46-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 47-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 48-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 49-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 50-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 51-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 52-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 53-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 54-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 55-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 56-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 57-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 58-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 59-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 60-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 61-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 62-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 63-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 64-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 65-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 66-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 67-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 68-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 69-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 70-> dropped')
+              - Ether()/IP()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 71-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 72-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 73-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 74-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 75-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 76-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 77-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 78-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 79-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 80-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 81-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 82-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 83-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 84-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 85-> dropped')
+              - Ether()/IP(chksum=0x1234)/UDP()/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 86-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 87-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 88-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 89-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 90-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 91-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 92-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 93-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 94-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 95-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 96-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 97-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 98-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 99-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 100-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 101-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 102-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 103-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 104-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 105-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 106-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 107-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 108-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 109-> dropped')
+              - Ether()/IPv6()/UDP(chksum=0x1234)/VXLAN()/Ether()/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 110-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 111-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 112-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 113-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 114-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 115-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 116-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 117-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 118-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 119-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 120-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 121-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 122-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 123-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 124-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 125-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 126-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 127-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 128-> dropped')
+              - Ether()/IP(chksum=0x1234)/IP()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 129-> dropped')
+              - Ether()/IP(chksum=0x1234)/IPv6()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 130-> dropped')
+              - Ether()/IP(chksum=0x1234)/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 131-> dropped')
+              - Ether()/IP(chksum=0x1234)/IPv6()/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 132-> dropped')
+              - Ether()/IP(chksum=0x1234)/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 133-> dropped')
+              - Ether()/IP(chksum=0x1234)/IPv6()/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 134-> dropped')
+              - Ether()/IP()/IP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 135-> dropped')
+              - Ether()/IP()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 136-> dropped')
+              - Ether()/IP()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 137-> dropped')
+              - Ether()/IP()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 138-> dropped')
+              - Ether()/IP()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 139-> dropped')
+              - Ether()/IP()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 140-> dropped')
+              - Ether()/IP()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 141-> dropped')
+              - Ether()/IP()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 142-> dropped')
+              - Ether()/IP()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 143-> dropped')
+              - Ether()/IPv6()/IP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 144-> dropped')
+              - Ether()/IPv6()/IP(chksum=0x1234)/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 145-> dropped')
+              - Ether()/IPv6()/IP()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 146-> dropped')
+              - Ether()/IPv6()/IP(chksum=0x1234)/TCP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 147-> dropped')
+              - Ether()/IPv6()/IP(chksum=0x1234)/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 148-> dropped')
+              - Ether()/IPv6()/IP()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 149-> dropped')
+              - Ether()/IPv6()/IP(chksum=0x1234)/UDP()/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 150-> dropped')
+              - Ether()/IPv6()/IPv6()/TCP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 151-> dropped')
+              - Ether()/IPv6()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to entry idx 152-> dropped')
+        validation:
+          - type: dump
+            expected_text:
+              - "Port 0 Entry 33 (IPV4: IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 34 (IPV4/TCP: IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 35 (IPV4/UDP: IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 36 (IPV4/TCP: IPV4 and TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 37 (IPV4/UDP: IPV4 and UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 38 (IPV4/TCP: TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 39 (IPV4/UDP: UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 40 (IPV6/TCP: TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 41 (IPV6/UDP: UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 42 (IPV4/UDP/IPV4: Outer IPV4 and outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 43 (IPV4/UDP/IPV4: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 44 (IPV4/UDP/IPV4/TCP: Outer IPV4 and outer UDP and inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 45 (IPV4/UDP/IPV4/TCP: Outer IPV4 and outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 46 (IPV4/UDP/IPV4/TCP: Outer IPV4 and outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 47 (IPV4/UDP/IPV4/TCP: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 48 (IPV4/UDP/IPV4/UDP: Outer IPV4 and outer UDP and inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 49 (IPV4/UDP/IPV4/UDP: Outer IPV4 and outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 50 (IPV4/UDP/IPV4/UDP: Outer IPV4 and outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 51 (IPV4/UDP/IPV4/UDP: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 52 (IPV4/UDP/IPV6: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 53 (IPV4/UDP/IPV6/TCP: Outer IPV4 and outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 54 (IPV4/UDP/IPV6/TCP: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 55 (IPV4/UDP/IPV6/UDP: Outer IPV4 and outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 56 (IPV4/UDP/IPV6/UDP: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 57 (IPV4/UDP/IPV4: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 58 (IPV4/UDP/IPV4: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 59 (IPV4/UDP/IPV4/TCP: Outer UDP and inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 60 (IPV4/UDP/IPV4/TCP: Outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 61 (IPV4/UDP/IPV4/TCP: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 62 (IPV4/UDP/IPV4/TCP: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 63 (IPV4/UDP/IPV4/UDP: Outer UDP and inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 64 (IPV4/UDP/IPV4/UDP: Outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 65 (IPV4/UDP/IPV4/UDP: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 66 (IPV4/UDP/IPV4/UDP: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 67 (IPV4/UDP/IPV6: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 68 (IPV4/UDP/IPV6/TCP: Outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 69 (IPV4/UDP/IPV6/TCP: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 70 (IPV4/UDP/IPV6/UDP: Outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 71 (IPV4/UDP/IPV6/UDP: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 72 (IPV4/UDP/IPV4: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 73 (IPV4/UDP/IPV4: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 74 (IPV4/UDP/IPV4/TCP: Outer IPV4 and inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 75 (IPV4/UDP/IPV4/TCP: Outer IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 76 (IPV4/UDP/IPV4/TCP: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 77 (IPV4/UDP/IPV4/TCP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 78 (IPV4/UDP/IPV4/UDP: Outer IPV4 and inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 79 (IPV4/UDP/IPV4/UDP: Outer IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 80 (IPV4/UDP/IPV4/UDP: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 81 (IPV4/UDP/IPV4/UDP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 82 (IPV4/UDP/IPV6: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 83 (IPV4/UDP/IPV6/TCP: Outer IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 84 (IPV4/UDP/IPV6/TCP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 85 (IPV4/UDP/IPV6/UDP: Outer IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 86 (IPV4/UDP/IPV6/UDP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 87 (IPV4/UDP/IPV4: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 88 (IPV4/UDP/IPV4/TCP: Inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 89 (IPV4/UDP/IPV4/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 90 (IPV4/UDP/IPV4/TCP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 91 (IPV4/UDP/IPV4/UDP: Inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 92 (IPV4/UDP/IPV4/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 93 (IPV4/UDP/IPV4/UDP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 94 (IPV4/UDP/IPV6/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 95 (IPV4/UDP/IPV6/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 96 (IPV6/UDP/IPV4: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 97 (IPV6/UDP/IPV4: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 98 (IPV6/UDP/IPV4/TCP: Outer UDP and inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 99 (IPV6/UDP/IPV4/TCP: Outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 100 (IPV6/UDP/IPV4/TCP: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 101 (IPV6/UDP/IPV4/TCP: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 102 (IPV6/UDP/IPV4/UDP: Outer UDP and inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 103 (IPV6/UDP/IPV4/UDP: Outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 104 (IPV6/UDP/IPV4/UDP: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 105 (IPV6/UDP/IPV4/UDP: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 106 (IPV6/UDP/IPV6: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 107 (IPV6/UDP/IPV6/TCP: Outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 108 (IPV6/UDP/IPV6/TCP: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 109 (IPV6/UDP/IPV6/UDP: Outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 110 (IPV6/UDP/IPV6/UDP: Outer UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 111 (IPV6/UDP/IPV4: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 112 (IPV6/UDP/IPV4/TCP: Inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 113 (IPV6/UDP/IPV4/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 114 (IPV6/UDP/IPV4/TCP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 115 (IPV6/UDP/IPV4/UDP: Inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 116 (IPV6/UDP/IPV4/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 117 (IPV6/UDP/IPV4/UDP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 118 (IPV6/UDP/IPV6/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 119 (IPV6/UDP/IPV6/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 120 (IPV4/IPV4: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 121 (IPV4/IPV4: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 122 (IPV4/IPV4/TCP: Outer IPV4 and inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 123 (IPV4/IPV4/TCP: Outer IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 124 (IPV4/IPV4/TCP: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 125 (IPV4/IPV4/TCP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 126 (IPV4/IPV4/UDP: Outer IPV4 and inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 127 (IPV4/IPV4/UDP: Outer IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 128 (IPV4/IPV4/UDP: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 129 (IPV4/IPV4/UDP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 130 (IPV4/IPV6: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 131 (IPV4/IPV6/TCP: Outer IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 132 (IPV4/IPV6/TCP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 133 (IPV4/IPV6/UDP: Outer IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 134 (IPV4/IPV6/UDP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 135 (IPV4/IPV4: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 136 (IPV4/IPV4/TCP: Inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 137 (IPV4/IPV4/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 138 (IPV4/IPV4/TCP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 139 (IPV4/IPV4/UDP: Inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 140 (IPV4/IPV4/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 141 (IPV4/IPV4/UDP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 142 (IPV4/IPV6/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 143 (IPV4/IPV6/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 144 (IPV6/IPV4: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 145 (IPV6/IPV4/TCP: Inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 146 (IPV6/IPV4/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 147 (IPV6/IPV4/TCP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 148 (IPV6/IPV4/UDP: Inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 149 (IPV6/IPV4/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 0 Entry 150 (IPV6/IPV4/UDP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 151 (IPV6/IPV6/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 0 Entry 152 (IPV6/IPV6/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 33 (IPV4: IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 34 (IPV4/TCP: IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 35 (IPV4/UDP: IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 36 (IPV4/TCP: IPV4 and TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 37 (IPV4/UDP: IPV4 and UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 38 (IPV4/TCP: TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 39 (IPV4/UDP: UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 40 (IPV6/TCP: TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 41 (IPV6/UDP: UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 42 (IPV4/UDP/IPV4: Outer IPV4 and outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 43 (IPV4/UDP/IPV4: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 44 (IPV4/UDP/IPV4/TCP: Outer IPV4 and outer UDP and inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 45 (IPV4/UDP/IPV4/TCP: Outer IPV4 and outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 46 (IPV4/UDP/IPV4/TCP: Outer IPV4 and outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 47 (IPV4/UDP/IPV4/TCP: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 48 (IPV4/UDP/IPV4/UDP: Outer IPV4 and outer UDP and inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 49 (IPV4/UDP/IPV4/UDP: Outer IPV4 and outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 50 (IPV4/UDP/IPV4/UDP: Outer IPV4 and outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 51 (IPV4/UDP/IPV4/UDP: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 52 (IPV4/UDP/IPV6: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 53 (IPV4/UDP/IPV6/TCP: Outer IPV4 and outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 54 (IPV4/UDP/IPV6/TCP: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 55 (IPV4/UDP/IPV6/UDP: Outer IPV4 and outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 56 (IPV4/UDP/IPV6/UDP: Outer IPV4 and outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 57 (IPV4/UDP/IPV4: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 58 (IPV4/UDP/IPV4: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 59 (IPV4/UDP/IPV4/TCP: Outer UDP and inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 60 (IPV4/UDP/IPV4/TCP: Outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 61 (IPV4/UDP/IPV4/TCP: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 62 (IPV4/UDP/IPV4/TCP: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 63 (IPV4/UDP/IPV4/UDP: Outer UDP and inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 64 (IPV4/UDP/IPV4/UDP: Outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 65 (IPV4/UDP/IPV4/UDP: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 66 (IPV4/UDP/IPV4/UDP: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 67 (IPV4/UDP/IPV6: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 68 (IPV4/UDP/IPV6/TCP: Outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 69 (IPV4/UDP/IPV6/TCP: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 70 (IPV4/UDP/IPV6/UDP: Outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 71 (IPV4/UDP/IPV6/UDP: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 72 (IPV4/UDP/IPV4: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 73 (IPV4/UDP/IPV4: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 74 (IPV4/UDP/IPV4/TCP: Outer IPV4 and inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 75 (IPV4/UDP/IPV4/TCP: Outer IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 76 (IPV4/UDP/IPV4/TCP: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 77 (IPV4/UDP/IPV4/TCP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 78 (IPV4/UDP/IPV4/UDP: Outer IPV4 and inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 79 (IPV4/UDP/IPV4/UDP: Outer IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 80 (IPV4/UDP/IPV4/UDP: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 81 (IPV4/UDP/IPV4/UDP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 82 (IPV4/UDP/IPV6: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 83 (IPV4/UDP/IPV6/TCP: Outer IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 84 (IPV4/UDP/IPV6/TCP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 85 (IPV4/UDP/IPV6/UDP: Outer IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 86 (IPV4/UDP/IPV6/UDP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 87 (IPV4/UDP/IPV4: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 88 (IPV4/UDP/IPV4/TCP: Inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 89 (IPV4/UDP/IPV4/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 90 (IPV4/UDP/IPV4/TCP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 91 (IPV4/UDP/IPV4/UDP: Inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 92 (IPV4/UDP/IPV4/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 93 (IPV4/UDP/IPV4/UDP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 94 (IPV4/UDP/IPV6/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 95 (IPV4/UDP/IPV6/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 96 (IPV6/UDP/IPV4: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 97 (IPV6/UDP/IPV4: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 98 (IPV6/UDP/IPV4/TCP: Outer UDP and inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 99 (IPV6/UDP/IPV4/TCP: Outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 100 (IPV6/UDP/IPV4/TCP: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 101 (IPV6/UDP/IPV4/TCP: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 102 (IPV6/UDP/IPV4/UDP: Outer UDP and inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 103 (IPV6/UDP/IPV4/UDP: Outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 104 (IPV6/UDP/IPV4/UDP: Outer UDP and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 105 (IPV6/UDP/IPV4/UDP: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 106 (IPV6/UDP/IPV6: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 107 (IPV6/UDP/IPV6/TCP: Outer UDP and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 108 (IPV6/UDP/IPV6/TCP: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 109 (IPV6/UDP/IPV6/UDP: Outer UDP and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 110 (IPV6/UDP/IPV6/UDP: Outer UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 111 (IPV6/UDP/IPV4: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 112 (IPV6/UDP/IPV4/TCP: Inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 113 (IPV6/UDP/IPV4/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 114 (IPV6/UDP/IPV4/TCP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 115 (IPV6/UDP/IPV4/UDP: Inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 116 (IPV6/UDP/IPV4/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 117 (IPV6/UDP/IPV4/UDP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 118 (IPV6/UDP/IPV6/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 119 (IPV6/UDP/IPV6/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 120 (IPV4/IPV4: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 121 (IPV4/IPV4: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 122 (IPV4/IPV4/TCP: Outer IPV4 and inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 123 (IPV4/IPV4/TCP: Outer IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 124 (IPV4/IPV4/TCP: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 125 (IPV4/IPV4/TCP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 126 (IPV4/IPV4/UDP: Outer IPV4 and inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 127 (IPV4/IPV4/UDP: Outer IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 128 (IPV4/IPV4/UDP: Outer IPV4 and inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 129 (IPV4/IPV4/UDP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 130 (IPV4/IPV6: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 131 (IPV4/IPV6/TCP: Outer IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 132 (IPV4/IPV6/TCP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 133 (IPV4/IPV6/UDP: Outer IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 134 (IPV4/IPV6/UDP: Outer IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 135 (IPV4/IPV4: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 136 (IPV4/IPV4/TCP: Inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 137 (IPV4/IPV4/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 138 (IPV4/IPV4/TCP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 139 (IPV4/IPV4/UDP: Inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 140 (IPV4/IPV4/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 141 (IPV4/IPV4/UDP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 142 (IPV4/IPV6/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 143 (IPV4/IPV6/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 144 (IPV6/IPV4: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 145 (IPV6/IPV4/TCP: Inner IPV4 and inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 146 (IPV6/IPV4/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 147 (IPV6/IPV4/TCP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 148 (IPV6/IPV4/UDP: Inner IPV4 and inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 149 (IPV6/IPV4/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 150 (IPV6/IPV4/UDP: Inner IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 151 (IPV6/IPV6/TCP: Inner TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 152 (IPV6/IPV6/UDP: Inner UDP checksum error): Total packets: 1"
+  - name: "Flow integrity not ok packets use case"
+    args: ""
+    stages:
+      - name: "Sending not ok packets"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(len=10)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 153-> dropped')
+              - Ether()/IPv6(plen=9999)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 154-> dropped')
+              - Ether()/IP()/TCP(dataofs=2)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 155-> dropped')
+              - Ether()/IP()/UDP(len=4)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 156-> dropped')
+              - Ether()/IPv6()/TCP(dataofs=2)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 157-> dropped')
+              - Ether()/IPv6()/UDP(len=4)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 158-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(len=10)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 159-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6(plen=9999)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 160-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/TCP(dataofs=2)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 161-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/UDP(len=4)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 162-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/TCP(dataofs=2)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 163-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/UDP(len=4)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 164-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(len=10)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 165-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6(plen=9999)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 166-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/TCP(dataofs=2)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 167-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/UDP(len=4)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 168-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/TCP(dataofs=2)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 169-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/UDP(len=4)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 170-> dropped')
+              - Ether()/IP()/IP(len=10)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 171-> dropped')
+              - Ether()/IP()/IPv6(plen=9999)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 172-> dropped')
+              - Ether()/IP()/IP()/TCP(dataofs=2)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 173-> dropped')
+              - Ether()/IP()/IP()/UDP(len=4)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 174-> dropped')
+              - Ether()/IP()/IPv6()/TCP(dataofs=2)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 175-> dropped')
+              - Ether()/IP()/IPv6()/UDP(len=4)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 176-> dropped')
+              - Ether()/IPv6()/IP(len=10)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 177-> dropped')
+              - Ether()/IPv6()/IPv6(plen=9999)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 178-> dropped')
+              - Ether()/IPv6()/IP()/TCP(dataofs=2)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 179-> dropped')
+              - Ether()/IPv6()/IP()/UDP(len=4)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 180-> dropped')
+              - Ether()/IPv6()/IPv6()/TCP(dataofs=2)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 181-> dropped')
+              - Ether()/IPv6()/IPv6()/UDP(len=4)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 182-> dropped')
+          - receiving_port: 1
+            packets:
+              - Ether()/IP(len=10)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 153-> dropped')
+              - Ether()/IPv6(plen=9999)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 154-> dropped')
+              - Ether()/IP()/TCP(dataofs=2)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 155-> dropped')
+              - Ether()/IP()/UDP(len=4)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 156-> dropped')
+              - Ether()/IPv6()/TCP(dataofs=2)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 157-> dropped')
+              - Ether()/IPv6()/UDP(len=4)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 158-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP(len=10)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 159-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6(plen=9999)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 160-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/TCP(dataofs=2)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 161-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IP()/UDP(len=4)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 162-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/TCP(dataofs=2)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 163-> dropped')
+              - Ether()/IP()/UDP()/VXLAN()/Ether()/IPv6()/UDP(len=4)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 164-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP(len=10)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 165-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6(plen=9999)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 166-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/TCP(dataofs=2)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 167-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IP()/UDP(len=4)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 168-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/TCP(dataofs=2)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 169-> dropped')
+              - Ether()/IPv6()/UDP()/VXLAN()/Ether()/IPv6()/UDP(len=4)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 170-> dropped')
+              - Ether()/IP()/IP(len=10)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 171-> dropped')
+              - Ether()/IP()/IPv6(plen=9999)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 172-> dropped')
+              - Ether()/IP()/IP()/TCP(dataofs=2)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 173-> dropped')
+              - Ether()/IP()/IP()/UDP(len=4)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 174-> dropped')
+              - Ether()/IP()/IPv6()/TCP(dataofs=2)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 175-> dropped')
+              - Ether()/IP()/IPv6()/UDP(len=4)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 176-> dropped')
+              - Ether()/IPv6()/IP(len=10)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 177-> dropped')
+              - Ether()/IPv6()/IPv6(plen=9999)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 178-> dropped')
+              - Ether()/IPv6()/IP()/TCP(dataofs=2)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 179-> dropped')
+              - Ether()/IPv6()/IP()/UDP(len=4)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 180-> dropped')
+              - Ether()/IPv6()/IPv6()/TCP(dataofs=2)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 181-> dropped')
+              - Ether()/IPv6()/IPv6()/UDP(len=4)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to RSS table -> goes to csum table -> goes to not ok table -> goes to entry idx 182-> dropped')
+        validation:
+          - type: dump
+            expected_text:
+              - "Port 0 Entry 153 (IPV4: IPV4 len error): Total packets: 1"
+              - "Port 0 Entry 154 (IPV6: IPV6 len error): Total packets: 1"
+              - "Port 0 Entry 155 (IPV4/TCP: TCP len error): Total packets: 1"
+              - "Port 0 Entry 156 (IPV4/UDP: UDP len error): Total packets: 1"
+              - "Port 0 Entry 157 (IPV6/TCP: TCP len error): Total packets: 1"
+              - "Port 0 Entry 158 (IPV6/UDP: UDP len error): Total packets: 1"
+              - "Port 0 Entry 159 (IPV4/UDP/IPV4: Inner IPV4 len error): Total packets: 1"
+              - "Port 0 Entry 160 (IPV4/UDP/IPV6: Inner IPV6 len error): Total packets: 1"
+              - "Port 0 Entry 161 (IPV4/UDP/IPV4/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 0 Entry 162 (IPV4/UDP/IPV4/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 0 Entry 163 (IPV4/UDP/IPV6/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 0 Entry 164 (IPV4/UDP/IPV6/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 0 Entry 165 (IPV6/UDP/IPV4: Inner IPV4 len error): Total packets: 1"
+              - "Port 0 Entry 166 (IPV6/UDP/IPV6: Inner IPV6 len error): Total packets: 1"
+              - "Port 0 Entry 167 (IPV6/UDP/IPV4/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 0 Entry 168 (IPV6/UDP/IPV4/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 0 Entry 169 (IPV6/UDP/IPV6/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 0 Entry 170 (IPV6/UDP/IPV6/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 0 Entry 171 (IPV4/IPV4: Inner IPV4 len error): Total packets: 1"
+              - "Port 0 Entry 172 (IPV4/IPV6: Inner IPV6 len error): Total packets: 1"
+              - "Port 0 Entry 173 (IPV4/IPV4/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 0 Entry 174 (IPV4/IPV4/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 0 Entry 175 (IPV4/IPV6/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 0 Entry 176 (IPV4/IPV6/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 0 Entry 177 (IPV6/IPV4: Inner IPV4 len error): Total packets: 1"
+              - "Port 0 Entry 178 (IPV6/IPV6: Inner IPV6 len error): Total packets: 1"
+              - "Port 0 Entry 179 (IPV6/IPV4/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 0 Entry 180 (IPV6/IPV4/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 0 Entry 181 (IPV6/IPV6/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 0 Entry 182 (IPV6/IPV6/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 1 Entry 153 (IPV4: IPV4 len error): Total packets: 1"
+              - "Port 1 Entry 154 (IPV6: IPV6 len error): Total packets: 1"
+              - "Port 1 Entry 155 (IPV4/TCP: TCP len error): Total packets: 1"
+              - "Port 1 Entry 156 (IPV4/UDP: UDP len error): Total packets: 1"
+              - "Port 1 Entry 157 (IPV6/TCP: TCP len error): Total packets: 1"
+              - "Port 1 Entry 158 (IPV6/UDP: UDP len error): Total packets: 1"
+              - "Port 1 Entry 159 (IPV4/UDP/IPV4: Inner IPV4 len error): Total packets: 1"
+              - "Port 1 Entry 160 (IPV4/UDP/IPV6: Inner IPV6 len error): Total packets: 1"
+              - "Port 1 Entry 161 (IPV4/UDP/IPV4/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 1 Entry 162 (IPV4/UDP/IPV4/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 1 Entry 163 (IPV4/UDP/IPV6/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 1 Entry 164 (IPV4/UDP/IPV6/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 1 Entry 165 (IPV6/UDP/IPV4: Inner IPV4 len error): Total packets: 1"
+              - "Port 1 Entry 166 (IPV6/UDP/IPV6: Inner IPV6 len error): Total packets: 1"
+              - "Port 1 Entry 167 (IPV6/UDP/IPV4/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 1 Entry 168 (IPV6/UDP/IPV4/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 1 Entry 169 (IPV6/UDP/IPV6/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 1 Entry 170 (IPV6/UDP/IPV6/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 1 Entry 171 (IPV4/IPV4: Inner IPV4 len error): Total packets: 1"
+              - "Port 1 Entry 172 (IPV4/IPV6: Inner IPV6 len error): Total packets: 1"
+              - "Port 1 Entry 173 (IPV4/IPV4/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 1 Entry 174 (IPV4/IPV4/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 1 Entry 175 (IPV4/IPV6/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 1 Entry 176 (IPV4/IPV6/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 1 Entry 177 (IPV6/IPV4: Inner IPV4 len error): Total packets: 1"
+              - "Port 1 Entry 178 (IPV6/IPV6: Inner IPV6 len error): Total packets: 1"
+              - "Port 1 Entry 179 (IPV6/IPV4/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 1 Entry 180 (IPV6/IPV4/UDP: Inner UDP len error): Total packets: 1"
+              - "Port 1 Entry 181 (IPV6/IPV6/TCP: Inner TCP len error): Total packets: 1"
+              - "Port 1 Entry 182 (IPV6/IPV6/UDP: Inner UDP len error): Total packets: 1"
+  - name: "Flow integrity invalid packets with csum 0 use case"
+    args: ""
+    stages:
+      # This test case demonstrates TCP and IPv4 packets with different checksum configurations:
+      # - chksum=0x0: INVALID checksum value (0 is not a valid checksum for TCP and IPv4)
+      # - chksum=0x7cd4/0xf719: VALID hard-coded checksum values
+      # - No chksum parameter: VALID default checksum calculation (correct value)
+      - name: "Sending invalid TCP/IPV4 packets with csum 0"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(chksum=0x0)/Raw(load=b'Invalid IPV4 checksum')
+              - Ether()/IP(chksum=0x7cd4)/Raw(load=b'Valid IPV4 checksum')
+              - Ether()/IP()/Raw(load=b'Valid IPV4 checksum')
+              - Ether()/IP()/TCP(chksum=0x0)/Raw(load=b'Invalid IPV4/TCP with a TCP checksum error')
+              - Ether()/IP()/TCP(chksum=0xf719)/Raw(load=b'Valid IPV4/TCP packet')
+              - Ether()/IP()/TCP()/Raw(load=b'Valid IPV4/TCP packet')
+          - receiving_port: 1
+            packets:
+              - Ether()/IP(chksum=0x0)/Raw(load=b'Invalid IPV4 checksum')
+              - Ether()/IP(chksum=0x7cd4)/Raw(load=b'Valid IPV4 checksum')
+              - Ether()/IP()/Raw(load=b'Valid IPV4 checksum')
+              - Ether()/IP()/TCP(chksum=0x0)/Raw(load=b'Invalid IPV4/TCP with a TCP checksum error')
+              - Ether()/IP()/TCP(chksum=0xf719)/Raw(load=b'Valid IPV4/TCP packet')
+              - Ether()/IP()/TCP()/Raw(load=b'Valid IPV4/TCP packet')
+        validation:
+          - type: dump
+            expected_text:
+              - "Port 0 Entry 1 (VALID IPV4 TCP): Total packets: 2"
+              - "Port 0 Entry 3 (VALID IPV4): Total packets: 2"
+              - "Port 0 Entry 33 (IPV4: IPV4 checksum error): Total packets: 1"
+              - "Port 0 Entry 38 (IPV4/TCP: TCP checksum error): Total packets: 1"
+              - "Port 1 Entry 1 (VALID IPV4 TCP): Total packets: 2"
+              - "Port 1 Entry 3 (VALID IPV4): Total packets: 2"
+              - "Port 1 Entry 33 (IPV4: IPV4 checksum error): Total packets: 1"
+              - "Port 1 Entry 38 (IPV4/TCP: TCP checksum error): Total packets: 1"
+  - name: "Flow integrity valid packets with checksum 0 use case"
+    args: ""
+    stages:
+      - name: "Sending valid packets with checksum 0"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              # First 2 packets represent valid use cases: checksum 0 (valid for UDP) or correct checksum
+              # (0x87cf, hard-coded for this specific packet) - these are forwarded
+              # Third packet has invalid checksum value (0x1234) - this is dropped
+              - Ether()/IPv6()/IPv6()/UDP(chksum=0x0)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 1')
+              - Ether()/IPv6()/IPv6()/UDP(chksum=0x87cf)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 1')
+              - Ether()/IPv6()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 0 -> goes to invalid checksum table -> goes to entry idx 152 -> dropped')
+          - receiving_port: 1
+            packets:
+              - Ether()/IPv6()/IPv6()/UDP(chksum=0x0)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 0')
+              - Ether()/IPv6()/IPv6()/UDP(chksum=0x87cf)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 0')
+              - Ether()/IPv6()/IPv6()/UDP(chksum=0x1234)/Raw(load=b'Received on port 1 -> goes to invalid checksum table -> goes to entry idx 152 -> dropped')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 0
+                packets:
+                  - Ether()/IPv6()/IPv6()/UDP(chksum=0x0)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 0')
+                  - Ether()/IPv6()/IPv6()/UDP(chksum=0x87cf)/Raw(load=b'Received on port 1 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 0')
+              - forwarding_port: 1
+                packets:
+                  - Ether()/IPv6()/IPv6()/UDP(chksum=0x0)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 1')
+                  - Ether()/IPv6()/IPv6()/UDP(chksum=0x87cf)/Raw(load=b'Received on port 0 -> goes to valid table -> goes to entry idx 29 -> forwarded to port 1')
+          - type: dump
+            expected_text:
+              - "Port 0 Entry 29 (VALID IPV6/VALID IPV6 UDP): Total packets: 2"
+              - "Port 0 Entry 152 (IPV6/IPV6/UDP: Inner UDP checksum error): Total packets: 1"
+              - "Port 1 Entry 29 (VALID IPV6/VALID IPV6 UDP): Total packets: 2"
+              - "Port 1 Entry 152 (IPV6/IPV6/UDP: Inner UDP checksum error): Total packets: 1"

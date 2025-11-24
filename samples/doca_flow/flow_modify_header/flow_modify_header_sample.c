@@ -23,6 +23,7 @@
  *
  */
 
+#include <endian.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -129,12 +130,12 @@ static doca_error_t add_vxlan_pipe_entry(struct doca_flow_pipe *pipe, struct ent
 	match.tun.vxlan_type = DOCA_FLOW_TUN_EXT_VXLAN_STANDARD;
 	match.tun.vxlan_tun_id = DOCA_HTOBE32(100);
 
-	actions.action_idx = 0;
 	actions.tun.vxlan_tun_rsvd1 = 0x12;
 
 	result = doca_flow_pipe_add_entry(0,
 					  pipe,
 					  &match,
+					  0,
 					  &actions,
 					  NULL,
 					  NULL,
@@ -243,13 +244,13 @@ static doca_error_t add_vxlan_gpe_pipe_entry(struct doca_flow_pipe *pipe, struct
 	match.tun.vxlan_type = DOCA_FLOW_TUN_EXT_VXLAN_GPE;
 	match.tun.vxlan_tun_id = DOCA_HTOBE32(100);
 
-	actions.action_idx = 0;
 	actions.tun.vxlan_tun_rsvd1 = 0x34;
 	actions.tun.vxlan_type = DOCA_FLOW_TUN_EXT_VXLAN_GPE;
 
 	result = doca_flow_pipe_add_entry(0,
 					  pipe,
 					  &match,
+					  0,
 					  &actions,
 					  NULL,
 					  NULL,
@@ -367,12 +368,11 @@ static doca_error_t add_modify_header_pipe_entry(struct doca_flow_pipe *pipe, st
 	memset(&actions, 0, sizeof(actions));
 
 	match.outer.ip4.dst_ip = dst_ip_addr;
-	actions.action_idx = 0;
 
 	/* modify source mac address */
 	SET_MAC_ADDR(actions.outer.eth.src_mac, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -405,7 +405,7 @@ doca_error_t flow_modify_header(int nb_queues)
 	}
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(TOTAL_ENTRIES));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size);
+	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

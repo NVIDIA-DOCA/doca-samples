@@ -201,8 +201,8 @@ static doca_error_t telemetry_dpa_print_perf_event_list(uint32_t perf_event_samp
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	DOCA_LOG_DBG("Number of perf event samples_num: %u", perf_event_samples_num);
-	DOCA_LOG_DBG("Extracted perf event counter list:");
+	DOCA_LOG_INFO("Number of perf event samples_num: %u", perf_event_samples_num);
+	DOCA_LOG_INFO("Extracted perf event counter list:");
 	for (uint32_t idx = 0; idx < perf_event_samples_num; idx++) {
 		if (event_info_list[idx].instructions == 0)
 			continue;

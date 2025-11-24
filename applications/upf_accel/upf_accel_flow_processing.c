@@ -764,7 +764,7 @@ static doca_error_t upf_accel_pipe_8t_ipv4_accel(struct upf_accel_ctx *ctx,
 						 struct upf_accel_entry_ctx *entry_ctx,
 						 struct doca_flow_pipe_entry **entry)
 {
-	struct doca_flow_actions actions = {.action_idx = 0};
+	struct doca_flow_actions actions;
 	struct doca_flow_match hw_match = {0};
 	struct doca_flow_pipe *pipe;
 	doca_error_t res;
@@ -799,6 +799,7 @@ static doca_error_t upf_accel_pipe_8t_ipv4_accel(struct upf_accel_ctx *ctx,
 	res = doca_flow_pipe_add_entry(queue_id,
 				       pipe,
 				       &hw_match,
+				       0,
 				       &actions,
 				       NULL,
 				       NULL,
@@ -835,7 +836,7 @@ static doca_error_t upf_accel_pipe_8t_ipv6_accel(struct upf_accel_ctx *ctx,
 						 struct upf_accel_entry_ctx *entry_ctx,
 						 struct doca_flow_pipe_entry **entry)
 {
-	struct doca_flow_actions actions = {.action_idx = 0};
+	struct doca_flow_actions actions;
 	struct doca_flow_match hw_match = {0};
 	struct doca_flow_pipe *pipe;
 	doca_error_t res;
@@ -866,6 +867,7 @@ static doca_error_t upf_accel_pipe_8t_ipv6_accel(struct upf_accel_ctx *ctx,
 	res = doca_flow_pipe_add_entry(queue_id,
 				       pipe,
 				       &hw_match,
+				       0,
 				       &actions,
 				       NULL,
 				       NULL,
@@ -900,7 +902,7 @@ static doca_error_t upf_accel_pipe_8t_ipv6_ext_accel(struct upf_accel_ctx *ctx,
 						     struct upf_accel_entry_ctx *entry_ctx,
 						     struct doca_flow_pipe_entry **entry)
 {
-	struct doca_flow_actions actions = {.action_idx = 0};
+	struct doca_flow_actions actions;
 	struct doca_flow_match hw_match = {0};
 	struct doca_flow_pipe *pipe;
 	doca_error_t res;
@@ -919,6 +921,7 @@ static doca_error_t upf_accel_pipe_8t_ipv6_ext_accel(struct upf_accel_ctx *ctx,
 	res = doca_flow_pipe_add_entry(queue_id,
 				       pipe,
 				       &hw_match,
+				       0,
 				       &actions,
 				       NULL,
 				       NULL,
@@ -953,7 +956,7 @@ static doca_error_t upf_accel_pipe_5t_ipv4_accel(struct upf_accel_ctx *ctx,
 						 struct upf_accel_entry_ctx *entry_ctx,
 						 struct doca_flow_pipe_entry **entry)
 {
-	struct doca_flow_actions actions = {.action_idx = 0};
+	struct doca_flow_actions actions;
 	struct doca_flow_match hw_match = {0};
 	struct doca_flow_pipe *pipe;
 	doca_error_t res;
@@ -980,6 +983,7 @@ static doca_error_t upf_accel_pipe_5t_ipv4_accel(struct upf_accel_ctx *ctx,
 	res = doca_flow_pipe_add_entry(queue_id,
 				       pipe,
 				       &hw_match,
+				       0,
 				       &actions,
 				       NULL,
 				       NULL,
@@ -1016,7 +1020,7 @@ static doca_error_t upf_accel_pipe_5t_ipv6_accel(struct upf_accel_ctx *ctx,
 						 struct upf_accel_entry_ctx *entry_ctx,
 						 struct doca_flow_pipe_entry **entry)
 {
-	struct doca_flow_actions actions = {.action_idx = 0};
+	struct doca_flow_actions actions;
 	struct doca_flow_match hw_match = {0};
 	struct doca_flow_pipe *pipe;
 	doca_error_t res;
@@ -1043,6 +1047,7 @@ static doca_error_t upf_accel_pipe_5t_ipv6_accel(struct upf_accel_ctx *ctx,
 	res = doca_flow_pipe_add_entry(queue_id,
 				       pipe,
 				       &hw_match,
+				       0,
 				       &actions,
 				       NULL,
 				       NULL,
@@ -1077,7 +1082,7 @@ static doca_error_t upf_accel_pipe_5t_ipv6_ext_accel(struct upf_accel_ctx *ctx,
 						     struct upf_accel_entry_ctx *entry_ctx,
 						     struct doca_flow_pipe_entry **entry)
 {
-	struct doca_flow_actions actions = {.action_idx = 0};
+	struct doca_flow_actions actions;
 	struct doca_flow_match hw_match = {0};
 	struct doca_flow_pipe *pipe;
 	doca_error_t res;
@@ -1089,6 +1094,7 @@ static doca_error_t upf_accel_pipe_5t_ipv6_ext_accel(struct upf_accel_ctx *ctx,
 	res = doca_flow_pipe_add_entry(queue_id,
 				       pipe,
 				       &hw_match,
+				       0,
 				       &actions,
 				       NULL,
 				       NULL,
@@ -1778,10 +1784,12 @@ static doca_error_t handle_exceeds_quotas(struct upf_accel_fp_data *fp_data)
 		return DOCA_SUCCESS;
 
 	for (port_id = 0; port_id < fp_data->ctx->num_ports; ++port_id) {
-		result = doca_flow_shared_resources_query(DOCA_FLOW_SHARED_RESOURCE_COUNTER,
-							  shared_counter_ids->ids[port_id],
-							  query_results_array,
-							  cntrs_num);
+		result = doca_flow_port_shared_resources_query(
+			fp_data->ctx->ports[port_id],
+			DOCA_FLOW_SHARED_RESOURCE_COUNTER,
+			&fp_data->ctx->shared_counter_id_to_res[port_id][shared_counter_ids->ids[port_id][0]],
+			query_results_array,
+			cntrs_num);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entries: %s", doca_error_get_descr(result));
 			return result;

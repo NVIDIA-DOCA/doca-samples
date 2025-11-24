@@ -115,6 +115,7 @@ static void pipe_create(struct doca_flow_pipe_cfg *cfg,
 static void pipe_add_entry(uint16_t pipe_queue,
 			   uint64_t pipe_id,
 			   struct doca_flow_match *match,
+			   uint8_t action_idx,
 			   struct doca_flow_actions *actions,
 			   struct doca_flow_monitor *monitor,
 			   struct doca_flow_fwd *fwd,
@@ -152,7 +153,7 @@ static void pipe_add_entry(uint16_t pipe_queue,
 		hws_flag = DOCA_FLOW_NO_WAIT;
 	}
 
-	result = doca_flow_pipe_add_entry(0, pipe, match, actions, monitor, fwd, hws_flag, &status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, match, action_idx, actions, monitor, fwd, hws_flag, &status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Entry creation failed: %s", doca_error_get_descr(result));
 		return;
@@ -361,7 +362,7 @@ static void register_actions_on_flow_parser(void)
 doca_error_t switch_init(struct application_dpdk_config *app_dpdk_config, struct flow_switch_ctx *ctx)
 {
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
-	struct flow_resources resource = {0};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	int nr_switch_manager_ports = 1;
 	int nr_entries = 10000;
 	const char *start_str;
@@ -393,7 +394,8 @@ doca_error_t switch_init(struct application_dpdk_config *app_dpdk_config, struct
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

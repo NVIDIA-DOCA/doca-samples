@@ -364,7 +364,7 @@ doca_error_t dpa_ping_pong(struct dpa_resources *resources)
 	ping_receive_mmap_obj.permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
 					    DOCA_ACCESS_FLAG_RDMA_READ;
 	ping_receive_mmap_obj.memrange_addr = (void *)ping_receive_buf_dev_ptr;
-	ping_receive_mmap_obj.memrange_len = sizeof(uint64_t);
+	ping_receive_mmap_obj.memrange_len = (uint64_t)sizeof(uint64_t);
 	doca_err = doca_mmap_obj_init(&ping_receive_mmap_obj);
 	if (doca_err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function doca_mmap_obj_init failed (%s)", doca_error_get_descr(doca_err));
@@ -389,7 +389,7 @@ doca_error_t dpa_ping_pong(struct dpa_resources *resources)
 	pong_receive_mmap_obj.permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
 					    DOCA_ACCESS_FLAG_RDMA_READ;
 	pong_receive_mmap_obj.memrange_addr = (void *)pong_receive_buf_dev_ptr;
-	pong_receive_mmap_obj.memrange_len = sizeof(uint64_t);
+	pong_receive_mmap_obj.memrange_len = (uint64_t)sizeof(uint64_t);
 	doca_err = doca_mmap_obj_init(&pong_receive_mmap_obj);
 	if (doca_err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function doca_mmap_obj_init failed (%s)", doca_error_get_descr(doca_err));
@@ -414,7 +414,7 @@ doca_error_t dpa_ping_pong(struct dpa_resources *resources)
 	ping_send_mmap_obj.permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
 					 DOCA_ACCESS_FLAG_RDMA_READ;
 	ping_send_mmap_obj.memrange_addr = (void *)ping_send_buf_dev_ptr;
-	ping_send_mmap_obj.memrange_len = sizeof(uint64_t);
+	ping_send_mmap_obj.memrange_len = (uint64_t)sizeof(uint64_t);
 	doca_err = doca_mmap_obj_init(&ping_send_mmap_obj);
 	if (doca_err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function doca_mmap_obj_init failed (%s)", doca_error_get_descr(doca_err));
@@ -439,7 +439,7 @@ doca_error_t dpa_ping_pong(struct dpa_resources *resources)
 	pong_send_mmap_obj.permissions = DOCA_ACCESS_FLAG_LOCAL_READ_WRITE | DOCA_ACCESS_FLAG_RDMA_WRITE |
 					 DOCA_ACCESS_FLAG_RDMA_READ;
 	pong_send_mmap_obj.memrange_addr = (void *)pong_send_buf_dev_ptr;
-	pong_send_mmap_obj.memrange_len = sizeof(uint64_t);
+	pong_send_mmap_obj.memrange_len = (uint64_t)sizeof(uint64_t);
 	doca_err = doca_mmap_obj_init(&pong_send_mmap_obj);
 	if (doca_err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function doca_mmap_obj_init failed (%s)", doca_error_get_descr(doca_err));

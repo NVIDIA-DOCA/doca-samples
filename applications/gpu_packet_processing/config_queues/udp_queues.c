@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -25,11 +25,23 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <rte_ethdev.h>
 
 #include "common.h"
 
 DOCA_LOG_REGISTER(GPU_PACKET_PROCESSING_UDP);
+
+/*
+ * Retrieve host page size
+ *
+ * @return: host page size
+ */
+static size_t get_host_page_size(void)
+{
+	long ret = sysconf(_SC_PAGESIZE);
+	if (ret == -1)
+		return 4096; // 4KB, default Linux page size
+	return (size_t)ret;
+}
 
 doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 			       struct doca_flow_port *df_port,
@@ -100,9 +112,11 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 			return DOCA_ERROR_BAD_STATE;
 		}
 
+		ALIGN_SIZE(cyclic_buffer_size, get_host_page_size());
+
 		result = doca_gpu_mem_alloc(udp_queues->gpu_dev,
 					    cyclic_buffer_size,
-					    GPU_PAGE_SIZE,
+					    get_host_page_size(),
 					    DOCA_GPU_MEM_TYPE_GPU,
 					    &udp_queues->gpu_pkt_addr[idx],
 					    NULL);

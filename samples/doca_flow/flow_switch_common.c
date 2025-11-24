@@ -87,7 +87,8 @@ doca_error_t init_doca_flow_switch_ports(struct flow_devs_manager devs_manager[]
 					 int nb_managers,
 					 struct doca_flow_port *ports[],
 					 int nb_ports,
-					 uint32_t actions_mem_size[])
+					 uint32_t actions_mem_size[],
+					 struct flow_resources *resources)
 {
 	struct doca_dev *dev_arr[FLOW_COMMON_DEV_MAX];
 	struct doca_dev_rep *dev_rep_arr[FLOW_COMMON_REPS_MAX];
@@ -115,13 +116,16 @@ doca_error_t init_doca_flow_switch_ports(struct flow_devs_manager devs_manager[]
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	return init_doca_flow_ports_with_op_state(nb_ports,
-						  ports,
-						  false /* is_port_fwd */,
-						  dev_arr,
-						  dev_rep_arr,
-						  NULL,
-						  actions_mem_size);
+	return init_doca_flow_ports_with_custom_config(nb_ports,
+						       ports,
+						       false /* is_port_fwd */,
+						       dev_arr,
+						       dev_rep_arr,
+						       NULL /* port_cb */,
+						       NULL /* port_rep_cb */,
+						       NULL /* config_cb_ctx */,
+						       actions_mem_size,
+						       resources);
 }
 
 uint8_t get_dpdk_nb_ports(void)

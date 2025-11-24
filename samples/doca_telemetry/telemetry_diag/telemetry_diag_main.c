@@ -52,14 +52,25 @@ DOCA_LOG_REGISTER(TELEMETRY_DIAG::MAIN);
 #define DEFAULT_FORCE_OWNERSHIP 0
 #define DEFAULT_DATA_IDS_PATH "/0"
 #define DEFAULT_EXAMPLE_JSON_PATH "/0"
+#define DEFAULT_SYNC_MODE DOCA_TELEMETRY_DIAG_SYNC_MODE_NO_SYNC
+#define DEFAULT_TIMESTAMP_SOURCE DOCA_TELEMETRY_DIAG_TIMESTAMP_SOURCE_RTC
 
 #define JSON_NAME_KEY "name"
 #define JSON_DATA_ID_KEY "data_id"
 
+/**
+ * Data IDs only supported in DOCA_TELEMETRY_DIAG_SYNC_MODE_NO_SYNC
+ */
 #define DATA_ID_PORT_0_RX_BYTES 0x1020000100000000
 #define DATA_ID_PORT_0_TX_BYTES 0x1140000100000000
 #define DATA_ID_PORT_0_RX_PACKETS 0x1020000300000000
 #define DATA_ID_PORT_0_TX_PACKETS 0x1140000300000000
+/**
+ * Data IDs supported in both DOCA_TELEMETRY_DIAG_SYNC_MODE_NO_SYNC and DOCA_TELEMETRY_DIAG_SYNC_MODE_SYNC_START
+ */
+#define DATA_ID_GLOBAL_ICMC_REQUEST 0x1180000100000000
+#define DATA_ID_GLOBAL_ICMC_HIT 0x1180000200000000
+#define DATA_ID_GLOBAL_ICMC_MISS 0x1180000300000000
 
 /*
  * ARGP Callback - Handle PCI device address parameter
@@ -244,6 +255,39 @@ static doca_error_t output_format_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - Handle sync_mode parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t sync_mode_callback(void *param, void *config)
+{
+	struct telemetry_diag_sample_cfg *telemetry_diag_sample_cfg = (struct telemetry_diag_sample_cfg *)config;
+	enum doca_telemetry_diag_sync_mode sync_mode = *(enum doca_telemetry_diag_sync_mode *)param;
+
+	telemetry_diag_sample_cfg->sync_mode = sync_mode;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle timestamp_source parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t timestamp_source_callback(void *param, void *config)
+{
+	struct telemetry_diag_sample_cfg *telemetry_diag_sample_cfg = (struct telemetry_diag_sample_cfg *)config;
+	enum doca_telemetry_diag_timestamp_source timestamp_source =
+		*(enum doca_telemetry_diag_timestamp_source *)param;
+
+	telemetry_diag_sample_cfg->timestamp_source = timestamp_source;
+	return DOCA_SUCCESS;
+}
+
+/*
  * ARGP Callback - Handle force_ownership parameter
  *
  * @param [in]: Input parameter
@@ -310,7 +354,8 @@ static doca_error_t register_telemetry_diag_params(void)
 	doca_error_t result;
 	struct doca_argp_param *pci_param, *data_ids_param, *run_time_param, *sample_period_param,
 		*log_max_num_samples_param, *max_num_samples_per_read_param, *sample_mode_param, *output_format_param,
-		*output_param, *force_ownership_param, *generate_example_json, *reconfig_sample_period_param;
+		*output_param, *force_ownership_param, *generate_example_json, *reconfig_sample_period_param,
+		*sync_mode_param, *timestamp_source_param;
 
 	result = doca_argp_param_create(&pci_param);
 	if (result != DOCA_SUCCESS) {
@@ -447,10 +492,45 @@ static doca_error_t register_telemetry_diag_params(void)
 	}
 	doca_argp_param_set_short_name(output_format_param, "of");
 	doca_argp_param_set_long_name(output_format_param, "output-format");
-	doca_argp_param_set_description(output_format_param, "output format");
+	doca_argp_param_set_description(
+		output_format_param,
+		"output format (0 - output_format_0, 1 - output_format_1, 2 - output_format_2)");
 	doca_argp_param_set_callback(output_format_param, output_format_callback);
 	doca_argp_param_set_type(output_format_param, DOCA_ARGP_TYPE_INT);
 	result = doca_argp_register_param(output_format_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_name(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&sync_mode_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(sync_mode_param, "sym");
+	doca_argp_param_set_long_name(sync_mode_param, "sync-mode");
+	doca_argp_param_set_description(sync_mode_param, "sync mode (0 - sync_mode_no_sync, 1 - sync_mode_sync_start)");
+	doca_argp_param_set_callback(sync_mode_param, sync_mode_callback);
+	doca_argp_param_set_type(sync_mode_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(sync_mode_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_name(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&timestamp_source_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(timestamp_source_param, "tss");
+	doca_argp_param_set_long_name(timestamp_source_param, "timestamp-source");
+	doca_argp_param_set_description(timestamp_source_param,
+					"timestamp source (0 - timestamp_source_frc, 1 - timestamp_source_rtc)");
+	doca_argp_param_set_callback(timestamp_source_param, timestamp_source_callback);
+	doca_argp_param_set_type(timestamp_source_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(timestamp_source_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_name(result));
 		return result;
@@ -570,7 +650,11 @@ static doca_error_t parse_json_data_ids(struct telemetry_diag_sample_cfg *cfg,
  */
 static doca_error_t set_default_data_ids(struct telemetry_diag_sample_cfg *cfg)
 {
-	cfg->num_data_ids = 4;
+	if (cfg->sync_mode == DOCA_TELEMETRY_DIAG_SYNC_MODE_SYNC_START) {
+		cfg->num_data_ids = 3;
+	} else {
+		cfg->num_data_ids = 4;
+	}
 
 	cfg->data_ids_struct = calloc(cfg->num_data_ids, sizeof(struct data_id_entry));
 	if (!cfg->data_ids_struct) {
@@ -578,18 +662,28 @@ static doca_error_t set_default_data_ids(struct telemetry_diag_sample_cfg *cfg)
 		return DOCA_ERROR_NO_MEMORY;
 	}
 
-	cfg->data_ids_struct[0].data_id = DATA_ID_PORT_0_RX_BYTES;
-	strncpy(cfg->data_ids_struct[0].name, "port_0_rx_bytes", MAX_NAME_SIZE - 1);
+	if (cfg->sync_mode == DOCA_TELEMETRY_DIAG_SYNC_MODE_SYNC_START) {
+		cfg->data_ids_struct[0].data_id = DATA_ID_GLOBAL_ICMC_REQUEST;
+		strncpy(cfg->data_ids_struct[0].name, "global_icmc_request", MAX_NAME_SIZE - 1);
 
-	cfg->data_ids_struct[1].data_id = DATA_ID_PORT_0_TX_BYTES;
-	strncpy(cfg->data_ids_struct[1].name, "port_0_tx_bytes", MAX_NAME_SIZE - 1);
+		cfg->data_ids_struct[1].data_id = DATA_ID_GLOBAL_ICMC_HIT;
+		strncpy(cfg->data_ids_struct[1].name, "global_icmc_hit", MAX_NAME_SIZE - 1);
 
-	cfg->data_ids_struct[2].data_id = DATA_ID_PORT_0_RX_PACKETS;
-	strncpy(cfg->data_ids_struct[2].name, "port_0_rx_packets", MAX_NAME_SIZE - 1);
+		cfg->data_ids_struct[2].data_id = DATA_ID_GLOBAL_ICMC_MISS;
+		strncpy(cfg->data_ids_struct[2].name, "global_icmc_miss", MAX_NAME_SIZE - 1);
+	} else {
+		cfg->data_ids_struct[0].data_id = DATA_ID_PORT_0_RX_BYTES;
+		strncpy(cfg->data_ids_struct[0].name, "port_0_rx_bytes", MAX_NAME_SIZE - 1);
 
-	cfg->data_ids_struct[3].data_id = DATA_ID_PORT_0_TX_PACKETS;
-	strncpy(cfg->data_ids_struct[3].name, "port_0_tx_packets", MAX_NAME_SIZE - 1);
+		cfg->data_ids_struct[1].data_id = DATA_ID_PORT_0_TX_BYTES;
+		strncpy(cfg->data_ids_struct[1].name, "port_0_tx_bytes", MAX_NAME_SIZE - 1);
 
+		cfg->data_ids_struct[2].data_id = DATA_ID_PORT_0_RX_PACKETS;
+		strncpy(cfg->data_ids_struct[2].name, "port_0_rx_packets", MAX_NAME_SIZE - 1);
+
+		cfg->data_ids_struct[3].data_id = DATA_ID_PORT_0_TX_PACKETS;
+		strncpy(cfg->data_ids_struct[3].name, "port_0_tx_packets", MAX_NAME_SIZE - 1);
+	}
 	return DOCA_SUCCESS;
 }
 
@@ -861,6 +955,8 @@ static void set_default_params(struct telemetry_diag_sample_cfg *cfg)
 	cfg->force_ownership = DEFAULT_FORCE_OWNERSHIP;
 	cfg->sample_mode = DEFAULT_SAMPLE_MODE;
 	cfg->output_format = DEFAULT_OUTPUT_FORMAT;
+	cfg->sync_mode = DEFAULT_SYNC_MODE;
+	cfg->timestamp_source = DEFAULT_TIMESTAMP_SOURCE;
 	cfg->pci_set = false;
 	cfg->import_json = false;
 	cfg->export_json = false;

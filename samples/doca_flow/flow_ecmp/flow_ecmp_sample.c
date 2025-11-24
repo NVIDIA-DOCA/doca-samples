@@ -117,14 +117,15 @@ static doca_error_t create_root_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, DOCA_FLOW_WAIT_FOR_BATCH, status, &entry);
+	result =
+		doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, DOCA_FLOW_WAIT_FOR_BATCH, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add UDP entry into root pipe: %s", doca_error_get_descr(result));
 		return result;
 	}
 
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_TCP;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add TCP entry into root pipe: %s", doca_error_get_descr(result));
 		return result;
@@ -246,7 +247,7 @@ static doca_error_t add_hash_pipe_entries(struct doca_flow_pipe *pipe,
 		if (i == nb_ecmp_ports - 1)
 			flags = DOCA_FLOW_NO_WAIT;
 
-		result = doca_flow_pipe_hash_add_entry(0, pipe, i, NULL, NULL, &fwd, flags, status, &entries[i]);
+		result = doca_flow_pipe_hash_add_entry(0, pipe, i, 0, NULL, NULL, &fwd, flags, status, &entries[i]);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add hash pipe entry index %u: %s", i, doca_error_get_descr(result));
 			return result;
@@ -310,19 +311,54 @@ static doca_error_t show_ecmp_results(uint32_t counter_id, struct doca_flow_pipe
 }
 
 /*
- * Run flow_ecmp sample.
+ * Run flow_ecmp sample
  *
  * @nb_queues [in]: number of queues the sample will use
- * @nb_ports [in]: number of ports the sample will use
- * @ctx [in]: flow switch context the sample will use
+ * @nb_ports [in]: number of ports
+ * @ctx [in]: flow switch context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
+/* Context structure for statistics printing */
+struct ecmp_stats_context {
+	uint32_t shared_counter_id;
+	struct doca_flow_pipe_entry **entries;
+	int nb_ecmp_ports;
+};
+
+/*
+ * Print ECMP statistics
+ *
+ * @shared_counter_id [in]: shared counter ID
+ * @entries [in]: array of flow entries
+ * @nb_ecmp_ports [in]: number of ECMP ports
+ */
+static void print_ecmp_stats(uint32_t shared_counter_id, struct doca_flow_pipe_entry *entries[], int nb_ecmp_ports)
+{
+	doca_error_t result;
+	result = show_ecmp_results(shared_counter_id, entries, nb_ecmp_ports);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to show results: %s", doca_error_get_descr(result));
+	}
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: ecmp_stats_context structure
+ */
+static void print_ecmp_stats_wrapper(void *context)
+{
+	struct ecmp_stats_context *ctx = (struct ecmp_stats_context *)context;
+	print_ecmp_stats(ctx->shared_counter_id, ctx->entries, ctx->nb_ecmp_ports);
+}
+
 doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 {
 	struct doca_flow_shared_resource_cfg cfg = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct flow_resources resource = {0};
-	uint32_t shared_counter_id = 0;
+	uint32_t shared_counter_id = UINT32_MAX; /* Invalid counter id */
 	struct doca_flow_port *switch_port;
 	struct doca_flow_port *ports[MAX_TOTAL_PORTS];
 	struct doca_flow_pipe *hash_pipe;
@@ -333,8 +369,8 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 	struct entries_status status;
 	doca_error_t result;
 
-	nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_COUNTER] = 1;
-	resource.nr_counters = nb_entries;
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_counters = nb_entries + 1;
 
 	if (nb_ports > MAX_TOTAL_PORTS) {
 		DOCA_LOG_ERR("Number provided ports %d is too big (maximal supported is %d)",
@@ -354,7 +390,8 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -374,6 +411,27 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 	result = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_COUNTER, &shared_counter_id, 1, switch_port);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to bind shared counter to port: %s", doca_error_get_descr(result));
+		stop_doca_flow_ports(nb_ports, ports);
+		doca_flow_destroy();
+		return result;
+	}
+
+	result = doca_flow_port_shared_resource_get(switch_port, DOCA_FLOW_SHARED_RESOURCE_COUNTER, &shared_counter_id);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get shared counter id from port");
+		stop_doca_flow_ports(nb_ports, ports);
+		doca_flow_destroy();
+		return result;
+	}
+
+	/* config shared counter to port */
+	result = doca_flow_port_shared_resource_set_cfg(switch_port,
+							DOCA_FLOW_SHARED_RESOURCE_COUNTER,
+							shared_counter_id,
+							&cfg);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to configure shared counter to port: %s", doca_error_get_descr(result));
+		;
 		stop_doca_flow_ports(nb_ports, ports);
 		doca_flow_destroy();
 		return result;
@@ -420,16 +478,12 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	DOCA_LOG_INFO("Wait %u seconds for packets to arrive", WAITING_TIME);
-	sleep(WAITING_TIME);
+	/* Setup statistics context and wait for packets */
+	struct ecmp_stats_context stats_ctx = {.shared_counter_id = shared_counter_id,
+					       .entries = entries,
+					       .nb_ecmp_ports = nb_ecmp_ports};
 
-	result = show_ecmp_results(shared_counter_id, entries, nb_ecmp_ports);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to show results: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
-	}
+	flow_wait_for_packets(WAITING_TIME, print_ecmp_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

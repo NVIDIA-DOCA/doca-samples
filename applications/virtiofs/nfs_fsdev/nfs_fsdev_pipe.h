@@ -64,13 +64,21 @@ struct NfsFsdevEntry {
 	} replay_unlink_params;			     /* Replay unlink params */
 };
 
+struct database;
+
 /* Function declarations for persistent map management. */
 /**
  * @brief Allocate and initialize the persistent map.
  * @param [in] filename Path to the persistent map file.
  * @return Pointer to the map, or NULL on failure.
  */
-void *allocate_and_init_map(const char *filename);
+struct database *allocate_and_init_map(const char *filename);
+
+/**
+ * @brief Close the persistent map.
+ * @param [in] map Pointer to the map.
+ */
+void close_map(struct database *db);
 
 /**
  * @brief Insert an entry into the persistent map.
@@ -80,7 +88,10 @@ void *allocate_and_init_map(const char *filename);
  * @param [in] right Right key for the entry.
  * @return True if the entry was inserted successfully, false otherwise.
  */
-bool insert_entry(void *data_base, struct NfsFsdevEntry *entry, unsigned long left, struct persistent_nfs_fh3 *right);
+bool insert_entry(struct database *db,
+		  struct NfsFsdevEntry *entry,
+		  unsigned long left,
+		  struct persistent_nfs_fh3 *right);
 
 /**
  * @brief Update an entry in the persistent map by left key.
@@ -89,7 +100,7 @@ bool insert_entry(void *data_base, struct NfsFsdevEntry *entry, unsigned long le
  * @param [in] left Left key for the entry.
  * @return True if the entry was updated successfully, false otherwise.
  */
-bool update_entry_by_left(void *data_base, struct NfsFsdevEntry *entry, unsigned long left);
+bool update_entry_by_left(struct database *db, struct NfsFsdevEntry *entry, unsigned long left);
 
 /**
  * @brief Update an entry in the persistent map by right key.
@@ -98,7 +109,7 @@ bool update_entry_by_left(void *data_base, struct NfsFsdevEntry *entry, unsigned
  * @param [in] right Right key for the entry.
  * @return True if the entry was updated successfully, false otherwise.
  */
-bool update_entry_by_right(void *data_base, struct NfsFsdevEntry *entry, struct persistent_nfs_fh3 *right);
+bool update_entry_by_right(struct database *db, struct NfsFsdevEntry *entry, struct persistent_nfs_fh3 *right);
 
 /**
  * @brief Remove an entry from the persistent map by left key.
@@ -106,7 +117,7 @@ bool update_entry_by_right(void *data_base, struct NfsFsdevEntry *entry, struct 
  * @param [in] left Left key for the entry.
  * @return True if the entry was removed successfully, false otherwise.
  */
-bool remove_entry_by_left(void *data_base, unsigned long left);
+bool remove_entry_by_left(struct database *db, unsigned long left);
 
 /**
  * @brief Remove an entry from the persistent map by right key.
@@ -114,7 +125,7 @@ bool remove_entry_by_left(void *data_base, unsigned long left);
  * @param [in] right Right key for the entry.
  * @return True if the entry was removed successfully, false otherwise.
  */
-bool remove_entry_by_right(void *data_base, struct persistent_nfs_fh3 *right);
+bool remove_entry_by_right(struct database *db, struct persistent_nfs_fh3 *right);
 
 /**
  * @brief Get an entry from the persistent map by left key.
@@ -122,7 +133,7 @@ bool remove_entry_by_right(void *data_base, struct persistent_nfs_fh3 *right);
  * @param [in] left Left key for the entry.
  * @return The entry.
  */
-struct NfsFsdevEntry get_entry_by_left(void *data_base, unsigned long left);
+struct NfsFsdevEntry get_entry_by_left(struct database *db, unsigned long left);
 
 /**
  * @brief Get an entry from the persistent map by right key.
@@ -130,14 +141,14 @@ struct NfsFsdevEntry get_entry_by_left(void *data_base, unsigned long left);
  * @param [in] right Right key for the entry.
  * @return The entry.
  */
-struct NfsFsdevEntry get_entry_by_right(void *data_base, struct persistent_nfs_fh3 *right);
+struct NfsFsdevEntry get_entry_by_right(struct database *db, struct persistent_nfs_fh3 *right);
 
 /**
  * @brief Generate a left key for the persistent map.
  * @param [in] data_base Pointer to the persistent map.
  * @return The left key.
  */
-unsigned long generate_left_key(void *data_base);
+unsigned long generate_left_key(struct database *db);
 
 /**
  * @brief Check if an entry exists in the persistent map by left key.
@@ -145,7 +156,7 @@ unsigned long generate_left_key(void *data_base);
  * @param [in] left Left key for the entry.
  * @return True if the entry exists, false otherwise.
  */
-bool check_if_exist_by_left(void *data_base, unsigned long left);
+bool check_if_exist_by_left(struct database *db, unsigned long left);
 
 /**
  * @brief Check if an entry exists in the persistent map by right key.
@@ -153,7 +164,7 @@ bool check_if_exist_by_left(void *data_base, unsigned long left);
  * @param [in] right Right key for the entry.
  * @return True if the entry exists, false otherwise.
  */
-bool check_if_exist_by_right(void *data_base, struct persistent_nfs_fh3 *right);
+bool check_if_exist_by_right(struct database *db, struct persistent_nfs_fh3 *right);
 
 #ifdef __cplusplus
 }

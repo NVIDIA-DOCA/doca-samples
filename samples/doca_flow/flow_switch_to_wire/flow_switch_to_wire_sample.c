@@ -206,9 +206,7 @@ static doca_error_t add_rss_pipe_entry(struct doca_flow_pipe *pipe, struct entri
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
 
-	actions.action_idx = 0;
-
-	result = doca_flow_pipe_add_entry(0, pipe, &match, &actions, NULL, NULL, 0, status, &rss_entry);
+	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &rss_entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -297,13 +295,10 @@ destroy_pipe_cfg:
  * Unmatched traffic will be dropped.
  *
  * @sw_port [in]: switch port
- * @mirror_id [in]: mirror ID
  * @pipe [out]: created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t create_switch_ingress_pipe(struct doca_flow_port *sw_port,
-					       uint32_t mirror_id,
-					       struct doca_flow_pipe **pipe)
+static doca_error_t create_switch_ingress_pipe(struct doca_flow_port *sw_port, struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
 	struct doca_flow_monitor monitor;
@@ -326,8 +321,6 @@ static doca_error_t create_switch_ingress_pipe(struct doca_flow_port *sw_port,
 	match.outer.ip4.src_ip = 0xffffffff;
 	match.outer.tcp.l4_port.src_port = 0xffff;
 	match.outer.tcp.l4_port.dst_port = 0xffff;
-
-	monitor.shared_mirror_id = mirror_id;
 
 	/* Port ID to forward to is defined per entry */
 	fwd.type = DOCA_FLOW_FWD_PIPE;
@@ -492,6 +485,7 @@ static doca_error_t add_switch_egress_pipe_entries(struct doca_flow_pipe *pipe, 
 		result = doca_flow_pipe_add_entry(0,
 						  pipe,
 						  &match,
+						  0,
 						  NULL,
 						  NULL,
 						  &fwd,
@@ -546,6 +540,7 @@ static doca_error_t add_switch_ingress_pipe_entries(struct doca_flow_pipe *pipe,
 		result = doca_flow_pipe_add_entry(0,
 						  pipe,
 						  &match,
+						  0,
 						  NULL,
 						  NULL,
 						  &fwd,
@@ -597,6 +592,7 @@ static doca_error_t add_switch_vport_pipe_entries(struct doca_flow_pipe *pipe, s
 		result = doca_flow_pipe_add_entry(0,
 						  pipe,
 						  &match,
+						  0,
 						  NULL,
 						  NULL,
 						  &fwd,
@@ -631,16 +627,13 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	struct entries_status status;
 	doca_error_t result;
 	int entry_idx;
-	uint32_t shared_mirror_ids = 1;
-	struct doca_flow_mirror_target target = {0};
-	struct doca_flow_shared_resource_cfg cfg = {0};
-	struct doca_flow_resource_mirror_cfg mirror_cfg = {0};
 	const char *start_str;
 	bool is_expert = ctx->is_expert;
 
 	memset(&status, 0, sizeof(status));
-	nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_MIRROR] = 4;
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 2 * NB_TOTAL_ENTRIES; /* counter per entry */
+	resource.nr_rss = 1;
 	/* Use isolated mode as we will create the RSS pipe later */
 	if (is_expert)
 		start_str = "switch,hws,isolated,hairpinq_num=4,expert";
@@ -657,7 +650,8 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -676,28 +670,6 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	result = add_rss_pipe_entry(pipe_rss, &status);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
-	}
-
-	mirror_cfg.nr_targets = 1;
-	mirror_cfg.target = &target;
-	target.fwd.type = DOCA_FLOW_FWD_PORT;
-	target.fwd.port_id = 1;
-	cfg.mirror_cfg = mirror_cfg;
-	/* Create the function and reset later to verify the mirror update supporting.  */
-	result = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_MIRROR, shared_mirror_ids, &cfg);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to cfg shared mirror");
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
-	}
-	/* bind shared mirror to port */
-	result = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_MIRROR, &shared_mirror_ids, 1, ports[0]);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to bind shared mirror to port");
 		stop_doca_flow_ports(nb_ports, ports);
 		doca_flow_destroy();
 		return result;
@@ -737,22 +709,8 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 		return result;
 	}
 
-	mirror_cfg.nr_targets = 1;
-	mirror_cfg.target = &target;
-	target.fwd.type = DOCA_FLOW_FWD_PIPE;
-	target.fwd.next_pipe = pipe_egress;
-	cfg.mirror_cfg = mirror_cfg;
-	/* Update mirror configuration here */
-	result = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_MIRROR, shared_mirror_ids, &cfg);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to cfg shared mirror");
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
-	}
-
 	/* Create ingress pipe and entries */
-	result = create_switch_ingress_pipe(doca_flow_port_switch_get(ports[0]), shared_mirror_ids, &pipe_ingress);
+	result = create_switch_ingress_pipe(doca_flow_port_switch_get(ports[0]), &pipe_ingress);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ingress pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);

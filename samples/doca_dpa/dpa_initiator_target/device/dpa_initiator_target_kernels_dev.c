@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -150,7 +150,7 @@ __dpa_global__ void thread2_kernel(uint64_t arg)
  * This RPC is used by target host application to post the first RDMA receive operation on DPA local buffer.
  * This buffer will be reused again after each completion
  *
- * @rdma_dpa_ctx_handle [in]: DPA context handle used for RDMA DOCA device. Needed when running from DPU
+ * @rdma_dpa_ctx_handle [in]: DPA context handle used for RDMA DOCA device
  * @target_rdma [in]: Target RDMA DPA handle
  * @local_buf_addr [in]: address of received buffer used for Target RDMA
  * @dpa_mmap_handle [in]: DOCA Mmap handle for local_buf_addr
@@ -161,7 +161,7 @@ __dpa_rpc__ uint64_t rdma_post_receive_rpc(doca_dpa_dev_t rdma_dpa_ctx_handle,
 					   doca_dpa_dev_rdma_t target_rdma,
 					   doca_dpa_dev_uintptr_t local_buf_addr,
 					   doca_dpa_dev_mmap_t dpa_mmap_handle,
-					   size_t length)
+					   uint64_t length)
 {
 	DOCA_DPA_DEV_LOG_INFO("%s: Target RDMA post receive on DPA Mmap handle 0x%x, address 0x%lx, length %lu\n",
 			      __func__,
@@ -181,7 +181,7 @@ __dpa_rpc__ uint64_t rdma_post_receive_rpc(doca_dpa_dev_t rdma_dpa_ctx_handle,
  *
  * This RPC is used by initiator host application to post RDMA send with immediate operation on host local buffer
  *
- * @rdma_dpa_ctx_handle [in]: DPA context handle used for RDMA DOCA device. Needed when running from DPU
+ * @rdma_dpa_ctx_handle [in]: DPA context handle used for RDMA DOCA device
  * @rdma [in]: RDMA DPA handle
  * @connection_id [in]: RDMA connection ID
  * @local_buf_addr [in]: address of send buffer
@@ -195,7 +195,7 @@ __dpa_rpc__ uint64_t rdma_post_send_imm_rpc(doca_dpa_dev_t rdma_dpa_ctx_handle,
 					    uint32_t connection_id,
 					    uintptr_t local_buf_addr,
 					    doca_dpa_dev_mmap_t dpa_mmap_handle,
-					    size_t length,
+					    uint64_t length,
 					    uint32_t immediate)
 {
 	DOCA_DPA_DEV_LOG_INFO(

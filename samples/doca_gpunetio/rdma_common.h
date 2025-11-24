@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -184,10 +184,11 @@ doca_error_t destroy_rdma_resources(struct rdma_resources *resources);
 /*
  * Create a DOCA mmap object
  *
+ * @gpu_dev [in]: DOCA GPUNetIO handler
  * @mmap_obj [in]: mmap object to populate
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t create_mmap(struct rdma_mmap_obj *mmap_obj);
+doca_error_t create_mmap(struct doca_gpu *gpu_dev, struct rdma_mmap_obj *mmap_obj);
 
 /*
  * Create a buffer array on GPU

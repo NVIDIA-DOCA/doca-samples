@@ -104,12 +104,6 @@ doca_error_t ipsec_security_gw_close_devices(const struct ipsec_security_gw_conf
 			DOCA_LOG_ERR("Failed to destroy unsecured DOCA dev rep: %s", doca_error_get_descr(tmp_result));
 			DOCA_ERROR_PROPAGATE(result, tmp_result);
 		}
-		tmp_result = doca_dev_close(app_cfg->objects.unsecured_dev.doca_dev);
-		if (tmp_result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to destroy unsecured DOCA dev rep context: %s",
-				     doca_error_get_descr(tmp_result));
-			DOCA_ERROR_PROPAGATE(result, tmp_result);
-		}
 	} else {
 		tmp_result = doca_dev_close(app_cfg->objects.unsecured_dev.doca_dev);
 		if (tmp_result != DOCA_SUCCESS) {
@@ -138,11 +132,14 @@ doca_error_t ipsec_security_gw_init_devices(struct ipsec_security_gw_config *app
 			return result;
 		}
 	} else {
-		result = doca_dpdk_port_probe(
+		result = doca_dpdk_port_probe_with_representors(
 			app_cfg->objects.secured_dev.doca_dev,
-			"dv_flow_en=2,dv_xmeta_en=4,fdb_def_rule_en=0,vport_match=1,repr_matching_en=0,representor=pf[0-1]");
+			"dv_flow_en=2,dv_xmeta_en=4,fdb_def_rule_en=0,vport_match=1,repr_matching_en=0",
+			&app_cfg->objects.unsecured_dev.doca_dev_rep,
+			1);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to probe dpdk port for secured port: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed to probe dpdk port for secured port and unsecured port representor: %s",
+				     doca_error_get_descr(result));
 			return result;
 		}
 	}

@@ -24,6 +24,7 @@
  */
 
 #include <unistd.h>
+#include <sys/time.h>
 
 #include <rte_ethdev.h>
 
@@ -36,6 +37,7 @@
 #include "flow_switch_common.h"
 
 #define PACKET_BURST 128
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 DOCA_LOG_REGISTER(FLOW_CT_UDP_UPDATE);
 
@@ -125,7 +127,7 @@ static doca_error_t create_rss_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add RSS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -295,9 +297,8 @@ static doca_error_t create_vxlan_encap_pipe(struct doca_flow_port *port,
 	actions.encap_cfg.encap.outer.ip4.dst_ip = BE_IPV4_ADDR(81, 81, 81, 81);
 	actions.encap_cfg.encap.outer.ip4.ttl = 17;
 	actions.encap_cfg.encap.tun.vxlan_tun_id = DOCA_HTOBE32(0xadadad);
-	actions.action_idx = 0;
 
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, &actions, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add VxLAN Encap pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -393,7 +394,7 @@ static doca_error_t create_count_pipe(struct doca_flow_port *port,
 	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(80);
 	match.outer.udp.l4_port.src_port = DOCA_HTOBE16(1234);
 
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, NULL, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add count pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -463,79 +464,69 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 	struct rte_mbuf *packets[PACKET_BURST];
 	struct doca_flow_ct_match match_o;
 	struct doca_flow_ct_match match_r;
-	uint32_t flags;
+	uint32_t entry_flags, prepare_flags;
 	doca_error_t result;
-	int i, entries, nb_packets;
-	bool conn_found = false;
+	int i, nb_packets = 0, total_packets_processed = 0;
+	uint64_t timeout_s = 5; /* Timeout in seconds */
+	time_t end_time, max_end_time;
 
 	memset(&match_o, 0, sizeof(match_o));
 	memset(&match_r, 0, sizeof(match_r));
 
-	nb_packets = rte_eth_rx_burst(0, 0, packets, PACKET_BURST);
-	if (nb_packets == 0) {
-		DOCA_LOG_INFO("Sample didn't receive packets to process");
+	max_end_time = time(NULL) + timeout_s;
+	end_time = max_end_time;
+	do {
+		nb_packets = rte_eth_rx_burst(0, 0, packets, PACKET_BURST);
+		if (nb_packets == 0) {
+			/* No packets received, continue immediately without blocking */
+			continue;
+		}
+		total_packets_processed += nb_packets;
+		/* Updated timeout */
+		end_time = MIN(time(NULL) + 2, max_end_time);
+
+		DOCA_LOG_INFO("Sample received %d packets", nb_packets);
+		for (i = 0; i < PACKET_BURST && i < nb_packets; i++) {
+			parse_packet(packets[i], &match_o, &match_r);
+			prepare_flags = DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS |
+					DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN |
+					DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_REPLY;
+			entry_flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
+				      DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY |
+				      DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY |
+				      DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN;
+			result = flow_ct_create_entry(port,
+						      ct_queue,
+						      NULL,
+						      prepare_flags,
+						      entry_flags,
+						      &match_o,
+						      &match_r,
+						      packets[i]->hash.rss,
+						      packets[i]->hash.rss,
+						      NULL,
+						      NULL,
+						      0,
+						      0,
+						      0,
+						      ct_status,
+						      &ct_entries_arr[i]);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to create CT entry\n");
+				return result;
+			}
+			DOCA_LOG_INFO(
+				"Entry %d matches on the 5-tuple of the incoming packet. Reply direction matches on the inversed origin direction",
+				i);
+		}
+	} while (time(NULL) < end_time);
+
+	if (total_packets_processed == 0) {
+		DOCA_LOG_ERR("Sample didn't receive packets within 5 seconds timeout");
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	entries = 0;
-	DOCA_LOG_INFO("Sample received %d packets", nb_packets);
-	for (i = 0; i < PACKET_BURST && i < nb_packets; i++) {
-		parse_packet(packets[i], &match_o, &match_r);
-		flags = DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS | DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN |
-			DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_REPLY;
-		/* Allocate CT entry */
-		result = doca_flow_ct_entry_prepare(ct_queue,
-						    NULL,
-						    flags,
-						    &match_o,
-						    packets[i]->hash.rss,
-						    &match_r,
-						    packets[i]->hash.rss,
-						    &ct_entries_arr[i],
-						    &conn_found);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to prepare CT entry\n");
-			return result;
-		}
-
-		if (!conn_found) {
-			flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
-				DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY |
-				DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN;
-			result = doca_flow_ct_add_entry(ct_queue,
-							NULL,
-							flags,
-							&match_o,
-							&match_r,
-							NULL,
-							NULL,
-							0,
-							0,
-							0,
-							ct_status,
-							ct_entries_arr[i]);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to add CT pipe an entry: %s", doca_error_get_descr(result));
-				return result;
-			}
-			entries++;
-		}
-	}
-
-	while (ct_status->nb_processed != entries) {
-		result = doca_flow_ct_entries_process(port, ct_queue, 0, 0, NULL);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to process Flow CT entries: %s", doca_error_get_descr(result));
-			return result;
-		}
-
-		if (ct_status->failure) {
-			DOCA_LOG_ERR("Flow CT entries process returned with a failure");
-			return DOCA_ERROR_BAD_STATE;
-		}
-	}
-
-	*ct_entries_arr_len = entries;
+	*ct_entries_arr_len = 1;
 
 	return DOCA_SUCCESS;
 }
@@ -609,9 +600,27 @@ static doca_error_t update_nonactive_entries(struct doca_flow_port *port,
  * @ctx [in]: flow switch context the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
+
+/* Context structure for waiting */
+struct ct_udp_update_wait_context {
+	/* Empty context - just for consistency with other samples */
+	int dummy;
+};
+
+/*
+ * Simple wait function for packet processing
+ *
+ * @context [in]: wait context (unused but required for flow_wait_for_packets)
+ */
+static void ct_udp_update_wait_function(void *context)
+{
+	(void)context; /* Suppress unused parameter warning */
+		       /* This function intentionally does nothing - just waits for packets */
+}
+
 doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 {
-	const int nb_ports = 2, nb_entries = 6;
+	const int nb_ports = 1, nb_entries = 6;
 	int ct_entries_arr_len = 0;
 	struct flow_resources resource;
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
@@ -626,12 +635,16 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 		 nb_ipv6_sessions = 0; /* On BF2 should always be 0 */
 	uint16_t ct_queue = nb_queues;
 	doca_error_t result;
+	struct ct_udp_update_wait_context wait_ctx = {.dummy = 0};
 
 	memset(&ctrl_status, 0, sizeof(ctrl_status));
 	memset(&ct_status, 0, sizeof(ct_status));
 	memset(&resource, 0, sizeof(resource));
 
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 1;
+	resource.nr_rss = 1;
+	resource.nr_encap = 1;
 
 	result = init_doca_flow_cb(nb_queues,
 				   "switch,hws,isolated",
@@ -676,7 +689,8 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_ct_destroy();
@@ -710,15 +724,15 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 		goto cleanup;
 	}
 
-	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
-	sleep(5);
-
+	DOCA_LOG_INFO("Wait a few seconds for packets to arrive");
 	result = process_packets(ports[0], ct_queue, &ct_status, ct_entries_arr, &ct_entries_arr_len);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
-	DOCA_LOG_INFO("Same UDP packets should be resent. wait for packet to arrive, if not, sessions will be aged");
-	sleep(5);
+	DOCA_LOG_INFO(
+		"Send packets of the same session. Wait a few seconds for packets to arrive, if not, sessions will be aged");
+
+	flow_wait_for_packets(5, ct_udp_update_wait_function, &wait_ctx);
 
 	result = update_nonactive_entries(ports[0], ct_pipe, ct_entries_arr, ct_entries_arr_len, ct_queue);
 	if (result != DOCA_SUCCESS)

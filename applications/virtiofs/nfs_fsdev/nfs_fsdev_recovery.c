@@ -24,6 +24,7 @@
  */
 
 #include <nfsc/libnfs-raw-nfs.h>
+#include <sys/mman.h>
 #include "priv_nfs_fsdev.h"
 #include <doca_log.h>
 
@@ -42,8 +43,9 @@ static inline void nfs_fsdev_init_recovery(struct nfs_fsdev_recovery *recovery)
 	recovery->magic_number = NFS_FSDEV_RECOVERY_MAGIC_NUM;
 }
 
-static inline void nfs_fsdev_restore_recovery(struct nfs_fsdev_recovery *recovery, int fd, void *db)
+static inline void nfs_fsdev_restore_recovery(struct nfs_fsdev_recovery *recovery, int fd, struct database *db)
 {
+	(void)fd;
 	unsigned int max_gen = 0;
 	unsigned int index = 0;
 	for (int i = 0; i < NFS_FSDEV_NUM_OF_VIRTIO_QUEUES; ++i) {
@@ -72,7 +74,7 @@ static inline void nfs_fsdev_restore_recovery(struct nfs_fsdev_recovery *recover
 	}
 }
 
-struct nfs_fsdev_recovery *nfs_fsdev_create_recovery(const char *filename, void *db)
+struct nfs_fsdev_recovery *nfs_fsdev_create_recovery(const char *filename, struct database *db)
 {
 	int fd = open(filename, O_RDWR | O_CREAT, 0666);
 	if (fd == -1) {
@@ -101,11 +103,19 @@ struct nfs_fsdev_recovery *nfs_fsdev_create_recovery(const char *filename, void 
 		nfs_fsdev_restore_recovery(recovery, fd, db);
 	}
 	compiler_barrier();
-	// close(fd); should be closed?
+	close(fd);
 	return recovery;
 }
 
-bool nfs_fsdev_db_init_new_root(unsigned long inode, const struct nfs_fh *fh, void *db)
+void nfs_fsdev_destroy_recovery(struct nfs_fsdev_recovery *recovery)
+{
+	if (recovery == NULL)
+		return;
+
+	munmap(recovery, sizeof(struct nfs_fsdev_recovery));
+}
+
+bool nfs_fsdev_db_init_new_root(unsigned long inode, const struct nfs_fh *fh, struct database *db)
 {
 	struct NfsFsdevEntry entry = {0};
 
@@ -117,7 +127,7 @@ bool nfs_fsdev_db_init_new_root(unsigned long inode, const struct nfs_fh *fh, vo
 	return insert_entry(db, &entry, inode, &entry.fh_right_key);
 }
 
-bool nfs_fsdev_db_insert(void *db, int state, int ref_count, int inode, struct nfs_fh3 *fh)
+bool nfs_fsdev_db_insert(struct database *db, int state, int ref_count, int inode, struct nfs_fh3 *fh)
 {
 	struct NfsFsdevEntry entry = {0};
 

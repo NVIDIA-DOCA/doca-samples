@@ -85,6 +85,19 @@
 
 #define ROUND_UP(unaligned_mapping_size, align_val) ((unaligned_mapping_size) + (align_val)-1) & (~((align_val)-1))
 
+#define ALIGN_SIZE(size, align) size = ((size + (align)-1) / (align)) * (align);
+
+#define RC_QP_RST2INIT_REQ_ATTR_MASK \
+	(DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE | DOCA_VERBS_QP_ATTR_ATOMIC_MODE | \
+	 DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_READ | DOCA_VERBS_QP_ATTR_PKEY_INDEX | DOCA_VERBS_QP_ATTR_PORT_NUM)
+#define RC_QP_INIT2RTR_REQ_ATTR_MASK \
+	(DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_RQ_PSN | DOCA_VERBS_QP_ATTR_DEST_QP_NUM | \
+	 DOCA_VERBS_QP_ATTR_PATH_MTU | DOCA_VERBS_QP_ATTR_AH_ATTR | DOCA_VERBS_QP_ATTR_MIN_RNR_TIMER | \
+	 DOCA_VERBS_QP_ATTR_MAX_DEST_RD_ATOMIC)
+#define RC_QP_RTR2RTS_REQ_ATTR_MASK \
+	(DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_SQ_PSN | DOCA_VERBS_QP_ATTR_ACK_TIMEOUT | \
+	 DOCA_VERBS_QP_ATTR_RETRY_CNT | DOCA_VERBS_QP_ATTR_RNR_RETRY | DOCA_VERBS_QP_ATTR_MAX_QP_RD_ATOMIC)
+
 /* High-level API */
 struct doca_gpu_verbs_qp_init_attr_hl {
 	struct doca_gpu *gpu_dev;
@@ -288,6 +301,13 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources);
  */
 void *progress_cpu_proxy(void *args_);
 
+/*
+ * Get system page size
+ *
+ * @return: system page size in bytes (default is 4096)
+ */
+size_t get_page_size(void);
+
 /**
  * Create an high-level GPUNetIO QP.
  * This function encapsulate all required steps using doca verbs and doca gpunetio to
@@ -452,6 +472,39 @@ doca_error_t gpunetio_verbs_two_sided_bw(cudaStream_t stream,
 					 uint32_t dump_flag_mkey,
 					 enum doca_gpu_dev_verbs_exec_scope scope,
 					 bool is_client);
+
+/*
+ * Launch a CUDA kernel with to measure One-Sided Get Shared QP bandwidth
+ *
+ * @stream [in]: CUDA Stream to launch the kernel
+ * @qp [in]: Verbs GPU object
+ * @num_iters [in]: Total number of iterations
+ * @cuda_blocks [in]: Number of CUDA blocks to launch the kernel
+ * @cuda_threads [in]: Number of CUDA threads to launch the kernel
+ * @data_size [in]: Data buffer size (number of bytes)
+ * @src_buf [in]: Source GPU data buffer address
+ * @src_buf_mkey [in]: Source GPU data buffer memory key
+ * @dst_buf [in]: Destination GPU data buffer address
+ * @dst_buf_mkey [in]: Destination GPU data buffer memory key
+ * @dump_flag [in]: Flag in GPU memory to use with Dump WQE, if needed
+ * @dump_flag_mkey [in]: Dump flag memory key
+ * @scope [in]: Each put is called per CUDA thread or per CUDA warp
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t gpunetio_verbs_get_bw(cudaStream_t stream,
+				   struct doca_gpu_dev_verbs_qp *qp,
+				   uint32_t num_iters,
+				   uint32_t cuda_blocks,
+				   uint32_t cuda_threads,
+				   uint32_t data_size,
+				   uint8_t *src_buf,
+				   uint32_t src_buf_mkey,
+				   uint8_t *dst_buf,
+				   uint32_t dst_buf_mkey,
+				   uint64_t *dump_flag,
+				   uint32_t dump_flag_mkey,
+				   enum doca_gpu_dev_verbs_exec_scope scope);
+
 /*
  * Launch a CUDA kernel with to measure One-Sided Put Shared QP bandwidth
  *

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -45,6 +45,11 @@
 #include <doca_rdma.h>
 
 namespace storage {
+
+enum class thread_safety {
+	yes,
+	no,
+};
 
 /*
  * Helper to keep a RDMA connection and its associated context together as pairs
@@ -92,7 +97,11 @@ doca_dev_rep *open_representor(doca_dev *dev, std::string const &identifier);
  * @permissions [in]: Bit masked set of permissions to apply to the mmap. See enum doca_access_flag
  * @return: The newly created, initialized and started mmap
  */
-doca_mmap *make_mmap(doca_dev *dev, char *memory_region, size_t memory_region_size, uint32_t permissions);
+doca_mmap *make_mmap(doca_dev *dev,
+		     char *memory_region,
+		     size_t memory_region_size,
+		     uint32_t permissions,
+		     storage::thread_safety ts);
 
 /*
  * Create, initialize and start a mmap from a remote export. See doca_mmap_export_pci and doca_mmap_export_rdma
@@ -104,7 +113,10 @@ doca_mmap *make_mmap(doca_dev *dev, char *memory_region, size_t memory_region_si
  * @mmap_export_blob_size[in]: Size (in bytes) of the remote export blob buffer
  * @return: The newly created, initialized and started mmap
  */
-doca_mmap *make_mmap(doca_dev *dev, void const *mmap_export_blob, size_t mmap_export_blob_size);
+doca_mmap *make_mmap(doca_dev *dev,
+		     void const *mmap_export_blob,
+		     size_t mmap_export_blob_size,
+		     storage::thread_safety ts);
 
 /*
  * Create, initialize and start a buffer inventory
@@ -289,6 +301,43 @@ void create_doca_logger_backend(void) noexcept;
  * @return enum or throw if unknown
  */
 doca_ec_matrix_type matrix_type_from_string(std::string const &matrix_type);
+
+/*
+ * Provides a holder for doca bufs which can be used to hold a doca buf until it's placed into another container so that
+ * an allocated doca buf will not leak during task creation
+ */
+class doca_buf_raii_wrapper {
+public:
+	~doca_buf_raii_wrapper()
+	{
+		if (m_buf) {
+			doca_buf_dec_refcount(m_buf, nullptr);
+		}
+	}
+
+	doca_buf_raii_wrapper() = default;
+	doca_buf_raii_wrapper(doca_buf_raii_wrapper const &) = delete;
+	doca_buf_raii_wrapper(doca_buf_raii_wrapper &&) noexcept = delete;
+	doca_buf_raii_wrapper &operator=(doca_buf_raii_wrapper const &) = delete;
+	doca_buf_raii_wrapper &operator=(doca_buf_raii_wrapper &&) noexcept = delete;
+
+	/* Allows the doca_buf_raii_wrapper to be populated from the out param of doca buf alocation routines */
+	doca_buf **operator&()
+	{
+		return &m_buf;
+	}
+
+	/* Take the held doca_buf (if any) and release its ownership to the caller for them to destroy it later */
+	doca_buf *release()
+	{
+		doca_buf *tmp{m_buf};
+		m_buf = nullptr;
+		return tmp;
+	}
+
+private:
+	doca_buf *m_buf = nullptr;
+};
 
 } /* namespace storage */
 

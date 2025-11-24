@@ -45,6 +45,7 @@ doca_error_t upf_accel_pipe_static_entry_add(struct upf_accel_ctx *upf_accel_ctx
 					     uint16_t pipe_queue,
 					     struct doca_flow_pipe *pipe,
 					     const struct doca_flow_match *match,
+					     uint8_t action_idx,
 					     const struct doca_flow_actions *actions,
 					     const struct doca_flow_monitor *mon,
 					     const struct doca_flow_fwd *fwd,
@@ -53,7 +54,7 @@ doca_error_t upf_accel_pipe_static_entry_add(struct upf_accel_ctx *upf_accel_ctx
 					     struct doca_flow_pipe_entry **entry)
 {
 	const doca_error_t result =
-		doca_flow_pipe_add_entry(pipe_queue, pipe, match, actions, mon, fwd, flags, usr_ctx, entry);
+		doca_flow_pipe_add_entry(pipe_queue, pipe, match, action_idx, actions, mon, fwd, flags, usr_ctx, entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add static entry: %s", doca_error_get_descr(result));
 		return result;
@@ -180,6 +181,7 @@ static doca_error_t upf_accel_pipe_drop_create(struct upf_accel_ctx *upf_accel_c
 						 0,
 						 *pipe,
 						 NULL,
+						 0,
 						 NULL,
 						 NULL,
 						 NULL,
@@ -274,13 +276,13 @@ static doca_error_t upf_accel_pipe_to_sw_create(struct upf_accel_ctx *upf_accel_
 
 	act_set_dir.meta.pkt_meta = is_ul ? rte_cpu_to_be_32(UPF_ACCEL_META_PKT_DIR_UL) :
 					    rte_cpu_to_be_32(UPF_ACCEL_META_PKT_DIR_DL);
-	act_set_dir.action_idx = 0;
 
 	result = upf_accel_pipe_static_entry_add(upf_accel_ctx,
 						 pipe_cfg->port_id,
 						 0,
 						 *pipe,
 						 NULL,
+						 0,
 						 &act_set_dir,
 						 NULL,
 						 NULL,
@@ -339,6 +341,7 @@ static doca_error_t upf_accel_pipe_tx_root_create(struct upf_accel_ctx *upf_acce
 						 0,
 						 *pipe,
 						 NULL,
+						 0,
 						 NULL,
 						 NULL,
 						 NULL,
@@ -583,6 +586,7 @@ static doca_error_t upf_accel_pipe_far_create(struct upf_accel_ctx *upf_accel_ct
 						 0,
 						 *pipe,
 						 NULL,
+						 0,
 						 NULL,
 						 NULL,
 						 NULL,
@@ -666,6 +670,7 @@ static doca_error_t upf_accel_pipe_decap_create(struct upf_accel_ctx *upf_accel_
 						 0,
 						 *pipe,
 						 &match,
+						 0,
 						 &act_decap,
 						 NULL,
 						 NULL,
@@ -684,6 +689,7 @@ static doca_error_t upf_accel_pipe_decap_create(struct upf_accel_ctx *upf_accel_
 						 0,
 						 *pipe,
 						 &match,
+						 0,
 						 &act_decap,
 						 NULL,
 						 NULL,
@@ -769,6 +775,7 @@ static doca_error_t upf_accel_pipe_vxlan_decap_create(struct upf_accel_ctx *upf_
 						 0,
 						 *pipe,
 						 NULL,
+						 0,
 						 NULL,
 						 NULL,
 						 NULL,
@@ -829,6 +836,7 @@ static doca_error_t upf_accel_pipe_color_match_create(struct upf_accel_ctx *upf_
 						 0,
 						 *pipe,
 						 &match,
+						 0,
 						 NULL,
 						 NULL,
 						 &fwd,
@@ -847,6 +855,7 @@ static doca_error_t upf_accel_pipe_color_match_create(struct upf_accel_ctx *upf_
 						 0,
 						 *pipe,
 						 &match,
+						 0,
 						 NULL,
 						 NULL,
 						 &fwd,
@@ -1449,6 +1458,7 @@ static doca_error_t upf_accel_pipe_inner_ip_type_create(struct upf_accel_ctx *up
 						 0,
 						 *pipe,
 						 &match,
+						 0,
 						 NULL,
 						 NULL,
 						 &fwd,
@@ -1508,6 +1518,7 @@ static doca_error_t upf_accel_pipe_outer_ip_type_create(struct upf_accel_ctx *up
 						 0,
 						 *pipe,
 						 &match,
+						 0,
 						 NULL,
 						 NULL,
 						 &fwd,
@@ -1567,6 +1578,7 @@ static doca_error_t upf_accel_pipe_ext_gtp_create(struct upf_accel_ctx *upf_acce
 						 0,
 						 *pipe,
 						 &match,
+						 0,
 						 NULL,
 						 NULL,
 						 NULL,
@@ -1638,6 +1650,7 @@ static doca_error_t upf_accel_pipe_uldl_create(struct upf_accel_ctx *upf_accel_c
 						 0,
 						 *pipe,
 						 NULL,
+						 0,
 						 NULL,
 						 NULL,
 						 NULL,
@@ -1697,6 +1710,7 @@ static doca_error_t upf_accel_pipe_root_create(struct upf_accel_ctx *upf_accel_c
 						 0,
 						 *pipe,
 						 &match,
+						 0,
 						 NULL,
 						 NULL,
 						 NULL,
@@ -1714,6 +1728,7 @@ static doca_error_t upf_accel_pipe_root_create(struct upf_accel_ctx *upf_accel_c
 						 0,
 						 *pipe,
 						 &match,
+						 0,
 						 NULL,
 						 NULL,
 						 NULL,
@@ -2028,6 +2043,7 @@ static doca_error_t upf_accel_pipe_vxlan_insert(struct upf_accel_ctx *upf_accel_
 						 0,
 						 upf_accel_ctx->pipes[port_id][UPF_ACCEL_PIPE_TX_VXLAN_ENCAP],
 						 &match,
+						 0,
 						 &act_encap,
 						 NULL,
 						 NULL,
@@ -2055,6 +2071,7 @@ static doca_error_t upf_accel_pipe_vxlan_insert(struct upf_accel_ctx *upf_accel_
 						 0,
 						 upf_accel_ctx->pipes[port_id][UPF_ACCEL_PIPE_RX_VXLAN_DECAP],
 						 &match,
+						 0,
 						 NULL,
 						 NULL,
 						 NULL,

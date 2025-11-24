@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -25,10 +25,7 @@
 
 #include <arpa/inet.h>
 #include <doca_flow.h>
-#include <doca_log.h>
-
 #include "gpunetio_common.h"
-
 #include "common.h"
 
 #define FLOW_NB_COUNTERS 524228 /* 1024 x 512 */
@@ -38,7 +35,20 @@
 struct doca_flow_port *df_port;
 bool force_quit;
 
-DOCA_LOG_REGISTER(SIMPLE_RECEIVE : SAMPLE);
+DOCA_LOG_REGISTER(GPUNETIO_SIMPLE_RECEIVE);
+
+/*
+ * Retrieve host page size
+ *
+ * @return: host page size
+ */
+static size_t get_host_page_size(void)
+{
+	long ret = sysconf(_SC_PAGESIZE);
+	if (ret == -1)
+		return 4096; // 4KB, default Linux page size
+	return (size_t)ret;
+}
 
 /*
  * Signal handler to quit application gracefully
@@ -247,7 +257,8 @@ static doca_error_t create_udp_pipe(struct rxq_queue *rxq)
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
 	/* Add HW offload */
-	result = doca_flow_pipe_add_entry(0, rxq->rxq_pipe, &match, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, NULL, &entry);
+	result =
+		doca_flow_pipe_add_entry(0, rxq->rxq_pipe, &match, 0, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, NULL, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("RxQ pipe entry creation failed with: %s", doca_error_get_descr(result));
 		return result;
@@ -450,10 +461,11 @@ static doca_error_t destroy_rxq(struct rxq_queue *rxq)
  * @ddev [in]: DOCA device
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t create_rxq(struct rxq_queue *rxq, struct doca_gpu *gpu_dev, struct doca_dev *ddev)
+static doca_error_t create_rxq(struct rxq_queue *rxq, struct doca_gpu *gpu_dev, int cuda_id, struct doca_dev *ddev)
 {
 	doca_error_t result;
 	uint32_t cyclic_buffer_size = 0;
+	struct cudaDeviceProp prop;
 
 	if (rxq == NULL || gpu_dev == NULL || ddev == NULL) {
 		DOCA_LOG_ERR("Can't create UDP queues, invalid input");
@@ -504,11 +516,13 @@ static doca_error_t create_rxq(struct rxq_queue *rxq, struct doca_gpu *gpu_dev, 
 		goto exit_error;
 	}
 
+	ALIGN_SIZE(cyclic_buffer_size, get_host_page_size());
+
 	result = doca_gpu_mem_alloc(rxq->gpu_dev,
 				    cyclic_buffer_size,
-				    GPU_PAGE_SIZE,
+				    get_host_page_size(),
 				    DOCA_GPU_MEM_TYPE_GPU,
-				    &rxq->gpu_pkt_addr,
+				    (void **)&rxq->gpu_pkt_addr,
 				    NULL);
 	if (result != DOCA_SUCCESS || rxq->gpu_pkt_addr == NULL) {
 		DOCA_LOG_ERR("Failed to allocate gpu memory %s", doca_error_get_descr(result));
@@ -563,6 +577,16 @@ static doca_error_t create_rxq(struct rxq_queue *rxq, struct doca_gpu *gpu_dev, 
 		goto exit_error;
 	}
 
+	cudaGetDeviceProperties(&prop, cuda_id);
+	// If pre-Hopper GPU with __CUDA_ARCH__ < 900
+	if (prop.major < 9) {
+		result = doca_eth_rxq_gpu_enable_mcst_qp(rxq->eth_rxq_cpu);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set GPU dump qp  %s", doca_error_get_descr(result));
+			goto exit_error;
+		}
+	}
+
 	rxq->eth_rxq_ctx = doca_eth_rxq_as_doca_ctx(rxq->eth_rxq_cpu);
 	if (rxq->eth_rxq_ctx == NULL) {
 		DOCA_LOG_ERR("Failed doca_eth_rxq_as_doca_ctx: %s", doca_error_get_descr(result));
@@ -614,7 +638,7 @@ exit_error:
  * @sample_cfg [in]: Sample config parameters
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t gpunetio_simple_receive(struct sample_send_wait_cfg *sample_cfg)
+doca_error_t gpunetio_simple_receive(struct sample_simple_recv_cfg *sample_cfg)
 {
 	doca_error_t result;
 	struct doca_gpu *gpu_dev = NULL;
@@ -624,6 +648,8 @@ doca_error_t gpunetio_simple_receive(struct sample_send_wait_cfg *sample_cfg)
 	cudaError_t res_rt = cudaSuccess;
 	uint32_t *cpu_exit_condition;
 	uint32_t *gpu_exit_condition;
+	uint64_t *cpu_tot_pkts;
+	uint64_t *gpu_tot_pkts;
 
 	result = init_doca_device(sample_cfg->nic_pcie_addr, &ddev);
 	if (result != DOCA_SUCCESS) {
@@ -654,7 +680,7 @@ doca_error_t gpunetio_simple_receive(struct sample_send_wait_cfg *sample_cfg)
 		goto exit;
 	}
 
-	result = create_rxq(&rxq, gpu_dev, ddev);
+	result = create_rxq(&rxq, gpu_dev, sample_cfg->cuda_id, ddev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function create_rxq returned %s", doca_error_get_descr(result));
 		goto exit;
@@ -668,7 +694,7 @@ doca_error_t gpunetio_simple_receive(struct sample_send_wait_cfg *sample_cfg)
 
 	result = doca_gpu_mem_alloc(gpu_dev,
 				    sizeof(uint32_t),
-				    GPU_PAGE_SIZE,
+				    get_host_page_size(),
 				    DOCA_GPU_MEM_TYPE_GPU_CPU,
 				    (void **)&gpu_exit_condition,
 				    (void **)&cpu_exit_condition);
@@ -678,9 +704,21 @@ doca_error_t gpunetio_simple_receive(struct sample_send_wait_cfg *sample_cfg)
 	}
 	cpu_exit_condition[0] = 0;
 
+	result = doca_gpu_mem_alloc(gpu_dev,
+				    sizeof(uint64_t),
+				    get_host_page_size(),
+				    DOCA_GPU_MEM_TYPE_CPU_GPU,
+				    (void **)&gpu_tot_pkts,
+				    (void **)&cpu_tot_pkts);
+	if (result != DOCA_SUCCESS || gpu_tot_pkts == NULL || cpu_tot_pkts == NULL) {
+		DOCA_LOG_ERR("Function doca_gpu_mem_alloc returned %s", doca_error_get_descr(result));
+		return EXIT_FAILURE;
+	}
+	cpu_tot_pkts[0] = 0;
+
 	DOCA_LOG_INFO("Launching CUDA kernel to receive packets");
 
-	kernel_receive_packets(stream, &rxq, gpu_exit_condition);
+	kernel_receive_packets(stream, &rxq, sample_cfg->exec_scope, gpu_exit_condition, gpu_tot_pkts);
 
 	DOCA_LOG_INFO("Waiting for termination");
 	/* This loop keeps busy main thread until force_quit is set to 1 (e.g. typing ctrl+c) */
@@ -688,9 +726,9 @@ doca_error_t gpunetio_simple_receive(struct sample_send_wait_cfg *sample_cfg)
 		;
 	DOCA_GPUNETIO_VOLATILE(*cpu_exit_condition) = 1;
 
-	DOCA_LOG_INFO("Exiting from sample");
-
 	cudaStreamSynchronize(stream);
+
+	printf("Exiting from simple receive sample. Total number of received packets: %ld\n", cpu_tot_pkts[0]);
 exit:
 
 	result = destroy_rxq(&rxq);

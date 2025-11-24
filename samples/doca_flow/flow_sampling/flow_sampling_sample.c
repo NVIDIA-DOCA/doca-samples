@@ -146,7 +146,7 @@ static doca_error_t add_root_pipe_entry(struct doca_flow_pipe *pipe,
 	DOCA_LOG_DBG("Adding root pipe entry matching of: "
 		     "IPv4(src='1.1.1.1',dst='8.8.8.8') and TCP(src_port=1234,dst_port=80)");
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, NULL, NULL, NULL, 0, status, entry);
+	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
 }
 
 /*
@@ -311,6 +311,44 @@ static doca_error_t random_sampling_results(struct doca_flow_pipe_entry *root_en
 	return DOCA_SUCCESS;
 }
 
+/* Context structure for statistics printing */
+struct sampling_stats_context {
+	struct doca_flow_pipe_entry *root_entry;
+	struct doca_flow_pipe_entry *random_entry;
+	double requested_percentage;
+};
+
+/*
+ * Print sampling statistics
+ *
+ * @root_entry [in]: root entry
+ * @random_entry [in]: random entry
+ * @requested_percentage [in]: requested sampling percentage
+ */
+static void print_sampling_stats(struct doca_flow_pipe_entry *root_entry,
+				 struct doca_flow_pipe_entry *random_entry,
+				 double requested_percentage)
+{
+	doca_error_t result;
+
+	/* Show the results for sampling */
+	result = random_sampling_results(root_entry, random_entry, requested_percentage);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to show sampling results: %s", doca_error_get_descr(result));
+	}
+}
+
+/*
+ * Wrapper function for statistics printing compatible with flow_wait_for_packets
+ *
+ * @context [in]: sampling_stats_context structure
+ */
+static void print_sampling_stats_wrapper(void *context)
+{
+	struct sampling_stats_context *ctx = (struct sampling_stats_context *)context;
+	print_sampling_stats(ctx->root_entry, ctx->random_entry, ctx->requested_percentage);
+}
+
 /*
  * Run flow_sampling sample.
  *
@@ -338,6 +376,7 @@ doca_error_t flow_sampling(int nb_queues, struct flow_switch_ctx *ctx)
 	doca_error_t result;
 
 	memset(&status, 0, sizeof(status));
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = num_of_entries;
 
 	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
@@ -351,7 +390,8 @@ doca_error_t flow_sampling(int nb_queues, struct flow_switch_ctx *ctx)
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
-					     actions_mem_size);
+					     actions_mem_size,
+					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();
@@ -401,16 +441,13 @@ doca_error_t flow_sampling(int nb_queues, struct flow_switch_ctx *ctx)
 	}
 
 	DOCA_LOG_INFO("Wait %u seconds for packets to arrive", WAITING_TIME);
-	sleep(WAITING_TIME);
 
-	/* Show the results for sampling */
-	result = random_sampling_results(root_entry, random_entry, requested_percentage);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to show sampling results: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
-	}
+	/* Setup statistics context and wait for packets */
+	struct sampling_stats_context stats_ctx = {.root_entry = root_entry,
+						   .random_entry = random_entry,
+						   .requested_percentage = requested_percentage};
+
+	flow_wait_for_packets(WAITING_TIME, print_sampling_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();

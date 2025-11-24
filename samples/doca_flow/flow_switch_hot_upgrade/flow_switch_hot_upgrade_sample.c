@@ -167,6 +167,7 @@ static doca_error_t add_switch_pipe_entries(uint8_t switch_port_idx,
 	result = doca_flow_pipe_add_entry(0,
 					  control->pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -184,6 +185,7 @@ static doca_error_t add_switch_pipe_entries(uint8_t switch_port_idx,
 	result = doca_flow_pipe_add_entry(0,
 					  control->pipe,
 					  &match,
+					  0,
 					  NULL,
 					  NULL,
 					  &fwd,
@@ -441,6 +443,23 @@ static doca_error_t port_control_query(struct port_control *control)
 	return DOCA_SUCCESS;
 }
 
+static doca_error_t set_doca_flow_port_operation_state(struct doca_flow_port_cfg *port_cfg,
+						       int port_id,
+						       void *config_cb_ctx)
+{
+	enum doca_flow_port_operation_state state = *(enum doca_flow_port_operation_state *)config_cb_ctx;
+	doca_error_t result;
+	(void)port_id;
+
+	result = doca_flow_port_cfg_set_operation_state(port_cfg, state);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg operation state: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
 /*
  * Initialize DOCA Flow ports
  *
@@ -454,21 +473,20 @@ static doca_error_t port_control_query(struct port_control *control)
 static doca_error_t init_hot_upgrade_ports(struct flow_devs_manager devs_manager[],
 					   int nb_devs,
 					   struct doca_flow_port *ports[],
-					   int nb_ports)
+					   int nb_ports,
+					   struct flow_resources *resources)
 {
 	struct doca_dev *dev_arr[nb_ports];
 	struct doca_dev_rep *rep_arr[nb_ports];
-	enum doca_flow_port_operation_state states[nb_ports];
+	enum doca_flow_port_operation_state state = DOCA_FLOW_PORT_OPERATION_STATE_UNCONNECTED;
 	uint32_t actions_mem_size[nb_ports];
 	int nb_mapped_devs = 0;
 
 	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
 	memset(rep_arr, 0, sizeof(struct doca_dev_rep *) * nb_ports);
-	memset(states, 0, sizeof(enum doca_flow_port_operation_state) * nb_ports);
 
 	for (int i = 0; i < nb_devs; i++) {
-		dev_arr[nb_mapped_devs] = devs_manager[i].doca_dev;
-		states[nb_mapped_devs++] = DOCA_FLOW_PORT_OPERATION_STATE_UNCONNECTED;
+		dev_arr[nb_mapped_devs++] = devs_manager[i].doca_dev;
 
 		for (int j = 0; j < devs_manager[i].nb_reps; j++)
 			rep_arr[nb_mapped_devs++] = devs_manager[i].doca_dev_rep[j];
@@ -476,13 +494,16 @@ static doca_error_t init_hot_upgrade_ports(struct flow_devs_manager devs_manager
 
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(DEFAULT_CTRL_PIPE_SIZE));
 
-	return init_doca_flow_ports_with_op_state(nb_mapped_devs,
-						  ports,
-						  false,
-						  dev_arr,
-						  rep_arr,
-						  states,
-						  actions_mem_size);
+	return init_doca_flow_ports_with_custom_config(nb_mapped_devs,
+						       ports,
+						       false,
+						       dev_arr,
+						       rep_arr,
+						       set_doca_flow_port_operation_state,
+						       NULL /* port_rep_cb */,
+						       &state,
+						       actions_mem_size,
+						       resources);
 }
 
 /*
@@ -501,7 +522,7 @@ doca_error_t flow_switch_hot_upgrade(int nb_queues,
 				     uint16_t nb_devs,
 				     enum doca_flow_port_operation_state state)
 {
-	struct flow_resources resource = {.nr_counters = 6};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT, .nr_counters = 6};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
 	struct port_control port_control_list[FLOW_SWITCH_PROXY_PORT_NB];
@@ -517,7 +538,7 @@ doca_error_t flow_switch_hot_upgrade(int nb_queues,
 		return result;
 	}
 
-	result = init_hot_upgrade_ports(devs_manager, nb_devs, ports, nb_ports);
+	result = init_hot_upgrade_ports(devs_manager, nb_devs, ports, nb_ports, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

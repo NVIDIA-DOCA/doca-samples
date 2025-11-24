@@ -30,7 +30,7 @@ ports_decription:
   port_1: doca_rep_dev
   port_2: doca_rep_dev
 description: "This sample uses hash flooding pipe to distribute packets across port representors.
-              Sample Command Line: ./build/doca_flow_hash_pipe -- -l 60 -r pci/08:00.0,pf0sf[0-1]"
+              Sample Command Line: ./build/doca_flow_hash_flooding_pipe -- -l 60 -r pci/08:00.0,pf0sf[0-1]"
 use_cases:
   - name: "Flow hash flooding pipe use case #1"
     args: ""

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -39,6 +39,7 @@ struct flow_skeleton_entry_ctx {
 	uint32_t priority;				   /* priority value */
 	struct doca_flow_match *match;			   /* pointer to match */
 	struct doca_flow_match *match_mask;		   /* pointer to match mask */
+	uint8_t actions_idx;				   /* actions index */
 	struct doca_flow_actions *actions;		   /* pointer to modify actions */
 	struct doca_flow_actions *actions_mask;		   /* pointer to modify actions' mask */
 	const struct doca_flow_action_descs *action_descs; /* pointer to action descriptions */

@@ -41,7 +41,7 @@ extern "C" {
 
 #ifndef BE_IPV4_ADDR
 #define BE_IPV4_ADDR(a, b, c, d) \
-	(DOCA_HTOBE32(((uint32_t)a << 24) + (b << 16) + (c << 8) + d)) /* create IPV4 address */
+	(DOCA_HTOBE32((((uint32_t)a << 24) + (b << 16) + (c << 8) + (d)))) /* create IPV4 address */
 #endif
 
 #ifndef SET_IPV6_ADDR
@@ -75,7 +75,7 @@ extern "C" {
 #endif
 
 #ifndef SHARED_RESOURCE_NUM_VALUES
-#define SHARED_RESOURCE_NUM_VALUES (8) /* Number of doca_flow_shared_resource_type values */
+#define SHARED_RESOURCE_NUM_VALUES (7) /* Number of doca_flow_shared_resource_type values */
 #endif
 
 #define FLOW_COMMON_DEV_MAX (8)	   /* Max number of devices */
@@ -129,8 +129,14 @@ struct entries_status {
 
 /* User struct that hold number of counters and meters to configure for doca_flow */
 struct flow_resources {
-	uint32_t nr_counters; /* number of counters to configure */
-	uint32_t nr_meters;   /* number of traffic meters to configure */
+	enum doca_flow_resource_mode mode; /* resource mode */
+	uint32_t nr_counters;		   /* number of counters to configure */
+	uint32_t nr_meters;		   /* number of traffic meters to configure */
+	uint32_t nr_rss;		   /* number of RSS to configure */
+	uint32_t nr_encap;		   /* number of encap to configure */
+	uint32_t nr_decap;		   /* number of decap to configure */
+	uint32_t nr_ipsec_sa;		   /* number of IPSec SA to configure */
+	uint32_t nr_psp;		   /* number of PSP to configure */
 };
 
 struct flow_devs_manager {
@@ -138,6 +144,7 @@ struct flow_devs_manager {
 	const char *dev_arg;					 /* port's DOCA device argument */
 	struct doca_dev_rep *doca_dev_rep[FLOW_COMMON_REPS_MAX]; /* DOCA representor devices associated with port */
 	uint16_t nb_reps;					 /* Number of reps associated with port */
+	bool device_opened_without_reps;			 /* Was the device opened without reps? */
 };
 
 /* doca flow device context */
@@ -231,7 +238,8 @@ doca_error_t init_doca_flow_ports(int nb_ports,
 				  struct doca_flow_port *ports[],
 				  bool is_port_fwd,
 				  struct doca_dev *dev_arr[],
-				  uint32_t actions_mem_size[]);
+				  uint32_t actions_mem_size[],
+				  struct flow_resources *resources);
 
 /*
  * Initialize DOCA Flow VNF ports
@@ -244,27 +252,45 @@ doca_error_t init_doca_flow_ports(int nb_ports,
  * @actions_mem_size[in]: array of actions memory size
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t init_doca_flow_vnf_ports(int nb_ports, struct doca_flow_port *ports[], uint32_t actions_mem_size[]);
+doca_error_t init_doca_flow_vnf_ports(int nb_ports,
+				      struct doca_flow_port *ports[],
+				      uint32_t actions_mem_size[],
+				      struct flow_resources *resources);
 
 /*
- * Initialize DOCA Flow ports with operation state
+ * Port configuration callback
+ *
+ * @port_cfg [in]: port configuration
+ * @port_id [in]: port ID
+ * @config_cb_ctx [in]: users configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+typedef doca_error_t (*port_config_cb)(struct doca_flow_port_cfg *port_cfg, int port_id, void *config_cb_ctx);
+
+/*
+ * Initialize DOCA Flow ports with custom configuration
  *
  * @nb_ports [in]: number of ports to create
  * @ports [in]: array of ports to create
  * @is_port_fwd [in]: if set to true, this function will call doca_flow_port_pair() as required
  * @dev_arr [in]: doca device array for each port
  * @dev_rep_arr [in]: doca reprtesentor array for each port
- * @states [in]: operation states array for each port
- * @actions_mem_size[in]: actions memory size
+ * @port_cb [in]: port configuration callback
+ * @port_rep_cb [in]: port representor configuration callback
+ * @config_cb_ctx [in]: users configuration context
+ * @actions_mem_size[in]: array of actions memory size
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t init_doca_flow_ports_with_op_state(int nb_ports,
-						struct doca_flow_port *ports[],
-						bool is_port_fwd,
-						struct doca_dev *dev_arr[],
-						struct doca_dev_rep *dev_rep_arr[],
-						enum doca_flow_port_operation_state *states,
-						uint32_t actions_mem_size[]);
+doca_error_t init_doca_flow_ports_with_custom_config(int nb_ports,
+						     struct doca_flow_port *ports[],
+						     bool is_port_fwd,
+						     struct doca_dev *dev_arr[],
+						     struct doca_dev_rep *dev_rep_arr[],
+						     port_config_cb port_cb,
+						     port_config_cb port_rep_cb,
+						     void *config_cb_ctx,
+						     uint32_t actions_mem_size[],
+						     struct flow_resources *resources);
 
 /*
  * Stop DOCA Flow ports
@@ -380,6 +406,29 @@ void destroy_doca_flow_devs(struct flow_dev_ctx *ctx);
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t close_doca_dev_reps(struct doca_dev_rep *dev_reps[], uint16_t nb_reps);
+
+/*
+ * Register common flow statistics interval parameter
+ *
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t register_flow_stats_params(void);
+
+/*
+ * Get the current statistics interval value
+ *
+ * @return: statistics interval in microseconds
+ */
+int get_flow_stats_interval(void);
+
+/*
+ * Wait for packets with optional periodic statistics printing
+ *
+ * @total_wait_sec [in]: total wait time in seconds
+ * @stats_print_func [in]: optional function to call for printing stats (can be NULL)
+ * @stats_context [in]: context to pass to stats_print_func (can be NULL)
+ */
+void flow_wait_for_packets(int total_wait_sec, void (*stats_print_func)(void *), void *stats_context);
 
 #ifdef __cplusplus
 } /* extern "C" */
