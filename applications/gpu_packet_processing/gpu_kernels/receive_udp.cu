@@ -93,8 +93,7 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 		/* No need to impose packet limit here as we want the max number of packets every time */
 		ret = doca_gpu_dev_eth_rxq_recv<DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK,
 									DOCA_GPUNETIO_ETH_MCST_AUTO,
-									DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
-									false>(
+									DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO>(
 								rxq,
 								0,
 								MAX_RX_TIMEOUT_NS,

@@ -33,18 +33,25 @@ DOCA_LOG_REGISTER(VERBS_TWO_SIDED);
 
 cudaStream_t cstream = NULL;
 int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384};
+int message_size_inl32[NUM_MSG_SIZE] = {1, 4, 8, 12, 16, 20, 24, 28, 30, 32};
 volatile bool server_force_quit = false;
 
 /*
  * Server validates data from client at the end of the test
  */
-static void client_validate_test(struct verbs_resources *resources)
+static void server_validate_test(struct verbs_resources *resources)
 {
 	uint8_t *buffer;
 	cudaError_t res_cuda;
+	int msg_size;
 
 	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
-		buffer = (uint8_t *)calloc(resources->cuda_threads * message_size[idx], sizeof(uint8_t));
+		if (resources->recv_inline)
+			msg_size = message_size_inl32[idx];
+		else
+			msg_size = message_size[idx];
+
+		buffer = (uint8_t *)calloc(resources->cuda_threads * msg_size, sizeof(uint8_t));
 		if (buffer == NULL) {
 			DOCA_LOG_ERR("Error memory");
 			return;
@@ -52,7 +59,7 @@ static void client_validate_test(struct verbs_resources *resources)
 
 		res_cuda = cudaMemcpy(buffer,
 				      resources->data_buf[idx],
-				      resources->cuda_threads * message_size[idx],
+				      resources->cuda_threads * msg_size,
 				      cudaMemcpyDefault);
 		if (res_cuda != cudaSuccess) {
 			DOCA_LOG_ERR("Function CUDA Memcpy failed with %s", cudaGetErrorString(res_cuda));
@@ -60,21 +67,37 @@ static void client_validate_test(struct verbs_resources *resources)
 			return;
 		}
 
-		for (int pos = 0; pos < (int)resources->cuda_threads * message_size[idx]; pos++) {
-			if (buffer[pos] != (idx + 1)) {
-				DOCA_LOG_ERR("Validation error: buffer %d pos %d has invalid data %d\n",
-					     idx,
-					     pos,
-					     buffer[pos]);
+		for (int pos = 0; pos < (int)resources->cuda_threads * msg_size; pos++) {
+			if (resources->recv_inline) {
+				// in case of inline, no data in receive buffer
+				if (buffer[pos] != 0) {
+					DOCA_LOG_ERR(
+						"Validation error: buffer %d pos %d has invalid data %d expected 0\n",
+						idx,
+						pos,
+						buffer[pos]);
 
-				free(buffer);
-				return;
+					free(buffer);
+					return;
+				}
+			} else {
+				if (buffer[pos] != (idx + 1)) {
+					DOCA_LOG_ERR(
+						"Validation error: buffer %d pos %d has invalid data %d expected %d\n",
+						idx,
+						pos,
+						buffer[pos],
+						(idx + 1));
+
+					free(buffer);
+					return;
+				}
 			}
 		}
 		free(buffer);
 	}
 
-	DOCA_LOG_WARN("Data validation successfull! Data received correctly from server\n");
+	DOCA_LOG_WARN("Data validation successfull! Data received correctly from client\n");
 }
 
 static doca_error_t destroy_local_memory_objects(struct verbs_resources *resources)
@@ -125,10 +148,16 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 	size_t host_page_size = get_page_size();
 	size_t size_data, size_flag, size_dump;
 	int dmabuf_fd;
+	int msg_size;
 
 	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
+		if (resources->recv_inline)
+			msg_size = message_size_inl32[idx];
+		else
+			msg_size = message_size[idx];
+
 		resources->data_mr[idx] = NULL;
-		size_data = (size_t)(resources->cuda_threads * message_size[idx]);
+		size_data = (size_t)(resources->cuda_threads * msg_size);
 		ALIGN_SIZE(size_data, host_page_size);
 		size_flag = (size_t)resources->cuda_threads * sizeof(uint64_t);
 		ALIGN_SIZE(size_flag, host_page_size);
@@ -143,12 +172,15 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 			DOCA_LOG_ERR("Failed to allocate GPU memory buffer %d of size = %zd (%d x %d)",
 				     idx,
 				     size_data,
-				     message_size[idx],
+				     msg_size,
 				     resources->cuda_threads);
 			goto exit_error;
 		}
 
-		cudaMemset(resources->data_buf[idx], idx + 1, size_data);
+		if (resources->cfg->is_server)
+			cudaMemset(resources->data_buf[idx], 0, size_data);
+		else
+			cudaMemset(resources->data_buf[idx], idx + 1, size_data);
 
 		/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method. */
 		status = doca_gpu_dmabuf_fd(resources->gpu_dev, resources->data_buf[idx], size_data, &dmabuf_fd);
@@ -368,6 +400,8 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	// 125000000;
 	const unsigned long num_messages = cfg->num_iters * NUM_QP;
 	struct doca_gpu_dev_verbs_qp *qp_gpu;
+	int msg_size;
+	uint8_t data_val;
 
 	resources.conn_socket = -1;
 	resources.num_iters = cfg->num_iters;
@@ -375,6 +409,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	resources.nic_handler = cfg->nic_handler;
 	resources.scope = (enum doca_gpu_dev_verbs_exec_scope)cfg->exec_scope;
 	resources.qp_group = false;
+	resources.recv_inline = cfg->recv_inline;
 
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
@@ -429,12 +464,13 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	}
 
 	DOCA_LOG_INFO(
-		"Launching gpunetio_verbs_twosided_bw kernel with 1 CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread %d cpu proxy, %d shared mode",
+		"Launching gpunetio_verbs_twosided_bw kernel with 1 CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread %d cpu proxy, %d shared mode, %s CQE inline 32B",
 		resources.cuda_threads,
 		resources.num_iters,
 		resources.num_iters / resources.cuda_threads, // check this is ok
 		resources.nic_handler,
-		resources.scope);
+		resources.scope,
+		(resources.recv_inline == 1 ? "Yes" : "No"));
 
 	printf(RESULT_LINE);
 	printf(RESULT_FMT_G);
@@ -448,6 +484,14 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	}
 
 	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
+		if (resources.recv_inline == 1) {
+			msg_size = message_size_inl32[idx];
+			data_val = idx + 1;
+		} else {
+			msg_size = message_size[idx];
+			data_val = 0;
+		}
+
 		/* Warmup per size*/
 		status = gpunetio_verbs_two_sided_bw(cstream,
 						     qp_gpu,
@@ -455,7 +499,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						     resources.num_iters,
 						     1,
 						     resources.cuda_threads,
-						     message_size[idx],
+						     msg_size,
 						     resources.data_buf[idx],
 						     htobe32(resources.data_mr[idx]->lkey),
 						     resources.flag_buf[idx],
@@ -465,7 +509,8 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						     (uint64_t *)(resources.dump_flag_buf),
 						     htobe32(resources.dump_flag_mr->lkey),
 						     resources.scope,
-						     false);
+						     false,
+						     data_val);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
 			goto destroy_events;
@@ -486,7 +531,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						     resources.num_iters,
 						     1,
 						     resources.cuda_threads,
-						     message_size[idx],
+						     msg_size,
 						     resources.data_buf[idx],
 						     htobe32(resources.data_mr[idx]->lkey),
 						     resources.flag_buf[idx],
@@ -496,7 +541,8 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						     (uint64_t *)(resources.dump_flag_buf),
 						     htobe32(resources.dump_flag_mr->lkey),
 						     resources.scope,
-						     false);
+						     false,
+						     data_val);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
 			goto destroy_events;
@@ -524,13 +570,15 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 		}
 
 		// Check calculation is the same as in case of perftest
-		double bw = (double)((message_size[idx] * num_messages) / et_ms * 1000.0f / format_factor);
+		double bw = (double)((msg_size * num_messages) / et_ms * 1000.0f / format_factor);
 		double msgrate = (double)(num_messages / et_ms * 1000.0f / 1000000.0f);
 
-		printf(REPORT_FMT_EXT, message_size[idx], resources.num_iters, bw, msgrate, (double)et_ms);
+		printf(REPORT_FMT_EXT, msg_size, resources.num_iters, bw, msgrate, (double)et_ms);
 
 		printf("\n");
 	}
+
+	server_validate_test(&resources);
 
 destroy_events:
 	cudaStreamSynchronize(cstream);
@@ -573,6 +621,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	// 125000000;
 	const unsigned long num_messages = cfg->num_iters * NUM_QP;
 	struct doca_gpu_dev_verbs_qp *qp_gpu;
+	int msg_size;
 
 	resources.conn_socket = -1;
 	resources.num_iters = cfg->num_iters;
@@ -580,6 +629,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	resources.nic_handler = cfg->nic_handler;
 	resources.scope = (enum doca_gpu_dev_verbs_exec_scope)cfg->exec_scope;
 	resources.qp_group = false;
+	resources.recv_inline = cfg->recv_inline;
 
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
@@ -653,6 +703,10 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	}
 
 	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
+		if (resources.recv_inline == 1)
+			msg_size = message_size_inl32[idx];
+		else
+			msg_size = message_size[idx];
 		/* Warmup per size*/
 		status = gpunetio_verbs_two_sided_bw(cstream,
 						     qp_gpu,
@@ -660,7 +714,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						     resources.num_iters,
 						     1,
 						     resources.cuda_threads,
-						     message_size[idx],
+						     msg_size,
 						     resources.data_buf[idx],
 						     htobe32(resources.data_mr[idx]->lkey),
 						     resources.flag_buf[idx],
@@ -670,7 +724,8 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						     (uint64_t *)(resources.dump_flag_buf),
 						     htobe32(resources.dump_flag_mr->lkey),
 						     resources.scope,
-						     true);
+						     true,
+						     0);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
 			goto destroy_events;
@@ -691,7 +746,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						     resources.num_iters,
 						     1,
 						     resources.cuda_threads,
-						     message_size[idx],
+						     msg_size,
 						     resources.data_buf[idx],
 						     htobe32(resources.data_mr[idx]->lkey),
 						     resources.flag_buf[idx],
@@ -701,7 +756,8 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						     resources.prev_flag_buf[idx],
 						     htobe32(resources.dump_flag_mr->lkey),
 						     resources.scope,
-						     true);
+						     true,
+						     0);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
 			goto destroy_events;
@@ -729,15 +785,13 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 		}
 
 		// Check calculation is the same as in case of perftest
-		double bw = (double)((message_size[idx] * num_messages) / et_ms * 1000.0f / format_factor);
+		double bw = (double)((msg_size * num_messages) / et_ms * 1000.0f / format_factor);
 		double msgrate = (double)(num_messages / et_ms * 1000.0f / 1000000.0f);
 
-		printf(REPORT_FMT_EXT, message_size[idx], resources.num_iters, bw, msgrate, (double)et_ms);
+		printf(REPORT_FMT_EXT, msg_size, resources.num_iters, bw, msgrate, (double)et_ms);
 
 		printf("\n");
 	}
-
-	client_validate_test(&resources);
 
 destroy_events:
 	cudaStreamSynchronize(cstream);

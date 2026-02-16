@@ -47,7 +47,7 @@ __global__ void receive_packets(struct doca_gpu_eth_rxq *rxq, uint32_t *exit_con
 				ret = doca_gpu_dev_eth_rxq_recv<exec_scope,
 												DOCA_GPUNETIO_ETH_MCST_AUTO,
 												DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
-												true>(
+												DOCA_GPUNETIO_ETH_RX_ATTR_ALL>(
 								rxq,
 								MAX_RX_NUM_PKTS,
 								MAX_RX_TIMEOUT_NS,
@@ -71,7 +71,7 @@ __global__ void receive_packets(struct doca_gpu_eth_rxq *rxq, uint32_t *exit_con
 			ret = doca_gpu_dev_eth_rxq_recv<exec_scope,
 											DOCA_GPUNETIO_ETH_MCST_AUTO,
 											DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
-											true>(
+											DOCA_GPUNETIO_ETH_RX_ATTR_ALL>(
 							rxq,
 							MAX_RX_NUM_PKTS,
 							MAX_RX_TIMEOUT_NS,

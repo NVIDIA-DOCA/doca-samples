@@ -272,6 +272,7 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 			      struct doca_uar *external_uar,
 			      enum doca_gpu_dev_verbs_nic_handler nic_handler,
 			      bool set_core_direct,
+			      uint8_t recv_inline,
 			      struct doca_verbs_qp **verbs_qp)
 {
 	doca_error_t status = DOCA_SUCCESS, tmp_status = DOCA_SUCCESS;
@@ -279,6 +280,22 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 	struct doca_verbs_qp *new_qp = NULL;
 	uint32_t external_umem_size = 0;
 	size_t dbr_umem_align_sz = ROUND_UP(VERBS_TEST_DBR_SIZE, get_page_size());
+
+	if (recv_inline == 1) {
+		struct doca_verbs_device_attr *verbs_device_attr;
+
+		status = doca_verbs_query_device(verbs_ctx, &verbs_device_attr);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query device attributes: %s", doca_error_get_descr(status));
+			return status;
+		}
+
+		status = doca_verbs_device_attr_get_is_cqe_inline_supported(verbs_device_attr);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("CQE inline resp not supported by this device: %s", doca_error_get_descr(status));
+			return status;
+		}
+	}
 
 	status = doca_verbs_qp_init_attr_create(&verbs_qp_init_attr);
 	if (status != DOCA_SUCCESS) {
@@ -294,8 +311,16 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 
 	status = doca_verbs_qp_init_attr_set_external_uar(verbs_qp_init_attr, external_uar);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set receive_max_sges");
+		DOCA_LOG_ERR("Failed to set external_uar");
 		goto destroy_resources;
+	}
+
+	if (recv_inline == 1) {
+		status = doca_verbs_qp_init_attr_set_cqe_inline(verbs_qp_init_attr, 1);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set cqe_inline");
+			goto destroy_resources;
+		}
 	}
 
 	external_umem_size = calc_qp_external_umem_size(rq_nwqe, sq_nwqe);
@@ -560,6 +585,7 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 			   qp_->external_uar,
 			   qp_->nic_handler,
 			   false,
+			   qp_init_attr->recv_inline,
 			   &qp_->qp);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca verbs qp");
@@ -774,6 +800,7 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 			   qpg_->qp_main.external_uar,
 			   qpg_->qp_main.nic_handler,
 			   false,
+			   0, // recv_inline does not apply here
 			   &qpg_->qp_main.qp);
 
 	if (status != DOCA_SUCCESS) {
@@ -849,6 +876,7 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 			   qpg_->qp_companion.external_uar,
 			   qpg_->qp_companion.nic_handler,
 			   true,
+			   0, // recv_inline does not apply
 			   &qpg_->qp_companion.qp);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca verbs qp");

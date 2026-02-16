@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -41,7 +41,8 @@ typedef struct {
 	uint8_t rtt_meas_psn;	     /* RTT request sequence number */
 	uint8_t rtt_req_to_rtt_sent; /* Set between the algorithm's RTT request until the time at which the RTT packet
 					was sent */
-	uint32_t reserved[8];	     /* Reserved bits */
+	uint32_t min_rtt;	     /* Minimal RTT measurement we got so far */
+	uint32_t reserved[7];	     /* Reserved bits */
 } cc_ctxt_rtt_template_t;
 
 #endif /* RTT_TEMPLATE_CTXT_H_ */
