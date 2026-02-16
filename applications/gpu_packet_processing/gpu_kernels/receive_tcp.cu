@@ -153,8 +153,7 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 
 		ret = doca_gpu_dev_eth_rxq_recv<DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK,
 									DOCA_GPUNETIO_ETH_MCST_AUTO,
-									DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
-									false>(
+									DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO>(
 								rxq,
 								MAX_RX_NUM_PKTS,
 								MAX_RX_TIMEOUT_NS,

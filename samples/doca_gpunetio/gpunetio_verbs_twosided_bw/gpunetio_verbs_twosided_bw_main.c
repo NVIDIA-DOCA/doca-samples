@@ -46,6 +46,7 @@ static doca_error_t register_verbs_params(void)
 	struct doca_argp_param *gpu_device_param;
 	struct doca_argp_param *iters_param;
 	struct doca_argp_param *exec_param;
+	struct doca_argp_param *inline_param;
 	struct doca_argp_param *threads_param;
 
 	status = doca_argp_param_create(&client_param);
@@ -144,6 +145,22 @@ static doca_error_t register_verbs_params(void)
 	doca_argp_param_set_callback(exec_param, exec_callback);
 	doca_argp_param_set_type(exec_param, DOCA_ARGP_TYPE_INT);
 	status = doca_argp_register_param(exec_param);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(status));
+		return status;
+	}
+
+	status = doca_argp_param_create(&inline_param);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(status));
+		return status;
+	}
+	doca_argp_param_set_short_name(inline_param, "x");
+	doca_argp_param_set_long_name(inline_param, "inline");
+	doca_argp_param_set_description(inline_param, "Enable receive inline");
+	doca_argp_param_set_callback(inline_param, recv_inline_callback);
+	doca_argp_param_set_type(inline_param, DOCA_ARGP_TYPE_INT);
+	status = doca_argp_register_param(inline_param);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(status));
 		return status;

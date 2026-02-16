@@ -107,6 +107,7 @@ struct doca_gpu_verbs_qp_init_attr_hl {
 	uint16_t sq_nwqe;
 	uint16_t rq_nwqe;
 	enum doca_gpu_dev_verbs_nic_handler nic_handler;
+	uint8_t recv_inline;
 };
 
 struct doca_gpu_verbs_qp_hl {
@@ -151,8 +152,9 @@ struct verbs_config {
 	char server_ip_addr[MAX_IP_ADDRESS_LEN];	    /* DOCA device name */
 	uint32_t num_iters;				    /* total number orations per cuda kernel */
 	uint32_t cuda_threads;				    /* cuda threads per cuda block */
-	enum doca_gpu_dev_verbs_nic_handler nic_handler;
-	uint8_t exec_scope;
+	enum doca_gpu_dev_verbs_nic_handler nic_handler;    /* GPU_DB or CPU proxy nic handler */
+	uint8_t exec_scope;				    /* set execution scope of high-level functions */
+	uint8_t recv_inline;				    /* enable/disable receive inline */
 };
 
 struct verbs_resources {
@@ -195,6 +197,7 @@ struct verbs_resources {
 	struct doca_gpu_verbs_qp_group_hl *qpg;
 	enum doca_gpu_dev_verbs_nic_handler nic_handler;
 	enum doca_gpu_dev_verbs_exec_scope scope;
+	uint8_t recv_inline; /* enable/disable receive inline */
 
 	/* _lat test */
 	struct ibv_mr *local_poll_mr[NUM_MSG_SIZE]; /* local memory region */
@@ -216,6 +219,7 @@ doca_error_t gpu_pcie_addr_callback(void *param, void *config);
 doca_error_t gid_index_callback(void *param, void *config);
 doca_error_t client_param_callback(void *param, void *config);
 doca_error_t iters_callback(void *param, void *config);
+doca_error_t recv_inline_callback(void *param, void *config);
 doca_error_t threads_callback(void *param, void *config);
 doca_error_t exec_callback(void *param, void *config);
 
@@ -453,6 +457,7 @@ doca_error_t gpunetio_verbs_write_lat(cudaStream_t stream,
  * @dump_flag_mkey [in]: Dump flag memory key
  * @scope [in]: Each put is called per CUDA thread or per CUDA warp
  * @is_client [in]: This kernel should act like the client (true) or server (false)
+ * @recv_inline [in]: Enable recv inline for server
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t gpunetio_verbs_two_sided_bw(cudaStream_t stream,
@@ -471,7 +476,8 @@ doca_error_t gpunetio_verbs_two_sided_bw(cudaStream_t stream,
 					 uint64_t *dump_flag,
 					 uint32_t dump_flag_mkey,
 					 enum doca_gpu_dev_verbs_exec_scope scope,
-					 bool is_client);
+					 bool is_client,
+					 uint8_t recv_inline);
 
 /*
  * Launch a CUDA kernel with to measure One-Sided Get Shared QP bandwidth

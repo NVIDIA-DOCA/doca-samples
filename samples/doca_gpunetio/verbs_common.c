@@ -204,6 +204,26 @@ doca_error_t threads_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - Enable receive inline of 32B messages
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t recv_inline_callback(void *param, void *config)
+{
+	struct verbs_config *verbs_cfg = (struct verbs_config *)config;
+	const int inl = *(uint32_t *)param;
+
+	if (inl == 0)
+		verbs_cfg->recv_inline = 0;
+	else
+		verbs_cfg->recv_inline = 1;
+
+	return DOCA_SUCCESS;
+}
+
+/*
  * ARGP Callback - Set shared QP execution mode (THREAD or WARP)
  *
  * @param [in]: Input parameter
@@ -546,6 +566,7 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 	qp_init.rq_nwqe = VERBS_TEST_QUEUE_SIZE;
 	qp_init.sq_nwqe = VERBS_TEST_QUEUE_SIZE;
 	qp_init.nic_handler = resources->nic_handler;
+	qp_init.recv_inline = resources->recv_inline;
 
 	if (resources->qp_group) {
 		status = doca_gpu_verbs_create_qp_group_hl(&qp_init, &(resources->qpg));

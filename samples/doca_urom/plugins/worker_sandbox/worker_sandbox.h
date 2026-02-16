@@ -26,139 +26,62 @@
 #ifndef WORKER_SANDBOX_H_
 #define WORKER_SANDBOX_H_
 
-#include "ucp/api/ucp.h"
+#include <ucp/api/ucp.h>
+#include <ucs/datastruct/khash.h>
+#include <ucs/datastruct/list.h>
 
-#include <doca_urom.h>
+#include <doca_error.h>
+#include <doca_urom_plugin.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+/* UROM worker sandbox context */
+struct urom_worker_sandbox;
 
-/*
- * Tag send task callback function, will be called once the send task is finished
- *
- * @result [in]: task status
- * @cookie [in]: user cookie
- * @context [in]: task user context
- * @status [in]: UCX status
- */
-typedef void (*urom_sandbox_send_finished)(doca_error_t result,
-					   union doca_data cookie,
-					   union doca_data context,
-					   ucs_status_t status);
+/* UROM sandbox worker interface */
+struct urom_worker_sandbox_iface {
+	struct urom_plugin_iface super; /* DOCA UROM worker plugin interface */
+};
 
-/*
- * Tag recv task callback function, will be called once the recv task is finished
- *
- * @result [in]: task status
- * @cookie [in]: user cookie
- * @context [in]: task user context
- * @buffer [in]: inline receive data, NULL if RDMA
- * @count [in]: data bytes count
- * @sender_tag [in]: sender tag
- * @status [in]: UCX status
- */
-typedef void (*urom_sandbox_recv_finished)(doca_error_t result,
-					   union doca_data cookie,
-					   union doca_data context,
-					   void *buffer,
-					   uint64_t count,
-					   uint64_t sender_tag,
-					   ucs_status_t status);
+/* Sandbox command request structure */
+struct urom_worker_sandbox_request {
+	ucs_list_link_t entry;			    /* UCX list entry */
+	struct urom_worker_sandbox *sandbox_worker; /* Worker sandbox context */
+	struct urom_worker_notif_desc *notif_desc;  /* Worker sandbox notification descriptor */
+	int inline_data;			    /* If notification contains inline data */
+};
 
-/*
- * Memory map task callback function, will be called once the mem map task is finished
- *
- * @result [in]: task status
- * @cookie [in]: user cookie
- * @context [in]: task user context
- * @memh_id [out]: UCX memory ID
- */
-typedef void (*urom_sandbox_mem_map_finished)(doca_error_t result,
-					      union doca_data cookie,
-					      union doca_data context,
-					      uint64_t memh_id);
+/* Init endpoints UCX map */
+KHASH_MAP_INIT_INT64(ep, ucp_ep_h);
+
+/* Sandbox UCP data structure */
+struct urom_worker_sandbox_ucp_data {
+	ucp_context_h ucp_context;     /* UCP context */
+	ucp_worker_h ucp_worker;       /* UCP worker instance */
+	ucp_address_t *worker_address; /* UCP worker address */
+	size_t ucp_addrlen;	       /* UCP worker address length */
+	khash_t(ep) * eps;	       /* Worker endpoints map */
+};
+
+/* UROM worker sandbox context */
+struct urom_worker_sandbox {
+	struct urom_worker_sandbox_ucp_data ucp_data; /* Sandbox UCP data */
+	ucs_list_link_t completed_reqs;		      /* Sandbox worker commands completion list */
+};
 
 /*
- * Create send sandbox tag task
+ * Get DOCA worker plugin interface for sandbox plugin, DOCA UROM worker will load the urom_plugin_get_iface symbol
+ * to get the sandbox interface
  *
- * @worker_ctx [in]: DOCA UROM worker context
- * @cookie [in]: user cookie
- * @context [in]: task user context
- * @dest [in]: destination id
- * @buffer [in]: data pointer
- * @count [in]: data bytes count
- * @tag [in]: tag send
- * @memh_id [in]: memory handle id
- * @cb [in]: program callback to call once the task is finished
+ * @iface [out]: Set DOCA UROM plugin interface for sandbox
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t urom_sandbox_tag_task_send(struct doca_urom_worker *worker_ctx,
-					union doca_data cookie,
-					union doca_data context,
-					uint64_t dest,
-					uint64_t buffer,
-					uint64_t count,
-					uint64_t tag,
-					uint64_t memh_id,
-					urom_sandbox_send_finished cb);
+doca_error_t urom_plugin_get_iface(struct urom_plugin_iface *iface);
 
 /*
- * Create recv sandbox tag task
+ * Get sandbox plugin version, will be used to verify that the host and DPU plugin versions are compatible
  *
- * @worker_ctx [in]: DOCA UROM worker context
- * @cookie [in]: user cookie
- * @context [in]: task user context
- * @buffer [in]: data pointer
- * @count [in]: data bytes count
- * @tag [in]: tag recv
- * @tag_mask [in]: tag recv mask
- * @memh_id [in]: memory handle id
- * @cb [in]: program callback to call once the task is finished
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- *
- * @NOTE: If buffer data is included as part of the notification (inline), it is the user's responsibility to copy
- * the buffer data.
- */
-doca_error_t urom_sandbox_tag_task_recv(struct doca_urom_worker *worker_ctx,
-					union doca_data cookie,
-					union doca_data context,
-					uint64_t buffer,
-					uint64_t count,
-					uint64_t tag,
-					uint64_t tag_mask,
-					uint64_t memh_id,
-					urom_sandbox_recv_finished cb);
-
-/*
- * Create recv sandbox tag task
- *
- * @worker_ctx [in]: DOCA UROM worker context
- * @cookie [in]: user cookie
- * @context [in]: task user context
- * @map_params [in]: memory map parameters
- * @exported_memh_buffer_len [in]: exported buffer length
- * @cb [in]: program callback to call once the task is finished
+ * @version [out]: Set the sandbox worker plugin version
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t urom_sandbox_task_mem_map(struct doca_urom_worker *worker_ctx,
-				       union doca_data cookie,
-				       union doca_data context,
-				       ucp_mem_map_params_t map_params,
-				       size_t exported_memh_buffer_len,
-				       urom_sandbox_mem_map_finished cb);
-
-/*
- * This method inits sandbox plugin.
- *
- * @plugin_id [in]: UROM plugin ID
- * @version [in]: plugin version on DPU side
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-doca_error_t urom_sandbox_init(uint64_t plugin_id, uint64_t version);
-
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
+doca_error_t urom_plugin_get_version(uint64_t *version);
 
 #endif /* WORKER_SANDBOX_H_ */

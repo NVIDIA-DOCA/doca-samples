@@ -26,49 +26,47 @@
 #ifndef WORKER_GRAPH_H_
 #define WORKER_GRAPH_H_
 
-#include "ucp/api/ucp.h"
+#include <ucp/api/ucp.h>
+#include <ucs/datastruct/khash.h>
+#include <ucs/datastruct/list.h>
 
-#include <doca_urom.h>
+#include <doca_error.h>
+#include <doca_urom_plugin.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+/* UROM graph worker interface */
+struct urom_worker_graph_iface {
+	struct urom_plugin_iface super; /* DOCA UROM worker plugin interface */
+};
+
+/* Graph UCP data structure */
+struct urom_worker_graph_ucp_data {
+	ucp_context_h ucp_context;     /* UCP context */
+	ucp_worker_h ucp_worker;       /* UCP worker instance */
+	ucp_address_t *worker_address; /* UCP worker address */
+	size_t ucp_addrlen;	       /* UCP worker address length */
+};
+
+/* UROM worker graph context */
+struct urom_worker_graph {
+	struct urom_worker_graph_ucp_data ucp_data; /* Graph UCP data */
+	ucs_list_link_t completed_reqs;		    /* Graph worker commands completion list */
+};
 
 /*
- * Loopback task callback function, will be called once the loopback task is finished
+ * Get DOCA worker plugin interface for graph plugin, DOCA UROM worker will load the urom_plugin_get_iface symbol
+ * to get the graph interface
  *
- * @result [in]: task result
- * @cookie [in]: user cookie
- * @data [in]: loopback data
- */
-typedef void (*urom_graph_loopback_finished)(doca_error_t result, union doca_data cookie, uint64_t data);
-
-/*
- * Creates send graph tag task
- *
- * @worker_ctx [in]: DOCA UROM worker context
- * @cookie [in]: user cookie
- * @data [in]: loopback data
- * @cb [in]: program callback to call once the task is finished
+ * @iface [out]: Set DOCA UROM plugin interface for graph
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t urom_graph_task_loopback(struct doca_urom_worker *worker_ctx,
-				      union doca_data cookie,
-				      uint64_t data,
-				      urom_graph_loopback_finished cb);
+doca_error_t urom_plugin_get_iface(struct urom_plugin_iface *iface);
 
 /*
+ * Get graph plugin version, will be used to verify that the host and DPU plugin versions are compatible
  *
- * This method inits graph plugin.
- *
- * @plugin_id [in]: plugin id
- * @version [in]: plugin version on DPU side
+ * @version [out]: Set the graph worker plugin version
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t urom_graph_init(uint64_t plugin_id, uint64_t version);
-
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
+doca_error_t urom_plugin_get_version(uint64_t *version);
 
 #endif /* WORKER_GRAPH_H_ */

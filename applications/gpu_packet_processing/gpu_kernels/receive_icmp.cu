@@ -106,8 +106,7 @@ __global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond, struct doca_gpu_et
 	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
 		ret = doca_gpu_dev_eth_rxq_recv<DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP,
 									DOCA_GPUNETIO_ETH_MCST_AUTO,
-									DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
-									false>(
+									DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO>(
 								rxq,
 								MAX_RX_NUM_PKTS_ICMP,
 								MAX_RX_TIMEOUT_NS_ICMP,

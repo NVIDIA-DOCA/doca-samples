@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -55,13 +55,13 @@
 								mode */
 
 typedef enum {
-	RTT_TEMPLATE_UPDATE_FACTOR = 0, /* configurable parameter of update factor */
-	RTT_TEMPLATE_AI = 1,		/* configurable parameter of AI */
-	RTT_TEMPLATE_BASE_RTT = 2,	/* configurable parameter of base rtt */
-	RTT_TEMPLATE_NEW_FLOW_RATE = 3, /* configurable parameter of new flow rate */
-	RTT_TEMPLATE_MIN_RATE = 4,	/* configurable parameter of min rate */
-	RTT_TEMPLATE_MAX_DELAY = 5,	/* configurable parameter of max delay */
-	RTT_TEMPLATE_PARAM_NUM		/* Maximal number of configurable parameters */
+	RTT_TEMPLATE_UPDATE_FACTOR = 0,	    /* configurable parameter of update factor */
+	RTT_TEMPLATE_AI = 1,		    /* configurable parameter of AI */
+	RTT_TEMPLATE_BASE_RELATIVE_RTT = 2, /* configurable parameter of base rtt */
+	RTT_TEMPLATE_NEW_FLOW_RATE = 3,	    /* configurable parameter of new flow rate */
+	RTT_TEMPLATE_MIN_RATE = 4,	    /* configurable parameter of min rate */
+	RTT_TEMPLATE_MAX_DELAY = 5,	    /* configurable parameter of max delay */
+	RTT_TEMPLATE_PARAM_NUM		    /* Maximal number of configurable parameters */
 } rtt_template_params_t;
 
 enum {
@@ -73,7 +73,7 @@ enum {
 const volatile char rtt_template_desc[] = "Rtt template v0.1";
 static const volatile char rtt_template_param_update_factor_desc[] = "UPDATE_FACTOR, update factor";
 static const volatile char rtt_template_param_ai_desc[] = "AI, ai";
-static const volatile char rtt_template_param_base_rtt_desc[] = "BASE_RTT, base rtt";
+static const volatile char rtt_template_param_base_relative_rtt_desc[] = "BASE_RELATIVE_RTT, base relative rtt";
 static const volatile char rtt_template_param_new_flow_rate_desc[] = "NEW_FLOW_RATE, new flow rate";
 static const volatile char rtt_template_param_min_rate_desc[] = "MIN_RATE, min rate";
 static const volatile char rtt_template_param_max_delay_desc[] = "MAX_DELAY, max delay";
@@ -115,12 +115,12 @@ void rtt_template_init(uint32_t algo_idx)
 				     (uint64_t)rtt_template_param_ai_desc);
 	doca_pcc_dev_algo_init_param(algo_idx,
 				     param_num++,
-				     BASE_RTT,
+				     BASE_RELATIVE_RTT,
 				     UINT32_MAX,
 				     1,
 				     1,
-				     sizeof(rtt_template_param_base_rtt_desc),
-				     (uint64_t)rtt_template_param_base_rtt_desc);
+				     sizeof(rtt_template_param_base_relative_rtt_desc),
+				     (uint64_t)rtt_template_param_base_relative_rtt_desc);
 	doca_pcc_dev_algo_init_param(algo_idx,
 				     param_num++,
 				     NEW_FLOW_RATE,
@@ -193,7 +193,14 @@ static inline uint32_t algorithm_core(cc_ctxt_rtt_template_t *ccctx,
 		ccctx->flags.was_cnp = 0;
 	} else {
 		/* RTT */
-		if (rtt > param[RTT_TEMPLATE_BASE_RTT])
+		uint32_t relative_delay = rtt;
+		if (rtt >= ccctx->min_rtt) {
+			relative_delay = rtt - ccctx->min_rtt;
+		} else {
+			ccctx->min_rtt = rtt;
+		}
+
+		if (relative_delay > param[RTT_TEMPLATE_BASE_RELATIVE_RTT])
 			cur_rate = doca_pcc_dev_fxp_mult(is_high_util ? HIGH_UTIL_DEC_FACTOR : DEC_FACTOR, cur_rate);
 		else {
 			cur_rate += param[RTT_TEMPLATE_AI];
@@ -309,6 +316,10 @@ static inline void rtt_template_handle_roce_rtt(doca_pcc_dev_event_t *event,
 	ccctx->rtt = rtt;
 
 	/* Call to the core of the CC algorithm */
+	if ((end_rtt & 0xFF) == 0) {
+		ccctx->min_rtt = INITIAL_MIN_RTT; // Reset min RTT periodically to get real min RTT based on changing
+						  // environment
+	}
 
 #ifdef DOCA_PCC_SAMPLE_TX_BYTES
 	uint8_t is_high_tx_util =
@@ -397,6 +408,7 @@ static inline void rtt_template_handle_new_flow(doca_pcc_dev_event_t *event,
 	ccctx->rtt_req_to_rtt_sent = 1;
 	ccctx->abort_cnt = 0;
 	ccctx->flags.was_nack = 0;
+	ccctx->min_rtt = INITIAL_MIN_RTT;
 	results->rate = param[RTT_TEMPLATE_NEW_FLOW_RATE];
 	results->rtt_req = 1;
 }

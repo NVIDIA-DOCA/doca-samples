@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -31,7 +31,7 @@ project('DOCA_SAMPLE', 'C', 'CPP',
 	meson_version: '>= 0.61.2'
 )
 
-SAMPLE_NAME = 'flow_switch_direction_info'
+SAMPLE_NAME = 'telemetry_export_metrics'
 
 # Comment this line to restore warnings of experimental DOCA features
 add_project_arguments('-D DOCA_ALLOW_EXPERIMENTAL_API', language: ['c', 'cpp'])
@@ -40,39 +40,21 @@ sample_dependencies = []
 # Required for all DOCA programs
 sample_dependencies += dependency('doca-common')
 # The DOCA library of the sample itself
-sample_dependencies += dependency('doca-flow')
-# Additional DOCA library that is relevant for this sample
-sample_dependencies += dependency('doca-dpdk-bridge')
+sample_dependencies += dependency('doca-telemetry-exporter')
 # Utility DOCA library for executables
 sample_dependencies += dependency('doca-argp')
-# Required DOCA Driver
-sample_dependencies += dependency('libdpdk')
 
 sample_srcs = [
 	# The sample itself
 	SAMPLE_NAME + '_sample.c',
 	# Main function for the sample's executable
 	SAMPLE_NAME + '_main.c',
-	# Common code for the DOCA library samples
-	'../flow_common.c',
-	# Flow switch common code for the DOCA library samples
-	'../flow_switch_common.c',
-	# Common code for all DOCA samples
-	'../../common.c',
-	# Common code for all DOCA applications
-	'../../../applications/common/dpdk_utils.c',
 ]
 
 sample_inc_dirs  = []
-# Common DOCA library logic
-sample_inc_dirs += include_directories('..')
-# Common DOCA logic (samples)
-sample_inc_dirs += include_directories('../..')
-# Common DOCA logic (applications)
-sample_inc_dirs += include_directories('../../../applications/common/')
 
 executable('doca_' + SAMPLE_NAME, sample_srcs,
-	c_args : '-Wno-missing-braces',
 	dependencies : sample_dependencies,
 	include_directories: sample_inc_dirs,
 	install: false)
+

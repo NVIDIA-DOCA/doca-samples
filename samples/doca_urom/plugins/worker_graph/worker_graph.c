@@ -23,179 +23,323 @@
  *
  */
 
+#include <stdlib.h>
 #include <string.h>
 
-#include <doca_buf.h>
 #include <doca_log.h>
-#include <doca_pe.h>
+#include <doca_compat.h>
 
 #include "urom_graph.h"
 #include "worker_graph.h"
 
 DOCA_LOG_REGISTER(UROM::WORKER::GRAPH);
 
-static uint64_t graph_id;	      /* Graph plugin id, will be set in init function */
-static uint64_t graph_version = 0x01; /* Graph plugin version */
-
-/* Graph task metadata */
-struct doca_graph_task_data {
-	union doca_data cookie;		      /* User cookie */
-	urom_graph_loopback_finished user_cb; /* User callback */
-};
+static uint64_t plugin_version = 0x01; /* Graph plugin DPU version */
 
 /*
- * Packs graph commands
+ * Close graph worker plugin
  *
- * @graph_cmd [in]: internal graph command to pack
- * @packed_cmd_len [in/out]: packed buffer size, at the end will store packed command size
- * @packed_cmd [out]: Store graph packed command
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ * @worker_ctx [in]: DOCA UROM worker context
  */
-static doca_error_t urom_worker_graph_cmd_pack(struct urom_worker_graph_cmd *graph_cmd,
-					       size_t *packed_cmd_len,
-					       void *packed_cmd)
+static void urom_worker_graph_close(struct urom_worker_ctx *worker_ctx)
 {
-	size_t pack_len;
-	void *pack_head = packed_cmd;
+	struct urom_worker_graph *graph_worker = worker_ctx->plugin_ctx;
 
-	pack_len = sizeof(struct urom_worker_graph_cmd);
-	if (pack_len > *packed_cmd_len)
-		return DOCA_ERROR_INITIALIZATION;
+	if (graph_worker == NULL)
+		return;
 
-	/* pack base command */
-	memcpy(pack_head, graph_cmd, pack_len);
-	*packed_cmd_len = pack_len;
+	ucp_worker_release_address(graph_worker->ucp_data.ucp_worker, graph_worker->ucp_data.worker_address);
+	ucp_worker_destroy(graph_worker->ucp_data.ucp_worker);
+	ucp_cleanup(graph_worker->ucp_data.ucp_context);
+	free(graph_worker);
+}
+
+/*
+ * Open graph worker plugin
+ *
+ * @ctx [in]: DOCA UROM worker context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t urom_worker_graph_open(struct urom_worker_ctx *ctx)
+{
+	struct urom_worker_graph *graph_worker;
+	ucp_worker_params_t worker_params;
+	ucp_params_t ucp_params;
+	ucp_config_t *ucp_config;
+	ucp_context_h ucp_context;
+	ucp_worker_h ucp_worker;
+	ucs_status_t status;
+
+	graph_worker = malloc(sizeof(*graph_worker));
+	if (graph_worker == NULL)
+		return DOCA_ERROR_NO_MEMORY;
+
+	status = ucp_config_read(NULL, NULL, &ucp_config);
+	if (status != UCS_OK)
+		goto err_cfg;
+
+	/* Avoid SM when using XGVMI */
+	status = ucp_config_modify(ucp_config, "TLS", "^sm");
+	if (status != UCS_OK)
+		goto err_cfg;
+
+		/* Use TCP for CM, but do not allow TCP for RDMA when using xGVMI */
+#if UCP_API_VERSION >= UCP_VERSION(1, 17)
+	status = ucp_config_modify(ucp_config, "TCP_PUT_ENABLE", "n");
+#else
+	status = ucp_config_modify(ucp_config, "PUT_ENABLE", "n");
+#endif
+	if (status != UCS_OK)
+		goto err_cfg;
+
+	ucp_params.field_mask = UCP_PARAM_FIELD_FEATURES;
+	ucp_params.features = UCP_FEATURE_TAG | UCP_FEATURE_RMA | UCP_FEATURE_AMO64 | UCP_FEATURE_EXPORTED_MEMH;
+	ucp_params.features |= UCP_FEATURE_WAKEUP;
+
+	status = ucp_init(&ucp_params, ucp_config, &ucp_context);
+	ucp_config_release(ucp_config);
+	if (status != UCS_OK)
+		goto err_cfg;
+
+	worker_params.field_mask = UCP_WORKER_PARAM_FIELD_THREAD_MODE;
+	worker_params.thread_mode = UCS_THREAD_MODE_SINGLE;
+	status = ucp_worker_create(ucp_context, &worker_params, &ucp_worker);
+	if (status != UCS_OK)
+		goto err_worker_create;
+
+	graph_worker->ucp_data.worker_address = NULL;
+	status = ucp_worker_get_address(ucp_worker,
+					&graph_worker->ucp_data.worker_address,
+					&graph_worker->ucp_data.ucp_addrlen);
+	if (status != UCS_OK)
+		goto err_worker_address;
+
+	DOCA_LOG_DBG("Worker addr length: %lu", graph_worker->ucp_data.ucp_addrlen);
+
+	graph_worker->ucp_data.ucp_context = ucp_context;
+	graph_worker->ucp_data.ucp_worker = ucp_worker;
+
+	ucs_list_head_init(&graph_worker->completed_reqs);
+	ctx->plugin_ctx = graph_worker;
+	return DOCA_SUCCESS;
+
+err_worker_address:
+	ucp_worker_destroy(ucp_worker);
+err_worker_create:
+	ucp_cleanup(ucp_context);
+err_cfg:
+	free(graph_worker);
+	return DOCA_ERROR_NOT_FOUND;
+}
+
+/*
+ * Unpacking graph worker command
+ *
+ * @packed_cmd [in]: packed worker command
+ * @packed_cmd_len [in]: packed worker command length
+ * @cmd [out]: set unpacked UROM worker command
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t urom_worker_graph_cmd_unpack(void *packed_cmd, size_t packed_cmd_len, struct urom_worker_cmd **cmd)
+{
+	if (packed_cmd_len < sizeof(struct urom_worker_graph_cmd)) {
+		DOCA_LOG_INFO("Invalid packed command length");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	*cmd = packed_cmd;
+
+	if ((*cmd)->len != sizeof(struct urom_worker_graph_cmd)) {
+		DOCA_LOG_ERR("Received invalid graph command size");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
 	return DOCA_SUCCESS;
 }
 
 /*
- * Graph commands completion callback function
+ * Handle loopback graph command
  *
- * @task [in]: UROM worker task
- * @task_user_data [in]: task user data
- * @ctx_user_data [in]: worker context user data
+ * @ctx [in]: DOCA UROM worker context
+ * @cmd_desc [in]: graph command descriptor
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static void urom_graph_completed(struct doca_urom_worker_cmd_task *task,
-				 union doca_data task_user_data,
-				 union doca_data ctx_user_data)
+static doca_error_t graph_loopback_cmd(struct urom_worker_ctx *ctx, struct urom_worker_cmd_desc *cmd_desc)
 {
-	(void)task_user_data;
-	(void)ctx_user_data;
-
-	size_t data_len;
-	doca_error_t result;
-	struct doca_buf *response;
-	struct urom_worker_notify_graph notify_error = {0};
-	struct urom_worker_notify_graph *graph_notify = &notify_error;
-	struct doca_graph_task_data *task_data;
-
-	task_data = (struct doca_graph_task_data *)doca_urom_worker_cmd_task_get_user_data(task);
-	if (task_data == NULL) {
-		DOCA_LOG_ERR("Failed to get task data buffer");
-		result = DOCA_ERROR_INVALID_VALUE;
-		goto error_exit;
-	}
-
-	response = doca_urom_worker_cmd_task_get_response(task);
-	if (response == NULL) {
-		DOCA_LOG_ERR("Failed to get task response buffer");
-		result = DOCA_ERROR_INVALID_VALUE;
-		goto error_exit;
-	}
-
-	result = doca_buf_get_data_len(response, &data_len);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get response data length");
-		goto error_exit;
-	}
-
-	if (data_len != sizeof(*graph_notify)) {
-		DOCA_LOG_ERR("Task response data length is different from notification expected length");
-		result = DOCA_ERROR_INVALID_VALUE;
-		goto error_exit;
-	}
-
-	result = doca_buf_get_data(response, (void **)&graph_notify);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get response data");
-		goto error_exit;
-	}
-
-	result = doca_task_get_status(doca_urom_worker_cmd_task_as_task(task));
-	if (result != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Bad worker command task status %s", doca_error_get_descr(result));
-
-error_exit:
-	(task_data->user_cb)(result, task_data->cookie, graph_notify->loopback.data);
-	result = doca_urom_worker_cmd_task_release(task);
-	if (result != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to release worker command task %s", doca_error_get_descr(result));
-}
-
-doca_error_t urom_graph_task_loopback(struct doca_urom_worker *worker_ctx,
-				      union doca_data cookie,
-				      uint64_t data,
-				      urom_graph_loopback_finished cb)
-{
-	size_t cmd_len = 0;
-	doca_error_t tmp_result, result;
-	struct doca_buf *payload;
-	struct doca_urom_worker_cmd_task *task;
-	struct doca_graph_task_data *task_data;
+	struct urom_worker_graph *graph_worker = ctx->plugin_ctx;
+	struct urom_worker_notify *notif;
+	struct urom_worker_notif_desc *notif_desc;
+	struct urom_worker_notify_graph *graph_notif;
 	struct urom_worker_graph_cmd *graph_cmd;
 
-	/* Allocate task */
-	result = doca_urom_worker_cmd_task_allocate_init(worker_ctx, graph_id, &task);
-	if (result != DOCA_SUCCESS)
-		return result;
+	graph_cmd = (struct urom_worker_graph_cmd *)&cmd_desc->worker_cmd.plugin_cmd;
+	notif_desc = malloc(sizeof(*notif_desc) + sizeof(*graph_notif));
+	if (notif_desc == NULL)
+		return DOCA_ERROR_NO_MEMORY;
 
-	payload = doca_urom_worker_cmd_task_get_payload(task);
-	result = doca_buf_get_data(payload, (void **)&graph_cmd);
-	if (result != DOCA_SUCCESS)
-		goto task_destroy;
+	notif_desc->dest_id = cmd_desc->dest_id;
 
-	result = doca_buf_get_data_len(payload, &cmd_len);
-	if (result != DOCA_SUCCESS)
-		goto task_destroy;
+	notif = &notif_desc->worker_notif;
+	notif->type = cmd_desc->worker_cmd.type;
+	notif->status = DOCA_SUCCESS;
+	notif->urom_context = cmd_desc->worker_cmd.urom_context;
+	notif->len = sizeof(*graph_notif);
 
-	/* Populate commands attributes */
-	graph_cmd->type = UROM_WORKER_CMD_GRAPH_LOOPBACK;
-	graph_cmd->loopback.data = data;
+	graph_notif = (struct urom_worker_notify_graph *)notif->plugin_notif;
+	graph_notif->type = UROM_WORKER_NOTIFY_GRAPH_LOOPBACK;
+	graph_notif->loopback.data = graph_cmd->loopback.data;
 
-	result = urom_worker_graph_cmd_pack(graph_cmd, &cmd_len, (void *)graph_cmd);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to pack graph command");
-		goto task_destroy;
-	}
-
-	result = doca_buf_set_data(payload, graph_cmd, cmd_len);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set task command data");
-		goto task_destroy;
-	}
-
-	task_data = (struct doca_graph_task_data *)doca_urom_worker_cmd_task_get_user_data(task);
-	task_data->user_cb = cb;
-	task_data->cookie = cookie;
-
-	doca_urom_worker_cmd_task_set_cb(task, urom_graph_completed);
-	result = doca_task_submit(doca_urom_worker_cmd_task_as_task(task));
-	if (result != DOCA_SUCCESS)
-		goto task_destroy;
-
+	ucs_list_add_tail(&graph_worker->completed_reqs, &notif_desc->entry);
 	return DOCA_SUCCESS;
-task_destroy:
-	tmp_result = doca_urom_worker_cmd_task_release(task);
-	if (tmp_result != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to release worker command task, error [%s]", doca_error_get_descr(tmp_result));
-	return result;
 }
 
-doca_error_t urom_graph_init(uint64_t plugin_id, uint64_t version)
+/*
+ * Handle UROM graph worker commands function
+ *
+ * @ctx [in]: DOCA UROM worker context
+ * @cmd_list [in]: command descriptor list to handle
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t urom_worker_graph_worker_cmd(struct urom_worker_ctx *ctx, ucs_list_link_t *cmd_list)
 {
-	if (version != graph_version)
-		return DOCA_ERROR_UNSUPPORTED_VERSION;
+	struct urom_worker_cmd *cmd;
+	struct urom_worker_cmd_desc *cmd_desc;
+	struct urom_worker_graph_cmd *graph_cmd;
+	doca_error_t status = DOCA_SUCCESS;
 
-	graph_id = plugin_id;
+	while (!ucs_list_is_empty(cmd_list)) {
+		cmd_desc = ucs_list_extract_head(cmd_list, struct urom_worker_cmd_desc, entry);
+
+		status = urom_worker_graph_cmd_unpack(&cmd_desc->worker_cmd, cmd_desc->worker_cmd.len, &cmd);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to unpack command");
+			free(cmd_desc);
+			return status;
+		}
+		graph_cmd = (struct urom_worker_graph_cmd *)cmd_desc->worker_cmd.plugin_cmd;
+		switch (graph_cmd->type) {
+		case UROM_WORKER_NOTIFY_GRAPH_LOOPBACK:
+			status = graph_loopback_cmd(ctx, cmd_desc);
+			break;
+		default:
+			DOCA_LOG_INFO("Invalid GRAPH command type: %lu", graph_cmd->type);
+			free(cmd_desc);
+			break;
+		}
+		free(cmd_desc);
+		if (status != DOCA_SUCCESS)
+			return status;
+	}
+
+	return status;
+}
+
+/*
+ * Get graph worker address
+ *
+ * UROM worker calls the function twice, first one to get address length and second one to get address data
+ *
+ * @ctx [in]: DOCA UROM worker context
+ * @addr [out]: set worker address
+ * @addr_len [out]: set worker address length
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t urom_worker_graph_addr(struct urom_worker_ctx *ctx, void *addr, uint64_t *addr_len)
+{
+	struct urom_worker_graph *graph_worker = (struct urom_worker_graph *)ctx->plugin_ctx;
+
+	/* Always return address size */
+	if (*addr_len < graph_worker->ucp_data.ucp_addrlen) {
+		/* Return required buffer size on error */
+		*addr_len = graph_worker->ucp_data.ucp_addrlen;
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	*addr_len = graph_worker->ucp_data.ucp_addrlen;
+	memcpy(addr, graph_worker->ucp_data.worker_address, *addr_len);
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Check graph worker tasks progress to get notifications
+ *
+ * @ctx [in]: DOCA UROM worker context
+ * @notif_list [out]: set notification descriptors for completed tasks
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t urom_worker_graph_progress(struct urom_worker_ctx *ctx, ucs_list_link_t *notif_list)
+{
+	struct urom_worker_graph *graph_worker = (struct urom_worker_graph *)ctx->plugin_ctx;
+	struct urom_worker_notif_desc *nd;
+
+	ucp_worker_progress(graph_worker->ucp_data.ucp_worker);
+
+	if (ucs_list_is_empty(&graph_worker->completed_reqs))
+		return DOCA_ERROR_EMPTY;
+
+	while (!ucs_list_is_empty(&graph_worker->completed_reqs)) {
+		nd = ucs_list_extract_head(&graph_worker->completed_reqs, struct urom_worker_notif_desc, entry);
+
+		ucs_list_add_tail(notif_list, &nd->entry);
+	}
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Packing graph notification
+ *
+ * @notif [in]: graph notification to pack
+ * @packed_notif_len [in/out]: set packed notification command buffer size
+ * @packed_notif [out]: set packed notification command buffer
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t urom_worker_graph_notif_pack(struct urom_worker_notify *notif,
+						 size_t *packed_notif_len,
+						 void *packed_notif)
+{
+	size_t pack_len;
+	void *pack_head = packed_notif;
+
+	/* pack base command */
+	pack_len = ucs_offsetof(struct urom_worker_notify, plugin_notif) + sizeof(struct urom_worker_notify_graph);
+	if (pack_len > *packed_notif_len) {
+		DOCA_LOG_ERR("Notification pack length is greater than packed buffer length");
+		return DOCA_ERROR_INITIALIZATION;
+	}
+
+	memcpy(pack_head, notif, pack_len);
+	*packed_notif_len = pack_len;
+
+	return DOCA_SUCCESS;
+}
+
+/* Define UROM graph plugin interface, set plugin functions */
+static struct urom_worker_graph_iface urom_worker_graph = {
+	.super.open = urom_worker_graph_open,
+	.super.close = urom_worker_graph_close,
+	.super.addr = urom_worker_graph_addr,
+	.super.worker_cmd = urom_worker_graph_worker_cmd,
+	.super.progress = urom_worker_graph_progress,
+	.super.notif_pack = urom_worker_graph_notif_pack,
+};
+
+doca_error_t urom_plugin_get_iface(struct urom_plugin_iface *iface)
+{
+	if (iface == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	DOCA_STRUCT_CTOR(urom_worker_graph.super);
+	*iface = urom_worker_graph.super;
+	return DOCA_SUCCESS;
+}
+
+doca_error_t urom_plugin_get_version(uint64_t *version)
+{
+	if (version == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	*version = plugin_version;
 	return DOCA_SUCCESS;
 }

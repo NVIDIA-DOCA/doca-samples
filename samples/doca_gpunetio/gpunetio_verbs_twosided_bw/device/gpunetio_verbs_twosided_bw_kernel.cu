@@ -88,13 +88,16 @@ __global__ void server(struct doca_gpu_dev_verbs_qp *qp,
 		       uint64_t *dst_flag,
 		       uint32_t dst_flag_mkey,
 		       uint64_t *dump_flag,
-		       uint32_t dump_flag_mkey)
+		       uint32_t dump_flag_mkey,
+				uint8_t recv_inline)
 {
 	doca_gpu_dev_verbs_ticket_t out_ticket;
 	uint32_t lane_idx = doca_gpu_dev_verbs_get_lane_id();
 	uint32_t tidx = threadIdx.x + (blockIdx.x * blockDim.x);
 	uint64_t wqe_idx;
 	struct doca_gpu_dev_verbs_wqe *wqe_ptr;
+	struct mlx5_cqe64 *cqe64;
+	uint8_t *inl_data;
 
 	for (uint32_t iter_idx = tidx; iter_idx < num_iters; iter_idx += (blockDim.x * gridDim.x)) {
 
@@ -126,20 +129,53 @@ __global__ void server(struct doca_gpu_dev_verbs_qp *qp,
 			doca_gpu_dev_verbs_mark_wqes_ready(qp, wqe_idx, wqe_idx);
 			doca_gpu_dev_verbs_submit(qp, wqe_idx + 1);
 
-			/*
-			 * First thread in block waits for all recv posted in this iteration.
-			 * As an alternative, doca_gpu_dev_verbs_recv_wait() can be called with a specific out_ticket.
-			 * This way a specific CUDA thread can wait on a specific Recv WQE. 
-			 *
-			 * pre-Hopper GPU memory regions require to ensure the memory consistency before returning.
-			 */
+			if (recv_inline == 0) {
+				/*
+				 * First thread in block waits for all recv posted in this iteration.
+				 * As an alternative, doca_gpu_dev_verbs_recv_wait() can be called with a specific out_ticket.
+				 * This way a specific CUDA thread can wait on a specific Recv WQE. 
+				 *
+				 * pre-Hopper GPU memory regions require to ensure the memory consistency before returning.
+				 */
+#if __CUDA_ARCH__ < 900
+				doca_gpu_dev_verbs_recv_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO, DOCA_GPUNETIO_VERBS_MCST_ENABLED>(
+											qp, doca_gpu_dev_verbs_addr{.addr = (uint64_t)dump_flag, .key = dump_flag_mkey}, &cqe64);
+#else
+				doca_gpu_dev_verbs_recv_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO, DOCA_GPUNETIO_VERBS_MCST_DISABLED>(
+											qp, doca_gpu_dev_verbs_addr{.addr = 0, .key = 0}, &cqe64);
+#endif
+			}
+		}
+
+		/*
+		 * In case of receive inline feature, up to 32B can be stored in the CQE.
+		 * Each thread can call the recv_wait function on their out_ticket and read the data
+		 * in the CQE.
+		 */
+		if (recv_inline > 0) {
 #if __CUDA_ARCH__ < 900
 			doca_gpu_dev_verbs_recv_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO, DOCA_GPUNETIO_VERBS_MCST_ENABLED>(
-										qp, doca_gpu_dev_verbs_addr{.addr = (uint64_t)dump_flag, .key = dump_flag_mkey});
+										qp, doca_gpu_dev_verbs_addr{.addr = (uint64_t)dump_flag, .key = dump_flag_mkey}, &out_ticket, &cqe64);
 #else
 			doca_gpu_dev_verbs_recv_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO, DOCA_GPUNETIO_VERBS_MCST_DISABLED>(
-										qp, doca_gpu_dev_verbs_addr{.addr = 0, .key = 0});
+										qp, doca_gpu_dev_verbs_addr{.addr = 0, .key = 0}, &out_ticket, &cqe64);
 #endif
+
+			/*
+			 * CQE inline validation. This sample is not for performance measurements.
+			 * It's a showcase of all possible two-sided combinations.
+			 */
+			if (doca_gpu_dev_verbs_cqe_is_inline(cqe64) == 0)
+				printf("Error: CQE %ld has not inline data as expected\n", out_ticket);
+			else {
+				if (doca_gpu_dev_verbs_cqe_get_bytes(cqe64) != data_size)
+					printf("Error: CQE %ld expected bytes %d received inline bytes %d\n",
+						out_ticket, data_size, doca_gpu_dev_verbs_cqe_get_bytes(cqe64));
+
+				inl_data = doca_gpu_dev_verbs_cqe_get_inl_data(cqe64);
+				if (inl_data[0] != recv_inline)
+					printf("Error: CQE %ld expected value %d got %d\n", out_ticket, recv_inline, inl_data[0]);
+			}
 		}
 
 		__syncthreads();
@@ -164,7 +200,8 @@ doca_error_t gpunetio_verbs_two_sided_bw(cudaStream_t stream,
 					 uint64_t *dump_flag,
 					 uint32_t dump_flag_mkey,
 					 enum doca_gpu_dev_verbs_exec_scope scope,
-					 bool is_client)
+					 bool is_client,
+					uint8_t recv_inline)
 {
 	cudaError_t result = cudaSuccess;
 
@@ -210,7 +247,8 @@ doca_error_t gpunetio_verbs_two_sided_bw(cudaStream_t stream,
 									   dst_flag,
 									   dst_flag_mkey,
 									   dump_flag,
-									   dump_flag_mkey);
+									   dump_flag_mkey,
+									recv_inline);
 		else if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP)
 			server<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP>
 				<<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
@@ -224,7 +262,8 @@ doca_error_t gpunetio_verbs_two_sided_bw(cudaStream_t stream,
 									   dst_flag,
 									   dst_flag_mkey,
 									   dump_flag,
-									   dump_flag_mkey);
+									   dump_flag_mkey,
+									recv_inline);
 	}
 
 	result = cudaGetLastError();
