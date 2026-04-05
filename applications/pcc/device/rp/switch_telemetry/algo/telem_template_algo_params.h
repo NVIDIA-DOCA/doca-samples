@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -39,7 +39,7 @@
 #define RATE_MAX (1 << (20))		   /* Maximum value of rate */
 
 #define AI (40) // in bytes
-#define HAI (2 ^ (20 - 8))
+#define HAI (2 << (20 - 8))
 #define BASE_QLEN (200000) // in Bytes
 #define PORT_BW_G (200)
 
