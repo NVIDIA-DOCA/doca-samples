@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -66,15 +66,8 @@ static struct doca_flow_pipe_entry *egress_entries[EGRESS_ENTRIES];
  */
 static void handle_rx_tx_pkts(void)
 {
-	int rc;
 	uint32_t secs = PROCESSING_TIMEOUT_SECS, nb_rx, i;
 	struct rte_mbuf *mbufs[MAX_PKTS];
-
-	rc = rte_flow_dynf_metadata_register();
-	if (unlikely(rc)) {
-		DOCA_LOG_ERR("Enable metadata failed");
-		return;
-	}
 
 	while (secs--) {
 		sleep(1);

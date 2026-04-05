@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -312,19 +312,13 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 			       DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY;
 	uint8_t tcp_state;
 	doca_error_t result;
-	int rc, i, nb_packets, total_valid_packets = 0;
+	int i, nb_packets, total_valid_packets = 0;
 	uint64_t timeout_s = 5; /* Timeout in seconds */
 	time_t end_time, max_end_time;
 
 	memset(&match_o, 0, sizeof(match_o));
 	memset(&match_r, 0, sizeof(match_r));
 	memset(&actions, 0, sizeof(actions));
-
-	rc = rte_flow_dynf_metadata_register();
-	if (unlikely(rc)) {
-		DOCA_LOG_ERR("Enable metadata failed");
-		return DOCA_ERROR_BAD_STATE;
-	}
 
 	max_end_time = time(NULL) + timeout_s; /* Absolute maximum timeout */
 	end_time = max_end_time;	       /* Current timeout */
