@@ -186,7 +186,7 @@ int cmd_version(int argc, char *argv[], struct cmd *cmd);
  * Defines a list of available options of a tool command mode. Option list
  * entries are defined with OPT_ENTRY_*() macros.
  *
- * A help option that shows the the help menu is added to the command mode
+ * A help option that shows the help menu is added to the command mode
  * option list by default.
  * A verbose option that increases verbosity is added to the command mode option
  * list by default. If set, debug logging will be printed.

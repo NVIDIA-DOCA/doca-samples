@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -52,7 +52,7 @@ DOCA_LOG_REGISTER(IP_FRAG::DP);
 struct ip_frag_sw_counters {
 	uint64_t frags_rx;	/* Fragments received that need reassembly */
 	uint64_t whole;		/* Whole packets (either reassembled or not fragmented) */
-	uint64_t mtu_fits_rx;	/* Packets received that are within the MTU size and dont require fragmentation */
+	uint64_t mtu_fits_rx;	/* Packets received that are within the MTU size and don't require fragmentation */
 	uint64_t mtu_exceed_rx; /* Packets received that exceed the MTU size and require fragmentation */
 	uint64_t frags_gen;	/* Fragments generated from packets that exceed the MTU size */
 	uint64_t err;		/* Errors */
@@ -1180,7 +1180,7 @@ static doca_error_t ip_frag_rss_pipe_create(struct ip_frag_ctx *ctx,
 		return ret;
 	}
 
-	ret = doca_flow_pipe_add_entry(0, pipe, NULL, 0, NULL, NULL, NULL, 0, &status, NULL);
+	ret = doca_flow_pipe_basic_add_entry(0, pipe, NULL, 0, NULL, NULL, NULL, 0, &status, NULL);
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add rss entry: %s", doca_error_get_descr(ret));
 		return ret;

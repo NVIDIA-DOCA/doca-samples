@@ -47,14 +47,26 @@ DOCA_LOG_REGISTER(FLOW_IP_IN_IP);
 #define NB_DECAP_ACTIONS (1)
 
 #define NB_PORT_FWD_PIPE_ENTRIES (1)
-#define NB_ENCAP_PIPE_ENTRIES (2)
-#define NB_DECAP_PIPE_ENTRIES (2)
-#define NB_INGRESS_PIPE_ENTRIES (NB_PORT_FWD_PIPE_ENTRIES + NB_DECAP_PIPE_ENTRIES)
-#define NB_EGRESS_PIPE_ENTRIES (NB_ENCAP_PIPE_ENTRIES)
-#define TOTAL_ENTRIES (NB_INGRESS_PIPE_ENTRIES + NB_EGRESS_PIPE_ENTRIES)
+#define NB_ENCAP_IPV6_PIPE_ENTRIES (2)
+#define NB_ENCAP_IPV4_PIPE_ENTRIES (2)
+#define NB_DECAP_IPV6_PIPE_ENTRIES (2)
+#define NB_DECAP_IPV4_PIPE_ENTRIES (2)
+#define NB_ENCAP_TOTAL_ENTRIES (NB_ENCAP_IPV6_PIPE_ENTRIES + NB_ENCAP_IPV4_PIPE_ENTRIES)
+#define NB_DECAP_TOTAL_ENTRIES (NB_DECAP_IPV6_PIPE_ENTRIES + NB_DECAP_IPV4_PIPE_ENTRIES)
+#define NB_TOTAL_PORT_FWD_ENTRIES (NB_PORT_FWD_PIPE_ENTRIES)
+#define TOTAL_ENTRIES (NB_TOTAL_PORT_FWD_ENTRIES + NB_ENCAP_TOTAL_ENTRIES + NB_DECAP_TOTAL_ENTRIES)
 
 #define NEXT_HEADER_IPV4 (4)
 #define NEXT_HEADER_IPV6 (41)
+
+/*
+ * Selector MAC addresses to route packets to different outer tunnel types:
+ * - Packets with src MAC 66:66:66:66:66:66 will be encapsulated with IPv6 outer tunnel
+ * - Packets with src MAC 99:99:99:99:99:99 will be encapsulated with IPv4 outer tunnel
+ * This demonstrates both IPv4 and IPv6 outer tunnel encapsulation in the same pipeline.
+ */
+static const uint8_t encap_ipv6_selector_src_mac[6] = {0x66, 0x66, 0x66, 0x66, 0x66, 0x66};
+static const uint8_t encap_ipv4_selector_src_mac[6] = {0x99, 0x99, 0x99, 0x99, 0x99, 0x99};
 
 /*
  * Create DOCA Flow ingress pipe with transport layer match and set pkt meta value.
@@ -79,7 +91,7 @@ static doca_error_t create_port_fwd_pipe(struct doca_flow_port *port,
 	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
-	enum doca_flow_flags_type flags;
+	uint32_t flags;
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
@@ -104,7 +116,7 @@ static doca_error_t create_port_fwd_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg domain: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, NB_INGRESS_PIPE_ENTRIES);
+	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, NB_PORT_FWD_PIPE_ENTRIES);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg nr_entries: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -136,8 +148,8 @@ static doca_error_t create_port_fwd_pipe(struct doca_flow_port *port,
 	}
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
-	flags = DOCA_FLOW_NO_WAIT;
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
+	flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add port forwarding entry: %s", doca_error_get_descr(result));
 		return result;
@@ -151,13 +163,13 @@ destroy_pipe_cfg:
 }
 
 /*
- * Add DOCA Flow pipe entries with example encap values.
+ * Add DOCA Flow pipe entries with example IPv6 tunnel encap values.
  *
  * @pipe [in]: pipe of the entry
  * @status [in]: user context for adding entry
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t add_encap_pipe_entries(struct doca_flow_pipe *pipe,
+static doca_error_t add_encap_ipv6_entries(struct doca_flow_pipe *pipe,
 					   struct entries_status *status,
 					   struct doca_flow_pipe_entry *encap_entries[])
 {
@@ -180,7 +192,7 @@ static doca_error_t add_encap_pipe_entries(struct doca_flow_pipe *pipe,
 	SET_IPV6_ADDR(actions.encap_cfg.encap.outer.ip6.src_ip, ipv6_src[0], ipv6_src[1], ipv6_src[2], ipv6_src[3]);
 	SET_IPV6_ADDR(actions.encap_cfg.encap.outer.ip6.dst_ip, ipv6_dst[0], ipv6_dst[1], ipv6_dst[2], ipv6_dst[3]);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &encap_entries[0]);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &encap_entries[0]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry matching on ipv4: %s", doca_error_get_descr(result));
 		return result;
@@ -192,7 +204,7 @@ static doca_error_t add_encap_pipe_entries(struct doca_flow_pipe *pipe,
 	SET_IPV6_ADDR(actions.encap_cfg.encap.outer.ip6.src_ip, ipv6_src[3], ipv6_src[2], ipv6_src[1], ipv6_src[0]);
 	SET_IPV6_ADDR(actions.encap_cfg.encap.outer.ip6.dst_ip, ipv6_dst[3], ipv6_dst[2], ipv6_dst[1], ipv6_dst[0]);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &encap_entries[1]);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &encap_entries[1]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry matching on ipv6: %s", doca_error_get_descr(result));
 		return result;
@@ -202,7 +214,7 @@ static doca_error_t add_encap_pipe_entries(struct doca_flow_pipe *pipe,
 }
 
 /*
- * Create DOCA Flow pipe on EGRESS domain with match on the packet meta and encap action with changeable values.
+ * Create DOCA Flow pipe on EGRESS domain with match on the packet meta and IPv6 encap action.
  *
  * @port [in]: port of the pipe.
  * @port_id [in]: port_id for forwarding
@@ -210,7 +222,10 @@ static doca_error_t add_encap_pipe_entries(struct doca_flow_pipe *pipe,
  * @nb_entries [out]: pointer to put into number of entries.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t create_encap_pipe(struct doca_flow_port *port, uint32_t port_id, struct doca_flow_pipe **encap_pipe)
+static doca_error_t create_encap_ipv6_pipe(struct doca_flow_port *port,
+					   uint32_t port_id,
+					   struct doca_flow_pipe *miss_pipe,
+					   struct doca_flow_pipe **encap_pipe)
 {
 	struct doca_flow_match match;
 	struct doca_flow_match match_mask;
@@ -228,9 +243,17 @@ static doca_error_t create_encap_pipe(struct doca_flow_port *port, uint32_t port
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&fwd_miss, 0, sizeof(fwd_miss));
 
-	/* Match on inner L3 type */
+	/* Match on inner L3 type and selector MAC */
 	match.parser_meta.outer_l3_type = UINT32_MAX;
 	match_mask.parser_meta.outer_l3_type = UINT32_MAX;
+	SET_MAC_ADDR(match.outer.eth.src_mac,
+		     encap_ipv6_selector_src_mac[0],
+		     encap_ipv6_selector_src_mac[1],
+		     encap_ipv6_selector_src_mac[2],
+		     encap_ipv6_selector_src_mac[3],
+		     encap_ipv6_selector_src_mac[4],
+		     encap_ipv6_selector_src_mac[5]);
+	SET_MAC_ADDR(match_mask.outer.eth.src_mac, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
 
 	mon.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
@@ -239,11 +262,12 @@ static doca_error_t create_encap_pipe(struct doca_flow_port *port, uint32_t port
 	actions_ipv4.encap_cfg.is_l2 = false;
 	SET_MAC_ADDR(actions_ipv4.encap_cfg.encap.outer.eth.src_mac, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
 	SET_MAC_ADDR(actions_ipv4.encap_cfg.encap.outer.eth.dst_mac, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+	actions_ipv4.encap_cfg.encap.outer.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV6);
 	actions_ipv4.encap_cfg.encap.outer.l3_type = DOCA_FLOW_L3_TYPE_IP6;
 	SET_IPV6_ADDR(actions_ipv4.encap_cfg.encap.outer.ip6.src_ip, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff);
 	SET_IPV6_ADDR(actions_ipv4.encap_cfg.encap.outer.ip6.dst_ip, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff);
 	actions_ipv4.encap_cfg.encap.outer.ip6.hop_limit = 64;
-	actions_ipv4.encap_cfg.encap.outer.ip6.traffic_class = 0xdb;
+	actions_ipv4.encap_cfg.encap.outer.ip6.traffic_class = 0xd8;
 	actions_ipv4.encap_cfg.encap.outer.ip6.next_proto = NEXT_HEADER_IPV4;
 	actions_ipv4.encap_cfg.encap.tun.type = DOCA_FLOW_TUN_IP_IN_IP;
 
@@ -269,7 +293,7 @@ static doca_error_t create_encap_pipe(struct doca_flow_port *port, uint32_t port
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg domain: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, NB_ENCAP_PIPE_ENTRIES);
+	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, NB_ENCAP_IPV6_PIPE_ENTRIES);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg nr_entries: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -294,7 +318,14 @@ static doca_error_t create_encap_pipe(struct doca_flow_port *port, uint32_t port
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = port_id;
 
-	fwd_miss.type = DOCA_FLOW_FWD_DROP;
+	/*
+	 * Cascade logic for encap pipes on EGRESS domain:
+	 * - If packet matches IPv6 selector MAC (66:66:66:66:66:66), encap with IPv6 outer tunnel
+	 * - On miss, forward to IPv4 encap pipe to check for IPv4 selector MAC (99:99:99:99:99:99)
+	 * - This creates a cascade: IPv6_encap -> miss -> IPv4_encap -> miss -> DROP
+	 */
+	fwd_miss.type = DOCA_FLOW_FWD_PIPE;
+	fwd_miss.next_pipe = miss_pipe;
 
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, &fwd_miss, encap_pipe);
 	if (result != DOCA_SUCCESS) {
@@ -311,13 +342,180 @@ destroy_pipe_cfg:
 }
 
 /*
- * Add DOCA Flow pipe entries with example decap values.
+ * Add DOCA Flow pipe entries with example IPv4 tunnel encap values.
  *
  * @pipe [in]: pipe of the entry
  * @status [in]: user context for adding entry
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t add_decap_pipe_entries(struct doca_flow_pipe *pipe,
+static doca_error_t add_encap_ipv4_entries(struct doca_flow_pipe *pipe,
+					   struct entries_status *status,
+					   struct doca_flow_pipe_entry *encap_entries[])
+{
+	struct doca_flow_match match;
+	struct doca_flow_actions actions;
+	doca_error_t result;
+	uint8_t smac[] = {0xde, 0xad, 0xbe, 0xef, 0x00, 0x01};
+	uint8_t dmac[] = {0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc};
+	doca_be32_t outer_src_ips[] = {BE_IPV4_ADDR(10, 0, 0, 1), BE_IPV4_ADDR(30, 0, 0, 1)};
+	doca_be32_t outer_dst_ips[] = {BE_IPV4_ADDR(20, 0, 0, 1), BE_IPV4_ADDR(40, 0, 0, 1)};
+
+	memset(&match, 0, sizeof(match));
+	memset(&actions, 0, sizeof(actions));
+
+	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
+
+	SET_MAC_ADDR(actions.encap_cfg.encap.outer.eth.src_mac, smac[0], smac[1], smac[2], smac[3], smac[4], smac[5]);
+	SET_MAC_ADDR(actions.encap_cfg.encap.outer.eth.dst_mac, dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5]);
+	actions.encap_cfg.encap.outer.ip4.src_ip = outer_src_ips[0];
+	actions.encap_cfg.encap.outer.ip4.dst_ip = outer_dst_ips[0];
+
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &encap_entries[0]);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add IPv4 outer encap entry matching on IPv4: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV6;
+
+	SET_MAC_ADDR(actions.encap_cfg.encap.outer.eth.src_mac, smac[5], smac[4], smac[3], smac[2], smac[1], smac[0]);
+	SET_MAC_ADDR(actions.encap_cfg.encap.outer.eth.dst_mac, dmac[5], dmac[4], dmac[3], dmac[2], dmac[1], dmac[0]);
+	actions.encap_cfg.encap.outer.ip4.src_ip = outer_src_ips[1];
+	actions.encap_cfg.encap.outer.ip4.dst_ip = outer_dst_ips[1];
+
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &encap_entries[1]);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add IPv4 outer encap entry matching on IPv6: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Create DOCA Flow pipe on EGRESS domain with match on the packet meta and IPv4 encap action.
+ *
+ * @port [in]: port of the pipe.
+ * @port_id [in]: port_id for forwarding
+ * @status [in]: user context for adding entries.
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t create_encap_ipv4_pipe(struct doca_flow_port *port,
+					   uint32_t port_id,
+					   struct doca_flow_pipe **encap_pipe)
+{
+	struct doca_flow_match match;
+	struct doca_flow_match match_mask;
+	struct doca_flow_monitor mon;
+	struct doca_flow_actions actions_ipv4_inner_v4, actions_ipv4_inner_v6, *actions_arr[NB_ENCAP_ACTIONS];
+	struct doca_flow_fwd fwd, fwd_miss;
+	struct doca_flow_pipe_cfg *pipe_cfg;
+	doca_error_t result;
+
+	memset(&match, 0, sizeof(match));
+	memset(&match_mask, 0, sizeof(match_mask));
+	memset(&mon, 0, sizeof(mon));
+	memset(&actions_ipv4_inner_v4, 0, sizeof(actions_ipv4_inner_v4));
+	memset(&actions_ipv4_inner_v6, 0, sizeof(actions_ipv4_inner_v6));
+	memset(&fwd, 0, sizeof(fwd));
+	memset(&fwd_miss, 0, sizeof(fwd_miss));
+
+	match.parser_meta.outer_l3_type = UINT32_MAX;
+	match_mask.parser_meta.outer_l3_type = UINT32_MAX;
+	SET_MAC_ADDR(match.outer.eth.src_mac,
+		     encap_ipv4_selector_src_mac[0],
+		     encap_ipv4_selector_src_mac[1],
+		     encap_ipv4_selector_src_mac[2],
+		     encap_ipv4_selector_src_mac[3],
+		     encap_ipv4_selector_src_mac[4],
+		     encap_ipv4_selector_src_mac[5]);
+	SET_MAC_ADDR(match_mask.outer.eth.src_mac, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+
+	mon.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
+
+	actions_ipv4_inner_v4.encap_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
+	actions_ipv4_inner_v4.encap_cfg.is_l2 = false;
+	SET_MAC_ADDR(actions_ipv4_inner_v4.encap_cfg.encap.outer.eth.src_mac, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+	SET_MAC_ADDR(actions_ipv4_inner_v4.encap_cfg.encap.outer.eth.dst_mac, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+	actions_ipv4_inner_v4.encap_cfg.encap.outer.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
+	actions_ipv4_inner_v4.encap_cfg.encap.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+	actions_ipv4_inner_v4.encap_cfg.encap.outer.ip4.src_ip = UINT32_MAX;
+	actions_ipv4_inner_v4.encap_cfg.encap.outer.ip4.dst_ip = UINT32_MAX;
+	actions_ipv4_inner_v4.encap_cfg.encap.outer.ip4.ttl = 64;
+	actions_ipv4_inner_v4.encap_cfg.encap.outer.ip4.dscp_ecn = 0xd8;
+	actions_ipv4_inner_v4.encap_cfg.encap.outer.ip4.next_proto = NEXT_HEADER_IPV4;
+	actions_ipv4_inner_v4.encap_cfg.encap.tun.type = DOCA_FLOW_TUN_IP_IN_IP;
+
+	actions_ipv4_inner_v6 = actions_ipv4_inner_v4;
+	actions_ipv4_inner_v6.encap_cfg.encap.outer.ip4.next_proto = NEXT_HEADER_IPV6;
+
+	actions_arr[0] = &actions_ipv4_inner_v4;
+	actions_arr[1] = &actions_ipv4_inner_v6;
+
+	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create IPv4 encap pipe cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = set_flow_pipe_cfg(pipe_cfg, "ENCAP_IPV4_PIPE", DOCA_FLOW_PIPE_BASIC, false);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set IPv4 encap pipe cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_domain(pipe_cfg, DOCA_FLOW_PIPE_DOMAIN_EGRESS);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set IPv4 encap pipe domain: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, NB_ENCAP_IPV4_PIPE_ENTRIES);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set IPv4 encap pipe nr_entries: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, &match_mask);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set IPv4 encap pipe match: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &mon);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set IPv4 encap pipe monitor: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ENCAP_ACTIONS);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set IPv4 encap pipe actions: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	fwd.type = DOCA_FLOW_FWD_PORT;
+	fwd.port_id = port_id;
+
+	fwd_miss.type = DOCA_FLOW_FWD_DROP;
+
+	result = doca_flow_pipe_create(pipe_cfg, &fwd, &fwd_miss, encap_pipe);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create IPv4 encap pipe: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	doca_flow_pipe_cfg_destroy(pipe_cfg);
+
+	return DOCA_SUCCESS;
+
+destroy_pipe_cfg:
+	doca_flow_pipe_cfg_destroy(pipe_cfg);
+	return result;
+}
+
+/*
+ * Add DOCA Flow pipe entries with example IPv6 tunnel decap values.
+ *
+ * @pipe [in]: pipe of the entry
+ * @status [in]: user context for adding entry
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t add_decap_ipv6_entries(struct doca_flow_pipe *pipe,
 					   struct entries_status *status,
 					   struct doca_flow_pipe_entry *decap_entries[])
 {
@@ -336,7 +534,7 @@ static doca_error_t add_decap_pipe_entries(struct doca_flow_pipe *pipe,
 	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5]);
 	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &decap_entries[0]);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &decap_entries[0]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry matching on ipv4: %s", doca_error_get_descr(result));
 		return result;
@@ -347,7 +545,7 @@ static doca_error_t add_decap_pipe_entries(struct doca_flow_pipe *pipe,
 	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, dmac[5], dmac[4], dmac[3], dmac[2], dmac[1], dmac[0]);
 	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV6);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &decap_entries[1]);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &decap_entries[1]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry matching on ipv6: %s", doca_error_get_descr(result));
 		return result;
@@ -357,7 +555,7 @@ static doca_error_t add_decap_pipe_entries(struct doca_flow_pipe *pipe,
 }
 
 /*
- * Create DOCA Flow pipe with match on the next_proto and decap action with changeable values.
+ * Create DOCA Flow pipe with match on the next_proto and IPv6 decap action.
  *
  * @port [in]: port of the pipe.
  * @port_id [in]: port_id for forwarding
@@ -365,9 +563,9 @@ static doca_error_t add_decap_pipe_entries(struct doca_flow_pipe *pipe,
  * @nb_entries [out]: pointer to put into number of entries.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t create_decap_pipe(struct doca_flow_port *port,
-				      struct doca_flow_pipe *next_pipe,
-				      struct doca_flow_pipe **decap_pipe)
+static doca_error_t create_decap_ipv6_pipe(struct doca_flow_port *port,
+					   struct doca_flow_pipe *next_pipe,
+					   struct doca_flow_pipe **decap_pipe)
 {
 	struct doca_flow_match match;
 	struct doca_flow_monitor mon;
@@ -402,13 +600,13 @@ static doca_error_t create_decap_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to create doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
 		return result;
 	}
-	result = set_flow_pipe_cfg(pipe_cfg, "DECAP_PIPE", DOCA_FLOW_PIPE_BASIC, true);
+	result = set_flow_pipe_cfg(pipe_cfg, "DECAP_PIPE", DOCA_FLOW_PIPE_BASIC, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 	/* keep the default domain */
-	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, NB_ENCAP_PIPE_ENTRIES);
+	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, NB_DECAP_IPV6_PIPE_ENTRIES);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg nr_entries: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -449,6 +647,152 @@ destroy_pipe_cfg:
 }
 
 /*
+ * Add DOCA Flow pipe entries with example IPv4 tunnel decap values.
+ *
+ * @pipe [in]: pipe of the entry
+ * @status [in]: user context for adding entry
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t add_decap_ipv4_entries(struct doca_flow_pipe *pipe,
+					   struct entries_status *status,
+					   struct doca_flow_pipe_entry *decap_entries[])
+{
+	struct doca_flow_match match;
+	struct doca_flow_actions actions;
+	doca_error_t result;
+	uint8_t smac[] = {0x44, 0x55, 0x66, 0x77, 0x88, 0x99};
+	uint8_t dmac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+
+	memset(&match, 0, sizeof(match));
+	memset(&actions, 0, sizeof(actions));
+
+	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
+	match.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+	match.outer.ip4.next_proto = NEXT_HEADER_IPV4;
+
+	SET_MAC_ADDR(actions.decap_cfg.eth.src_mac, smac[0], smac[1], smac[2], smac[3], smac[4], smac[5]);
+	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5]);
+	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
+	actions.decap_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
+
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &decap_entries[0]);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add IPv4 decap entry (inner IPv4): %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	match.outer.ip4.next_proto = NEXT_HEADER_IPV6;
+	SET_MAC_ADDR(actions.decap_cfg.eth.src_mac, smac[5], smac[4], smac[3], smac[2], smac[1], smac[0]);
+	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, dmac[5], dmac[4], dmac[3], dmac[2], dmac[1], dmac[0]);
+	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV6);
+
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &decap_entries[1]);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add IPv4 decap entry (inner IPv6): %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Create DOCA Flow pipe with match on IPv4 tunnel packets and decap action with changeable values.
+ *
+ * @port [in]: port of the pipe.
+ * @next_pipe [in]: next pipe to forward decapped packets
+ * @decap_pipe [out]: created pipe pointer
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t create_decap_ipv4_pipe(struct doca_flow_port *port,
+					   struct doca_flow_pipe *next_pipe,
+					   struct doca_flow_pipe *miss_pipe,
+					   struct doca_flow_pipe **decap_pipe)
+{
+	struct doca_flow_match match;
+	struct doca_flow_monitor mon;
+	struct doca_flow_actions actions, *actions_arr[NB_DECAP_ACTIONS];
+	struct doca_flow_fwd fwd, fwd_miss;
+	struct doca_flow_pipe_cfg *pipe_cfg;
+	doca_error_t result;
+
+	memset(&match, 0, sizeof(match));
+	memset(&mon, 0, sizeof(mon));
+	memset(&actions, 0, sizeof(actions));
+	memset(&fwd, 0, sizeof(fwd));
+	memset(&fwd_miss, 0, sizeof(fwd_miss));
+
+	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
+	match.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+	match.outer.ip4.next_proto = UINT8_MAX;
+
+	mon.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
+
+	actions.decap_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
+	SET_MAC_ADDR(actions.decap_cfg.eth.src_mac, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+	actions.decap_cfg.eth.type = UINT16_MAX;
+
+	actions_arr[0] = &actions;
+
+	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create IPv4 decap pipe cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+	result = set_flow_pipe_cfg(pipe_cfg, "DECAP_IPV4_PIPE", DOCA_FLOW_PIPE_BASIC, true);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set IPv4 decap pipe cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, NB_DECAP_IPV4_PIPE_ENTRIES);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set IPv4 decap pipe nr_entries: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set IPv4 decap pipe match: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &mon);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set IPv4 decap pipe monitor: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_DECAP_ACTIONS);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set IPv4 decap pipe actions: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	/*
+	 * Cascade logic for decap pipes on INGRESS domain:
+	 * - IPv4 decap pipe (root) matches IPv4 outer tunnel packets
+	 * - On match: decap and forward to port_fwd_pipe
+	 * - On miss: forward to IPv6 decap pipe to check for IPv6 outer tunnel
+	 * - This creates a cascade: IPv4_decap -> miss -> IPv6_decap -> miss -> port_fwd (raw packets)
+	 */
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = next_pipe;
+
+	fwd_miss.type = DOCA_FLOW_FWD_PIPE;
+	fwd_miss.next_pipe = miss_pipe;
+
+	result = doca_flow_pipe_create(pipe_cfg, &fwd, &fwd_miss, decap_pipe);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create IPv4 decap pipe: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	doca_flow_pipe_cfg_destroy(pipe_cfg);
+
+	return DOCA_SUCCESS;
+
+destroy_pipe_cfg:
+	doca_flow_pipe_cfg_destroy(pipe_cfg);
+	return result;
+}
+
+/*
  * Prepare egress domain pipeline.
  *
  * @ingress_port [in]: pointer to the ingress port.
@@ -464,37 +808,59 @@ static doca_error_t prepare_encap_pipeline(struct doca_flow_port *ingress_port,
 					   struct entries_status *status,
 					   struct doca_flow_pipe_entry *encap_entries[])
 {
-	struct doca_flow_pipe *port_fwd_pipe, *encap_pipe;
+	struct doca_flow_pipe *encap_ipv6_pipe, *encap_ipv4_pipe;
+	struct doca_flow_pipe *port_fwd_pipe;
 	doca_error_t result;
 
 	status->nb_processed = 0;
 
-	result = create_encap_pipe(egress_port, egress_port_id, &encap_pipe);
+	result = create_encap_ipv4_pipe(egress_port, egress_port_id, &encap_ipv4_pipe);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create encap pipe with entries: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to create IPv4 encap pipe: %s", doca_error_get_descr(result));
 		return result;
 	}
-	result = add_encap_pipe_entries(encap_pipe, status, encap_entries);
+	result = add_encap_ipv4_entries(encap_ipv4_pipe, status, encap_entries + NB_ENCAP_IPV6_PIPE_ENTRIES);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to add entries to encap pipe: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to add entries to IPv4 encap pipe: %s", doca_error_get_descr(result));
 		return result;
 	}
-	result = flow_process_entries(egress_port, status, NB_EGRESS_PIPE_ENTRIES);
+	result = flow_process_entries(egress_port, status, NB_ENCAP_IPV4_PIPE_ENTRIES);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to process encap entries: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to process IPv4 encap entries: %s", doca_error_get_descr(result));
 		return result;
 	}
 
 	status->nb_processed = 0;
 
-	result = create_port_fwd_pipe(ingress_port, encap_pipe, egress_port_id, true, status, &port_fwd_pipe);
+	result = create_encap_ipv6_pipe(egress_port, egress_port_id, encap_ipv4_pipe, &encap_ipv6_pipe);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create port fwd pipe with entries: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to create IPv6 encap pipe: %s", doca_error_get_descr(result));
 		return result;
 	}
+	result = add_encap_ipv6_entries(encap_ipv6_pipe, status, encap_entries);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add entries to IPv6 encap pipe: %s", doca_error_get_descr(result));
+		return result;
+	}
+	result = flow_process_entries(egress_port, status, NB_ENCAP_IPV6_PIPE_ENTRIES);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to process IPv6 encap entries: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	status->nb_processed = 0;
+
+	result = create_port_fwd_pipe(ingress_port, encap_ipv6_pipe, egress_port_id, true, status, &port_fwd_pipe);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create port forwarding pipe: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	status->nb_processed = 0;
+
 	result = flow_process_entries(ingress_port, status, NB_PORT_FWD_PIPE_ENTRIES);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to process encap entries: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to process port forwarding entry: %s", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -515,7 +881,8 @@ static doca_error_t prepare_decap_pipeline(struct doca_flow_port *ingress_port,
 					   struct entries_status *status,
 					   struct doca_flow_pipe_entry *decap_entries[])
 {
-	struct doca_flow_pipe *port_fwd_pipe, *decap_pipe;
+	struct doca_flow_pipe *port_fwd_pipe;
+	struct doca_flow_pipe *decap_ipv6_pipe, *decap_ipv4_pipe;
 	doca_error_t result;
 
 	status->nb_processed = 0;
@@ -526,19 +893,45 @@ static doca_error_t prepare_decap_pipeline(struct doca_flow_port *ingress_port,
 		return result;
 	}
 
-	result = create_decap_pipe(ingress_port, port_fwd_pipe, &decap_pipe);
+	result = flow_process_entries(ingress_port, status, NB_PORT_FWD_PIPE_ENTRIES);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to process port forwarding entry: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	status->nb_processed = 0;
+
+	result = create_decap_ipv6_pipe(ingress_port, port_fwd_pipe, &decap_ipv6_pipe);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create decap pipe with entries: %s", doca_error_get_descr(result));
 		return result;
 	}
-	result = add_decap_pipe_entries(decap_pipe, status, decap_entries);
+	result = add_decap_ipv6_entries(decap_ipv6_pipe, status, decap_entries);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entries to decap pipe: %s", doca_error_get_descr(result));
 		return result;
 	}
-	result = flow_process_entries(ingress_port, status, NB_INGRESS_PIPE_ENTRIES);
+	result = flow_process_entries(ingress_port, status, NB_DECAP_IPV6_PIPE_ENTRIES);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to process decap entries: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to process IPv6 decap entries: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	status->nb_processed = 0;
+
+	result = create_decap_ipv4_pipe(ingress_port, port_fwd_pipe, decap_ipv6_pipe, &decap_ipv4_pipe);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create IPv4 decap pipe with entries: %s", doca_error_get_descr(result));
+		return result;
+	}
+	result = add_decap_ipv4_entries(decap_ipv4_pipe, status, decap_entries + NB_DECAP_IPV6_PIPE_ENTRIES);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add entries to IPv4 decap pipe: %s", doca_error_get_descr(result));
+		return result;
+	}
+	result = flow_process_entries(ingress_port, status, NB_DECAP_IPV4_PIPE_ENTRIES);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to process IPv4 decap entries: %s", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -567,32 +960,38 @@ struct ip_in_ip_stats_context {
 static void print_ip_in_ip_stats(struct doca_flow_pipe_entry *encap_entries[],
 				 struct doca_flow_pipe_entry *decap_entries[])
 {
+	const char *encap_labels[NB_ENCAP_TOTAL_ENTRIES] = {
+		"Encap IPv6 outer (inner IPv4)",
+		"Encap IPv6 outer (inner IPv6)",
+		"Encap IPv4 outer (inner IPv4)",
+		"Encap IPv4 outer (inner IPv6)",
+	};
+	const char *decap_labels[NB_DECAP_TOTAL_ENTRIES] = {
+		"Decap IPv6 outer (inner IPv4)",
+		"Decap IPv6 outer (inner IPv6)",
+		"Decap IPv4 outer (inner IPv4)",
+		"Decap IPv4 outer (inner IPv6)",
+	};
 	doca_error_t result;
-	struct doca_flow_resource_query encap_ipv4_query_stats, decap_ipv4_query_stats, encap_ipv6_query_stats,
-		decap_ipv6_query_stats;
+	struct doca_flow_resource_query query_stats;
 
-	result = doca_flow_resource_query_entry(encap_entries[0], &encap_ipv4_query_stats);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
+	for (int i = 0; i < NB_ENCAP_TOTAL_ENTRIES; i++) {
+		result = doca_flow_resource_query_entry(encap_entries[i], &query_stats);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query %s counter: %s", encap_labels[i], doca_error_get_descr(result));
+			continue;
+		}
+		DOCA_LOG_INFO("%s counted %ld packets", encap_labels[i], query_stats.counter.total_pkts);
 	}
-	result = doca_flow_resource_query_entry(decap_entries[0], &decap_ipv4_query_stats);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
+
+	for (int i = 0; i < NB_DECAP_TOTAL_ENTRIES; i++) {
+		result = doca_flow_resource_query_entry(decap_entries[i], &query_stats);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query %s counter: %s", decap_labels[i], doca_error_get_descr(result));
+			continue;
+		}
+		DOCA_LOG_INFO("%s counted %ld packets", decap_labels[i], query_stats.counter.total_pkts);
 	}
-	result = doca_flow_resource_query_entry(encap_entries[1], &encap_ipv6_query_stats);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
-	}
-	result = doca_flow_resource_query_entry(decap_entries[1], &decap_ipv6_query_stats);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query entry counter: %s", doca_error_get_descr(result));
-	}
-	DOCA_LOG_INFO("Encap: counted %ld IPv4 packets, %ld IPv6 packets",
-		      encap_ipv4_query_stats.counter.total_pkts,
-		      encap_ipv6_query_stats.counter.total_pkts);
-	DOCA_LOG_INFO("Decap: counted %ld IPv4 packets, %ld IPv6 packets",
-		      decap_ipv4_query_stats.counter.total_pkts,
-		      decap_ipv6_query_stats.counter.total_pkts);
 }
 
 /*
@@ -616,14 +1015,14 @@ doca_error_t flow_ip_in_ip(int nb_queues)
 	doca_error_t result;
 	uint32_t raw_port_id = 0;		   /* sends and receives "raw" (not encapped) packets */
 	uint32_t tunnel_port_id = raw_port_id ^ 1; /* sends and receives "tunnel" packets (IP-in-IP encap) */
-	struct doca_flow_pipe_entry *encap_entries[NB_ENCAP_PIPE_ENTRIES];
-	struct doca_flow_pipe_entry *decap_entries[NB_DECAP_PIPE_ENTRIES];
+	struct doca_flow_pipe_entry *encap_entries[NB_ENCAP_TOTAL_ENTRIES];
+	struct doca_flow_pipe_entry *decap_entries[NB_DECAP_TOTAL_ENTRIES];
 	struct entries_status entries_status = {0};
 
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
-	resource.nr_counters = nb_ports * NB_PORT_FWD_PIPE_ENTRIES + NB_DECAP_PIPE_ENTRIES + NB_ENCAP_PIPE_ENTRIES;
-	resource.nr_encap = NB_ENCAP_PIPE_ENTRIES;
-	resource.nr_decap = NB_DECAP_PIPE_ENTRIES;
+	resource.nr_counters = NB_TOTAL_PORT_FWD_ENTRIES + NB_DECAP_TOTAL_ENTRIES + NB_ENCAP_TOTAL_ENTRIES;
+	resource.nr_encap = NB_ENCAP_TOTAL_ENTRIES;
+	resource.nr_decap = NB_DECAP_TOTAL_ENTRIES;
 	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));

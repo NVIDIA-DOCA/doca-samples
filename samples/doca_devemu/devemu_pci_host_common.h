@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -44,13 +44,14 @@ struct mapped_memory {
 };
 
 struct devemu_host_resources {
-	int container_fd;			  /**< The fd of the VFIO container */
-	int group_fd;				  /**< The fd of the VFIO group */
-	int device_fd;				  /**< The fd of the VFIO device */
-	struct bar_mapped_region stateful_region; /**< mapped memory of the stateful region */
-	struct bar_mapped_region db_region;	  /**< mapped memory of the DB region */
-	int *msix_vector_to_fd;			  /**< Map of MSI-X index to event fd */
-	struct mapped_memory dma_mem;		  /**< mapped memory of for DMA operation */
+	int container_fd;			     /**< The fd of the VFIO container */
+	int group_fd;				     /**< The fd of the VFIO group */
+	int device_fd;				     /**< The fd of the VFIO device */
+	struct bar_mapped_region transaction_region; /**< mapped memory of the transaction region */
+	struct bar_mapped_region stateful_region;    /**< mapped memory of the stateful region */
+	struct bar_mapped_region db_region;	     /**< mapped memory of the DB region */
+	int *msix_vector_to_fd;			     /**< Map of MSI-X index to event fd */
+	struct mapped_memory dma_mem;		     /**< mapped memory of for DMA operation */
 };
 
 /*

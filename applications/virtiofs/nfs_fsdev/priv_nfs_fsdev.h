@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -125,7 +125,7 @@ struct async_context {
 
 struct nfs_fsdev_recovery *nfs_fsdev_create_recovery(const char *filename, struct database *db);
 void nfs_fsdev_destroy_recovery(struct nfs_fsdev_recovery *recovery);
-void priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global);
+int priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global);
 void priv_nfs_fsdev_deinit(struct nfs_fsdev *fsdev);
 bool nfs_fsdev_db_insert(struct database *db, int state, int ref_count, int inode, struct nfs_fh3 *fh);
 bool nfs_fsdev_db_init_new_root(unsigned long inode, const struct nfs_fh *fh, struct database *db);
@@ -181,6 +181,10 @@ struct nfs_fsdev {
 	}
 	nfs_fsdev()
 	{
+	}
+	int nfs_fsdev_init()
+	{
+		return priv_nfs_fsdev_init(this, nfs_global);
 	}
 #endif
 };

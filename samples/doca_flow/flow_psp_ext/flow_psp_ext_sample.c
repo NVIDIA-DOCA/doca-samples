@@ -336,16 +336,16 @@ static doca_error_t create_pipe(struct doca_flow_port *port, struct entries_stat
 	/* First entry packets go to the first VF/SF */
 	fwd.port_id = FIRST_VM_PORT;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match.base,
-					  0,
-					  &actions.base,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  status,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match.base,
+						0,
+						&actions.base,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create PSP root pipe first entry: %s", doca_error_get_descr(result));
 		return result;
@@ -364,16 +364,16 @@ static doca_error_t create_pipe(struct doca_flow_port *port, struct entries_stat
 	/* Second entry packets go to the second VF/SF */
 	fwd.port_id = SECOND_VM_PORT;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match.base,
-					  0,
-					  &actions.base,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_NO_WAIT,
-					  status,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match.base,
+						0,
+						&actions.base,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create PSP root pipe second entry: %s", doca_error_get_descr(result));
 		return result;

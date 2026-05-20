@@ -154,7 +154,7 @@ doca_error_t create_tx_buf(struct tx_buf *buf,
 	/* Map GPU memory buffer used to send packets with DMABuf */
 	status = doca_gpu_dmabuf_fd(buf->gpu_dev, buf->gpu_pkt_addr, size, &(buf->dmabuf_fd));
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_INFO("Mapping send queue buffer (0x%p size %zdB) with legacy nvidia-peermem mode",
+		DOCA_LOG_INFO("Mapping send queue buffer (%p size %zdB) with legacy nvidia-peermem mode",
 			      buf->gpu_pkt_addr,
 			      size);
 
@@ -165,7 +165,7 @@ doca_error_t create_tx_buf(struct tx_buf *buf,
 			return status;
 		}
 	} else {
-		DOCA_LOG_INFO("Mapping send queue buffer (0x%p size %zdB dmabuf fd %d) with dmabuf mode",
+		DOCA_LOG_INFO("Mapping send queue buffer (%p size %zdB dmabuf fd %d) with dmabuf mode",
 			      buf->gpu_pkt_addr,
 			      size,
 			      buf->dmabuf_fd);

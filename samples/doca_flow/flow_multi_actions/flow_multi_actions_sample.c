@@ -124,7 +124,7 @@ static doca_error_t add_multi_actions_pipe_entries(struct doca_flow_pipe *pipe, 
 	/* modify source mac address */
 	SET_MAC_ADDR(actions.outer.eth.src_mac, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry0);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry0);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add first entry: %s", doca_error_get_descr(result));
 		return result;
@@ -136,7 +136,7 @@ static doca_error_t add_multi_actions_pipe_entries(struct doca_flow_pipe *pipe, 
 	/* modify source IP address */
 	actions.outer.ip4.src_ip = mod_src_ip_addr;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry1);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry1);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add second entry: %s", doca_error_get_descr(result));
 		return result;

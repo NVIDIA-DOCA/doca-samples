@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -321,7 +321,7 @@ public:
 	doca_buf_raii_wrapper &operator=(doca_buf_raii_wrapper const &) = delete;
 	doca_buf_raii_wrapper &operator=(doca_buf_raii_wrapper &&) noexcept = delete;
 
-	/* Allows the doca_buf_raii_wrapper to be populated from the out param of doca buf alocation routines */
+	/* Allows the doca_buf_raii_wrapper to be populated from the out param of doca buf allocation routines */
 	doca_buf **operator&()
 	{
 		return &m_buf;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -44,6 +44,7 @@
 #define VIRTIOFS_CORE_MASK_DEFAULT "0x1"	/* Default core mask */
 #define VIRTIOFS_NFS_SERVER_DEFAULT "localhost" /* Default NFS server */
 #define VIRTIOFS_NFS_EXPORT_DEFAULT "/VIRTUAL"	/* Default NFS export */
+#define VIRTIOFS_NUM_REQUEST_QUEUES_DEFAULT 32	/* Default num_request_queues */
 
 /* VirtioFS callback */
 typedef void (*virtiofs_cb_t)(void *cb_arg, doca_error_t status);
@@ -53,6 +54,7 @@ typedef void (*vfs_doca_fsdev_io_cb)(void *app_ctxt, int status);
 
 /* VirtioFS application configuration */
 struct virtiofs_cfg {
+	uint16_t num_request_queues;		   /* Number of request queues */
 	char core_mask[VIRTIOFS_CORE_MASK_SIZE];   /* Core mask */
 	char nfs_server[VIRTIOFS_NFS_SERVER_SIZE]; /* NFS server */
 	char nfs_export[VIRTIOFS_NFS_EXPORT_SIZE]; /* NFS export */

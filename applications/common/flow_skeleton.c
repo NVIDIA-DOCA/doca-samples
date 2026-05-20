@@ -72,7 +72,7 @@ static void process_callback(struct doca_flow_pipe_entry *entry,
 		if (status != DOCA_FLOW_ENTRY_STATUS_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry");
 			/* if status is not success - the skeleton will remove the entry */
-			result = doca_flow_pipe_remove_entry(pipe_queue, DOCA_FLOW_WAIT_FOR_BATCH, entry);
+			result = doca_flow_pipe_remove_entry(pipe_queue, DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH, entry);
 			if (result != DOCA_SUCCESS)
 				DOCA_LOG_ERR("Failed to remove entry: %s", doca_error_get_descr(result));
 		} else
@@ -97,7 +97,7 @@ static void process_callback(struct doca_flow_pipe_entry *entry,
 
 		skeleton_ctx.skeleton_cfg.aging_cb(entry, &aging_op);
 		if (aging_op.to_remove) {
-			result = doca_flow_pipe_remove_entry(pipe_queue, DOCA_FLOW_WAIT_FOR_BATCH, entry);
+			result = doca_flow_pipe_remove_entry(pipe_queue, DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH, entry);
 			if (result != DOCA_SUCCESS)
 				DOCA_LOG_ERR("Failed to remove entry: %s", doca_error_get_descr(result));
 		}
@@ -247,7 +247,7 @@ void flow_skeleton_destroy(void)
  * Add entry based on the given flow_skeleton_entry struct
  *
  * @pipe_queue [in]: queue identifier
- * @flag [in]: DOCA_FLOW_WAIT_FOR_BATCH / DOCA_FLOW_NO_WAIT
+ * @flag [in]: DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH / DOCA_FLOW_ENTRY_FLAGS_NO_WAIT
  * @entry [in]: application input information for adding the entry
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -257,20 +257,19 @@ static doca_error_t add_entry(uint16_t pipe_queue, uint32_t flag, struct flow_sk
 
 	switch (entry->ctx.type) {
 	case DOCA_FLOW_PIPE_BASIC:
-		result = doca_flow_pipe_add_entry(pipe_queue,
-						  entry->ctx.pipe,
-						  entry->ctx.match,
-						  entry->ctx.actions_idx,
-						  entry->ctx.actions,
-						  entry->ctx.monitor,
-						  entry->ctx.fwd,
-						  flag,
-						  entry->ctx.usr_ctx,
-						  entry->ctx.entry);
+		result = doca_flow_pipe_basic_add_entry(pipe_queue,
+							entry->ctx.pipe,
+							entry->ctx.match,
+							entry->ctx.actions_idx,
+							entry->ctx.actions,
+							entry->ctx.monitor,
+							entry->ctx.fwd,
+							flag,
+							entry->ctx.usr_ctx,
+							entry->ctx.entry);
 		break;
 	case DOCA_FLOW_PIPE_CONTROL:
 		result = doca_flow_pipe_control_add_entry(pipe_queue,
-							  entry->ctx.priority,
 							  entry->ctx.pipe,
 							  entry->ctx.match,
 							  entry->ctx.match_mask,
@@ -279,6 +278,7 @@ static doca_error_t add_entry(uint16_t pipe_queue, uint32_t flag, struct flow_sk
 							  entry->ctx.actions_mask,
 							  entry->ctx.action_descs,
 							  entry->ctx.monitor,
+							  entry->ctx.priority,
 							  entry->ctx.fwd,
 							  entry->ctx.usr_ctx,
 							  entry->ctx.entry);
@@ -350,8 +350,8 @@ static void add_batch_entries(struct main_loop_params *params, uint32_t nb_entri
 	uint32_t i;
 	doca_error_t result;
 
-	/* Add all the entries with DOCA_FLOW_WAIT_FOR_BATCH flag */
-	flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	/* Add all the entries with DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH flag */
+	flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	for (i = 0; i < nb_entries - 1; i++) {
 		if (skeleton_ctx.entries[i].ctx.op == DOCA_FLOW_ENTRY_OP_ADD)
 			result = add_entry(params->pipe_queue, flags, &skeleton_ctx.entries[i]);
@@ -369,8 +369,8 @@ static void add_batch_entries(struct main_loop_params *params, uint32_t nb_entri
 			skeleton_ctx.queue_state[port_id][params->pipe_queue]++;
 	}
 
-	/* Add last entry with DOCA_FLOW_NO_WAIT */
-	flags = DOCA_FLOW_NO_WAIT;
+	/* Add last entry with DOCA_FLOW_ENTRY_FLAGS_NO_WAIT */
+	flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 	if (skeleton_ctx.entries[nb_entries - 1].ctx.op == DOCA_FLOW_ENTRY_OP_ADD)
 		result = add_entry(params->pipe_queue, flags, &skeleton_ctx.entries[nb_entries - 1]);
 	else if (skeleton_ctx.entries[nb_entries - 1].ctx.op == DOCA_FLOW_ENTRY_OP_DEL)

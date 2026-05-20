@@ -1,0 +1,79 @@
+/*
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without modification, are permitted
+ * provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright notice, this list of
+ *       conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright notice, this list of
+ *       conditions and the following disclaimer in the documentation and/or other materials
+ *       provided with the distribution.
+ *     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+ *       to endorse or promote products derived from this software without specific prior written
+ *       permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+ * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ */
+
+#ifndef TIME_SYNC_DPU_CORE_H_
+#define TIME_SYNC_DPU_CORE_H_
+
+#include "time_sync_common.h"
+
+/*
+ * Helper function to open input dev and repr devices
+ *
+ * @ts_cfg [in]: Config file for app
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t time_sync_dpu_open_devs(struct time_sync_cfg *ts_cfg);
+
+/*
+ * Configure doca dpa context and load app
+ *
+ * @ts_cfg [in]: Config file for app
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t time_sync_dpu_load_dpa_app(struct time_sync_cfg *ts_cfg);
+
+/*
+ * Stop and destroy doca dpa context
+ *
+ * @ts_cfg [in]: Config file for app containing dpa context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t time_sync_dpu_unload_dpa_app(struct time_sync_cfg *ts_cfg);
+
+/*
+ * Configure and start a communication channel server
+ *
+ * @ts_cfg [in]: Config file for app
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t time_sync_dpu_init_comch_server(struct time_sync_cfg *ts_cfg);
+
+/*
+ * Stop and close contexts related to comch server
+ *
+ * @ts_cfg [in]: Config file for app containing initialised contexts
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t time_sync_dpu_close_comch_server(struct time_sync_cfg *ts_cfg);
+
+/*
+ * Run the main loop of application - on completion, app can shut down
+ *
+ * @ts_cfg [in]: Config file for app
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t time_sync_dpu_main_loop(struct time_sync_cfg *ts_cfg);
+
+#endif /* TIME_SYNC_DPU_CORE_H_ */

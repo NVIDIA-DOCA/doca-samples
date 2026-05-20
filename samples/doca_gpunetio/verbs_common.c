@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -36,6 +36,28 @@
 #include "common.h"
 
 DOCA_LOG_REGISTER(GPUVERBS::COMMON);
+
+/*
+ * ARGP Callback - Set send DBR mode to external
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t send_dbr_mode_ext_callback(void *param, void *config)
+{
+	struct verbs_config *verbs_cfg = (struct verbs_config *)config;
+	const int send_dbr_mode_ext = *(uint32_t *)param;
+
+	if (send_dbr_mode_ext != 0 && send_dbr_mode_ext != 1) {
+		DOCA_LOG_ERR("Send DBR mode for DOCA Verbs must be 0 (disabled) or 1 (enabled)");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	verbs_cfg->send_dbr_mode_ext = send_dbr_mode_ext;
+
+	return DOCA_SUCCESS;
+}
 
 /*
  * ARGP Callback - Set DB ring mode
@@ -192,7 +214,7 @@ doca_error_t threads_callback(void *param, void *config)
 
 	if (threads < 0 || (threads % VERBS_CUDA_BLOCK) != 0 ||
 	    threads < (VERBS_CUDA_BLOCK * DOCA_GPUNETIO_VERBS_WARP_SIZE)) {
-		DOCA_LOG_ERR("CUDA threads must be > 0, at leas %d and divisible by %d",
+		DOCA_LOG_ERR("CUDA threads must be > 0, at least %d and divisible by %d",
 			     VERBS_CUDA_BLOCK * DOCA_GPUNETIO_VERBS_WARP_SIZE,
 			     VERBS_CUDA_BLOCK);
 		return DOCA_ERROR_INVALID_VALUE;
@@ -475,7 +497,7 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 
 	/*
 	 * A CUDA context must be initialized before calling GPUNetIO functions.
-	 * cudaFree(0) triggers tje CUDA runtime initialization and report any errors.
+	 * cudaFree(0) triggers the CUDA runtime initialization and report any errors.
 	 */
 	cuda_ret = cudaFree(0);
 	if (cuda_ret != cudaSuccess) {
@@ -567,6 +589,7 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 	qp_init.sq_nwqe = VERBS_TEST_QUEUE_SIZE;
 	qp_init.nic_handler = resources->nic_handler;
 	qp_init.recv_inline = resources->recv_inline;
+	qp_init.send_dbr_mode_ext = resources->send_dbr_mode_ext;
 
 	if (resources->qp_group) {
 		status = doca_gpu_verbs_create_qp_group_hl(&qp_init, &(resources->qpg));

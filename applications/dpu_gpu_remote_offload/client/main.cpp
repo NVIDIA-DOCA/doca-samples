@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -37,7 +37,7 @@
 #include <client/application.hpp>
 #include <client/stats.hpp>
 
-DOCA_LOG_REGISTER(client::main);
+DOCA_LOG_REGISTER(CLIENT::MAIN);
 
 namespace {
 

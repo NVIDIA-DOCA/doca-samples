@@ -51,7 +51,7 @@ enum vpd_parser_resource_tags {
 
 /**
  * vpd_parser_create:
- * @vpd_file_path: The path of a file that contians the VPD to parse
+ * @vpd_file_path: The path of a file that contains the VPD to parse
  *
  * Creates a VPD parser that parses the VPD contents of @vpd_file_path. After a
  * successful call to this function, the rest of the parsing functions can be

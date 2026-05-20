@@ -56,7 +56,7 @@ static void server_validate_test(struct verbs_resources *resources)
 		}
 	}
 
-	printf("Data validation successfull! Data received correctly from client\n");
+	printf("Data validation successful! Data received correctly from client\n");
 
 	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 		tot_flag = 0;

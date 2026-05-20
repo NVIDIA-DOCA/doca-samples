@@ -28,7 +28,7 @@ mode_args:
 ports_decription:
   port_0: doca_dev
   port_1: doca_dev
-description: "This sample demonstrates how to encap either IPv4 or IPv6 packets with IP-in-IPv6 tunneling.
+description: "This sample demonstrates how to encapsulate IPv4 and IPv6 packets with either IPv4 or IPv6 outer tunnels.
               Sample Command Line: ./build/doca_flow_ip_in_ip -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Flow ip-in-ip use case #1: IPv4 encap -> IPv6/IPv4"
@@ -38,7 +38,7 @@ use_cases:
         packets_to_send:
           - receiving_port: 0
             packets:
-              - Ether()/IP()/TCP(sport=1234, dport=80)/Raw(load=b'IPv4 Packet received on port 0 -> encap in IPv6 -> forwarded to port 1')
+              - Ether(src='66:66:66:66:66:66')/IP()/TCP(sport=1234, dport=80)/Raw(load=b'IPv4 Packet received on port 0 -> encap in IPv6 -> forwarded to port 1')
         validation:
           - type: packet
             expected_packets:
@@ -52,7 +52,7 @@ use_cases:
         packets_to_send:
           - receiving_port: 0
             packets:
-              - Ether()/IPv6()/UDP(sport=5678, dport=80)/Raw(load=b'IPv6 Packet received on port 0 -> encap in IPv6 -> forwarded to port 1')
+              - Ether(src='66:66:66:66:66:66')/IPv6()/UDP(sport=5678, dport=80)/Raw(load=b'IPv6 Packet received on port 0 -> encap in IPv6 -> forwarded to port 1')
         validation:
           - type: packet
             expected_packets:
@@ -87,3 +87,59 @@ use_cases:
               - forwarding_port: 0
                 packets:
                   - Ether(src='cc:bb:aa:99:88:77', dst='33:22:11:ff:ee:dd')/IPv6()/UDP(sport=5678, dport=80)/Raw(load=b'IPv6/IPv6 Packet received on port 1 -> decap -> forwarded to port 0')
+  - name: "Flow ip-in-ip use case #5: IPv4 encap -> IPv4/IPv4"
+    args: ""
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='99:99:99:99:99:99')/IP()/TCP(sport=4321, dport=80)/Raw(load=b'IPv4 Packet received on port 0 -> encap in IPv4 -> forwarded to port 1')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='de:ad:be:ef:00:01', dst='12:34:56:78:9a:bc')/IP(src='10.0.0.1', dst='20.0.0.1', tos=216, id=0, proto=4)/IP()/TCP(sport=4321, dport=80)/Raw(load=b'IPv4 Packet received on port 0 -> encap in IPv4 -> forwarded to port 1')
+  - name: "Flow ip-in-ip use case #6: IPv6 encap -> IPv4/IPv6"
+    args: ""
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='99:99:99:99:99:99')/IPv6()/UDP(sport=8765, dport=80)/Raw(load=b'IPv6 Packet received on port 0 -> encap in IPv4 -> forwarded to port 1')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='01:00:ef:be:ad:de', dst='bc:9a:78:56:34:12')/IP(src='30.0.0.1', dst='40.0.0.1', tos=216, id=0, proto=41)/IPv6()/UDP(sport=8765, dport=80)/Raw(load=b'IPv6 Packet received on port 0 -> encap in IPv4 -> forwarded to port 1')
+  - name: "Flow ip-in-ip use case #7: IPv4/IPv4 decap -> IPv4"
+    args: ""
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 1
+            packets:
+              - Ether()/IP()/IP()/TCP(sport=4321, dport=80)/Raw(load=b'IPv4/IPv4 Packet received on port 1 -> decap -> forwarded to port 0')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 0
+                packets:
+                  - Ether(src='44:55:66:77:88:99', dst='11:22:33:44:55:66')/IP()/TCP(sport=4321, dport=80)/Raw(load=b'IPv4/IPv4 Packet received on port 1 -> decap -> forwarded to port 0')
+  - name: "Flow ip-in-ip use case #8: IPv4/IPv6 decap -> IPv6"
+    args: ""
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 1
+            packets:
+              - Ether()/IP()/IPv6()/UDP(sport=8765, dport=80)/Raw(load=b'IPv4/IPv6 Packet received on port 1 -> decap -> forwarded to port 0')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 0
+                packets:
+                  - Ether(src='99:88:77:66:55:44', dst='66:55:44:33:22:11')/IPv6()/UDP(sport=8765, dport=80)/Raw(load=b'IPv4/IPv6 Packet received on port 1 -> decap -> forwarded to port 0')

@@ -22,23 +22,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-project('DOCA_SAMPLE', 'C', 'CPP',
-	# Get version number from file.
-	version: run_command(find_program('cat'),
-		files('../../../VERSION'), check: true).stdout().strip(),
-	license: 'BSD-3',
-	default_options: ['buildtype=debug'],
-	meson_version: '>= 0.61.2'
-)
-
-SAMPLE_NAME = 'data_direct_ctl'
-
-# Comment this line to restore warnings of experimental DOCA features
-add_project_arguments('-D DOCA_ALLOW_EXPERIMENTAL_API', language: ['c', 'cpp'])
-
-sample_dependencies = []
-
-sample_srcs = [
+sample_main_srcs = files([
 	'ccan/json/json.c',
 	'cmd.c',
 	'data_direct.c',
@@ -46,13 +30,4 @@ sample_srcs = [
 	'mlxfwctl.c',
 	'util.c',
 	'vpd_parser.c',
-]
-
-sample_inc_dirs  = []
-
-
-executable('doca_' + SAMPLE_NAME, sample_srcs,
-	c_args : '-Wno-missing-braces',
-	dependencies : sample_dependencies,
-	include_directories: sample_inc_dirs,
-	install: false)
+])

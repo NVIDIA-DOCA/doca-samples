@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -37,7 +37,7 @@
 
 #include "config.h"
 
-DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::config);
+DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::CONFIG);
 
 #define MAX_CORES (32)
 
@@ -56,13 +56,13 @@ static doca_error_t parse_hex_to_bytes(const char *key_hex, size_t key_size, uin
 
 	/* Parse every digit (nibble and translate it to the matching numeric value) */
 	for (i = 0; i < key_size; i++) {
-		/* Must be alpha-numeric */
+		/* Must be alphanumeric */
 		if ('0' <= key_hex[i] && key_hex[i] <= '9')
 			digit = key_hex[i] - '0';
 		else if ('a' <= tolower(key_hex[i]) && tolower(key_hex[i]) <= 'f')
 			digit = tolower(key_hex[i]) - 'a' + 10;
 		else {
-			DOCA_LOG_ERR("Wrong format for key (%s) - not alpha-numeric", key_hex);
+			DOCA_LOG_ERR("Wrong format for key (%s) - not alphanumeric", key_hex);
 			return DOCA_ERROR_INVALID_VALUE;
 		}
 		/* There are 2 nibbles (digits) in each byte, place them at their numeric place */
@@ -1374,7 +1374,7 @@ static doca_error_t parse_device_param(void *param, struct ipsec_security_gw_dev
 	struct doca_argp_device_ctx *dev_ctx = (struct doca_argp_device_ctx *)param;
 
 	if (dev_ctx->devargs != NULL) {
-		DOCA_LOG_WARN("Passed device args are not needed, and will be overriden by the application");
+		DOCA_LOG_WARN("Passed device args are not needed, and will be overridden by the application");
 		/* Fallthrough */
 	}
 
@@ -1401,7 +1401,7 @@ static doca_error_t parse_device_rep_param(void *param, struct ipsec_security_gw
 
 	if (dev_rep_ctx->dev_ctx.devargs != NULL) {
 		DOCA_LOG_WARN(
-			"Passed representor device args are not needed, and will be overriden by the application");
+			"Passed representor device args are not needed, and will be overridden by the application");
 		/* Fallthrough */
 	}
 

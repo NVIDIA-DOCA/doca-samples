@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -38,7 +38,7 @@
 #include <orchestrator/application.hpp>
 #include <orchestrator/stats.hpp>
 
-DOCA_LOG_REGISTER(orchestrator::main);
+DOCA_LOG_REGISTER(ORCHESTRATOR::MAIN);
 
 namespace {
 

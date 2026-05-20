@@ -41,7 +41,7 @@ struct simple_fwd_config {
 	uint16_t hw_offload;  /* Whether or not HW steering is used */
 	uint64_t stats_timer; /* The time between periodic stats prints */
 	bool is_hairpin;      /* Number of hairpin queues */
-	bool age_thread;      /* Whther or not to use a dedicated thread to handle aged flows */
+	bool age_thread;      /* Whether or not to use a dedicated thread to handle aged flows */
 };
 
 /* Simple FWD VNF parameters to be passed when starting processing packets */
@@ -51,7 +51,7 @@ struct simple_fwd_process_pkts_params {
 };
 
 /*
- * Registers all flags used bu the users when running the application, such as "aging-thread" flag.
+ * Registers all flags used by the users when running the application, such as "aging-thread" flag.
  * This is needed so that the parsing by DOCA argument parser work as expected.
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise

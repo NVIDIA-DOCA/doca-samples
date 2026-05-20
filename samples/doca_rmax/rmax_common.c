@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -30,7 +30,7 @@
 
 #include "rmax_common.h"
 
-DOCA_LOG_REGISTER(rmax_common);
+DOCA_LOG_REGISTER(RMAX_COMMON);
 
 /*
  * ARGP Callback - Handle PCI device address parameter

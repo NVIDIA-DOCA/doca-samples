@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -46,7 +46,7 @@ struct nfs_fsdev_global *get_global_context_nfs_fsdev(struct nfs_fsdev_context *
 
 struct nfs_fsdev *get_private_context_nfs_fsdev(struct nfs_fsdev_context *nfs_fsdev_context)
 {
-	IoDevice<nfs_fsdev_global, nfs_fsdev> *io_device = (IoDevice<nfs_fsdev_global, nfs_fsdev> *)nfs_fsdev_context;
-	return &(io_device->getPerThreadData());
+	auto *io_device = reinterpret_cast<IoDevice<nfs_fsdev_global, nfs_fsdev> *>(nfs_fsdev_context);
+	return io_device->getPerThreadData();
 }
 }

@@ -72,7 +72,6 @@ static doca_error_t create_vxlan_pipe(struct doca_flow_port *port, int port_id, 
 	actions_arr[0] = &actions;
 	actions.tun.vxlan_tun_rsvd1 = 0xFF;
 	actions.tun.type = DOCA_FLOW_TUN_VXLAN;
-	actions.tun.vxlan_type = DOCA_FLOW_TUN_EXT_VXLAN_STANDARD;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -132,16 +131,16 @@ static doca_error_t add_vxlan_pipe_entry(struct doca_flow_pipe *pipe, struct ent
 
 	actions.tun.vxlan_tun_rsvd1 = 0x12;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  NULL,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  status,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -184,7 +183,6 @@ static doca_error_t create_vxlan_gpe_pipe(struct doca_flow_port *port,
 	actions_arr[0] = &actions;
 	actions.tun.vxlan_tun_rsvd1 = 0xFF;
 	actions.tun.type = DOCA_FLOW_TUN_VXLAN;
-	actions.tun.vxlan_type = DOCA_FLOW_TUN_EXT_VXLAN_GPE;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -245,18 +243,17 @@ static doca_error_t add_vxlan_gpe_pipe_entry(struct doca_flow_pipe *pipe, struct
 	match.tun.vxlan_tun_id = DOCA_HTOBE32(100);
 
 	actions.tun.vxlan_tun_rsvd1 = 0x34;
-	actions.tun.vxlan_type = DOCA_FLOW_TUN_EXT_VXLAN_GPE;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  NULL,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  status,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -372,7 +369,7 @@ static doca_error_t add_modify_header_pipe_entry(struct doca_flow_pipe *pipe, st
 	/* modify source mac address */
 	SET_MAC_ADDR(actions.outer.eth.src_mac, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 

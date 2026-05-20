@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -55,14 +55,22 @@ public:
 	 * @brief Get or create per-thread data for this device.
 	 * @return Reference to the per-thread data.
 	 */
-	T2 &getPerThreadData()
+	T2 *getPerThreadData()
 	{
-		if (threadLocalVars.find((char *)this) == threadLocalVars.end()) {
-			threadLocalVars.emplace(std::piecewise_construct,
-						std::forward_as_tuple((char *)this),
-						std::forward_as_tuple(&global_data));
+		auto it = threadLocalVars.find((char *)this);
+		if (it == threadLocalVars.end()) {
+			auto res = threadLocalVars.emplace(std::piecewise_construct,
+							   std::forward_as_tuple((char *)this),
+							   std::forward_as_tuple(&global_data));
+
+			int rc = res.first->second.nfs_fsdev_init();
+			if (rc) {
+				threadLocalVars.erase(res.first);
+				return nullptr;
+			}
+			return &res.first->second;
 		}
-		return threadLocalVars[(char *)this];
+		return &it->second;
 	}
 };
 

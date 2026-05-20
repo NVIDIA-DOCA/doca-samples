@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -22,35 +22,29 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-project('urom_sandbox_worker_plugin',
-	'C', 'CPP',
-	license: 'BSD-3',
-	default_options: ['buildtype=debug'],
-	meson_version: '>= 0.61.2'
-)
-
 PLUGIN_NAME = 'worker_sandbox'
-lib_prefix = ''
-# Comment this line to restore warnings of experimental DOCA features
-add_project_arguments('-D DOCA_ALLOW_EXPERIMENTAL_API', language: ['c', 'cpp'])
 
-languages = ['c', 'cpp']
+plugin_src = []
+plugin_hrd = []
+plugin_common_src = []
+plugin_common_hdr = []
+plugin_common_includes = []
 
-plugin_dependencies = []
-# Required for all DOCA programs
-plugin_dependencies += dependency('doca-common')
-# The DOCA library of the sample itself
-plugin_dependencies += dependency('doca-urom')
-# Required DOCA Driver
-plugin_dependencies += dependency('ucx')
+subdir('common')
 
-plugin_srcs = [
-	PLUGIN_NAME + '.c',
-]
+if is_dpu
+        subdir('dpu')
+else
+        subdir('host')
+endif
 
-plugin_inc_dirs  = []
+plugins_install_dir = '/'.join([sample_lib_install_dir, 'plugins'])
+plugin_dir = plugins_install_dir + '/' + PLUGIN_NAME
 
-sandbox_plugin = shared_library(PLUGIN_NAME, plugin_srcs,
-	name_prefix: lib_prefix,
-	dependencies : plugin_dependencies,
-	install: false)
+meson_public_path = meson.current_source_dir() + '/' + 'meson.build.public'
+
+install_data(sources : plugin_src, install_dir : plugin_dir)
+install_data(sources : plugin_hdr, install_dir : plugin_dir)
+install_data(sources : plugin_common_src, install_dir : plugin_dir)
+install_data(sources : plugin_common_hdr, install_dir : plugin_dir)
+install_data(sources : meson_public_path, rename: ['meson.build'], install_dir : plugin_dir)

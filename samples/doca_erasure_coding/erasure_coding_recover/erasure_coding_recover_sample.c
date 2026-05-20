@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -278,23 +278,23 @@ static doca_error_t ec_core_init(struct ec_sample_objects *state,
 	ASSERT_DOCA_ERR(result, state, "Failed to start mmap src");
 
 	/* Construct DOCA buffer for each address range */
-	result = allocat_doca_buf_list(state->core_state.buf_inv,
-				       state->core_state.src_mmap,
-				       state->src_buffer,
-				       src_size,
-				       num_src_buf,
-				       true,
-				       &state->src_doca_buf);
+	result = allocate_doca_buf_list(state->core_state.buf_inv,
+					state->core_state.src_mmap,
+					state->src_buffer,
+					src_size,
+					num_src_buf,
+					true,
+					&state->src_doca_buf);
 	ASSERT_DOCA_ERR(result, state, "Unable to acquire DOCA buffer representing source buffer");
 
 	/* Construct DOCA buffer for each address range */
-	result = allocat_doca_buf_list(state->core_state.buf_inv,
-				       state->core_state.dst_mmap,
-				       state->dst_buffer,
-				       dst_size,
-				       num_dst_buf,
-				       false,
-				       &state->dst_doca_buf);
+	result = allocate_doca_buf_list(state->core_state.buf_inv,
+					state->core_state.dst_mmap,
+					state->dst_buffer,
+					dst_size,
+					num_dst_buf,
+					false,
+					&state->dst_doca_buf);
 	ASSERT_DOCA_ERR(result, state, "Unable to acquire DOCA buffer representing destination buffer");
 
 	/* Include state in user data of context to be used in callbacks */

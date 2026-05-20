@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -33,7 +33,7 @@
 #include "doca_flow.h"
 #include "flow_encrypt.h"
 
-DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::flow_encrypt);
+DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::FLOW_ENCRYPT);
 
 #define ENCAP_DST_IP_IDX_IP4 30		  /* index in encap raw data for destination IPv4 */
 #define ENCAP_DST_IP_IDX_IP6 38		  /* index in encap raw data for destination IPv4 */
@@ -400,16 +400,16 @@ static doca_error_t create_egress_ip_classifier(struct doca_flow_port *port,
 		snprintf(pipe->entries_info[pipe->nb_entries].name, MAX_NAME_LEN, "IPv4");
 		entry = &pipe->entries_info[pipe->nb_entries++].entry;
 	}
-	result = doca_flow_pipe_add_entry(0,
-					  pipe->pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  &app_cfg->secured_status[0],
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe->pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ipv4 entry: %s", doca_error_get_descr(result));
 		return result;
@@ -422,16 +422,16 @@ static doca_error_t create_egress_ip_classifier(struct doca_flow_port *port,
 		snprintf(pipe->entries_info[pipe->nb_entries].name, MAX_NAME_LEN, "IPv6");
 		entry = &pipe->entries_info[pipe->nb_entries++].entry;
 	}
-	result = doca_flow_pipe_add_entry(0,
-					  pipe->pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_NO_WAIT,
-					  &app_cfg->secured_status[0],
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe->pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ipv6 entry: %s", doca_error_get_descr(result));
 		return result;
@@ -493,16 +493,16 @@ static doca_error_t add_vxlan_encap_pipe_entry(struct doca_flow_port *port,
 	actions.encap_cfg.encap.tun.type = DOCA_FLOW_TUN_VXLAN;
 	actions.encap_cfg.encap.tun.vxlan_tun_id = DOCA_HTOBE32(app_cfg->vni);
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe->pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  NULL,
-					  DOCA_FLOW_NO_WAIT,
-					  &app_cfg->secured_status[0],
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe->pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ipv4 entry: %s", doca_error_get_descr(result));
 		return result;
@@ -727,16 +727,16 @@ static doca_error_t create_marker_encap_pipe(struct doca_flow_port *port,
 		}
 	}
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe_info->pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_NO_WAIT,
-					  &app_cfg->secured_status[0],
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe_info->pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						&app_cfg->secured_status[0],
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add non-ESP marker encap entry: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -1351,7 +1351,6 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 		entry = &control_pipe->entries_info[control_pipe->nb_entries++].entry;
 	}
 	result = doca_flow_pipe_control_add_entry(0,
-						  0,
 						  control_pipe->pipe,
 						  &match,
 						  NULL,
@@ -1360,6 +1359,7 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 						  NULL,
 						  NULL,
 						  monitor_ptr,
+						  0,
 						  &fwd,
 						  NULL,
 						  entry);
@@ -1385,7 +1385,6 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 		entry = &control_pipe->entries_info[control_pipe->nb_entries++].entry;
 	}
 	result = doca_flow_pipe_control_add_entry(0,
-						  0,
 						  control_pipe->pipe,
 						  &match,
 						  NULL,
@@ -1394,6 +1393,7 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 						  NULL,
 						  NULL,
 						  monitor_ptr,
+						  0,
 						  &fwd,
 						  NULL,
 						  entry);
@@ -1421,7 +1421,6 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 		entry = &control_pipe->entries_info[control_pipe->nb_entries++].entry;
 	}
 	result = doca_flow_pipe_control_add_entry(0,
-						  0,
 						  control_pipe->pipe,
 						  &match,
 						  NULL,
@@ -1430,6 +1429,7 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 						  NULL,
 						  NULL,
 						  monitor_ptr,
+						  0,
 						  &fwd,
 						  NULL,
 						  entry);
@@ -1458,7 +1458,6 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 		entry = &control_pipe->entries_info[control_pipe->nb_entries++].entry;
 	}
 	result = doca_flow_pipe_control_add_entry(0,
-						  0,
 						  control_pipe->pipe,
 						  &match,
 						  NULL,
@@ -1467,6 +1466,7 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 						  NULL,
 						  NULL,
 						  monitor_ptr,
+						  0,
 						  &fwd,
 						  NULL,
 						  entry);
@@ -1618,7 +1618,7 @@ static doca_error_t add_src_ip6_entry(struct doca_flow_port *port,
 {
 	struct doca_flow_match match;
 	struct doca_flow_actions actions;
-	enum doca_flow_flags_type flags;
+	uint32_t flags;
 	struct security_gateway_pipe_info *pipe;
 	struct doca_flow_pipe_entry **entry = NULL;
 	doca_error_t result;
@@ -1632,25 +1632,25 @@ static doca_error_t add_src_ip6_entry(struct doca_flow_port *port,
 	actions.meta.u32[0] = DOCA_HTOBE32(src_ip_id);
 
 	if (hairpin_status->entries_in_queue == QUEUE_DEPTH - 1)
-		flags = DOCA_FLOW_NO_WAIT;
+		flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 	else
-		flags = DOCA_FLOW_WAIT_FOR_BATCH;
+		flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 
 	/* add entry to hairpin pipe*/
 	if (debug_mode) {
 		snprintf(pipe->entries_info[pipe->nb_entries].name, MAX_NAME_LEN, "rule%d", i);
 		entry = &pipe->entries_info[pipe->nb_entries++].entry;
 	}
-	result = doca_flow_pipe_add_entry(queue_id,
-					  pipe->pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  NULL,
-					  flags,
-					  hairpin_status,
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(queue_id,
+						pipe->pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						NULL,
+						flags,
+						hairpin_status,
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add hairpin pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -1688,7 +1688,7 @@ static doca_error_t add_five_tuple_match_entry(struct doca_flow_port *port,
 	struct doca_flow_match match;
 	struct doca_flow_actions actions;
 	struct security_gateway_pipe_info *pipe;
-	enum doca_flow_flags_type flags;
+	uint32_t flags;
 	int src_ip_id = 0;
 	doca_error_t result;
 	union security_gateway_pkt_meta meta = {0};
@@ -1734,25 +1734,25 @@ static doca_error_t add_five_tuple_match_entry(struct doca_flow_port *port,
 	actions.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
 
 	if (i == nb_rules - 1 || hairpin_status->entries_in_queue == QUEUE_DEPTH - 1)
-		flags = DOCA_FLOW_NO_WAIT;
+		flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 	else
-		flags = DOCA_FLOW_WAIT_FOR_BATCH;
+		flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 
 	/* add entry to hairpin pipe*/
 	if (app_cfg->debug_mode) {
 		snprintf(pipe->entries_info[pipe->nb_entries].name, MAX_NAME_LEN, "rule%d", i);
 		entry = &pipe->entries_info[pipe->nb_entries++].entry;
 	}
-	result = doca_flow_pipe_add_entry(queue_id,
-					  pipe->pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  NULL,
-					  flags,
-					  hairpin_status,
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(queue_id,
+						pipe->pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						NULL,
+						flags,
+						hairpin_status,
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add hairpin pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -1863,7 +1863,7 @@ doca_error_t add_encrypt_entry(struct encrypt_rule *rule,
 						       rule_id,
 						       &ordered_list,
 						       NULL,
-						       DOCA_FLOW_WAIT_FOR_BATCH,
+						       DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
 						       &app_cfg->secured_status[0],
 						       NULL);
 	if (result != DOCA_SUCCESS)
@@ -1886,16 +1886,16 @@ doca_error_t add_encrypt_entry(struct encrypt_rule *rule,
 			 rule_id);
 		entry = &match_encrypt_pipe->entries_info[match_encrypt_pipe->nb_entries++].entry;
 	}
-	result = doca_flow_pipe_add_entry(0,
-					  match_encrypt_pipe->pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd_to_ordered_list,
-					  DOCA_FLOW_NO_WAIT,
-					  &app_cfg->secured_status[0],
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						match_encrypt_pipe->pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd_to_ordered_list,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -1946,7 +1946,7 @@ doca_error_t add_encrypt_entries(struct ipsec_security_gw_config *app_cfg,
 	struct doca_flow_match match;
 	struct doca_flow_pipe_entry **entry = NULL;
 	struct security_gateway_pipe_info *match_encrypt_pipe;
-	enum doca_flow_flags_type flags;
+	uint32_t flags;
 	struct doca_flow_port *secured_port = NULL;
 	struct doca_flow_port *unsecured_port = NULL;
 	struct doca_flow_crypto crypto_actions = {};
@@ -2040,7 +2040,7 @@ doca_error_t add_encrypt_entries(struct ipsec_security_gw_config *app_cfg,
 							       rule_id,
 							       &ordered_list,
 							       NULL,
-							       DOCA_FLOW_WAIT_FOR_BATCH,
+							       DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
 							       &app_cfg->secured_status[queue_id],
 							       NULL);
 		if (result != DOCA_SUCCESS)
@@ -2057,9 +2057,9 @@ doca_error_t add_encrypt_entries(struct ipsec_security_gw_config *app_cfg,
 		fwd_to_ordered_list.ordered_list_pipe.idx = rule_id;
 
 		if (rule_id == nb_rules - 1 || app_cfg->secured_status[queue_id].entries_in_queue == QUEUE_DEPTH - 1)
-			flags = DOCA_FLOW_NO_WAIT;
+			flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 		else
-			flags = DOCA_FLOW_WAIT_FOR_BATCH;
+			flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 		/* add entry to encrypt match pipe*/
 		if (app_cfg->debug_mode) {
 			snprintf(match_encrypt_pipe->entries_info[match_encrypt_pipe->nb_entries].name,
@@ -2068,16 +2068,16 @@ doca_error_t add_encrypt_entries(struct ipsec_security_gw_config *app_cfg,
 				 i);
 			entry = &match_encrypt_pipe->entries_info[match_encrypt_pipe->nb_entries++].entry;
 		}
-		result = doca_flow_pipe_add_entry(queue_id,
-						  match_encrypt_pipe->pipe,
-						  &match,
-						  0,
-						  NULL,
-						  NULL,
-						  &fwd_to_ordered_list,
-						  flags,
-						  &app_cfg->secured_status[queue_id],
-						  entry);
+		result = doca_flow_pipe_basic_add_entry(queue_id,
+							match_encrypt_pipe->pipe,
+							&match,
+							0,
+							NULL,
+							NULL,
+							&fwd_to_ordered_list,
+							flags,
+							&app_cfg->secured_status[queue_id],
+							entry);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
 			return result;

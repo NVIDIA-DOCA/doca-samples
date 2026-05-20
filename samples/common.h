@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -33,6 +33,8 @@
 #include <doca_dev.h>
 #include <doca_error.h>
 #include <doca_mmap.h>
+
+#include "common_utils.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -191,41 +193,6 @@ doca_error_t destroy_core_objects(struct program_core_objects *state);
  */
 char *hex_dump(const void *data, size_t size);
 
-/**
- * This method aligns a uint64 value up
- *
- * @value [in]: value to align up
- * @alignment [in]: alignment value
- * @return: aligned value
- */
-uint64_t align_up_uint64(uint64_t value, uint64_t alignment);
-
-/**
- * This method aligns a uint64 value down
- *
- * @value [in]: value to align down
- * @alignment [in]: alignment value
- * @return: aligned value
- */
-uint64_t align_down_uint64(uint64_t value, uint64_t alignment);
-
-/*
- * Align up to uint32
- *
- * @value [in]: value to align up
- * @alignment [in]: alignment value
- * @return: aligned value
- */
-uint32_t align_up_uint32(uint32_t value, uint32_t alignment);
-
-/*
- * Next power of two
- *
- * @x [in]: value x
- * @return: next power of two
- */
-uint64_t next_power_of_two(uint64_t x);
-
 /*
  * Allocate DOCA buf list
  *
@@ -238,13 +205,13 @@ uint64_t next_power_of_two(uint64_t x);
  * @dbuf [out]: The head of allocated doca_buf list
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t allocat_doca_buf_list(struct doca_buf_inventory *buf_inv,
-				   struct doca_mmap *mmap,
-				   void *buf_addr,
-				   size_t buf_len,
-				   int num_buf,
-				   bool set_data_pos,
-				   struct doca_buf **dbuf);
+doca_error_t allocate_doca_buf_list(struct doca_buf_inventory *buf_inv,
+				    struct doca_mmap *mmap,
+				    void *buf_addr,
+				    size_t buf_len,
+				    int num_buf,
+				    bool set_data_pos,
+				    struct doca_buf **dbuf);
 
 #ifdef __cplusplus
 } /* extern "C" */

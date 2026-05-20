@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -38,7 +38,7 @@
 #define MAX_MPI_WAIT_TIME (10)	      /* Maximum time to wait on MPI request */
 #define SLEEP_IN_NANO_SEC (100000000) /* Sleeping interval for completion polling */
 
-DOCA_LOG_REGISTER(A2A::Core);
+DOCA_LOG_REGISTER(A2A::CORE);
 
 /*
  * A struct that includes all needed info on registered kernels and is initialized during linkage by DPACC.

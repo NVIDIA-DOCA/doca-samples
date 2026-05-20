@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #
-# Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -27,32 +27,48 @@
 set -e
 
 # This script uses the dpacc tool (located in /opt/mellanox/doca/tools/dpacc) to compile DPA kernels device code (for DPA samples).
-# This script takes 2 arguments:
-# arg1: The project's build path (for the DPA Device build)
-# arg2: Absolute paths of DPA (kernel) device source code *file* (our code)
+# This script takes 4 arguments:
+# arg1: The DOCA directory path
+# arg2: The project's build path (for the DPA Device build)
+# arg3: Absolute paths of DPA (kernel) device source code *file* (our code)
+# arg4: Is it an amalgamation build mode (true) or fine-grained build mode (false)
 
 ####################
 ## Configurations ##
 ####################
 
-DOCA_BUILD_DIR=$1
-DPA_KERNELS_DEVICE_SRC=$2
-DPACC_MCPU_FLAG=$3
-DOCA_LIB_DIR=$4
-APPLICATION_DPA_ATTRIBUTES=$5
+DOCA_DIR=$1
+DOCA_BUILD_DIR=$2
+DPA_KERNELS_DEVICE_SRC=$3
+AMALGAMATION_BUILD_MODE=$4
+DPACC_MCPU_FLAG=$5
+APPLICATION_DPA_ATTRIBUTES=$6
 
 # DOCA Configurations
-DOCA_DIR="/opt/mellanox/doca"
-DOCA_INCLUDE="${DOCA_DIR}/include"
-DOCA_TOOLS="${DOCA_DIR}/tools"
+DOCA_INSTALL_DIR="/opt/mellanox/doca"
+DOCA_TOOLS="${DOCA_INSTALL_DIR}/tools"
+DOCA_INCLUDE="${DOCA_INSTALL_DIR}/include"
 DOCA_DPACC="${DOCA_TOOLS}/dpacc"
-DOCA_APP_ATTRIBUTES2BLOB="${DOCA_TOOLS}/dpa-app-attributes2blob"
+DPA_DIR="${DOCA_DIR}/libs/doca_dpa"
+DPA_SRC_DIR="${DPA_DIR}/src"
+DOCA_COMMON_DIR="$DOCA_DIR/libs/doca_common/"
+DOCA_VERSION_DIR="$DOCA_DIR/libs/doca_common/version/"
+DOCA_INC_ERR="$DOCA_DIR/libs/doca_common/core/include/public/"
+GEN_HEADER_DIR="${DOCA_BUILD_DIR}/configs"
+DPA_APP_ATTRIBUTES2BLOB="${DOCA_TOOLS}/dpa-app-attributes2blob"
 
 # DOCA DPA APP Configuration
 # This variable name passed to DPACC with --app-name parameter and it's token must be identical to the
 # struct doca_dpa_app parameter passed to doca_dpa_set_app(), i.e.
 # doca_error_t doca_dpa_set_app(..., struct doca_dpa_app *${DPA_APP_NAME});
 DPA_APP_NAME="dpa_all2all_app"
+
+# DOCA include list
+if [ ${AMALGAMATION_BUILD_MODE} = "true" ]; then
+	DOCA_INC_LIST="-I${DOCA_COMMON_DIR} -I${DOCA_VERSION_DIR} -I${DOCA_INC_ERR} -I${DPA_DIR}/include/public/ -I${GEN_HEADER_DIR}"
+else
+	DOCA_INC_LIST="-I${DOCA_INCLUDE}"
+fi
 
 # DPA Configurations
 HOST_CC_FLAGS="-Wno-deprecated-declarations -Werror -Wall -Wextra -DFLEXIO_ALLOW_EXPERIMENTAL_API"
@@ -63,14 +79,14 @@ DEVICE_CC_FLAGS="-Wno-deprecated-declarations -Werror -Wall -Wextra -DFLEXIO_DEV
 ##################
 
 # Build directory for the DPA device (kernel) code
-APPLICATION_DEVICE_BUILD_DIR="${DOCA_BUILD_DIR}/dpa_all_to_all/device/build_dpacc"
-APPLICATION_DPA_ATTRIBUTES_BLOB="${APPLICATION_DEVICE_BUILD_DIR}/dpa_all_to_all_attributes.blob"
+APPLICATION_DEVICE_BUILD_DIR="${DOCA_BUILD_DIR}/applications/dpa_all_to_all/device/build_dpacc"
+APPLICATION_DPA_ATTRIBUTES_BLOB="${APPLICATION_DEVICE_BUILD_DIR}/${DPA_APP_NAME}_attributes.blob"
 
 rm -rf $APPLICATION_DEVICE_BUILD_DIR
 mkdir -p $APPLICATION_DEVICE_BUILD_DIR
 
 # Generate blob from device attributes file
-$DOCA_APP_ATTRIBUTES2BLOB ${APPLICATION_DPA_ATTRIBUTES} ${APPLICATION_DPA_ATTRIBUTES_BLOB}
+$DPA_APP_ATTRIBUTES2BLOB ${APPLICATION_DPA_ATTRIBUTES} ${APPLICATION_DPA_ATTRIBUTES_BLOB}
 
 # Compile the DPA (kernel) device source code using the DPACC
 $DOCA_DPACC $DPA_KERNELS_DEVICE_SRC \
@@ -79,8 +95,8 @@ $DOCA_DPACC $DPA_KERNELS_DEVICE_SRC \
 	-hostcc=gcc \
 	-hostcc-options="${HOST_CC_FLAGS}" \
 	--devicecc-options="${DEVICE_CC_FLAGS}" \
-	-device-libs="-L${DOCA_LIB_DIR} -ldoca_dpa_dev -ldoca_dpa_dev_comm" \
+	-device-libs="-L${DOCA_BUILD_DIR}/libs -ldoca_dpa_dev -ldoca_dpa_dev_comm" \
 	--app-name="${DPA_APP_NAME}" \
 	-flto \
-	-I${DOCA_INCLUDE} \
+	${DOCA_INC_LIST} \
 	--dpa-proc-attr="${APPLICATION_DPA_ATTRIBUTES_BLOB}"

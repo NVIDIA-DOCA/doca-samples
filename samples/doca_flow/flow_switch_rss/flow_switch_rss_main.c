@@ -55,8 +55,6 @@
 
 #include <stdlib.h>
 
-#include <rte_ethdev.h>
-
 #include <doca_argp.h>
 #include <doca_dev.h>
 #include <doca_flow.h>
@@ -66,14 +64,15 @@
 #include <flow_common.h>
 #include <flow_switch_common.h>
 
-#include <dpdk_utils.h>
-
 DOCA_LOG_REGISTER(FLOW_SWITCH_RSS::MAIN);
 
 #define SWITCH_RSS_PORTS 3
 
 /* Sample's Logic */
-doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx);
+doca_error_t flow_switch_rss(int nb_queues,
+			     int nb_ports,
+			     struct flow_devs_manager devs_manager[],
+			     struct flow_switch_ctx *ctx);
 
 /*
  * Sample main function
@@ -87,12 +86,7 @@ int main(int argc, char **argv)
 	doca_error_t result;
 	struct doca_log_backend *sdk_log;
 	int exit_status = EXIT_FAILURE;
-	struct application_dpdk_config dpdk_config = {
-		.port_config.nb_ports = SWITCH_RSS_PORTS,
-		.port_config.nb_queues = 10,
-		.port_config.switch_mode = 1,
-		.port_config.enable_mbuf_metadata = 1,
-	};
+	const int nb_queues = 10;
 	struct flow_switch_ctx ctx = {0};
 	uint16_t nr_ports;
 
@@ -120,7 +114,6 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
-	doca_argp_set_dpdk_program(flow_init_dpdk);
 	ctx.devs_ctx.default_dev_args = FLOW_SWITCH_DEV_ARGS;
 
 	result = doca_argp_start(argc, argv);
@@ -129,38 +122,22 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
-	result = init_doca_flow_devs(&ctx.devs_ctx);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to init flow switch common: %s", doca_error_get_descr(result));
-		goto dpdk_cleanup;
-	}
-
-	nr_ports = rte_eth_dev_count_avail();
+	/* In DPDK-free mode, ports are passed via ARGP; validate we have enough */
+	nr_ports = ctx.devs_ctx.nb_ports;
 	if (nr_ports < SWITCH_RSS_PORTS) {
-		DOCA_LOG_ERR("Failed to init - lack of ports, probed:%d, needed:%d", nr_ports, SWITCH_RSS_PORTS);
-		goto sample_exit;
-	}
-
-	/* update queues and ports */
-	result = dpdk_queues_and_ports_init(&dpdk_config);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to update ports and queues");
-		goto dpdk_cleanup;
+		DOCA_LOG_ERR("Failed to init - lack of ports, provided:%d, needed:%d", nr_ports, SWITCH_RSS_PORTS);
+		goto argp_cleanup;
 	}
 
 	/* run sample */
-	result = flow_switch_rss(dpdk_config.port_config.nb_queues, SWITCH_RSS_PORTS, &ctx);
+	result = flow_switch_rss(nb_queues, SWITCH_RSS_PORTS, ctx.devs_ctx.devs_manager, &ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("flow_switch_rss() encountered an error: %s", doca_error_get_descr(result));
-		goto dpdk_ports_queues_cleanup;
+		goto argp_cleanup;
 	}
 
 	exit_status = EXIT_SUCCESS;
 
-dpdk_ports_queues_cleanup:
-	dpdk_queues_and_ports_fini(&dpdk_config);
-dpdk_cleanup:
-	dpdk_fini();
 argp_cleanup:
 	doca_argp_destroy();
 sample_exit:

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -37,7 +37,7 @@
 #include <nfs_fsdev.h>
 #include "priv_nfs_fsdev.h"
 
-DOCA_LOG_REGISTER(VIRTIOFS_DEVICE)
+DOCA_LOG_REGISTER(VIRTIOFS_DEVICE);
 
 #define MAX_REQS_PER_DIO 1024
 #define MAX_DOCA_BUF_PER_DATA_DMA 1

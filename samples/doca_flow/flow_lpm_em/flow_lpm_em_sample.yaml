@@ -43,6 +43,11 @@ use_cases:
               - Ether()/Dot1Q(vlan=2)/IP(src="1.2.3.4")/UDP(dport=4789)/VXLAN(vni=0xabcde2)/Ether(dst="2:2:2:2:2:2")/Raw(load=b'Sent to port 0, forwarded from port 1 by entry number 2')
               - Ether()/Dot1Q(vlan=3)/IP(src="1.2.3.4")/UDP(dport=4789)/VXLAN(vni=0xabcde3)/Ether(dst="3:3:3:3:3:3")/Raw(load=b'Sent to port 0, dropped by entry number 3')
               - Ether()/Dot1Q(vlan=3)/IP(src="1.2.125.125")/UDP(dport=4789)/VXLAN(vni=0xabcde3)/Ether(dst="3:3:3:3:3:3")/Raw(load=b'Sent to port 0, forwarded from port 1 by entry number 4')
+              - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x11111111)/Ether(dst="11:11:11:11:11:12")/IP(dst="10.0.1.100")/UDP(sport=1111)/Raw(load=b'Sent to port 0, NVGRE dropped by default')
+              - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x11111111)/Ether(dst="11:11:11:11:11:11")/IP(dst="10.0.1.100")/UDP(sport=1111)/Raw(load=b'Sent to port 0, NVGRE forwarded from port 1 by entry 1')
+              - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x22222222)/Ether(dst="22:22:22:22:22:22")/IP(dst="10.0.1.100")/UDP(sport=2222)/Raw(load=b'Sent to port 0, NVGRE forwarded from port 1 by entry 2')
+              - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x33333333)/Ether(dst="33:33:33:33:33:33")/IP(dst="10.0.1.100")/UDP(sport=3333)/Raw(load=b'Sent to port 0, NVGRE dropped by entry 3')
+              - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x33333333)/Ether(dst="33:33:33:33:33:33")/IP(dst="10.0.125.125")/UDP(sport=3333)/Raw(load=b'Sent to port 0, NVGRE forwarded from port 1 by entry 4')
           - receiving_port: 1
             packets:
               - Ether()/Dot1Q(vlan=1)/IP(src="1.2.3.4")/UDP(dport=4789)/VXLAN(vni=0xabcde1)/Ether(dst="1:1:1:1:1:2")/Raw(load=b'Sent to port 1, dropped  by entry number 0 (default)')
@@ -50,6 +55,11 @@ use_cases:
               - Ether()/Dot1Q(vlan=2)/IP(src="1.2.3.4")/UDP(dport=4789)/VXLAN(vni=0xabcde2)/Ether(dst="2:2:2:2:2:2")/Raw(load=b'Sent to port 1, forwarded from port 0 by entry number 2')
               - Ether()/Dot1Q(vlan=3)/IP(src="1.2.3.4")/UDP(dport=4789)/VXLAN(vni=0xabcde3)/Ether(dst="3:3:3:3:3:3")/Raw(load=b'Sent to port 1, dropped by entry number 3')
               - Ether()/Dot1Q(vlan=3)/IP(src="1.2.125.125")/UDP(dport=4789)/VXLAN(vni=0xabcde3)/Ether(dst="3:3:3:3:3:3")/Raw(load=b'Sent to port 1, forwarded from port 0 by entry number 4')
+              - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x11111111)/Ether(dst="11:11:11:11:11:12")/IP(dst="10.0.1.100")/UDP(sport=1111)/Raw(load=b'Sent to port 1, NVGRE dropped by default')
+              - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x11111111)/Ether(dst="11:11:11:11:11:11")/IP(dst="10.0.1.100")/UDP(sport=1111)/Raw(load=b'Sent to port 1, NVGRE forwarded from port 0 by entry 1')
+              - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x22222222)/Ether(dst="22:22:22:22:22:22")/IP(dst="10.0.1.100")/UDP(sport=2222)/Raw(load=b'Sent to port 1, NVGRE forwarded from port 0 by entry 2')
+              - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x33333333)/Ether(dst="33:33:33:33:33:33")/IP(dst="10.0.1.100")/UDP(sport=3333)/Raw(load=b'Sent to port 1, NVGRE dropped by entry 3')
+              - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x33333333)/Ether(dst="33:33:33:33:33:33")/IP(dst="10.0.125.125")/UDP(sport=3333)/Raw(load=b'Sent to port 1, NVGRE forwarded from port 0 by entry 4')
         validation:
           - type: packet
             expected_packets:
@@ -58,8 +68,14 @@ use_cases:
                   - Ether()/Dot1Q(vlan=1)/IP(src="1.2.3.4")/UDP(dport=4789)/VXLAN(vni=0xabcde1)/Ether(dst="1:1:1:1:1:1")/Raw(load=b'Sent to port 1, forwarded from port 0 by entry number 1')
                   - Ether()/Dot1Q(vlan=2)/IP(src="1.2.3.4")/UDP(dport=4789)/VXLAN(vni=0xabcde2)/Ether(dst="2:2:2:2:2:2")/Raw(load=b'Sent to port 1, forwarded from port 0 by entry number 2')
                   - Ether()/Dot1Q(vlan=3)/IP(src="1.2.125.125")/UDP(dport=4789)/VXLAN(vni=0xabcde3)/Ether(dst="3:3:3:3:3:3")/Raw(load=b'Sent to port 1, forwarded from port 0 by entry number 4')
+                  - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x11111111)/Ether(dst="11:11:11:11:11:11")/IP(dst="10.0.1.100")/UDP(sport=1111)/Raw(load=b'Sent to port 1, NVGRE forwarded from port 0 by entry 1')
+                  - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x22222222)/Ether(dst="22:22:22:22:22:22")/IP(dst="10.0.1.100")/UDP(sport=2222)/Raw(load=b'Sent to port 1, NVGRE forwarded from port 0 by entry 2')
+                  - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x33333333)/Ether(dst="33:33:33:33:33:33")/IP(dst="10.0.125.125")/UDP(sport=3333)/Raw(load=b'Sent to port 1, NVGRE forwarded from port 0 by entry 4')
               - forwarding_port: 1
                 packets:
                   - Ether()/Dot1Q(vlan=1)/IP(src="1.2.3.4")/UDP(dport=4789)/VXLAN(vni=0xabcde1)/Ether(dst="1:1:1:1:1:1")/Raw(load=b'Sent to port 0, forwarded from port 1 by entry number 1')
                   - Ether()/Dot1Q(vlan=2)/IP(src="1.2.3.4")/UDP(dport=4789)/VXLAN(vni=0xabcde2)/Ether(dst="2:2:2:2:2:2")/Raw(load=b'Sent to port 0, forwarded from port 1 by entry number 2')
                   - Ether()/Dot1Q(vlan=3)/IP(src="1.2.125.125")/UDP(dport=4789)/VXLAN(vni=0xabcde3)/Ether(dst="3:3:3:3:3:3")/Raw(load=b'Sent to port 0, forwarded from port 1 by entry number 4')
+                  - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x11111111)/Ether(dst="11:11:11:11:11:11")/IP(dst="10.0.1.100")/UDP(sport=1111)/Raw(load=b'Sent to port 0, NVGRE forwarded from port 1 by entry 1')
+                  - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x22222222)/Ether(dst="22:22:22:22:22:22")/IP(dst="10.0.1.100")/UDP(sport=2222)/Raw(load=b'Sent to port 0, NVGRE forwarded from port 1 by entry 2')
+                  - Ether()/IP(proto=47)/GRE(key_present=1, proto=0x6558, key=0x33333333)/Ether(dst="33:33:33:33:33:33")/IP(dst="10.0.125.125")/UDP(sport=3333)/Raw(load=b'Sent to port 0, NVGRE forwarded from port 1 by entry 4')

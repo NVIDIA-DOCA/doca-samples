@@ -45,4 +45,3 @@ Usage: doca_telemetry_diag [DOCA Flags] [Program Flags]
 The sample can use data IDs given by the user using a JSON file.
 
 An example of the JSON file format can be created by using the "-e" flag on the sample, to export an example JSON file containing the default data IDs to a given path.
-

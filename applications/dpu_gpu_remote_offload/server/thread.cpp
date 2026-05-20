@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -37,7 +37,7 @@
 #include <remote_offload_common/runtime_error.hpp>
 #include <remote_offload_common/os_utils.hpp>
 
-DOCA_LOG_REGISTER(server::thread);
+DOCA_LOG_REGISTER(SERVER::THREAD);
 
 namespace remote_offload {
 namespace server {
@@ -824,6 +824,10 @@ doca_error_t thread::submit_initial_tasks() noexcept
 
 doca_error_t thread::send_request(void *message, size_t message_len) noexcept
 {
+	if (m_free_tasks_count == 0) {
+		return DOCA_ERROR_AGAIN;
+	}
+
 	auto *task = m_free_tasks_list[--m_free_tasks_count];
 
 	auto *buf = const_cast<doca_buf *>(doca_comch_producer_task_send_get_buf(task));

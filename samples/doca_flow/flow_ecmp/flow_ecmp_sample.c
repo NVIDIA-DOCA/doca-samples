@@ -117,15 +117,32 @@ static doca_error_t create_root_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
-	result =
-		doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, DOCA_FLOW_WAIT_FOR_BATCH, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add UDP entry into root pipe: %s", doca_error_get_descr(result));
 		return result;
 	}
 
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_TCP;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add TCP entry into root pipe: %s", doca_error_get_descr(result));
 		return result;
@@ -233,7 +250,7 @@ static doca_error_t add_hash_pipe_entries(struct doca_flow_pipe *pipe,
 					  struct doca_flow_pipe_entry **entries,
 					  struct entries_status *status)
 {
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	struct doca_flow_fwd fwd = {.type = DOCA_FLOW_FWD_PORT};
 	doca_error_t result;
 	uint16_t target_port;
@@ -243,9 +260,9 @@ static doca_error_t add_hash_pipe_entries(struct doca_flow_pipe *pipe,
 		target_port = i + 1;
 		fwd.port_id = target_port;
 
-		/* Last entry should be inserted with DOCA_FLOW_NO_WAIT flag */
+		/* Last entry should be inserted with DOCA_FLOW_ENTRY_FLAGS_NO_WAIT flag */
 		if (i == nb_ecmp_ports - 1)
-			flags = DOCA_FLOW_NO_WAIT;
+			flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 
 		result = doca_flow_pipe_hash_add_entry(0, pipe, i, 0, NULL, NULL, &fwd, flags, status, &entries[i]);
 		if (result != DOCA_SUCCESS) {
@@ -275,7 +292,11 @@ static doca_error_t show_ecmp_results(uint32_t counter_id, struct doca_flow_pipe
 	doca_error_t result;
 	uint8_t i;
 
-	result = doca_flow_shared_resources_query(DOCA_FLOW_SHARED_RESOURCE_COUNTER, &counter_id, &root_query_stats, 1);
+	result = doca_flow_port_shared_resources_query(doca_flow_port_switch_get(NULL),
+						       DOCA_FLOW_SHARED_RESOURCE_COUNTER,
+						       &counter_id,
+						       &root_query_stats,
+						       1);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to query root pipe shared counter: %s", doca_error_get_descr(result));
 		return result;
@@ -400,22 +421,6 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 
 	switch_port = doca_flow_port_switch_get(NULL);
 
-	result = doca_flow_shared_resource_set_cfg(DOCA_FLOW_SHARED_RESOURCE_COUNTER, shared_counter_id, &cfg);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to configure shared counter for root pipe: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
-	}
-
-	result = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_COUNTER, &shared_counter_id, 1, switch_port);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to bind shared counter to port: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
-	}
-
 	result = doca_flow_port_shared_resource_get(switch_port, DOCA_FLOW_SHARED_RESOURCE_COUNTER, &shared_counter_id);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get shared counter id from port");
@@ -431,7 +436,6 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 							&cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to configure shared counter to port: %s", doca_error_get_descr(result));
-		;
 		stop_doca_flow_ports(nb_ports, ports);
 		doca_flow_destroy();
 		return result;

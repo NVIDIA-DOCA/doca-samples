@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -76,6 +76,7 @@ static struct doca_flow_pipe_entry *rss_entry;
  */
 static void handle_rx_tx_pkts(uint32_t port_id, uint16_t nb_queues)
 {
+	int rc;
 	uint32_t queue_id;
 	uint32_t secs = WAIT_SECS;
 	uint32_t nb_rx;
@@ -85,6 +86,12 @@ static void handle_rx_tx_pkts(uint32_t port_id, uint16_t nb_queues)
 	uint32_t nb_tx;
 	uint32_t retry;
 	struct rte_mbuf *mbufs[MAX_PKTS];
+
+	rc = rte_flow_dynf_metadata_register();
+	if (unlikely(rc)) {
+		DOCA_LOG_ERR("Enable metadata failed");
+		return;
+	}
 
 	while (secs--) {
 		sleep(1);
@@ -199,7 +206,7 @@ static doca_error_t add_rss_pipe_entry(struct doca_flow_pipe *pipe, struct entri
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &rss_entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &rss_entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -447,7 +454,7 @@ static doca_error_t add_switch_egress_pipe_entries(struct doca_flow_pipe *pipe, 
 {
 	struct doca_flow_match match;
 	struct doca_flow_fwd fwd;
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	doca_error_t result;
 	int entry_index = 0;
 
@@ -471,20 +478,20 @@ static doca_error_t add_switch_egress_pipe_entries(struct doca_flow_pipe *pipe, 
 		/* First port as wire to wire, second wire to VF */
 		fwd.port_id = entry_index;
 
-		/* last entry should be inserted with DOCA_FLOW_NO_WAIT flag */
+		/* last entry should be inserted with DOCA_FLOW_ENTRY_FLAGS_NO_WAIT flag */
 		if (entry_index == NB_EGRESS_ENTRIES - 1)
-			flags = DOCA_FLOW_NO_WAIT;
+			flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 
-		result = doca_flow_pipe_add_entry(0,
-						  pipe,
-						  &match,
-						  0,
-						  NULL,
-						  NULL,
-						  &fwd,
-						  flags,
-						  status,
-						  &egress_entries[entry_index]);
+		result = doca_flow_pipe_basic_add_entry(0,
+							pipe,
+							&match,
+							0,
+							NULL,
+							NULL,
+							&fwd,
+							flags,
+							status,
+							&egress_entries[entry_index]);
 
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
@@ -506,7 +513,7 @@ static doca_error_t add_switch_ingress_pipe_entries(struct doca_flow_pipe *pipe,
 {
 	struct doca_flow_match match;
 	struct doca_flow_fwd fwd;
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	doca_error_t result;
 	int entry_index = 0;
 
@@ -530,16 +537,16 @@ static doca_error_t add_switch_ingress_pipe_entries(struct doca_flow_pipe *pipe,
 		/* First entry to egress, second to vport */
 		fwd.next_pipe = entry_index ? pipe_vport : pipe_egress;
 
-		result = doca_flow_pipe_add_entry(0,
-						  pipe,
-						  &match,
-						  0,
-						  NULL,
-						  NULL,
-						  &fwd,
-						  flags,
-						  status,
-						  &ingress_entries[entry_index]);
+		result = doca_flow_pipe_basic_add_entry(0,
+							pipe,
+							&match,
+							0,
+							NULL,
+							NULL,
+							&fwd,
+							flags,
+							status,
+							&ingress_entries[entry_index]);
 
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
@@ -561,7 +568,7 @@ static doca_error_t add_switch_vport_pipe_entries(struct doca_flow_pipe *pipe, s
 {
 	struct doca_flow_match match;
 	struct doca_flow_fwd fwd;
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	doca_error_t result;
 	int entry_index = 0;
 
@@ -582,16 +589,16 @@ static doca_error_t add_switch_vport_pipe_entries(struct doca_flow_pipe *pipe, s
 		/* First port as wire to wire, second wire to VF */
 		fwd.port_id = entry_index;
 
-		result = doca_flow_pipe_add_entry(0,
-						  pipe,
-						  &match,
-						  0,
-						  NULL,
-						  NULL,
-						  &fwd,
-						  flags,
-						  status,
-						  &vport_entries[entry_index]);
+		result = doca_flow_pipe_basic_add_entry(0,
+							pipe,
+							&match,
+							0,
+							NULL,
+							NULL,
+							&fwd,
+							flags,
+							status,
+							&vport_entries[entry_index]);
 
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
@@ -627,11 +634,10 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 2 * NB_TOTAL_ENTRIES; /* counter per entry */
 	resource.nr_rss = 1;
-	/* Use isolated mode as we will create the RSS pipe later */
 	if (is_expert)
-		start_str = "switch,hws,isolated,hairpinq_num=4,expert";
+		start_str = "switch,hws,hairpinq_num=4,expert";
 	else
-		start_str = "switch,hws,isolated,hairpinq_num=4";
+		start_str = "switch,hws,hairpinq_num=4";
 	result = init_doca_flow(nb_queues, start_str, &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));

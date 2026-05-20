@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -88,7 +88,7 @@ static doca_error_t create_pipe_and_entry(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, NULL, 0, NULL, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, NULL, 0, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add RSS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -223,7 +223,7 @@ static doca_error_t create_counter_pipe(struct doca_flow_port *port,
 	}
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
-	result = doca_flow_pipe_add_entry(0, *pipe, NULL, 0, NULL, &monitor, NULL, 0, status, entry);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, NULL, 0, NULL, &monitor, NULL, 0, status, entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add counter pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -518,13 +518,13 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 	resource.nr_counters = 2; /* Need 2 counters: 1 for CT pipe (matches) and 1 for counter_miss_pipe */
 	resource.nr_rss = 1;
 
-	result = init_doca_flow(nb_queues, "switch,hws,isolated", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
 	}
 
-	/* Dont use zone masking */
+	/* Don't use zone masking */
 	memset(&o_zone_mask, 0, sizeof(o_zone_mask));
 	memset(&o_modify_mask, 0, sizeof(o_modify_mask));
 	memset(&r_zone_mask, 0, sizeof(r_zone_mask));

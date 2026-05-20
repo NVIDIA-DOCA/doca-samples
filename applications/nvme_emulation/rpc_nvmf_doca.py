@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -21,8 +21,6 @@
 # STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
-
-#!/usr/bin/python3
 
 from spdk.rpc.client import print_json
 
@@ -52,7 +50,7 @@ def destroy_function(client, dev_name, vuid):
 	return client.call('nvmf_doca_destroy_function', params)
 
 def list_functions(client, dev_name):
-	"""List all avaialble function, for a DOCA device.
+	"""List all available function, for a DOCA device.
 
 	"""
 	params = {}
@@ -82,7 +80,7 @@ def spdk_rpc_plugin_initialize(subparsers):
 
 	p = subparsers.add_parser('nvmf_doca_destroy_function',
 				  help='Destroys a function')
-	p.add_argument('-d', '--dev_name', help='The name of the DOCA device tha function belongs to ', type=str)
+	p.add_argument('-d', '--dev_name', help='The name of the DOCA device that function belongs to ', type=str)
 	p.add_argument('-v', '--vuid', help='The vuid of the function we want to destroy', type=str)
 	p.set_defaults(func=nvmf_doca_destroy_function)
 
@@ -90,7 +88,6 @@ def spdk_rpc_plugin_initialize(subparsers):
         	print_json(list_functions(args.client, dev_name=args.dev_name))
 
 	p = subparsers.add_parser('nvmf_doca_list_functions',
-				  help='List all avaialble function, for a DOCA device')
+				  help='List all available function, for a DOCA device')
 	p.add_argument('-d', '--dev-name', help='The PCI type', type=str)
 	p.set_defaults(func=nvmf_doca_list_functions)
-

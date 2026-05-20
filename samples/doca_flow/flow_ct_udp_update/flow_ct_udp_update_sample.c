@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -41,6 +41,8 @@
 
 DOCA_LOG_REGISTER(FLOW_CT_UDP_UPDATE);
 
+struct doca_flow_pipe *ct_pipe;
+
 /*
  * Entry processing callback
  *
@@ -67,7 +69,7 @@ static void check_for_valid_entry_aging(struct doca_flow_pipe_entry *entry,
 	if (status != DOCA_FLOW_ENTRY_STATUS_SUCCESS)
 		entry_status->failure = true; /* set failure to true if processing failed */
 	if (op == DOCA_FLOW_ENTRY_OP_AGED) {
-		doca_flow_ct_rm_entry(pipe_queue, NULL, DOCA_FLOW_NO_WAIT, entry);
+		doca_flow_ct_rm_entry(pipe_queue, ct_pipe, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT, entry);
 		DOCA_LOG_INFO("Entry aged out and removed");
 	} else
 		entry_status->nb_processed++;
@@ -127,7 +129,7 @@ static doca_error_t create_rss_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add RSS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -298,7 +300,7 @@ static doca_error_t create_vxlan_encap_pipe(struct doca_flow_port *port,
 	actions.encap_cfg.encap.outer.ip4.ttl = 17;
 	actions.encap_cfg.encap.tun.vxlan_tun_id = DOCA_HTOBE32(0xadadad);
 
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add VxLAN Encap pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -394,7 +396,7 @@ static doca_error_t create_count_pipe(struct doca_flow_port *port,
 	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(80);
 	match.outer.udp.l4_port.src_port = DOCA_HTOBE16(1234);
 
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add count pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -450,6 +452,7 @@ static void parse_packet(struct rte_mbuf *packet,
  *
  * @port [in]: Port id to which an entry should be inserted
  * @ct_queue [in]: DOCA Flow CT queue number
+ * @ct_pipe [in]: DOCA Flow CT pipe
  * @ct_status [in]: User context for adding CT entry
  * @ct_entries_arr [out]: DOCA Flow CT entries array
  * @ct_entries_arr_len [out]: DOCA Flow CT entries array length
@@ -457,6 +460,7 @@ static void parse_packet(struct rte_mbuf *packet,
  */
 static doca_error_t process_packets(struct doca_flow_port *port,
 				    uint16_t ct_queue,
+				    struct doca_flow_pipe *ct_pipe,
 				    struct entries_status *ct_status,
 				    struct doca_flow_pipe_entry *ct_entries_arr[PACKET_BURST],
 				    int *ct_entries_arr_len)
@@ -497,7 +501,7 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 				      DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN;
 			result = flow_ct_create_entry(port,
 						      ct_queue,
-						      NULL,
+						      ct_pipe,
 						      prepare_flags,
 						      entry_flags,
 						      &match_o,
@@ -568,7 +572,8 @@ static doca_error_t update_nonactive_entries(struct doca_flow_port *port,
 
 		/* Nonactive session should be aged and deleted */
 		if (query_o.counter.total_pkts == 0 && query_r.counter.total_pkts == 0) {
-			result = doca_flow_ct_update_entry(ct_queue, NULL, flags, entries_arr[i], 0, 0, 0, 0, aging_s);
+			result =
+				doca_flow_ct_update_entry(ct_queue, ct_pipe, flags, entries_arr[i], 0, 0, 0, 0, aging_s);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to query CT entry: %s", doca_error_get_descr(result));
 				return result;
@@ -625,7 +630,7 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 	struct flow_resources resource;
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_pipe_entry *ct_entries_arr[PACKET_BURST];
-	struct doca_flow_pipe *rss_pipe, *encap_pipe, *count_pipe, *ct_pipe = NULL, *udp_pipe;
+	struct doca_flow_pipe *rss_pipe, *encap_pipe, *count_pipe, *udp_pipe;
 	struct doca_flow_port *ports[nb_ports];
 	struct doca_flow_meta o_zone_mask, r_zone_mask;
 	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
@@ -647,7 +652,7 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 	resource.nr_encap = 1;
 
 	result = init_doca_flow_cb(nb_queues,
-				   "switch,hws,isolated",
+				   "switch,hws",
 				   &resource,
 				   nr_shared_resources,
 				   check_for_valid_entry_aging,
@@ -658,7 +663,7 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 		return result;
 	}
 
-	/* Dont use zone masking */
+	/* Don't use zone masking */
 	memset(&o_zone_mask, 0, sizeof(o_zone_mask));
 	memset(&o_modify_mask, 0, sizeof(o_modify_mask));
 	memset(&r_zone_mask, 0, sizeof(r_zone_mask));
@@ -725,7 +730,7 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 	}
 
 	DOCA_LOG_INFO("Wait a few seconds for packets to arrive");
-	result = process_packets(ports[0], ct_queue, &ct_status, ct_entries_arr, &ct_entries_arr_len);
+	result = process_packets(ports[0], ct_queue, ct_pipe, &ct_status, ct_entries_arr, &ct_entries_arr_len);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
@@ -740,5 +745,6 @@ doca_error_t flow_ct_udp_update(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 
 cleanup:
 	cleanup_procedure(ct_pipe, nb_ports, ports);
+	ct_pipe = NULL;
 	return result;
 }

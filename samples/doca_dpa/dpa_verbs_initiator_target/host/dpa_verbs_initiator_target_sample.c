@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -355,11 +355,11 @@ static uint32_t calc_qp_external_umem_size(uint32_t rq_size, uint32_t sq_size)
 	uint32_t sq_ring_size = 0;
 
 	if (rq_size != 0)
-		rq_ring_size = (uint32_t)(next_power_of_two(rq_size) * sizeof(struct mlx5_wqe_data_seg));
+		rq_ring_size = (uint32_t)(common_utils_next_power_of_two(rq_size) * sizeof(struct mlx5_wqe_data_seg));
 	if (sq_size != 0)
-		sq_ring_size = (uint32_t)(next_power_of_two(sq_size) * VERBS_SAMPLE_WQEBB_SIZE);
+		sq_ring_size = (uint32_t)(common_utils_next_power_of_two(sq_size) * VERBS_SAMPLE_WQEBB_SIZE);
 
-	return align_up_uint32(rq_ring_size + sq_ring_size, VERBS_SAMPLE_CACHELINE_SIZE);
+	return common_utils_align_up_uint32(rq_ring_size + sq_ring_size, VERBS_SAMPLE_CACHELINE_SIZE);
 }
 
 /*

@@ -1,0 +1,15 @@
+doca_aes_gcm
+doca_apsh
+doca_comch
+doca_common
+doca_compress
+doca_devemu
+doca_dma
+doca_dpa
+doca_erasure_coding
+doca_eth
+doca_gpunetio
+doca_rdma
+doca_sha
+doca_telemetry_exporter
+doca_urom

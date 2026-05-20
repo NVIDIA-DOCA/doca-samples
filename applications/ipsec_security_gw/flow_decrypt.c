@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,7 +32,7 @@
 
 #include "flow_decrypt.h"
 
-DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::flow_decrypt);
+DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::FLOW_DECRYPT);
 
 #define DECAP_MAC_TYPE_IDX 12	   /* index in decap raw data for inner l3 type */
 #define DECAP_IDX_SRC_MAC 6	   /* index in decap raw data for source mac */
@@ -69,17 +69,17 @@ static doca_error_t create_ipsec_decrypt_pipe(struct doca_flow_port *port,
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&fwd_miss, 0, sizeof(fwd_miss));
 
+	meta_actions.meta.pkt_meta = 0xffffffff;
+
 	crypto_actions.crypto.action_type = DOCA_FLOW_CRYPTO_ACTION_DECRYPT;
 	crypto_actions.crypto.resource_type = DOCA_FLOW_CRYPTO_RESOURCE_IPSEC_SA;
 	crypto_actions.crypto.ipsec_sa.sn_en = !app_cfg->sw_antireplay;
 	crypto_actions.crypto.crypto_id = UINT32_MAX;
 
-	meta_actions.meta.pkt_meta = 0xffffffff;
-
-	elements[0].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_CRYPTO;
-	elements[0].crypto = &crypto_actions;
-	elements[1].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
-	elements[1].actions = &meta_actions;
+	elements[0].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
+	elements[0].actions = &meta_actions;
+	elements[1].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_CRYPTO;
+	elements[1].crypto = &crypto_actions;
 
 	ordered_list.idx = 0;
 	ordered_list.size = 2;
@@ -414,7 +414,7 @@ static doca_error_t add_bad_syndrome_pipe_entry(struct ipsec_security_gw_config 
 						struct decrypt_rule *rule,
 						uint32_t rule_id,
 						struct entries_status *decrypt_status,
-						enum doca_flow_flags_type flags,
+						uint32_t flags,
 						int queue_id)
 {
 	uint16_t rss_queues[app_cfg->dpdk_config->port_config.nb_queues];
@@ -446,16 +446,16 @@ static doca_error_t add_bad_syndrome_pipe_entry(struct ipsec_security_gw_config 
 	get_bad_syndrome_pipe_fwd(app_cfg, rss_queues, rss_flags, &fwd);
 
 	/* match on ipsec syndrome 1 */
-	result = doca_flow_pipe_add_entry(queue_id,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  decrypt_status,
-					  &rule->entries[0].entry);
+	result = doca_flow_pipe_basic_add_entry(queue_id,
+						pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						decrypt_status,
+						&rule->entries[0].entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add bad syndrome pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -467,16 +467,16 @@ static doca_error_t add_bad_syndrome_pipe_entry(struct ipsec_security_gw_config 
 	actions.meta.pkt_meta = DOCA_HTOBE32(actions_meta.u32);
 
 	/* match on ipsec syndrome 2 */
-	result = doca_flow_pipe_add_entry(queue_id,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  decrypt_status,
-					  &rule->entries[1].entry);
+	result = doca_flow_pipe_basic_add_entry(queue_id,
+						pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						decrypt_status,
+						&rule->entries[1].entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add bad syndrome pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -490,16 +490,16 @@ static doca_error_t add_bad_syndrome_pipe_entry(struct ipsec_security_gw_config 
 	actions.meta.pkt_meta = DOCA_HTOBE32(actions_meta.u32);
 
 	/* match on ASO syndrome 1 */
-	result = doca_flow_pipe_add_entry(queue_id,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  decrypt_status,
-					  &rule->entries[2].entry);
+	result = doca_flow_pipe_basic_add_entry(queue_id,
+						pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						decrypt_status,
+						&rule->entries[2].entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add bad syndrome pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -510,16 +510,16 @@ static doca_error_t add_bad_syndrome_pipe_entry(struct ipsec_security_gw_config 
 	actions.meta.pkt_meta = DOCA_HTOBE32(actions_meta.u32);
 
 	/* match on ASO syndrome 2 */
-	result = doca_flow_pipe_add_entry(queue_id,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  &fwd,
-					  flags,
-					  decrypt_status,
-					  &rule->entries[3].entry);
+	result = doca_flow_pipe_basic_add_entry(queue_id,
+						pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						&fwd,
+						flags,
+						decrypt_status,
+						&rule->entries[3].entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add bad syndrome pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -561,16 +561,16 @@ static doca_error_t add_vxlan_decap_pipe_entry(struct doca_flow_port *port,
 		entry = &pipe->entries_info[pipe->nb_entries++].entry;
 	}
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe->pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  NULL,
-					  DOCA_FLOW_NO_WAIT,
-					  &app_cfg->secured_status[0],
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe->pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ipv4 entry: %s", doca_error_get_descr(result));
 		return result;
@@ -692,6 +692,7 @@ static doca_error_t create_ipsec_decap_pipe(struct doca_flow_port *port,
 	struct doca_flow_ordered_list_element elements[1] = {0};
 	const int nb_ordered_lists = 1;
 	struct doca_flow_ordered_list *ordered_lists[nb_ordered_lists];
+	const uint32_t nb_entries = 2;
 	doca_error_t result;
 
 	if (app_cfg->offload == IPSEC_SECURITY_GW_ESP_OFFLOAD_BOTH ||
@@ -756,6 +757,11 @@ static doca_error_t create_ipsec_decap_pipe(struct doca_flow_port *port,
 	result = doca_flow_pipe_cfg_set_domain(pipe_cfg, DOCA_FLOW_PIPE_DOMAIN_SECURE_INGRESS);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg domain: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, nb_entries);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg nr_entries: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 	result = doca_flow_pipe_cfg_set_miss_counter(pipe_cfg, true);
@@ -1006,16 +1012,16 @@ static doca_error_t create_marker_decap_pipe(struct doca_flow_port *port, struct
 
 	match.parser_meta.outer_l3_type = (enum doca_flow_l3_meta)DOCA_FLOW_L3_META_IPV4;
 	fwd.next_pipe = app_cfg->decrypt_pipes.match_decrypt_ipv4_pipe.pipe;
-	result = doca_flow_pipe_add_entry(0,
-					  pipe_info->pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  &app_cfg->secured_status[0],
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe_info->pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						&app_cfg->secured_status[0],
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add non-ESP marker decap ingress IPv4 entry: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -1027,16 +1033,16 @@ static doca_error_t create_marker_decap_pipe(struct doca_flow_port *port, struct
 
 	match.parser_meta.outer_l3_type = (enum doca_flow_l3_meta)DOCA_FLOW_L3_META_IPV6;
 	fwd.next_pipe = app_cfg->decrypt_pipes.match_decrypt_ipv6_pipe.pipe;
-	result = doca_flow_pipe_add_entry(0,
-					  pipe_info->pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_NO_WAIT,
-					  &app_cfg->secured_status[0],
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe_info->pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						&app_cfg->secured_status[0],
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add non-ESP marker decap ingress IPv6 entry: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -1164,7 +1170,7 @@ static doca_error_t add_decap_pipe_entries(struct ipsec_security_gw_config *app_
 						       entry_idx_ipv4,
 						       &ordered_list,
 						       &fwd,
-						       DOCA_FLOW_WAIT_FOR_BATCH,
+						       DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
 						       &app_cfg->secured_status[0],
 						       entry);
 	if (result != DOCA_SUCCESS)
@@ -1186,7 +1192,7 @@ static doca_error_t add_decap_pipe_entries(struct ipsec_security_gw_config *app_
 						       entry_idx_ipv6,
 						       &ordered_list,
 						       &fwd,
-						       DOCA_FLOW_WAIT_FOR_BATCH,
+						       DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
 						       &app_cfg->secured_status[0],
 						       entry);
 	if (result != DOCA_SUCCESS)
@@ -1207,16 +1213,16 @@ static doca_error_t add_decap_pipe_entries(struct ipsec_security_gw_config *app_
 		snprintf(match_pipe->entries_info[match_pipe->nb_entries].name, MAX_NAME_LEN, "match_decap_ipv4");
 		entry = &match_pipe->entries_info[match_pipe->nb_entries++].entry;
 	}
-	result = doca_flow_pipe_add_entry(0,
-					  match_pipe->pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd_to_ordered_list,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  &app_cfg->secured_status[0],
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						match_pipe->pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd_to_ordered_list,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -1236,16 +1242,16 @@ static doca_error_t add_decap_pipe_entries(struct ipsec_security_gw_config *app_
 		snprintf(match_pipe->entries_info[match_pipe->nb_entries].name, MAX_NAME_LEN, "match_decap_ipv6");
 		entry = &match_pipe->entries_info[match_pipe->nb_entries++].entry;
 	}
-	result = doca_flow_pipe_add_entry(0,
-					  match_pipe->pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd_to_ordered_list,
-					  DOCA_FLOW_NO_WAIT,
-					  &app_cfg->secured_status[0],
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						match_pipe->pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd_to_ordered_list,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -1398,7 +1404,6 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 		entry = &control_pipe->entries_info[control_pipe->nb_entries++].entry;
 	}
 	result = doca_flow_pipe_control_add_entry(0,
-						  0,
 						  control_pipe->pipe,
 						  &match,
 						  NULL,
@@ -1407,6 +1412,7 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 						  NULL,
 						  NULL,
 						  monitor_ptr,
+						  0,
 						  &fwd,
 						  NULL,
 						  entry);
@@ -1453,7 +1459,6 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 		entry = &control_pipe->entries_info[control_pipe->nb_entries++].entry;
 	}
 	result = doca_flow_pipe_control_add_entry(0,
-						  0,
 						  control_pipe->pipe,
 						  &match,
 						  NULL,
@@ -1462,6 +1467,7 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 						  NULL,
 						  NULL,
 						  monitor_ptr,
+						  0,
 						  &fwd,
 						  NULL,
 						  entry);
@@ -1598,7 +1604,7 @@ doca_error_t add_decrypt_entry(struct decrypt_rule *rule,
 						       rule_id,
 						       &ordered_list,
 						       &fwd,
-						       DOCA_FLOW_WAIT_FOR_BATCH,
+						       DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
 						       &app_cfg->secured_status[0],
 						       NULL);
 	if (result != DOCA_SUCCESS)
@@ -1621,22 +1627,22 @@ doca_error_t add_decrypt_entry(struct decrypt_rule *rule,
 	fwd_to_ordered_list.ordered_list_pipe.idx = rule_id;
 
 	if (app_cfg->debug_mode) {
-		flags = DOCA_FLOW_WAIT_FOR_BATCH;
+		flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 		snprintf(decrypt_pipe->entries_info[decrypt_pipe->nb_entries].name, MAX_NAME_LEN, "rule%d", rule_id);
 		entry = &decrypt_pipe->entries_info[decrypt_pipe->nb_entries++].entry;
 	} else
-		flags = DOCA_FLOW_NO_WAIT;
+		flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 
-	result = doca_flow_pipe_add_entry(0,
-					  decrypt_pipe->pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd_to_ordered_list,
-					  flags,
-					  &app_cfg->secured_status[0],
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						decrypt_pipe->pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd_to_ordered_list,
+						flags,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -1649,7 +1655,7 @@ doca_error_t add_decrypt_entry(struct decrypt_rule *rule,
 						     rule,
 						     rule_id,
 						     &app_cfg->secured_status[0],
-						     DOCA_FLOW_NO_WAIT,
+						     DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
 						     0);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
@@ -1698,8 +1704,8 @@ doca_error_t add_decrypt_entries(struct ipsec_security_gw_config *app_cfg,
 	struct doca_flow_pipe_entry **entry = NULL;
 	struct security_gateway_pipe_info *decrypt_pipe;
 	struct doca_flow_port *secured_port;
-	enum doca_flow_flags_type flags;
-	enum doca_flow_flags_type decrypt_flags;
+	uint32_t flags;
+	uint32_t decrypt_flags;
 	int i, rule_id;
 	doca_error_t result;
 	union security_gateway_pkt_meta meta = {0};
@@ -1727,20 +1733,14 @@ doca_error_t add_decrypt_entries(struct ipsec_security_gw_config *app_cfg,
 		rule_id = rule_offset + i;
 		ipsec_id = IPSEC_ID(nb_encrypt_rules + rule_id);
 		if (i == nb_rules - 1 || app_cfg->secured_status[queue_id].entries_in_queue == QUEUE_DEPTH - 8)
-			flags = DOCA_FLOW_NO_WAIT;
+			flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 		else
-			flags = DOCA_FLOW_WAIT_FOR_BATCH;
+			flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 
 		/* create ipsec shared objects */
 		result = create_ipsec_decrypt_shared_object(secured_port, &rules[rule_id].sa_attrs, app_cfg, ipsec_id);
 		if (result != DOCA_SUCCESS)
 			return result;
-
-		/* Add entry to ordered list pipe */
-		crypto_actions.crypto.action_type = DOCA_FLOW_CRYPTO_ACTION_DECRYPT;
-		crypto_actions.crypto.resource_type = DOCA_FLOW_CRYPTO_RESOURCE_IPSEC_SA;
-		crypto_actions.crypto.ipsec_sa.sn_en = !app_cfg->sw_antireplay;
-		crypto_actions.crypto.crypto_id = ipsec_id;
 
 		/* save rule index in metadata */
 		meta.decrypt = 1;
@@ -1750,10 +1750,16 @@ doca_error_t add_decrypt_entries(struct ipsec_security_gw_config *app_cfg,
 			meta.inner_ipv6 = 1;
 		meta_actions.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
 
-		elements[0].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_CRYPTO;
-		elements[0].crypto = &crypto_actions;
-		elements[1].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
-		elements[1].actions = &meta_actions;
+		/* Add entry to ordered list pipe */
+		crypto_actions.crypto.action_type = DOCA_FLOW_CRYPTO_ACTION_DECRYPT;
+		crypto_actions.crypto.resource_type = DOCA_FLOW_CRYPTO_RESOURCE_IPSEC_SA;
+		crypto_actions.crypto.ipsec_sa.sn_en = !app_cfg->sw_antireplay;
+		crypto_actions.crypto.crypto_id = ipsec_id;
+
+		elements[0].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
+		elements[0].actions = &meta_actions;
+		elements[1].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_CRYPTO;
+		elements[1].crypto = &crypto_actions;
 
 		ordered_list.idx = 0;
 		ordered_list.size = 2;
@@ -1767,7 +1773,7 @@ doca_error_t add_decrypt_entries(struct ipsec_security_gw_config *app_cfg,
 							       rule_id,
 							       &ordered_list,
 							       &fwd,
-							       DOCA_FLOW_WAIT_FOR_BATCH,
+							       DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
 							       &app_cfg->secured_status[queue_id],
 							       NULL);
 		if (result != DOCA_SUCCESS)
@@ -1790,21 +1796,21 @@ doca_error_t add_decrypt_entries(struct ipsec_security_gw_config *app_cfg,
 		fwd_to_ordered_list.ordered_list_pipe.idx = rule_id;
 
 		if (app_cfg->debug_mode) {
-			decrypt_flags = DOCA_FLOW_WAIT_FOR_BATCH;
+			decrypt_flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 			snprintf(decrypt_pipe->entries_info[decrypt_pipe->nb_entries].name, MAX_NAME_LEN, "rule%d", i);
 			entry = &decrypt_pipe->entries_info[decrypt_pipe->nb_entries++].entry;
 		} else
 			decrypt_flags = flags;
-		result = doca_flow_pipe_add_entry(queue_id,
-						  decrypt_pipe->pipe,
-						  &decrypt_match,
-						  0,
-						  NULL,
-						  NULL,
-						  &fwd_to_ordered_list,
-						  decrypt_flags,
-						  &app_cfg->secured_status[queue_id],
-						  entry);
+		result = doca_flow_pipe_basic_add_entry(queue_id,
+							decrypt_pipe->pipe,
+							&decrypt_match,
+							0,
+							NULL,
+							NULL,
+							&fwd_to_ordered_list,
+							decrypt_flags,
+							&app_cfg->secured_status[queue_id],
+							entry);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
 			return result;

@@ -22,24 +22,23 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-if not flag_enable_grpc_support
-	warning('Skipping compilation of DOCA Application - @0@ - Missing gRPC support.'.format(APP_NAME))
+# Check if we should skip the compilation of the applications
+if flag_disable_applications_compilation
 	subdir_done()
 endif
 
-json_c_dependency = dependency('json-c', required: false)
-if not json_c_dependency.found()
-	warning('Skipping compilation of DOCA Application - @0@ - Missing json-c support.'.format(APP_NAME))
+if not flag_enable_grpc_support
+	set_variable('app_' + APP_NAME.underscorify() + '_disable_reason', 'Missing gRPC support')
 	subdir_done()
 endif
 
 subdir('grpc')
-
 app_dependencies += dependency_psp_gateway_grpc
 app_dependencies += grpc_dependencies
-app_dependencies += json_c_dependency
+app_dependencies += dependency('json-c')
 
 app_srcs = files([
+	APP_NAME + '.cpp',
 	'psp_gw_flows.cpp',
 	'psp_gw_params.cpp',
 	'psp_gw_svc_impl.cpp',
@@ -49,16 +48,10 @@ app_srcs = files([
 	samples_dir_path + '/common.c',
 ])
 
-vanilla_app_srcs = [
-	APP_NAME + '.cpp',
-]
-
-executable(DOCA_PREFIX + APP_NAME,
-	app_srcs + vanilla_app_srcs,
+executable(DOCA_PREFIX + APP_NAME, app_srcs,
 	override_options: ['cpp_std=c++17'],
-	c_args : grpc_c_args,
-	cpp_args: grpc_cpp_args,
+	c_args : apps_common_c_args + grpc_c_args,
+	cpp_args: apps_common_cpp_args + grpc_cpp_args,
 	link_args : grpc_link_args,
 	dependencies : app_dependencies,
-	include_directories : app_inc_dirs,
-	install: install_apps)
+	include_directories: app_inc_dirs)

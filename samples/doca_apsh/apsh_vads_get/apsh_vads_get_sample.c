@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -94,13 +94,16 @@ doca_error_t vads_get(const char *dma_device_name,
 	/* Print some attributes of the vads */
 	DOCA_LOG_INFO("First 5 vads for process %u:", pid);
 	for (i = 0; i < num_vads && i < 5; ++i) {
-		DOCA_LOG_INFO("\tVad %d  -  Process name: %s, start address: 0x%" PRIx64 ", end address: 0x%" PRIx64
-			      ", path : %s",
+		const char *path = doca_apsh_vad_info_get(vads_list[i], DOCA_APSH_VMA_FILE_PATH);
+		const char *prot = doca_apsh_vad_info_get(vads_list[i], DOCA_APSH_VMA_PROTECTION);
+		DOCA_LOG_INFO("\tVad %d  -  Process name: %s, start: 0x%" PRIx64 ", end: 0x%" PRIx64
+			      ", prot: %s, path: %s",
 			      i,
 			      doca_apsh_vad_info_get(vads_list[i], DOCA_APSH_VMA_PROCESS_NAME),
 			      doca_apsh_vad_info_get(vads_list[i], DOCA_APSH_VMA_VM_START),
 			      doca_apsh_vad_info_get(vads_list[i], DOCA_APSH_VMA_VM_END),
-			      doca_apsh_vad_info_get(vads_list[i], DOCA_APSH_VMA_FILE_PATH));
+			      prot ? prot : "----",
+			      path ? path : "(null)");
 	}
 
 	/* Cleanup */

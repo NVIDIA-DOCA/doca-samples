@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -55,7 +55,7 @@ struct doca_flow_port *init_doca_flow(struct doca_dev *dev, uint16_t port_id, ui
 		return NULL;
 	}
 
-	ret = doca_flow_cfg_set_mode_args(rxq_flow_cfg, "vnf,hws,isolated");
+	ret = doca_flow_cfg_set_mode_args(rxq_flow_cfg, "vnf,hws");
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg mode_args: %s", doca_error_get_descr(ret));
 		doca_flow_cfg_destroy(rxq_flow_cfg);
@@ -185,16 +185,16 @@ doca_error_t create_udp_pipe(struct rxq_udp_queues *udp_queues, struct doca_flow
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
 	/* Add HW offload */
-	result = doca_flow_pipe_add_entry(0,
-					  udp_queues->rxq_pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  NULL,
-					  DOCA_FLOW_NO_WAIT,
-					  NULL,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						udp_queues->rxq_pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						NULL,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("RxQ pipe entry creation failed with: %s", doca_error_get_descr(result));
 		return result;
@@ -222,7 +222,7 @@ doca_error_t create_tcp_cpu_pipe(struct rxq_tcp_queues *tcp_queues, struct doca_
 	doca_error_t result;
 	uint16_t rss_queues[MAX_QUEUES];
 	struct doca_flow_match match = {0};
-	char *eal_param[3] = {"", "-a", "00:00.0"};
+	char *eal_param[5] = {"", "-a", "00:00.0", "-a", "mlx5_core.sf.0"};
 
 	/*
 	 * Setup the TCP pipe 'rxq_pipe_cpu' which forwards unrecognized flows and
@@ -234,7 +234,7 @@ doca_error_t create_tcp_cpu_pipe(struct rxq_tcp_queues *tcp_queues, struct doca_
 		return DOCA_ERROR_INVALID_VALUE;
 
 	/* DPDK initialization is needed to use DPDK rte_hash */
-	int ret = rte_eal_init(3, eal_param);
+	int ret = rte_eal_init(5, eal_param);
 	if (ret < 0) {
 		DOCA_LOG_ERR("DPDK init failed: %d", ret);
 		return DOCA_ERROR_DRIVER;
@@ -313,16 +313,16 @@ doca_error_t create_tcp_cpu_pipe(struct rxq_tcp_queues *tcp_queues, struct doca_
 
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
-	result = doca_flow_pipe_add_entry(0,
-					  tcp_queues->rxq_pipe_cpu,
-					  NULL,
-					  0,
-					  NULL,
-					  NULL,
-					  NULL,
-					  DOCA_FLOW_NO_WAIT,
-					  NULL,
-					  &tcp_queues->cpu_rss_entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						tcp_queues->rxq_pipe_cpu,
+						NULL,
+						0,
+						NULL,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						NULL,
+						&tcp_queues->cpu_rss_entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("RxQ pipe entry creation failed with: %s", doca_error_get_descr(result));
 		return result;
@@ -442,16 +442,16 @@ doca_error_t create_tcp_gpu_pipe(struct rxq_tcp_queues *tcp_queues,
 	if (!connection_based_flows) {
 		// For the non-connection-based configuration, create a dummy flow entry which will enable
 		// any TCP packets to be forwarded.
-		result = doca_flow_pipe_add_entry(0,
-						  tcp_queues->rxq_pipe_gpu,
-						  NULL,
-						  0,
-						  NULL,
-						  NULL,
-						  NULL,
-						  0,
-						  NULL,
-						  &dummy_entry);
+		result = doca_flow_pipe_basic_add_entry(0,
+							tcp_queues->rxq_pipe_gpu,
+							NULL,
+							0,
+							NULL,
+							NULL,
+							NULL,
+							0,
+							NULL,
+							&dummy_entry);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("RxQ pipe-entry creation failed with: %s", doca_error_get_descr(result));
 			DOCA_GPUNETIO_VOLATILE(force_quit) = true;
@@ -550,16 +550,16 @@ doca_error_t create_icmp_gpu_pipe(struct rxq_icmp_queues *icmp_queues, struct do
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
 	/* Add HW offload */
-	result = doca_flow_pipe_add_entry(0,
-					  icmp_queues->rxq_pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  NULL,
-					  DOCA_FLOW_NO_WAIT,
-					  NULL,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						icmp_queues->rxq_pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						NULL,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("RxQ pipe entry creation failed with: %s", doca_error_get_descr(result));
 		return result;
@@ -649,7 +649,6 @@ doca_error_t create_root_pipe(struct rxq_udp_queues *udp_queues,
 	};
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  0,
 						  udp_queues->root_pipe,
 						  &udp_match,
 						  NULL,
@@ -658,6 +657,7 @@ doca_error_t create_root_pipe(struct rxq_udp_queues *udp_queues,
 						  NULL,
 						  NULL,
 						  NULL,
+						  0,
 						  &udp_fwd,
 						  NULL,
 						  &udp_queues->root_udp_entry);
@@ -679,7 +679,6 @@ doca_error_t create_root_pipe(struct rxq_udp_queues *udp_queues,
 		};
 
 		result = doca_flow_pipe_control_add_entry(0,
-							  priority_low,
 							  udp_queues->root_pipe,
 							  &icmp_match_gpu,
 							  NULL,
@@ -688,6 +687,7 @@ doca_error_t create_root_pipe(struct rxq_udp_queues *udp_queues,
 							  NULL,
 							  NULL,
 							  NULL,
+							  priority_low,
 							  &icmp_fwd_gpu,
 							  NULL,
 							  &udp_queues->root_icmp_entry_gpu);
@@ -710,7 +710,6 @@ doca_error_t create_root_pipe(struct rxq_udp_queues *udp_queues,
 		};
 
 		result = doca_flow_pipe_control_add_entry(0,
-							  priority_low,
 							  udp_queues->root_pipe,
 							  &tcp_match_gpu,
 							  NULL,
@@ -719,6 +718,7 @@ doca_error_t create_root_pipe(struct rxq_udp_queues *udp_queues,
 							  NULL,
 							  NULL,
 							  NULL,
+							  priority_low,
 							  &tcp_fwd_gpu,
 							  NULL,
 							  &udp_queues->root_tcp_entry_gpu);
@@ -757,7 +757,6 @@ doca_error_t create_root_pipe(struct rxq_udp_queues *udp_queues,
 			tcp_match_cpu.outer.tcp.flags = individual_tcp_flags[i];
 			tcp_match_cpu_mask.outer.tcp.flags = individual_tcp_flags[i];
 			result = doca_flow_pipe_control_add_entry(0,
-								  priority_high,
 								  udp_queues->root_pipe,
 								  &tcp_match_cpu,
 								  &tcp_match_cpu_mask,
@@ -766,6 +765,7 @@ doca_error_t create_root_pipe(struct rxq_udp_queues *udp_queues,
 								  NULL,
 								  NULL,
 								  NULL,
+								  priority_high,
 								  &tcp_fwd_cpu,
 								  NULL,
 								  &udp_queues->root_tcp_entry_cpu[i]);
@@ -811,16 +811,16 @@ doca_error_t enable_tcp_gpu_offload(struct doca_flow_port *port,
 			},
 	};
 
-	result = doca_flow_pipe_add_entry(queue_id,
-					  gpu_rss_pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  NULL,
-					  DOCA_FLOW_NO_WAIT,
-					  NULL,
-					  &session_entry->flow);
+	result = doca_flow_pipe_basic_add_entry(queue_id,
+						gpu_rss_pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						NULL,
+						&session_entry->flow);
 	if (result != DOCA_SUCCESS) {
 		inet_ntop(AF_INET, &session_entry->key.src_addr, src_addr, INET_ADDRSTRLEN);
 		inet_ntop(AF_INET, &session_entry->key.dst_addr, dst_addr, INET_ADDRSTRLEN);
@@ -869,7 +869,7 @@ doca_error_t disable_tcp_gpu_offload(struct doca_flow_port *port,
 		return result;
 	}
 
-	result = doca_flow_pipe_remove_entry(queue_id, DOCA_FLOW_NO_WAIT, session_entry->flow);
+	result = doca_flow_pipe_remove_entry(queue_id, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT, session_entry->flow);
 
 	if (result != DOCA_SUCCESS) {
 		inet_ntop(AF_INET, &session_entry->key.src_addr, src_addr, INET_ADDRSTRLEN);

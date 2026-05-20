@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -165,9 +165,12 @@ struct stats_tcp {
 
 /* UDP statistics reported by GPU filters */
 struct stats_udp {
-	uint64_t dns;	 /* DNS packet */
-	uint64_t others; /* Other UDP packets */
-	uint64_t total;	 /* Total UDP packets */
+	uint64_t dns;	       /* DNS packet */
+	uint64_t dns_bytes;    /* DNS packet bytes */
+	uint64_t others;       /* Other UDP packets */
+	uint64_t others_bytes; /* Other UDP packet bytes */
+	uint64_t total;	       /* Total UDP packets */
+	uint64_t total_bytes;  /* Total UDP bytes */
 };
 
 /* HTTP GET packet info used to reply with HTTP response */

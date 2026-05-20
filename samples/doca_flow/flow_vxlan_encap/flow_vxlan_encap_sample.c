@@ -265,7 +265,7 @@ static doca_error_t add_classifier_pipe_entry(struct doca_flow_pipe *pipe, struc
 
 	memset(&match, 0, sizeof(match));
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, &entry);
+	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, &entry);
 }
 
 /*
@@ -298,7 +298,7 @@ static doca_error_t add_match_pipe_entry(struct doca_flow_pipe *pipe, struct ent
 	actions.meta.pkt_meta = DOCA_HTOBE32(1);
 	actions.outer.transport.src_port = DOCA_HTOBE16(1235);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -372,7 +372,7 @@ static doca_error_t add_vxlan_encap_pipe_entry(struct doca_flow_pipe *pipe,
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 

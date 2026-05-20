@@ -301,14 +301,21 @@ __attribute__((no_sanitize("alignment"))) uint16_t handle_neighbor_solicitation(
 	response_ipv6_hdr->proto = IPPROTO_ICMPV6;
 	response_ipv6_hdr->hop_limits = 255;
 
+#ifdef DOCA_BUNDLE_DPDK_FOUND
 	memcpy(response_ipv6_hdr->src_addr, request_icmp6_ns_hdr->target_addr, IPV6_ADDR_LEN); // icmpv6 contains full
 											       // dst ipv6 addr
 	memcpy(response_ipv6_hdr->dst_addr, request_ipv6_hdr->src_addr, IPV6_ADDR_LEN);
+	memcpy(response_na_hdr->target_addr, request_icmp6_ns_hdr->target_addr, IPV6_ADDR_LEN);
+#else
+	memcpy(response_ipv6_hdr->src_addr.a, request_icmp6_ns_hdr->target_addr.a, IPV6_ADDR_LEN); // icmpv6 contains
+												   // full dst ipv6 addr
+	memcpy(response_ipv6_hdr->dst_addr.a, request_ipv6_hdr->src_addr.a, IPV6_ADDR_LEN);
+	memcpy(response_na_hdr->target_addr.a, request_icmp6_ns_hdr->target_addr.a, IPV6_ADDR_LEN);
+#endif
 
 	response_na_hdr->type = ND_NEIGHBOR_ADVERT;
 	response_na_hdr->code = 0;
 	response_na_hdr->checksum = 0;
-	memcpy(response_na_hdr->target_addr, request_icmp6_ns_hdr->target_addr, IPV6_ADDR_LEN);
 
 	uint8_t *options = (uint8_t *)(response_na_hdr + 1);
 	options[0] = 2;

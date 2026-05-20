@@ -78,4 +78,3 @@ ninja -C /tmp/build
 ### Info
 
 The binary `worker_<sample_name>.so` file is created under `/tmp/build/`.
-

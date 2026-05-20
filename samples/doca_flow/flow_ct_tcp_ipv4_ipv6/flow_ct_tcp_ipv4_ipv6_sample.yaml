@@ -36,22 +36,9 @@ use_cases:
   - name: "Flow ct_tcp_ipv4_ipv6 use case #1"
     args: ""
     stages:
-      - name: "Sending packets iteration 1"
-        packets_to_send:
-          - receiving_port: 0
-            packets:
-              - Ether()/IP(src='1.2.3.4', dst='2.2.2.2')/TCP()/Raw(load=b'Sent to port 0, dropped')
-              - Ether()/IP(src='1.2.3.4', dst='1.1.1.1')/TCP()/Raw(load=b'Sent to port 0, forwarded to RSS')
+      - name: "validating number of entries created"
         validation:
           - type: dump
             expected_text:
-              - "Origin IPv4 + Reply IPv6 entries created"
-      - name: "Sending packets iteration 2"
-        packets_to_send:
-          - receiving_port: 0
-            packets:
-              - Ether()/IPv6(src='2222:2222:2222:2222:2222:2222:2222:2222', dst='101:101:101:101:101:101:101:101')/TCP(flags="F")/Raw(load=b'Sent to port 0, forwarded to RSS')
-        validation:
-          - type: dump
-            expected_text:
-              - "TCP session was ended"
+              - "25000 TCP IPV4+IPV6 sessions were created"
+              - "25000 TCP IPV4+IPV6sessions were ended"

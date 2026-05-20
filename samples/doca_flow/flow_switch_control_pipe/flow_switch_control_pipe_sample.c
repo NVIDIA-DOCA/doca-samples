@@ -100,7 +100,6 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 		fwd.port_id = entry_index + 1; /* The port to forward to is defined based on the entry index */
 
 		result = doca_flow_pipe_control_add_entry(0,
-							  priority,
 							  control_pipe,
 							  &match,
 							  NULL,
@@ -109,6 +108,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 							  NULL,
 							  NULL,
 							  &monitor,
+							  priority,
 							  &fwd,
 							  status,
 							  &entries[entry_index]);

@@ -28,6 +28,7 @@
 
 #include <doca_log.h>
 #include <doca_flow.h>
+#include <doca_dpdk.h>
 
 #include <flow_common.h>
 
@@ -163,7 +164,7 @@ static doca_error_t add_shared_counter_pipe_entry(struct doca_flow_pipe *pipe,
 	SET_L4_PORT(outer, dst_port, dst_port);
 	SET_L4_PORT(outer, src_port, src_port);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, &monitor, NULL, 0, status, entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, &monitor, NULL, 0, status, entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 		return result;
@@ -232,7 +233,6 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	fwd.next_pipe = udp_pipe;
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  control_pipe,
 						  &match,
 						  NULL,
@@ -241,6 +241,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 						  NULL,
 						  NULL,
 						  NULL,
+						  priority,
 						  &fwd,
 						  status,
 						  NULL);
@@ -259,7 +260,6 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	fwd.next_pipe = tcp_pipe;
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  control_pipe,
 						  &match,
 						  NULL,
@@ -268,6 +268,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 						  NULL,
 						  NULL,
 						  NULL,
+						  priority,
 						  &fwd,
 						  status,
 						  NULL);
@@ -282,6 +283,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
  * Run flow_shared_counter sample
  *
  * @nb_queues [in]: number of queues the sample will use
+ * @refresh_interval_ms [in]: service thread refresh interval in milliseconds
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 
@@ -293,6 +295,37 @@ struct shared_counter_stats_context {
 	struct doca_flow_resource_query *query_results_array;
 	struct doca_flow_pipe_entry *(*entry)[2];
 };
+
+/* Context for port configuration callback */
+struct port_cfg_ctx {
+	uint32_t interval_ms;
+};
+
+/*
+ * Port configuration callback to set service threads cycle
+ *
+ * @port_cfg [in]: port configuration
+ * @port_id [in]: port ID
+ * @config_cb_ctx [in]: configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t port_config_callback(struct doca_flow_port_cfg *port_cfg, int port_id, void *config_cb_ctx)
+{
+	struct port_cfg_ctx *ctx = (struct port_cfg_ctx *)config_cb_ctx;
+	doca_error_t result;
+
+	(void)port_id;
+
+	if (ctx->interval_ms > 0) {
+		result = doca_flow_port_cfg_set_service_threads_cycle(port_cfg, ctx->interval_ms);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set service threads cycle: %s", doca_error_get_descr(result));
+			return result;
+		}
+	}
+
+	return DOCA_SUCCESS;
+}
 
 /*
  * Print shared counter statistics
@@ -369,7 +402,7 @@ static void print_shared_counter_stats_wrapper(void *context)
 				   ctx->entry);
 }
 
-doca_error_t flow_shared_counter(int nb_queues)
+doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 {
 	int nb_ports = 2;
 	struct flow_resources resource = {0};
@@ -385,6 +418,11 @@ doca_error_t flow_shared_counter(int nb_queues)
 	int num_of_entries = 4;
 	doca_error_t result;
 	struct doca_flow_pipe_entry *entry[nb_ports][2];
+	struct doca_dev *dev_arr[nb_ports];
+	struct port_cfg_ctx port_cfg_ctx = {0};
+	int i;
+
+	port_cfg_ctx.interval_ms = refresh_interval_ms;
 
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 2;
@@ -394,8 +432,28 @@ doca_error_t flow_shared_counter(int nb_queues)
 		return result;
 	}
 
+	/* Get DPDK devices for port initialization */
+	memset(dev_arr, 0, sizeof(struct doca_dev *) * nb_ports);
+	for (i = 0; i < nb_ports; i++) {
+		result = doca_dpdk_port_as_dev(i, &dev_arr[i]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get device for port %d: %s", i, doca_error_get_descr(result));
+			doca_flow_destroy();
+			return result;
+		}
+	}
+
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(num_of_entries));
-	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
+	result = init_doca_flow_ports_with_custom_config(nb_ports,
+							 ports,
+							 true,
+							 dev_arr,
+							 NULL,
+							 port_config_callback,
+							 NULL,
+							 &port_cfg_ctx,
+							 actions_mem_size,
+							 &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
 		doca_flow_destroy();

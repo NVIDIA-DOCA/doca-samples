@@ -35,8 +35,44 @@
 
 DOCA_LOG_REGISTER(FLOW_SHARED_COUNTER::MAIN);
 
+static uint32_t refresh_interval_ms = 1000;
+
 /* Sample's Logic */
-doca_error_t flow_shared_counter(int nb_queues);
+doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms);
+
+static doca_error_t refresh_interval_callback(void *param, void *config)
+{
+	(void)config;
+	uint32_t *interval = (uint32_t *)param;
+	refresh_interval_ms = *interval;
+	DOCA_LOG_INFO("Counter refresh interval set to %d ms", refresh_interval_ms);
+	return DOCA_SUCCESS;
+}
+
+doca_error_t register_application_params(void)
+{
+	/* Register refresh interval parameter */
+	struct doca_argp_param *refresh_param;
+	doca_error_t result = doca_argp_param_create(&refresh_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create refresh interval param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	doca_argp_param_set_short_name(refresh_param, "ri");
+	doca_argp_param_set_long_name(refresh_param, "refresh-interval-ms");
+	doca_argp_param_set_description(refresh_param, "Service thread refresh interval in milliseconds");
+	doca_argp_param_set_callback(refresh_param, refresh_interval_callback);
+	doca_argp_param_set_type(refresh_param, DOCA_ARGP_TYPE_INT);
+
+	result = doca_argp_register_param(refresh_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register refresh interval param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
 
 /*
  * Sample main function
@@ -89,6 +125,12 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
+	result = register_application_params();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register application params: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+
 	doca_argp_set_dpdk_program(flow_init_dpdk);
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
@@ -110,7 +152,7 @@ int main(int argc, char **argv)
 	}
 
 	/* run sample */
-	result = flow_shared_counter(dpdk_config.port_config.nb_queues);
+	result = flow_shared_counter(dpdk_config.port_config.nb_queues, refresh_interval_ms);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("flow_shared_counter() encountered an error: %s", doca_error_get_descr(result));
 		goto dpdk_ports_queues_cleanup;

@@ -162,7 +162,7 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 		/* Map GPU memory buffer used to receive packets with DMABuf */
 		status = doca_gpu_dmabuf_fd(state->gpu_dev, state->src_buffer, size, &(dmabuf_fd));
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_INFO("Mapping src buffer (0x%p size %zdB) with nvidia-peermem mode",
+			DOCA_LOG_INFO("Mapping src buffer (%p size %zdB) with nvidia-peermem mode",
 				      state->src_buffer,
 				      size);
 
@@ -175,7 +175,7 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 				return status;
 			}
 		} else {
-			DOCA_LOG_INFO("Mapping src buffer (0x%p size %zdB dmabuf fd %d) with dmabuf mode",
+			DOCA_LOG_INFO("Mapping src buffer (%p size %zdB dmabuf fd %d) with dmabuf mode",
 				      state->src_buffer,
 				      size,
 				      dmabuf_fd);
@@ -263,7 +263,7 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 		/* Map GPU memory buffer used to receive packets with DMABuf */
 		status = doca_gpu_dmabuf_fd(state->gpu_dev, state->dst_buffer, size, &(dmabuf_fd));
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_INFO("Mapping dst buffer (0x%p size %zdB) with nvidia-peermem mode",
+			DOCA_LOG_INFO("Mapping dst buffer (%p size %zdB) with nvidia-peermem mode",
 				      state->dst_buffer,
 				      size);
 
@@ -276,7 +276,7 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 				return status;
 			}
 		} else {
-			DOCA_LOG_INFO("Mapping dst buffer (0x%p size %zdB dmabuf fd %d) with dmabuf mode",
+			DOCA_LOG_INFO("Mapping dst buffer (%p size %zdB dmabuf fd %d) with dmabuf mode",
 				      state->dst_buffer,
 				      size,
 				      dmabuf_fd);

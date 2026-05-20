@@ -145,7 +145,7 @@ static doca_error_t add_root_pipe_entry(struct doca_flow_pipe *pipe,
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = next_pipe;
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, entry);
+	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, entry);
 }
 
 /*
@@ -313,7 +313,7 @@ static doca_error_t add_random_sampling_pipe_entry(struct doca_flow_pipe *pipe,
 	 * no need to provide fresh information here again.
 	 */
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
+	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
 }
 
 /*
@@ -385,7 +385,7 @@ static doca_error_t add_random_distribution_pipe_entries(struct doca_flow_pipe *
 							 int nb_entries,
 							 struct entries_status *status)
 {
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	struct doca_flow_pipe_entry *entry;
 	struct doca_flow_fwd fwd;
 	doca_error_t result;
@@ -403,7 +403,7 @@ static doca_error_t add_random_distribution_pipe_entries(struct doca_flow_pipe *
 		queue = i;
 
 		if (i == nb_entries - 1)
-			flags = DOCA_FLOW_NO_WAIT;
+			flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 
 		result = doca_flow_pipe_hash_add_entry(0, pipe, i, 0, NULL, NULL, &fwd, flags, status, &entry);
 		if (result != DOCA_SUCCESS) {

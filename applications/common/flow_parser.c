@@ -1641,7 +1641,7 @@ static void cmd_add_entry_parsed(void *parsed_result, __rte_unused struct cmdlin
 			  tmp_monitor,
 			  tmp_fwd,
 			  fwd_next_pipe_id,
-			  DOCA_FLOW_NO_WAIT);
+			  DOCA_FLOW_ENTRY_FLAGS_NO_WAIT);
 }
 
 /*
@@ -1861,7 +1861,7 @@ static void cmd_rm_entry_parsed(void *parsed_result, __rte_unused struct cmdline
 	if (result != DOCA_SUCCESS)
 		return;
 
-	(*remove_entry_func)(pipe_queue, entry_id, DOCA_FLOW_NO_WAIT);
+	(*remove_entry_func)(pipe_queue, entry_id, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT);
 }
 
 /*

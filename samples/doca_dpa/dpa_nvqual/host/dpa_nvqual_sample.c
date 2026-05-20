@@ -67,7 +67,7 @@ static void sigint_handler(int signum)
  *
  * @dpa [in]: Doca DPA struct
  * @total_num_eus [in]: Total number of possible EUs
- * @available_eus [out]: Boolian array of EUs filled with 'true' if availble
+ * @available_eus [out]: Boolian array of EUs filled with 'true' if available
  * @available_eus_size [out]: Size of available EUs
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -169,7 +169,7 @@ static doca_error_t get_available_eus(struct doca_dpa *dpa,
  *
  * This function returns the number of used EUs
  *
- * @available_eus [in]: Boolian array of availble EUs
+ * @available_eus [in]: Boolian array of available EUs
  * @excluded_eus [in]: Boolian array of excluded EUs
  * @total_num_eus [in]: Total number of possible EUs
  * @return: Number of used EUs
@@ -372,7 +372,7 @@ doca_error_t dpa_nvqual_register_params(void)
 	doca_argp_param_set_arguments(excluded_eus, "[excluded eus]");
 	doca_argp_param_set_description(
 		excluded_eus,
-		"excluded eus list, devided by ',' with no spaced (optional). If not provided then no eu will be excluded.");
+		"excluded eus list, divided by ',' with no spaced (optional). If not provided then no eu will be excluded.");
 	doca_argp_param_set_callback(excluded_eus, excluded_eus_param_callback);
 	doca_argp_param_set_type(excluded_eus, DOCA_ARGP_TYPE_STRING);
 	err = doca_argp_register_param(excluded_eus);
@@ -973,7 +973,7 @@ static doca_error_t run_flow(struct dpa_nvqual *nvq)
 			return doca_err;
 		}
 
-		DOCA_LOG_INFO("Reporting interation errs");
+		DOCA_LOG_INFO("Reporting iteration errs");
 		for (unsigned int thread_idx = 0; thread_idx < nvq->num_threads; thread_idx++)
 			iteration_complete_cb(nvq, thread_rets_host[thread_idx].val);
 

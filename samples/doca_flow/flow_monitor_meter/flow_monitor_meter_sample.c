@@ -141,7 +141,7 @@ static doca_error_t add_monitor_meter_pipe_entry(struct doca_flow_pipe *pipe, st
 	monitor.meter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 	monitor.non_shared_meter.cir = 1024;
 	monitor.non_shared_meter.cbs = 1024;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, &monitor, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, &monitor, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 

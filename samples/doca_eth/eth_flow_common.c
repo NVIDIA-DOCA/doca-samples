@@ -53,7 +53,7 @@ doca_error_t eth_flow_common_init_flow(void)
 		DOCA_LOG_ERR("Failed to set pipe_queues, err: %s", doca_error_get_name(result));
 		goto destroy_cfg;
 	}
-	result = doca_flow_cfg_set_mode_args(flow_cfg, "vnf,isolated");
+	result = doca_flow_cfg_set_mode_args(flow_cfg, "vnf");
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set mode_args, err: %s", doca_error_get_name(result));
 		goto destroy_cfg;
@@ -208,7 +208,8 @@ static doca_error_t create_root_pipe(struct doca_flow_port *df_port,
 	}
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
-	status = doca_flow_pipe_add_entry(0, *root_pipe, &all_match, 0, &actions, NULL, NULL, 0, NULL, root_entry);
+	status =
+		doca_flow_pipe_basic_add_entry(0, *root_pipe, &all_match, 0, &actions, NULL, NULL, 0, NULL, root_entry);
 	if (status != DOCA_SUCCESS) {
 		doca_flow_pipe_destroy(*root_pipe);
 		DOCA_LOG_ERR("Failed to add doca flow entry, err: %s", doca_error_get_name(status));

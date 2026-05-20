@@ -134,6 +134,10 @@ static doca_error_t add_comparison_pipe_entry(struct doca_flow_pipe *pipe,
 	struct doca_flow_match_condition condition;
 	struct doca_flow_fwd fwd;
 
+	memset(&match, 0, sizeof(match));
+	memset(&condition, 0, sizeof(condition));
+	memset(&fwd, 0, sizeof(fwd));
+
 	condition.operation = DOCA_FLOW_COMPARE_LT;
 	condition.field_op.a.field_string = "outer.tcp.seq_num";
 	condition.field_op.a.bit_offset = 0;
@@ -141,13 +145,13 @@ static doca_error_t add_comparison_pipe_entry(struct doca_flow_pipe *pipe,
 	condition.field_op.b.bit_offset = 0;
 	condition.field_op.width = 32;
 
+	match.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
 	match.outer.tcp.seq_num = DOCA_HTOBE32(10);
 
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = next_pipe;
 
 	return doca_flow_pipe_control_add_entry(0 /* queue */,
-						0 /* priority */,
 						pipe,
 						&match,
 						NULL /* match_mask */,
@@ -156,6 +160,7 @@ static doca_error_t add_comparison_pipe_entry(struct doca_flow_pipe *pipe,
 						NULL,
 						NULL,
 						NULL,
+						0 /* priority */,
 						&fwd,
 						status,
 						NULL);
@@ -194,6 +199,7 @@ static doca_error_t create_action_pipe(struct doca_flow_port *port, int port_id,
 	desc_array[0].field_op.dst.bit_offset = 0;
 	desc_array[0].field_op.width = 32;
 
+	actions.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
 	actions.outer.tcp.ack_num = DOCA_HTOBE32(314);
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
@@ -273,7 +279,7 @@ doca_error_t flow_tcp_seq(int nb_queues)
 			return result;
 		}
 
-		result = doca_flow_pipe_add_entry(0, action_pipe, NULL, 0, NULL, NULL, NULL, 0, &status, NULL);
+		result = doca_flow_pipe_basic_add_entry(0, action_pipe, NULL, 0, NULL, NULL, NULL, 0, &status, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add action pipe entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
@@ -305,7 +311,7 @@ doca_error_t flow_tcp_seq(int nb_queues)
 			return result;
 		}
 
-		result = doca_flow_pipe_add_entry(0, root_pipe, NULL, 0, NULL, NULL, NULL, 0, &status, NULL);
+		result = doca_flow_pipe_basic_add_entry(0, root_pipe, NULL, 0, NULL, NULL, NULL, 0, &status, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add root pipeentry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);

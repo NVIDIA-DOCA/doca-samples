@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -209,7 +209,6 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 		match.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
 		match.outer.ip4.dst_ip = BE_IPV4_ADDR(1, 1, 1, 1);
 		result = doca_flow_pipe_control_add_entry(0,
-							  1,
 							  *pipe,
 							  &match,
 							  NULL,
@@ -218,6 +217,7 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 							  NULL,
 							  NULL,
 							  NULL,
+							  1,
 							  &fwd,
 							  status,
 							  NULL);
@@ -229,7 +229,6 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 		match.outer.ip4.dst_ip = 0;
 		match.outer.ip4.src_ip = BE_IPV4_ADDR(1, 1, 1, 1);
 		result = doca_flow_pipe_control_add_entry(0,
-							  1,
 							  *pipe,
 							  &match,
 							  NULL,
@@ -238,6 +237,7 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 							  NULL,
 							  NULL,
 							  NULL,
+							  1,
 							  &fwd,
 							  status,
 							  NULL);
@@ -257,7 +257,6 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 		match.outer.ip6.dst_ip[2] = 0x01010101;
 		match.outer.ip6.dst_ip[3] = 0x01010101;
 		result = doca_flow_pipe_control_add_entry(0,
-							  1,
 							  *pipe,
 							  &match,
 							  NULL,
@@ -266,6 +265,7 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 							  NULL,
 							  NULL,
 							  NULL,
+							  1,
 							  &fwd,
 							  status,
 							  NULL);
@@ -280,7 +280,6 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 		match.outer.ip6.src_ip[2] = 0x01010101;
 		match.outer.ip6.src_ip[3] = 0x01010101;
 		result = doca_flow_pipe_control_add_entry(0,
-							  1,
 							  *pipe,
 							  &match,
 							  NULL,
@@ -289,6 +288,7 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 							  NULL,
 							  NULL,
 							  NULL,
+							  1,
 							  &fwd,
 							  status,
 							  NULL);
@@ -302,7 +302,6 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 	fwd.type = DOCA_FLOW_FWD_DROP;
 	memset(&match, 0, sizeof(match));
 	result = doca_flow_pipe_control_add_entry(0,
-						  2,
 						  *pipe,
 						  &match,
 						  NULL,
@@ -311,6 +310,7 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 						  NULL,
 						  NULL,
 						  NULL,
+						  2,
 						  &fwd,
 						  status,
 						  NULL);
@@ -349,6 +349,11 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 {
 	doca_error_t result;
 	bool conn_found = false;
+
+	if (port == NULL || pipe == NULL) {
+		DOCA_LOG_ERR("Invalid input parameters");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
 	/* Allocate CT entry */
 	result = doca_flow_ct_entry_prepare(ct_queue,

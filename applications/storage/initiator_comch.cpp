@@ -226,7 +226,7 @@ struct alignas(storage::cache_line_size) transaction_context {
 	/* A bit mask tracking the operations left for this transaction. A simplified state machine */
 	uint32_t pending_actions = 0;
 	/* A reference count, a transaction requires both the send and receive task to have their respective completion
-	 * callbacks triggered before the transaction can be re-used
+	 * callbacks triggered before the transaction can be reused
 	 */
 	uint16_t refcount = 0;
 };
@@ -452,7 +452,7 @@ public:
 		/* Core this worker is running on */
 		uint16_t core_idx;
 		/* Flag to indicate if the worker thread is currently running. Setting this to false while the thread is
-		 * running will signal the tread to stop. */
+		 * running will signal the thread to stop. */
 		std::atomic_bool run_flag = false;
 		/* Flag to indicate if the thread encountered any errors during execution */
 		bool error_flag = false;
@@ -559,7 +559,7 @@ private:
 	doca_mmap *m_io_message_mmap = nullptr;
 	/* A pool from which to allocate doca_buf objects */
 	doca_buf_inventory *m_io_message_inv = nullptr;
-	/* A reference to doca_bufs allocated that need to be realeased during teardown / destruction */
+	/* A reference to doca_bufs allocated that need to be released during teardown / destruction */
 	std::vector<doca_buf *> m_io_message_bufs = {};
 	/* Owning pointer to the workers progress engine */
 	doca_pe *m_pe = nullptr;
@@ -1199,7 +1199,7 @@ bool initiator_comch_worker::hot_data::progress_transaction(transaction_context 
 			return false;
 
 		/* set the transaction refcount to 2 as the order of completions between the receive callback and the
-		 * send callback are not guaranteed to be ordered. The task cannot be re-used until both callbacks have
+		 * send callback are not guaranteed to be ordered. The task cannot be reused until both callbacks have
 		 * completed.
 		 */
 		transaction.pending_actions = transaction_initial_ops_value;

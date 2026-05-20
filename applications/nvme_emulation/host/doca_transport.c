@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -31,6 +31,7 @@
 #include <doca_error.h>
 #include <doca_log.h>
 #include <doca_dev.h>
+#include <doca_devemu_pci_ep.h>
 #include <doca_dpa.h>
 #include <doca_pe.h>
 #include <doca_transport_common.h>
@@ -151,7 +152,7 @@ struct nvmf_doca_pci_dev_admin {
 	void *stateful_region_values;			       /**< Buffer used to query stateful region values */
 	struct nvmf_doca_admin_qp *admin_qp;		       /**< Admin QP context */
 	struct nvmf_doca_poll_group *admin_qp_pg;	       /**< Poll group associated with admin QP */
-	bool is_flr;					       /**< Flag to indicate if an FLR event has occured */
+	bool is_flr;					       /**< Flag to indicate if an FLR event has occurred */
 	bool is_destroy_flow;				       /**< Indicates if PCI device should be destroyed */
 	uint32_t ctlr_id;
 	TAILQ_ENTRY(nvmf_doca_pci_dev_admin) link; /**< Link to next device context */
@@ -755,7 +756,7 @@ static doca_error_t check_for_duplicate(struct nvmf_doca_transport *doca_transpo
 }
 
 /*
- * Finds an emulation manager and a fuction with the requested VUID
+ * Finds an emulation manager and a function with the requested VUID
  *
  * @doca_transport [in]: Doca transport
  * @vuid [in]: vuid to look for
@@ -805,7 +806,7 @@ static doca_error_t find_emulation_manager_and_function_by_vuid(
 		}
 	}
 
-	DOCA_LOG_ERR("Could not find an emulation manager and a fuction with the requested VUID");
+	DOCA_LOG_ERR("Could not find an emulation manager and a function with the requested VUID");
 	doca_devinfo_rep_destroy_list(devinfo_list_rep);
 	return DOCA_ERROR_NOT_FOUND;
 }
@@ -1660,7 +1661,7 @@ static doca_error_t nvmf_doca_create_host_mmap(struct doca_devemu_pci_dev *pci_d
 	struct doca_mmap *mmap;
 	doca_error_t ret;
 
-	ret = doca_devemu_pci_mmap_create(pci_dev, &mmap);
+	ret = doca_devemu_pci_ep_mmap_create(doca_devemu_pci_dev_as_ep(pci_dev), &mmap);
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create mmap for pci device emulation: %s", doca_error_get_name(ret));
 		return ret;
@@ -1788,7 +1789,7 @@ static int nvmf_doca_pci_dev_admin_create(struct nvmf_doca_transport *doca_trans
 
 	ret = register_handlers_set_datapath_and_start(doca_emulation_manager, pci_dev_admin);
 	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Faield to register handler and start context: %s", doca_error_get_name(ret));
+		DOCA_LOG_ERR("Failed to register handler and start context: %s", doca_error_get_name(ret));
 		nvmf_doca_pci_dev_admin_destroy(pci_dev_admin);
 		return -EINVAL;
 	}
@@ -2412,7 +2413,7 @@ static int nvmf_doca_qpair_get_listen_trid(struct spdk_nvmf_qpair *qpair, struct
 #define FEAT_CMD_HOST_IDENTIFIER_SIZE 8
 
 /*
- * Map the data described by PRP list entries used in NVME command in IOV structres
+ * Map the data described by PRP list entries used in NVME command in IOV structures
  *
  * @request [in]: The NVMf request which holds the ??
  * @arg [in]: Argument associated with the callback
@@ -2460,7 +2461,7 @@ static void copy_prp_list_data(struct nvmf_doca_request *request, void *arg)
 }
 
 /*
- * This method is responsible for mapping the data described by PRP entries used in NVME command in IOV structres.
+ * This method is responsible for mapping the data described by PRP entries used in NVME command in IOV structures.
  *
  * @request [in]: The NVMf request
  */
@@ -2820,7 +2821,7 @@ static void nvmf_doca_poll_group_create_io_cq_done(void *args)
  *
  * @admin_qp [in]: The PCI device admin QP context
  * @io_sq_id [in]: IO SQ ID
- * @return: A pointer to the maching SQ if found, or NULL if no match is found
+ * @return: A pointer to the matching SQ if found, or NULL if no match is found
  */
 static struct nvmf_doca_sq *admin_qp_find_io_sq_by_id(struct nvmf_doca_admin_qp *admin_qp, uint32_t io_sq_id)
 {
@@ -2853,7 +2854,7 @@ static void nvmf_doca_on_io_sq_stop(struct nvmf_doca_sq *sq)
  *
  * @admin_qp [in]: The PCI device admin QP context
  * @io_cq_id [in]: IO CQ ID
- * @return: A pointer to the maching CQ if found, or NULL if no match is found
+ * @return: A pointer to the matching CQ if found, or NULL if no match is found
  */
 static struct nvmf_doca_io *admin_qp_find_io_cq_by_id(struct nvmf_doca_admin_qp *admin_qp, uint32_t io_cq_id)
 {
@@ -3080,7 +3081,7 @@ static void nvmf_doca_poll_group_create_io_sq(void *args)
 }
 
 /*
- * Creates a submision I/O queue
+ * Creates a submission I/O queue
  *
  * @sq [in]: The SQ that holds the command
  * @request [in]: the NVME command
@@ -3255,7 +3256,7 @@ static void nvmf_doca_on_fetch_sqe_complete(struct nvmf_doca_sq *sq, struct nvmf
 			request->request.xfer = SPDK_NVME_DATA_NONE;
 			break;
 		default:
-			DOCA_LOG_ERR("Received unsupported feautre: opcode %u", fid);
+			DOCA_LOG_ERR("Received unsupported feature: opcode %u", fid);
 			return;
 		}
 		break;

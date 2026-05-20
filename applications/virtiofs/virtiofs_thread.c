@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,7 +32,7 @@
 #include <virtiofs_thread.h>
 #include <virtiofs_core.h>
 
-DOCA_LOG_REGISTER(VIRTIOFS_THREAD)
+DOCA_LOG_REGISTER(VIRTIOFS_THREAD);
 
 #define VIRTIOFS_THREAD_MAX_EVENTS_POLL 16
 

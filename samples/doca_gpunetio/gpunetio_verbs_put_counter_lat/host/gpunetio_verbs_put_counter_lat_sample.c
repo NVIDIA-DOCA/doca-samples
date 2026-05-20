@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -391,6 +391,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	resources.cuda_threads = cfg->cuda_threads;
 	resources.nic_handler = cfg->nic_handler;
 	resources.qp_group = true;
+	resources.send_dbr_mode_ext = cfg->send_dbr_mode_ext;
 
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
@@ -445,12 +446,12 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	}
 
 	DOCA_LOG_INFO(
-		"Launching gpunetio_verbs_put_counter_lat server kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread",
+		"Launching gpunetio_verbs_put_counter_lat server kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread, %d send_dbr_mode_ext",
 		NUM_QP,
 		resources.cuda_threads,
 		resources.num_iters,
-		resources.num_iters / resources.cuda_threads // check this is ok
-	);
+		resources.num_iters / resources.cuda_threads,
+		resources.send_dbr_mode_ext);
 
 	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		args.qp_cpu_main = resources.qpg->qp_main.qp_gverbs;
@@ -622,6 +623,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	resources.cuda_threads = cfg->cuda_threads;
 	resources.nic_handler = cfg->nic_handler;
 	resources.qp_group = true;
+	resources.send_dbr_mode_ext = cfg->send_dbr_mode_ext;
 
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
@@ -676,12 +678,12 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	}
 
 	DOCA_LOG_INFO(
-		"Launching gpunetio_verbs_put_counter_lat client kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread",
+		"Launching gpunetio_verbs_put_counter_lat client kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread, %d send_dbr_mode_ext",
 		NUM_QP,
 		resources.cuda_threads,
 		resources.num_iters,
-		resources.num_iters / resources.cuda_threads // check this is ok
-	);
+		resources.num_iters / resources.cuda_threads,
+		resources.send_dbr_mode_ext);
 
 	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		args.qp_cpu_main = resources.qpg->qp_main.qp_gverbs;

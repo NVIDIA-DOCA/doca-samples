@@ -113,7 +113,7 @@ static doca_error_t init_doca_flow(void)
 		return result;
 	}
 
-	result = doca_flow_cfg_set_mode_args(queue_flow_cfg, "vnf,isolated");
+	result = doca_flow_cfg_set_mode_args(queue_flow_cfg, "vnf");
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg mode_args: %s", doca_error_get_descr(result));
 		doca_flow_cfg_destroy(queue_flow_cfg);
@@ -257,8 +257,16 @@ static doca_error_t create_udp_pipe(struct rxq_queue *rxq)
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
 	/* Add HW offload */
-	result =
-		doca_flow_pipe_add_entry(0, rxq->rxq_pipe, &match, 0, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, NULL, &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						rxq->rxq_pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						NULL,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("RxQ pipe entry creation failed with: %s", doca_error_get_descr(result));
 		return result;
@@ -345,7 +353,6 @@ static doca_error_t create_root_pipe(struct rxq_queue *rxq)
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  0,
 						  rxq->root_pipe,
 						  &udp_match,
 						  NULL,
@@ -354,6 +361,7 @@ static doca_error_t create_root_pipe(struct rxq_queue *rxq)
 						  NULL,
 						  NULL,
 						  NULL,
+						  0,
 						  &udp_fwd,
 						  NULL,
 						  &rxq->root_udp_entry);
@@ -532,7 +540,7 @@ static doca_error_t create_rxq(struct rxq_queue *rxq, struct doca_gpu *gpu_dev, 
 	/* Map GPU memory buffer used to receive packets with DMABuf */
 	result = doca_gpu_dmabuf_fd(rxq->gpu_dev, rxq->gpu_pkt_addr, cyclic_buffer_size, &(rxq->dmabuf_fd));
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_INFO("Mapping receive queue buffer (0x%p size %dB) with nvidia-peermem mode",
+		DOCA_LOG_INFO("Mapping receive queue buffer (%p size %dB) with nvidia-peermem mode",
 			      rxq->gpu_pkt_addr,
 			      cyclic_buffer_size);
 
@@ -543,7 +551,7 @@ static doca_error_t create_rxq(struct rxq_queue *rxq, struct doca_gpu *gpu_dev, 
 			goto exit_error;
 		}
 	} else {
-		DOCA_LOG_INFO("Mapping receive queue buffer (0x%p size %dB dmabuf fd %d) with dmabuf mode",
+		DOCA_LOG_INFO("Mapping receive queue buffer (%p size %dB dmabuf fd %d) with dmabuf mode",
 			      rxq->gpu_pkt_addr,
 			      cyclic_buffer_size,
 			      rxq->dmabuf_fd);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -87,6 +87,7 @@ struct application_port_config {
 	uint16_t nb_queues;   /* Set on init to 0 for don't care, required minimum cores otherwise */
 	uint16_t mbuf_size;   /* Set on init to 0 for don't care, packet mbuf size (including headroom) otherwise */
 	uint64_t tx_offloads; /* Set on init to 0 for don't care, port tx offload flags otherwise */
+	uint64_t rx_offloads; /* Set on init to 0 for don't care, port rx offload flags otherwise */
 	uint16_t enable_mbuf_metadata : 1; /* Set on init to 0 to disable, otherwise it will add meta to each mbuf */
 	uint16_t rss_support : 1;	   /* Set on init to 0 for no RSS support, RSS support otherwise */
 	uint16_t lpbk_support : 1;	   /* Enable loopback support */
@@ -118,6 +119,15 @@ void dpdk_fini_with_devs(uint16_t nb_devs);
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t dpdk_init(int argc, char **argv);
+
+/*
+ * Initialize DPDK environment and disable `-a` arguments
+ *
+ * @argc [in]: number of program command line arguments
+ * @argv [in]: program command line arguments
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t dpdk_init_without_probing(int argc, char **argv);
 
 /*
  * Destroy DPDK environment

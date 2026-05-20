@@ -29,6 +29,7 @@
 #include <arpa/inet.h>
 
 #include <rte_random.h>
+#include <rte_bitops.h>
 
 #include <doca_flow.h>
 #include <doca_dpdk.h>
@@ -378,7 +379,7 @@ static void simple_fwd_aged_flow_cb(struct simple_fwd_ft_user_ctx *ctx)
 	struct simple_fwd_pipe_entry *entry = (struct simple_fwd_pipe_entry *)&ctx->data[0];
 
 	if (entry->is_hw) {
-		doca_flow_pipe_remove_entry(entry->pipe_queue, DOCA_FLOW_NO_WAIT, entry->hw_entry);
+		doca_flow_pipe_remove_entry(entry->pipe_queue, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT, entry->hw_entry);
 		entry->hw_entry = NULL;
 	}
 }
@@ -532,16 +533,16 @@ static int simple_fwd_build_rss_flow(uint16_t port_id)
 
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
-	result = doca_flow_pipe_add_entry(0,
-					  simple_fwd_ins->pipe_rss[port_cfg->port_id],
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  &fwd,
-					  0,
-					  status,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						simple_fwd_ins->pipe_rss[port_cfg->port_id],
+						&match,
+						0,
+						&actions,
+						NULL,
+						&fwd,
+						0,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		free(status);
 		return -1;
@@ -631,16 +632,16 @@ static int simple_fwd_build_hairpin_flow(uint16_t port_id)
 
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
-	result = doca_flow_pipe_add_entry(0,
-					  simple_fwd_ins->pipe_hairpin[port_cfg->port_id],
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  &fwd,
-					  0,
-					  status,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						simple_fwd_ins->pipe_hairpin[port_cfg->port_id],
+						&match,
+						0,
+						&actions,
+						NULL,
+						&fwd,
+						0,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		free(status);
 		return -1;
@@ -919,7 +920,6 @@ static int simple_fwd_add_control_pipe_entries(struct simple_fwd_port_cfg *port_
 	fwd.next_pipe = simple_fwd_ins->pipe_vxlan[port_cfg->port_id];
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  simple_fwd_ins->pipe_control[port_cfg->port_id],
 						  &match,
 						  NULL,
@@ -928,6 +928,7 @@ static int simple_fwd_add_control_pipe_entries(struct simple_fwd_port_cfg *port_
 						  NULL,
 						  NULL,
 						  NULL,
+						  priority,
 						  &fwd,
 						  status,
 						  &entry);
@@ -947,7 +948,6 @@ static int simple_fwd_add_control_pipe_entries(struct simple_fwd_port_cfg *port_
 	fwd.next_pipe = simple_fwd_ins->pipe_gre[port_cfg->port_id];
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  simple_fwd_ins->pipe_control[port_cfg->port_id],
 						  &match,
 						  NULL,
@@ -956,6 +956,7 @@ static int simple_fwd_add_control_pipe_entries(struct simple_fwd_port_cfg *port_
 						  NULL,
 						  NULL,
 						  NULL,
+						  priority,
 						  &fwd,
 						  status,
 						  &entry);
@@ -976,7 +977,6 @@ static int simple_fwd_add_control_pipe_entries(struct simple_fwd_port_cfg *port_
 	fwd.next_pipe = simple_fwd_ins->pipe_gtp[port_cfg->port_id];
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  simple_fwd_ins->pipe_control[port_cfg->port_id],
 						  &match,
 						  NULL,
@@ -985,6 +985,7 @@ static int simple_fwd_add_control_pipe_entries(struct simple_fwd_port_cfg *port_
 						  NULL,
 						  NULL,
 						  NULL,
+						  priority,
 						  &fwd,
 						  status,
 						  &entry);
@@ -1001,7 +1002,6 @@ static int simple_fwd_add_control_pipe_entries(struct simple_fwd_port_cfg *port_
 	fwd.next_pipe = simple_fwd_ins->pipe_hairpin[port_cfg->port_id];
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  simple_fwd_ins->pipe_control[port_cfg->port_id],
 						  &match,
 						  NULL,
@@ -1010,6 +1010,7 @@ static int simple_fwd_add_control_pipe_entries(struct simple_fwd_port_cfg *port_
 						  NULL,
 						  NULL,
 						  NULL,
+						  priority,
 						  &fwd,
 						  status,
 						  &entry);
@@ -1171,16 +1172,16 @@ static doca_error_t simple_fwd_add_vxlan_encap_pipe_entry(struct simple_fwd_port
 	actions.encap_cfg.encap.tun.type = DOCA_FLOW_TUN_VXLAN;
 	actions.encap_cfg.encap.tun.vxlan_tun_id = encap_vxlan_tun_id;
 
-	result = doca_flow_pipe_add_entry(0,
-					  simple_fwd_ins->vxlan_encap_pipe[port_cfg->port_id],
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  NULL,
-					  0,
-					  status,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						simple_fwd_ins->vxlan_encap_pipe[port_cfg->port_id],
+						&match,
+						0,
+						&actions,
+						NULL,
+						NULL,
+						0,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		free(status);
 		return result;
@@ -1486,16 +1487,16 @@ static struct doca_flow_pipe_entry *simple_fwd_pipe_add_entry(struct simple_fwd_
 
 	simple_fwd_build_entry_match(pinfo, &match);
 	simple_fwd_build_entry_monitor(pinfo, &monitor);
-	result = doca_flow_pipe_add_entry(pinfo->pipe_queue,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  &monitor,
-					  NULL,
-					  DOCA_FLOW_NO_WAIT,
-					  status,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(pinfo->pipe_queue,
+						pipe,
+						&match,
+						0,
+						&actions,
+						&monitor,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed adding entry to pipe");
 		free(status);
@@ -1517,7 +1518,7 @@ static struct doca_flow_pipe_entry *simple_fwd_pipe_add_entry(struct simple_fwd_
 	return entry;
 
 error:
-	doca_flow_pipe_remove_entry(pinfo->pipe_queue, DOCA_FLOW_NO_WAIT, entry);
+	doca_flow_pipe_remove_entry(pinfo->pipe_queue, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT, entry);
 	return NULL;
 }
 

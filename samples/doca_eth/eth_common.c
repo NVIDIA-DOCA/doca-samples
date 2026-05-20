@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -72,7 +72,7 @@ doca_error_t allocate_eth_core_resources(struct eth_core_config *cfg, struct eth
 		return status;
 	}
 
-	resources->mmap_addr = (void *)align_up_uint64((uint64_t)resources->mem_addr, CACHE_LINE_SIZE);
+	resources->mmap_addr = (void *)common_utils_align_up_uint64((uint64_t)resources->mem_addr, CACHE_LINE_SIZE);
 
 	resources->mmap_size = cfg->mmap_size;
 

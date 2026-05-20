@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -59,7 +59,7 @@
 #include "simple_fwd_port.h"
 #include "simple_fwd_vnf_core.h"
 
-DOCA_LOG_REGISTER(SIMPLE_FWD_VNF : Core);
+DOCA_LOG_REGISTER(SIMPLE_FWD_VNF::CORE);
 
 #define VNF_PKT_L2(M) rte_pktmbuf_mtod(M, uint8_t *) /* A marco that points to the start of the data in the mbuf */
 #define VNF_PKT_LEN(M) rte_pktmbuf_pkt_len(M)	     /* A marco that returns the length of the packet */
@@ -209,7 +209,7 @@ static doca_error_t nr_queues_callback(void *param, void *config)
 /*
  * Callback function for setting the "rx-only" mode, where the application only receives packets
  *
- * @param [in]: parameter indicates whther or not to set the "rx-only" mode
+ * @param [in]: parameter indicates whether or not to set the "rx-only" mode
  * @config [out]: application configuration to set the "rx-only" mode
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -225,7 +225,7 @@ static doca_error_t rx_only_callback(void *param, void *config)
 /*
  * Callback function for the HW offload
  *
- * @param [in]: parameter indicates whther or not to set the HW offload
+ * @param [in]: parameter indicates whether or not to set the HW offload
  * @config [out]: application configuration to set the HW offload
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -241,7 +241,7 @@ static doca_error_t hw_offload_callback(void *param, void *config)
 /*
  * Callback function for setting the hairpin usage
  *
- * @param [in]: parameter indicates whther or not to use hairpin queues
+ * @param [in]: parameter indicates whether or not to use hairpin queues
  * @config [out]: application configuration to set hairpin usage
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -257,7 +257,7 @@ static doca_error_t hairpinq_callback(void *param, void *config)
 /*
  * Callback function for setting dedicated thread for aging handling
  *
- * @param [in]: parameter indicates whther or not to use dedicated thread for aging
+ * @param [in]: parameter indicates whether or not to use dedicated thread for aging
  * @config [out]: application configuration to set the usage of a dedicated thread for aged flows
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */

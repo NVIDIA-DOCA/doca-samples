@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -166,7 +166,6 @@ static void query_encrypt_pipes(struct ipsec_security_gw_config *app_cfg)
 
 	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_SWITCH) {
 		changed |= query_pipe_info(&app_cfg->encrypt_pipes.encrypt_root);
-		changed |= query_pipe_info(&app_cfg->switch_pipes.pkt_meta_pipe);
 	}
 	changed |= query_pipe_info(&app_cfg->encrypt_pipes.ipv4_tcp_pipe);
 	changed |= query_pipe_info(&app_cfg->encrypt_pipes.ipv4_udp_pipe);
@@ -180,6 +179,20 @@ static void query_encrypt_pipes(struct ipsec_security_gw_config *app_cfg)
 	changed |= query_pipe_info(&app_cfg->encrypt_pipes.marker_insert_pipe);
 	if (app_cfg->vxlan_encap)
 		changed |= query_pipe_info(&app_cfg->encrypt_pipes.vxlan_encap_pipe);
+	if (changed) {
+		printf("\n");
+		fflush(stdout);
+	}
+}
+
+static void query_switch_pipes(struct ipsec_security_gw_config *app_cfg)
+{
+	bool changed = false;
+
+	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_SWITCH) {
+		changed |= query_pipe_info(&app_cfg->switch_pipes.pkt_meta_pipe);
+		changed |= query_pipe_info(&app_cfg->switch_pipes.rss_pipe);
+	}
 	if (changed) {
 		printf("\n");
 		fflush(stdout);
@@ -232,6 +245,7 @@ static void process_syndrome_packets(void *args)
 		if (ctx->config->debug_mode) {
 			query_encrypt_pipes(ctx->config);
 			query_decrypt_pipes(ctx->config);
+			query_switch_pipes(ctx->config);
 			for (i = 0; i < ctx->config->app_rules.nb_decrypt_rules; i++)
 				query_bad_syndrome(&ctx->config->app_rules.decrypt_rules[i]);
 		}
@@ -1066,7 +1080,7 @@ int main(int argc, char **argv)
 	char cores_str[10];
 	char pid_str[50]; /* Buffer for "pid_" + process ID */
 	snprintf(pid_str, sizeof(pid_str), "pid_%d", getpid());
-	char *eal_param[7] = {"", "-a", "00:00.0", "-l", "", "--file-prefix", pid_str};
+	char *eal_param[9] = {"", "-a", "00:00.0", "-a", "mlx5_core.sf.0", "-l", "", "--file-prefix", pid_str};
 	struct doca_log_backend *sdk_log;
 
 	app_cfg.dpdk_config = &dpdk_config;
@@ -1107,17 +1121,17 @@ int main(int argc, char **argv)
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse application input: %s", doca_error_get_descr(result));
-		doca_argp_destroy();
-		return EXIT_FAILURE;
+		exit_status = EXIT_FAILURE;
+		goto device_cleanup;
 	}
 
 	snprintf(cores_str, sizeof(cores_str), "0-%d", app_cfg.nb_cores - 1);
-	eal_param[4] = cores_str;
-	ret = rte_eal_init(7, eal_param);
+	eal_param[6] = cores_str;
+	ret = rte_eal_init(9, eal_param);
 	if (ret < 0) {
 		DOCA_LOG_ERR("EAL initialization failed");
-		doca_argp_destroy();
-		return EXIT_FAILURE;
+		exit_status = EXIT_FAILURE;
+		goto device_cleanup;
 	}
 
 	result = ipsec_security_gw_parse_config(&app_cfg);
@@ -1275,8 +1289,6 @@ doca_flow_cleanup:
 dpdk_cleanup:
 	/* DPDK cleanup */
 	dpdk_queues_and_ports_fini(&dpdk_config);
-device_cleanup:
-	ipsec_security_gw_close_devices(&app_cfg);
 config_destroy:
 	if (app_cfg.app_rules.encrypt_rules)
 		free(app_cfg.app_rules.encrypt_rules);
@@ -1284,6 +1296,8 @@ config_destroy:
 		free(app_cfg.app_rules.decrypt_rules);
 dpdk_destroy:
 	dpdk_fini();
+device_cleanup:
+	ipsec_security_gw_close_devices(&app_cfg);
 	/* ARGP cleanup */
 	doca_argp_destroy();
 	return exit_status;

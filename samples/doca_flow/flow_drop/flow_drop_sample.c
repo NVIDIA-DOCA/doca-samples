@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -103,7 +103,7 @@ destroy_pipe_cfg:
 }
 
 /*
- * Create DOCA Flow pipe with match on header types to fwd to drop pipe with it's own match logic.
+ * Create DOCA Flow pipe with match on header types to fwd to drop pipe with its own match logic.
  * On miss, drop the packet.
  *
  * @port [in]: port of the pipe
@@ -195,7 +195,7 @@ static doca_error_t add_pipe_entry(struct doca_flow_pipe *pipe,
 	 */
 	memset(&match, 0, sizeof(match));
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
+	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
 }
 
 /*
@@ -316,7 +316,7 @@ static doca_error_t add_drop_pipe_entry(struct doca_flow_pipe *pipe,
 	match.outer.tcp.l4_port.dst_port = dst_port;
 	match.outer.tcp.l4_port.src_port = src_port;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -405,7 +405,7 @@ doca_error_t flow_drop(int nb_queues)
 	struct doca_flow_pipe *drop_pipe;
 	struct doca_flow_pipe *port_fwd_pipe;
 	/*
-	 * Total numbe of entries - 3.
+	 * Total number of entries - 3.
 	 * - 1 entry for classifier pipe
 	 * - 1 entry for drop pipe
 	 * - 1 entry for port forwarding pipe

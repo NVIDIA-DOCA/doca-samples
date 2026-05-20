@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -100,7 +100,7 @@ static doca_error_t create_rss_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add RSS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -271,7 +271,7 @@ static doca_error_t create_vxlan_encap_pipe(struct doca_flow_port *port,
 	actions.encap_cfg.encap.outer.ip4.ttl = 17;
 	actions.encap_cfg.encap.tun.vxlan_tun_id = DOCA_HTOBE32(0xadadad);
 
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add VxLAN Encap pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -367,7 +367,7 @@ static doca_error_t create_count_pipe(struct doca_flow_port *port,
 	match.outer.udp.l4_port.dst_port = DOCA_HTOBE16(80);
 	match.outer.udp.l4_port.src_port = DOCA_HTOBE16(1234);
 
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add count pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -423,12 +423,14 @@ static void parse_packet(struct rte_mbuf *packet,
  *
  * @port [in]: Port id to which an entry should be inserted
  * @ct_queue [in]: DOCA Flow CT queue number
+ * @ct_pipe [in]: DOCA Flow CT pipe
  * @ct_status [in]: User context for adding CT entry
  * @entry [out]: CT entry to create
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t process_packets(struct doca_flow_port *port,
 				    uint16_t ct_queue,
+				    struct doca_flow_pipe *ct_pipe,
 				    struct entries_status *ct_status,
 				    struct doca_flow_pipe_entry **entry)
 {
@@ -480,7 +482,7 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 				      DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY;
 			result = flow_ct_create_entry(port,
 						      ct_queue,
-						      NULL,
+						      ct_pipe,
 						      prepare_flags,
 						      entry_flags,
 						      &match_o_asym,
@@ -505,7 +507,7 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 				      DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_SHARED;
 			result = flow_ct_create_entry(port,
 						      ct_queue,
-						      NULL,
+						      ct_pipe,
 						      prepare_flags,
 						      entry_flags,
 						      &match_o_shared,
@@ -637,7 +639,7 @@ doca_error_t flow_ct_udp_tunnel_asymmetric(uint16_t nb_queues, struct flow_switc
 					       nb_ipv4_sessions = 1024, nb_ipv6_sessions = 0; /* On BF2 should always be
 												 0 */
 	uint16_t ct_queue = nb_queues;
-	struct ct_udp_tunnel_stats_context stats_ctx = {.ct_pipe = ct_pipe, .ct_entry = ct_entry, .ct_queue = ct_queue};
+	struct ct_udp_tunnel_stats_context stats_ctx = {.ct_entry = ct_entry, .ct_queue = ct_queue};
 	doca_error_t result;
 
 	memset(&ctrl_status, 0, sizeof(ctrl_status));
@@ -650,13 +652,13 @@ doca_error_t flow_ct_udp_tunnel_asymmetric(uint16_t nb_queues, struct flow_switc
 	resource.nr_encap = 1;
 	ct_status.nb_processed = 0;
 
-	result = init_doca_flow(nb_queues, "switch,hws,isolated", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
 	}
 
-	/* Dont use zone masking */
+	/* Don't use zone masking */
 	memset(&o_zone_mask, 0, sizeof(o_zone_mask));
 	memset(&o_modify_mask, 0, sizeof(o_modify_mask));
 	memset(&r_zone_mask, 0, sizeof(r_zone_mask));
@@ -725,10 +727,11 @@ doca_error_t flow_ct_udp_tunnel_asymmetric(uint16_t nb_queues, struct flow_switc
 	}
 
 	DOCA_LOG_INFO("Wait a few seconds for packets to arrive");
-	result = process_packets(ports[0], ct_queue, &ct_status, ct_entry);
+	result = process_packets(ports[0], ct_queue, ct_pipe, &ct_status, ct_entry);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
+	stats_ctx.ct_pipe = ct_pipe;
 	flow_wait_for_packets(5, print_ct_udp_tunnel_stats_wrapper, &stats_ctx);
 
 cleanup:

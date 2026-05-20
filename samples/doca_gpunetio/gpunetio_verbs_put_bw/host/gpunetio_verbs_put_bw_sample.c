@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -54,7 +54,7 @@ static void server_validate_test(struct verbs_resources *resources)
 		}
 	}
 
-	DOCA_LOG_WARN("Validation successfull! Data received correctly from client");
+	DOCA_LOG_WARN("Validation successful! Data received correctly from client");
 }
 
 /*

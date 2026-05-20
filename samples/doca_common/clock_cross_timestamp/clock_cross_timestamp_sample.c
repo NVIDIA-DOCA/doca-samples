@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -83,7 +83,7 @@ static doca_error_t get_single_timestamp(const struct doca_clock *clock, uint64_
 	if (clock_type == DOCA_CLOCK_HOST_COUNTER_CYCLES)
 		DOCA_LOG_INFO("Timestamp - %s: %lu cycles", get_clock_name(clock_type), clock_ts.counter);
 	else
-		DOCA_LOG_INFO("Timestamp - %s: %lu.%lu seconds",
+		DOCA_LOG_INFO("Timestamp - %s: %lu.%09lu seconds",
 			      get_clock_name(clock_type),
 			      clock_ts.ts.tv_sec,
 			      clock_ts.ts.tv_nsec);
@@ -110,7 +110,7 @@ static doca_error_t get_cross_timestamp(const struct doca_clock *clock, uint64_t
 		return result;
 
 	if (prim_clock == DOCA_CLOCK_HOST_COUNTER_CYCLES)
-		DOCA_LOG_INFO("Cross-timestamp - %s: %lu cycles, %s: %lu.%lu seconds, accuracy: %lu cycles",
+		DOCA_LOG_INFO("Cross-timestamp - %s: %lu cycles, %s: %lu.%09lu seconds, accuracy: %lu cycles",
 			      get_clock_name(prim_clock),
 			      prim_ts.counter,
 			      get_clock_name(nic_clock),
@@ -118,14 +118,15 @@ static doca_error_t get_cross_timestamp(const struct doca_clock *clock, uint64_t
 			      nic_ts.ts.tv_nsec,
 			      accuracy);
 	else
-		DOCA_LOG_INFO("Cross-timestamp - %s: %lu.%lu seconds, %s: %lu.%lu seconds, accuracy: %lu nanoseconds",
-			      get_clock_name(prim_clock),
-			      prim_ts.ts.tv_sec,
-			      prim_ts.ts.tv_nsec,
-			      get_clock_name(nic_clock),
-			      nic_ts.ts.tv_sec,
-			      nic_ts.ts.tv_nsec,
-			      accuracy);
+		DOCA_LOG_INFO(
+			"Cross-timestamp - %s: %lu.%09lu seconds, %s: %lu.%09lu seconds, accuracy: %lu nanoseconds",
+			get_clock_name(prim_clock),
+			prim_ts.ts.tv_sec,
+			prim_ts.ts.tv_nsec,
+			get_clock_name(nic_clock),
+			nic_ts.ts.tv_sec,
+			nic_ts.ts.tv_nsec,
+			accuracy);
 
 	return result;
 }

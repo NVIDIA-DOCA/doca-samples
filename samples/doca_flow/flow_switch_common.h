@@ -37,7 +37,7 @@
 extern "C" {
 #endif
 
-#define FLOW_SWITCH_DEV_ARGS "dv_flow_en=2,fdb_def_rule_en=0,vport_match=1,repr_matching_en=0,dv_xmeta_en=4"
+#define FLOW_SWITCH_DEV_ARGS "dv_flow_en=2,fdb_def_rule_en=0,dv_xmeta_en=4"
 
 /* doca flow switch context */
 struct flow_switch_ctx {

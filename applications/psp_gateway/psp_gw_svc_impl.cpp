@@ -73,12 +73,19 @@ doca_error_t PSP_GatewayImpl::handle_miss_packet(struct rte_mbuf *packet)
 	} else {
 		const auto *ipv6_hdr =
 			rte_pktmbuf_mtod_offset(packet, struct rte_ipv6_hdr *, sizeof(struct rte_ether_hdr));
+#ifdef DOCA_BUNDLE_DPDK_FOUND
 		dst_vip = ipv6_to_string((uint32_t *)ipv6_hdr->dst_addr);
 		src_vip = ipv6_to_string((uint32_t *)ipv6_hdr->src_addr);
-		dst_vip_addr.type = DOCA_FLOW_L3_TYPE_IP6;
-		src_vip_addr.type = DOCA_FLOW_L3_TYPE_IP6;
 		memcpy(dst_vip_addr.ipv6_addr, ipv6_hdr->dst_addr, IPV6_ADDR_LEN);
 		memcpy(src_vip_addr.ipv6_addr, ipv6_hdr->src_addr, IPV6_ADDR_LEN);
+#else
+		dst_vip = ipv6_to_string((uint32_t *)ipv6_hdr->dst_addr.a);
+		src_vip = ipv6_to_string((uint32_t *)ipv6_hdr->src_addr.a);
+		memcpy(dst_vip_addr.ipv6_addr, ipv6_hdr->dst_addr.a, IPV6_ADDR_LEN);
+		memcpy(src_vip_addr.ipv6_addr, ipv6_hdr->src_addr.a, IPV6_ADDR_LEN);
+#endif
+		dst_vip_addr.type = DOCA_FLOW_L3_TYPE_IP6;
+		src_vip_addr.type = DOCA_FLOW_L3_TYPE_IP6;
 	}
 
 	// Create the new tunnel instance, if one does not already exist
@@ -317,8 +324,8 @@ doca_error_t PSP_GatewayImpl::prepare_session(std::string peer_svc_addr,
 	}
 	session_key session_pair = {local_vip, peer_vip};
 	auto &session = sessions[session_pair];
-	session.dst_vip = vip_pair.dst_vip; // allready set if other direction was supplied
-	session.src_vip = vip_pair.src_vip; // allready set if other direction was supplied
+	session.dst_vip = vip_pair.dst_vip; // already set if other direction was supplied
+	session.src_vip = vip_pair.src_vip; // already set if other direction was supplied
 	session.spi_egress = params.spi();
 	session.crypto_id = crypto_id;
 	session.psp_proto_ver = params.psp_version();

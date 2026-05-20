@@ -132,7 +132,7 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 					    cyclic_buffer_size,
 					    &(udp_queues->dmabuf_fd[idx]));
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_INFO("Mapping receive queue buffer (0x%p size %dB) with nvidia-peermem mode",
+			DOCA_LOG_INFO("Mapping receive queue buffer (%p size %dB) with nvidia-peermem mode",
 				      udp_queues->gpu_pkt_addr[idx],
 				      cyclic_buffer_size);
 
@@ -146,7 +146,7 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 				return DOCA_ERROR_BAD_STATE;
 			}
 		} else {
-			DOCA_LOG_INFO("Mapping receive queue buffer (0x%p size %dB dmabuf fd %d) with dmabuf mode",
+			DOCA_LOG_INFO("Mapping receive queue buffer (%p size %dB dmabuf fd %d) with dmabuf mode",
 				      udp_queues->gpu_pkt_addr[idx],
 				      cyclic_buffer_size,
 				      udp_queues->dmabuf_fd[idx]);

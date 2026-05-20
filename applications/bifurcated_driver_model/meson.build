@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -22,9 +22,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-app_srcs = [
+app_srcs = files([
 	APP_NAME + '.c',
-	APP_NAME + '_core.c',
+        APP_NAME + '_core.c',
 	common_dir_path + '/dpdk_utils.c',
 	common_dir_path + '/utils.c',
 	common_dir_path + '/flow_parser.c',
@@ -32,14 +32,17 @@ app_srcs = [
 	samples_dir_path + '/common.c',
 	samples_dir_path + '/doca_flow/flow_common.c',
 	samples_dir_path + '/doca_flow/flow_switch_common.c',
-]
+])
 
 app_inc_dirs += include_directories(samples_dir_path)
 app_inc_dirs += include_directories(samples_dir_path + '/doca_flow')
 
-executable(DOCA_PREFIX + APP_NAME,
-	app_srcs,
-	c_args : base_c_args,
+# Check if we should skip the compilation of the applications
+if flag_disable_applications_compilation
+	subdir_done()
+endif
+
+executable(DOCA_PREFIX + APP_NAME, app_srcs,
+	c_args : apps_common_c_args,
 	dependencies : app_dependencies,
-	include_directories : app_inc_dirs,
-	install: install_apps) 
+	include_directories: app_inc_dirs)

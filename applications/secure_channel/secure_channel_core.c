@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -61,7 +61,7 @@
 #define CLOCK_TYPE_ID CLOCK_MONOTONIC
 #endif
 
-DOCA_LOG_REGISTER(SECURE_CHANNEL::Core);
+DOCA_LOG_REGISTER(SECURE_CHANNEL::CORE);
 
 /* Local memory data for preparing and allocating doca_bufs */
 struct local_memory_bufs {

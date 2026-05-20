@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -22,38 +22,10 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-project('DOCA_SAMPLE', 'C', 'CPP',
-	# Get version number from file.
-	version: run_command(find_program('cat'),
-		files('../../../VERSION'), check: true).stdout().strip(),
-	license: 'BSD-3',
-	default_options: ['buildtype=debug'],
-	meson_version: '>= 0.61.2'
-)
-
-SAMPLE_NAME = 'telemetry_export_netflow'
-
-# Comment this line to restore warnings of experimental DOCA features
-add_project_arguments('-D DOCA_ALLOW_EXPERIMENTAL_API', language: ['c', 'cpp'])
-
-sample_dependencies = []
-# Required for all DOCA programs
-sample_dependencies += dependency('doca-common')
-# The DOCA library of the sample itself
-sample_dependencies += dependency('doca-telemetry-exporter')
-# Utility DOCA library for executables
-sample_dependencies += dependency('doca-argp')
-
-sample_srcs = [
-	# The sample itself
+sample_srcs = files([
 	SAMPLE_NAME + '_sample.c',
-	# Main function for the sample's executable
+])
+
+sample_main_srcs = files([
 	SAMPLE_NAME + '_main.c',
-]
-
-sample_inc_dirs  = []
-
-executable('doca_' + SAMPLE_NAME, sample_srcs,
-	dependencies : sample_dependencies,
-	include_directories: sample_inc_dirs,
-	install: false)
+])

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -70,7 +70,7 @@ __dpa_rpc__ uint64_t uninit_app_ctx_rpc(doca_dpa_dev_devemu_pci_db_completion_t 
 }
 
 /*
- * Doorbell handler wakes up everytime a DB is rang from Host
+ * Doorbell handler wakes up every time a DB is rang from Host
  *
  * @thread_arg [in]: Value provided on setup of DPA thread
  */

@@ -22,19 +22,28 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+# Install public version of DPA build script
+device_code_build_script_name = 'build_device_code.sh'
+device_code_build_script = meson.current_source_dir() / device_code_build_script_name
+app_install_excludes += device_code_build_script_name + public_file_suffix
+install_data(sources : device_code_build_script + public_file_suffix, rename : [device_code_build_script_name],
+		install_dir : app_install_dir)
+app_install_started = true
+
+# Check if we should skip the compilation of the applications
+if flag_disable_applications_compilation
+	subdir_done()
+endif
+
 # Check for UUID library
 dependency_uuid = dependency('uuid', required: false)
 if not dependency_uuid.found()
-	warning('Skipping compilation of DOCA Application - @0@ - Missing UUID support.'.format(APP_NAME))
+	set_variable('app_' + APP_NAME + '_disable_reason', 'Missing UUID support')
 	subdir_done()
 endif
 app_dependencies += dependency_uuid
 
-###################
-# SPDK Dependency #
-###################
-
-# Define list of SPDK & DPDK libs
+# Create SPDK dependency
 spdk_libs = [
 	'spdk_event',
 	'spdk_event_accel',
@@ -80,7 +89,6 @@ spdk_libs = [
 	'spdk_nvmf',
 	'spdk_event_nvmf',
 
-	# DPDK libraries used by SPDK
 	'rte_eal',
 	'rte_ring',
 	'rte_pci',
@@ -99,141 +107,134 @@ spdk_libs = [
 	'rte_mbuf',
 ]
 
-spdk_lib_path = get_option('spdk_prefix') / 'lib'
-spdk_incl_path = get_option('spdk_prefix') / 'include'
-spdk_dpdk_lib_path = get_option('spdk_dpdk_prefix') / 'lib'
-spdk_isal_prefix = get_option('spdk_isal_prefix')
+nvme_spdk_lib_path = get_option('nvme_emulation_spdk_prefix') / 'lib'
+nvme_spdk_incl_path = get_option('nvme_emulation_spdk_prefix') / 'include'
+nvme_dpdk_lib_path = get_option('nvme_emulation_dpdk_prefix') / 'lib'
+nvme_isal_prefix = get_option('nvme_emulation_isal_prefix')
 
-# Prepare common SPDK link arguments
-spdk_link_args  = ['-Wl,-no-as-needed']
-spdk_link_args += [
-	'-Wl,-rpath=' + spdk_lib_path,
-	'-Wl,-rpath-link=' + spdk_lib_path,
-	'-Wl,-rpath=' + spdk_dpdk_lib_path,
-	'-Wl,-rpath-link=' + spdk_dpdk_lib_path,
-	'-L' + spdk_lib_path,
-	'-L' + spdk_dpdk_lib_path,
+nvme_spdk_link_args  = ['-Wl,-no-as-needed']
+nvme_spdk_link_args += [
+	'-Wl,-rpath=' + nvme_spdk_lib_path,
+	'-Wl,-rpath-link=' + nvme_spdk_lib_path,
+	'-Wl,-rpath=' + nvme_dpdk_lib_path,
+	'-Wl,-rpath-link=' + nvme_dpdk_lib_path,
+	'-L' + nvme_spdk_lib_path,
+	'-L' + nvme_dpdk_lib_path,
 ]
-
-# Check that all SPDK/DPDK libraries exist
 foreach spdk_lib : spdk_libs
-	if c_compiler.find_library(spdk_lib, dirs : [spdk_lib_path, spdk_dpdk_lib_path], disabler : true, required : false).found()
-		spdk_link_args += ['-l' + spdk_lib]
+	if c_compiler.find_library(spdk_lib, dirs : [nvme_spdk_lib_path, nvme_dpdk_lib_path], disabler : true, required : false).found()
+		nvme_spdk_link_args += ['-l' + spdk_lib]
 	else
-		warning('Skipping compilation of DOCA Application - @0@ - Failed to find @1@ required by SPDK.'.format(APP_NAME, spdk_lib))
+		set_variable('app_' + APP_NAME + '_disable_reason', 'Missing SPDK library ' + spdk_lib)
 		subdir_done()
 	endif
 endforeach
 
-# Check that SPDK ISA-L library exists
-if run_command('[', '-f', spdk_isal_prefix + '/libisal.a', ']').returncode() == 0
-	spdk_link_args += [
-		'-Wl,-u,needed_symbol',
-		spdk_isal_prefix + '/libisal.a',
-		'-Wl,--no-whole-archive',
-	]
-else
-	warning('Skipping compilation of DOCA Application - @0@ - Failed to find SPDK ISA-L required by SPDK.'.format(APP_NAME))
-	subdir_done()
-endif
-
-# Prepare SPDK include and compiler flags
-spdk_inc_dirs = include_directories(spdk_incl_path)
 spdk_args = []
-if c_compiler.has_header_symbol('spdk/jsonrpc.h', 'spdk_jsonrpc_set_log_file', include_directories : [spdk_inc_dirs])
+
+if c_compiler.has_header_symbol('spdk/jsonrpc.h', 'spdk_jsonrpc_set_log_file', include_directories : [include_directories(nvme_spdk_incl_path)])
 	spdk_args += ['-DHAVE_SPDK_JSONRPC_SET_LOG_FILE=1']
 endif
 
-# Declare SPDK dependency
-spdk_dependency = declare_dependency(link_args: spdk_link_args, include_directories: spdk_inc_dirs, compile_args: spdk_args)
-
-if is_host
-	warning('@0@ is only supported on the DPU, and is not supported on the Host'.format(APP_NAME))
+if run_command('[', '-f', nvme_isal_prefix + '/libisal.a', ']').returncode() == 0
+	nvme_spdk_link_args += [
+		'-Wl,-u,needed_symbol',
+		nvme_isal_prefix + '/libisal.a',
+		'-Wl,--no-whole-archive',
+	]
+else
+	set_variable('app_' + APP_NAME + '_disable_reason', 'Missing SPDK ISA-L library')
+	subdir_done()
 endif
 
-vanilla_app_srcs = [
-	APP_NAME + '.c',
-]
+spdk_inc_dirs = include_directories(nvme_spdk_incl_path)
+spdk_depends = declare_dependency(link_args : nvme_spdk_link_args, include_directories : spdk_inc_dirs, compile_args: spdk_args)
 
-app_srcs += [
-	# SPDK External NVMf Trasnport Sources
+app_srcs = files([
+	APP_NAME + '.c',
+	# SPDK External NVMf Transport Sources
 	'host/doca_transport.c',
 	'host/nvmf_doca_io.c',
 	# SPDK External RPC Sources
 	'host/nvmf_rpc.c',
 	# PCI common
 	'host/nvme_pci_common.c'
-]
+])
 
-app_inc_dirs += include_directories('common')
+# Build DPA device code
+# Add necessary flags
+dpa_device_cc_extra_flags = ''
+dpa_host_cc_extra_flags = ''
 
-#########################
-# build DPA device code #
-#########################
+if get_option('buildtype') == 'debug'
+	dpa_device_cc_extra_flags += ' -DDOCA_DEBUG -g'
+endif
 
-dependency_dpa = dependency('doca-dpa')
-
-# Find DPA build script
-device_build_script_path = meson.current_source_dir() / 'build_device_code.sh'
-device_build_script = find_program(device_build_script_path)
-
-device_binary_name = 'nvmf_doca_transport_device'
+# Prepare common DPA compiler arguments
 dpa_app_name = 'nvmf_doca_transport_app'
+dpa_binary_name = 'nvmf_doca_transport_device'
+dpa_device_link_flags = ''
+dpa_device_include_flags = [
+	'-I' + doca_root_dir / 'applications/nvme_emulation/common',
+]
+app_dpa_device_depends = []
+dpa_dev_device_lib_names = ['dpa_dev', 'dpa_dev_comm']
+if flag_amalgamation_build
+	app_dpa_device_depends += doca_dpa_runtime_lib
+	foreach dpa_dev_device_lib_name : dpa_dev_device_lib_names
+		dpa_device_lib_info = get_variable('doca_' + dpa_dev_device_lib_name + '_dev_lib_info')
+		dpa_device_link_flags += ' ' + dpa_device_lib_info.get_variable('dev_link_args')
+		dpa_device_include_flags += dpa_device_lib_info.get_variable('dev_include_args')
+	endforeach
+	dpa_device_include_flags += [
+		'-I' + doca_root_dir / 'libs/doca_common/version',
+		'-I' + doca_root_dir / 'libs/doca_common/core/include/public',
+	]
+else
+	dpa_device_link_flags = '-L/opt/mellanox/doca' / get_option('libdir')
+	foreach dpa_dev_device_lib_name : dpa_dev_device_lib_names
+		dpa_device_link_flags += ' -ldoca_' + dpa_dev_device_lib_name
+	endforeach
+	dpa_device_include_flags += [
+		'-I/opt/mellanox/doca/include',
+	]
+endif
 
+# Application device source code files to be compiled by the DPACC
 app_device_srcs = files([
 	'device/doca_transport_dev.c',
 ])
 
-app_attributes_file = files(['device/doca_transport_attributes.yaml'])
+# Attributes file to be used
+app_device_attributes_arg = meson.current_source_dir() + '/device/doca_transport_attributes.yaml'
 
-# Prepare include flags
-dpa_include_dir = dependency_dpa.get_variable(pkgconfig : 'includedir')
-dpa_device_include_flags = [
-	'-I' + dpa_include_dir,
-	'-I' + meson.current_source_dir() / 'common',
-]
-
-# Prepare link flags
-dpa_lib_dir = dependency_dpa.get_variable(pkgconfig : 'libdir')
-dpa_device_link_flags = '-L' + dpa_lib_dir
-dpa_dev_device_lib_names = ['dpa_dev', 'dpa_dev_comm']
-foreach dpa_dev_device_lib_name : dpa_dev_device_lib_names
-	dpa_device_link_flags += ' -ldoca_' + dpa_dev_device_lib_name
-endforeach
-
-if not get_option('dpacc_mcpu').contains('nv-dpa-bf3') 
-	warning('Skipping compilation of DOCA Application - @0@ - only BF3 compilation is supported.'.format(APP_NAME))
-	subdir_done()
-endif
-
-if get_option('dpacc_mcpu') != 'nv-dpa-bf3'
-	warning('DOCA Application @0@ supports compilation only for BF3 - ignoring other architectures.'.format(APP_NAME))
-endif
-
-nvme_emu_dpacc_mcpu_flag = 'nv-dpa-bf3'
-
-# Invoke device compilation script
-dpa_code = custom_target(
-	device_binary_name,
+# Run DPA compiler
+app_srcs += custom_target(
+	dpa_binary_name,
 	input: app_device_srcs,
 	command: [
-		device_build_script,
+		dpa_build_script,
 		' '.join(dpa_device_include_flags),
+		dpa_host_cc_extra_flags,
+		dpa_device_cc_extra_flags,
+		'@SOURCE_ROOT@',
 		'@OUTDIR@',
-		nvme_emu_dpacc_mcpu_flag,
+		'application-attributes',
+		bf3_dpacc_mcpu_flag,
 		dpa_device_link_flags,
 		dpa_app_name,
-		app_attributes_file,
+		app_device_attributes_arg,
 		'@OUTPUT@',
 		'@INPUT@',
 	],
+	depends: app_dpa_device_depends,
 	depfile: '@BASENAME@.d',
-	output: [device_binary_name + '.a']
+	output: [dpa_binary_name + '.a']
 )
 
-executable(DOCA_PREFIX + APP_NAME,
-	   vanilla_app_srcs + app_srcs + dpa_code,
-	   c_args : base_c_args,
-	   dependencies : app_dependencies + spdk_dependency,
-	   include_directories : app_inc_dirs,
-	   install: install_apps)
+app_inc_dirs += include_directories('common')
+
+executable(DOCA_PREFIX + APP_NAME, app_srcs,
+	c_args : [apps_common_c_args],
+	dependencies : [app_dependencies, spdk_depends],
+	include_directories: app_inc_dirs)

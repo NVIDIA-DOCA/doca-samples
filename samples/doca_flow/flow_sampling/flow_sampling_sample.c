@@ -146,7 +146,7 @@ static doca_error_t add_root_pipe_entry(struct doca_flow_pipe *pipe,
 	DOCA_LOG_DBG("Adding root pipe entry matching of: "
 		     "IPv4(src='1.1.1.1',dst='8.8.8.8') and TCP(src_port=1234,dst_port=80)");
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
+	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
 }
 
 /*
@@ -249,7 +249,6 @@ static doca_error_t add_random_sampling_pipe_entry(struct doca_flow_pipe *pipe,
 	fwd.port_id = 1;
 
 	return doca_flow_pipe_control_add_entry(0 /* queue */,
-						0 /* priority */,
 						pipe,
 						&match,
 						NULL /* match_mask */,
@@ -258,6 +257,7 @@ static doca_error_t add_random_sampling_pipe_entry(struct doca_flow_pipe *pipe,
 						NULL /* actions_mask */,
 						NULL /* action_descs */,
 						&monitor,
+						0 /* priority */,
 						&fwd,
 						status,
 						entry);

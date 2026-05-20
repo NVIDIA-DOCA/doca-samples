@@ -39,7 +39,7 @@
 
 DOCA_LOG_REGISTER(FLOW_CT_ITERATOR);
 
-/* Create a pipe and an entry that match any packets and froward to fwd */
+/* Create a pipe and an entry that match any packets and forward to fwd */
 static doca_error_t create_pipe_and_entry(struct doca_flow_port *port,
 					  struct entries_status *status,
 					  const char *pipe_name,
@@ -84,7 +84,7 @@ static doca_error_t create_pipe_and_entry(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, NULL, 0, NULL, &monitor, NULL, 0, status, entry);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, NULL, 0, NULL, &monitor, NULL, 0, status, entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add RSS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -442,7 +442,7 @@ doca_error_t flow_ct_iterator(uint32_t n_ct_entries, struct flow_dev_ctx *ctx, b
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	result = init_doca_flow(1, "switch,hws,isolated", &resource, nr_shared_resources);
+	result = init_doca_flow(1, "switch,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;

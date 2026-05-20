@@ -40,30 +40,30 @@ use_cases:
         packets_to_send:
           - receiving_port: 0
             packets:
-              - Ether()/IP(src='1.1.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, TCP source and destination ports modified, src IP modified, forwarded from port 1')
-              - Ether()/IP(src='2.2.2.2', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')
-              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, TCP source and destination ports modified, src IP modified, forwarded from port 1')
-              - Ether()/IP(src='4.4.4.4', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')
-              - Ether()/IP(src='2.2.2.2', dst='1.1.1.1')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, dropped')
+              - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='1.1.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')
+              - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='2.2.2.2', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, IPv4->IPv6 NAT64 applied, forwarded from port 1')
+              - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')
+              - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='4.4.4.4', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, IPv4->IPv6 NAT64 applied, forwarded from port 1')
+              - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='2.2.2.2', dst='1.1.1.1')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, dropped')
           - receiving_port: 1
             packets:
-              - Ether()/IP(src='1.1.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, TCP source and destination ports modified, src IP modified, forwarded from port 0')
-              - Ether()/IP(src='2.2.2.2', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
-              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, TCP source and destination ports modified, src IP modified, forwarded from port 0')
-              - Ether()/IP(src='4.4.4.4', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
-              - Ether()/IP(src='2.2.2.2', dst='1.1.1.1')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, dropped')
+              - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='1.1.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
+              - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='2.2.2.2', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, IPv4->IPv6 NAT64 applied, forwarded from port 0')
+              - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
+              - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='4.4.4.4', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, IPv4->IPv6 NAT64 applied, forwarded from port 0')
+              - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='2.2.2.2', dst='1.1.1.1')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, dropped')
         validation:
           - type: packet
             expected_packets:
               - forwarding_port: 0
                 packets:
-                  - Ether()/IP(src='192.168.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, TCP source and destination ports modified, src IP modified, forwarded from port 0')
-                  - Ether()/IP(src='192.168.2.2', dst='8.8.8.8')/TCP(sport=555, dport=70)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
-                  - Ether()/IP(src='192.168.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, TCP source and destination ports modified, src IP modified, forwarded from port 0')
-                  - Ether()/IP(src='192.168.4.4', dst='8.8.8.8')/TCP(sport=555, dport=70)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
+                  - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='192.168.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
+                  - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IPv6(src='64:ff9b::c0a8:202', dst='64:ff9b::808:808')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, IPv4->IPv6 NAT64 applied, forwarded from port 0')
+                  - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='192.168.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, forwarded from port 0')
+                  - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IPv6(src='64:ff9b::c0a8:404', dst='64:ff9b::808:808')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, src IP modified, IPv4->IPv6 NAT64 applied, forwarded from port 0')
               - forwarding_port: 1
                 packets:
-                  - Ether()/IP(src='192.168.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, TCP source and destination ports modified, src IP modified, forwarded from port 1')
-                  - Ether()/IP(src='192.168.2.2', dst='8.8.8.8')/TCP(sport=555, dport=70)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')
-                  - Ether()/IP(src='192.168.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, TCP source and destination ports modified, src IP modified, forwarded from port 1')
-                  - Ether()/IP(src='192.168.4.4', dst='8.8.8.8')/TCP(sport=555, dport=70)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')
+                  - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='192.168.1.1', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')
+                  - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IPv6(src='64:ff9b::c0a8:202', dst='64:ff9b::808:808')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, IPv4->IPv6 NAT64 applied, forwarded from port 1')
+                  - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='192.168.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, forwarded from port 1')
+                  - Ether( dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IPv6(src='64:ff9b::c0a8:404', dst='64:ff9b::808:808')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, src IP modified, IPv4->IPv6 NAT64 applied, forwarded from port 1')

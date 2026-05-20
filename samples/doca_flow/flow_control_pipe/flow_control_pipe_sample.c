@@ -117,16 +117,16 @@ static doca_error_t add_vxlan_pipe_entry(struct doca_flow_pipe *pipe, struct ent
 
 	match.tun.vxlan_tun_id = vxlan_tun_id;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  NULL,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  status,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -236,8 +236,16 @@ static doca_error_t add_vxlan_gpe_pipe_entry(struct doca_flow_pipe *pipe, struct
 	match.tun.vxlan_gpe_next_protocol = DOCA_FLOW_VXLAN_GPE_TYPE_IPV4;
 	match.tun.vxlan_gpe_flags = 0xF;
 
-	result =
-		doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, DOCA_FLOW_WAIT_FOR_BATCH, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -349,16 +357,16 @@ static doca_error_t add_mpls_pipe_entry(struct doca_flow_pipe *pipe, struct entr
 	if (result != DOCA_SUCCESS)
 		return result;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  NULL,
-					  NULL,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  status,
-					  &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -463,7 +471,16 @@ static doca_error_t add_gre_pipe_entry(struct doca_flow_pipe *pipe, struct entri
 
 	match.tun.gre_key = gre_key;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						status,
+						&entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -548,7 +565,16 @@ static doca_error_t create_nvgre_pipe_and_entry(struct doca_flow_port *port,
 	match.tun.nvgre_vs_id = DOCA_HTOBE32((uint32_t)0x123456 << 8);
 	match.tun.nvgre_flow_id = 0x78;
 
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, DOCA_FLOW_NO_WAIT, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						*pipe,
+						&match,
+						0,
+						&actions,
+						NULL,
+						NULL,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						status,
+						&entry);
 	if (result == DOCA_SUCCESS) {
 		(*num_of_entries)++;
 	}
@@ -618,7 +644,6 @@ static doca_error_t control_add_nvgre_entry(struct doca_flow_pipe *control_pipe,
 	fwd.next_pipe = nvgre_pipe;
 
 	return doca_flow_pipe_control_add_entry(0,
-						priority,
 						control_pipe,
 						&match,
 						NULL,
@@ -627,6 +652,7 @@ static doca_error_t control_add_nvgre_entry(struct doca_flow_pipe *control_pipe,
 						NULL,
 						NULL,
 						NULL,
+						priority,
 						&fwd,
 						status,
 						NULL);
@@ -683,7 +709,6 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	fwd.next_pipe = vxlan_gpe_pipe;
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  control_pipe,
 						  &match,
 						  NULL,
@@ -692,6 +717,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 						  NULL,
 						  NULL,
 						  &monitor,
+						  priority,
 						  &fwd,
 						  status,
 						  NULL);
@@ -713,7 +739,6 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	fwd.next_pipe = vxlan_pipe;
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  control_pipe,
 						  &match,
 						  NULL,
@@ -722,6 +747,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 						  NULL,
 						  NULL,
 						  &monitor,
+						  priority,
 						  &fwd,
 						  status,
 						  NULL);
@@ -743,7 +769,6 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	fwd.next_pipe = mpls_pipe;
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  control_pipe,
 						  &match,
 						  NULL,
@@ -752,6 +777,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 						  NULL,
 						  NULL,
 						  &monitor,
+						  priority,
 						  &fwd,
 						  status,
 						  NULL);
@@ -772,7 +798,6 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	fwd.next_pipe = gre_pipe;
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority + 1,
 						  control_pipe,
 						  &match,
 						  NULL,
@@ -781,6 +806,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 						  NULL,
 						  NULL,
 						  &monitor,
+						  priority + 1,
 						  &fwd,
 						  status,
 						  NULL);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -46,7 +46,7 @@
 #include <errno.h>
 #include <doca_error.h>
 
-DOCA_LOG_REGISTER(NFS_FSDEV)
+DOCA_LOG_REGISTER(NFS_FSDEV);
 
 /* File type bits (octal, as per POSIX/SUS) */
 #define BITS_MASK 0170000    /* Mask for file type bits */
@@ -1099,7 +1099,7 @@ static void nfs_fsdev_write(struct async_context *context)
 				 nfs_fsdev_write_cb,
 				 &args,
 				 context)) {
-		DOCA_LOG_ERR("Error: in write opertion");
+		DOCA_LOG_ERR("Error: in write operation");
 		exit(1);
 	}
 }
@@ -1173,7 +1173,7 @@ static void nfs_fsdev_read(struct async_context *context)
 	struct READ3args args = nfs_fsdev_read_args(context, &temp);
 	pthread_mutex_unlock(&context->fsdev_global->lock);
 	if (rpc_nfs3_read_async(nfs_get_rpc_context(context->fsdev_perthread->nfs), nfs_fsdev_read_cb, &args, context)) {
-		DOCA_LOG_ERR("Falied to start read request ");
+		DOCA_LOG_ERR("Failed to start read request ");
 		exit(1);
 	}
 }
@@ -1298,7 +1298,7 @@ static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status
 	}
 
 	if (ref_count != 0) {
-		DOCA_LOG_WARN("Attempt to UNLINK a file that has positive refrence count");
+		DOCA_LOG_WARN("Attempt to UNLINK a file that has positive reference count");
 
 		strcpy(entry.replay_unlink_params.name, filename);
 
@@ -1643,7 +1643,7 @@ void nfs_fsdev_destroy(struct nfs_fsdev_context *nfs_fsdev_context)
 	destroy_nfs_fsdev_context(nfs_fsdev_context);
 }
 
-void priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global)
+int priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global)
 {
 	struct async_context *ios;
 
@@ -1665,30 +1665,32 @@ void priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *globa
 		DOCA_LOG_ERR("Failed to initialize NFS context");
 		free(fsdev->ios_pool);
 		pthread_mutex_unlock(&(global->lock));
-		exit(10);
+		return -EINVAL;
 	}
 
 	nfs_set_debug(fsdev->nfs, NFS_FSDEV_DEBUG_NONE);
 
 	int ret = nfs_mount(fsdev->nfs, global->server, global->mount_point);
 	if (ret != 0) {
-		DOCA_LOG_ERR("Failed to mount NFS server '%s' export '%s'", global->server, global->mount_point);
+		DOCA_LOG_ERR("Failed to mount NFS server '%s' export '%s' ret:%d",
+			     global->server,
+			     global->mount_point,
+			     ret);
 		nfs_destroy_context(fsdev->nfs);
 		free(fsdev->ios_pool);
 		pthread_mutex_unlock(&(global->lock));
-		exit(10);
+		return ret;
 	}
 
 	struct nfsfh *root_fh = NULL;
 	ret = nfs_open(fsdev->nfs, "/", O_RDONLY, &root_fh);
-
 	if (ret != 0) {
-		DOCA_LOG_ERR("Failed to open root file handle on NFS server");
+		DOCA_LOG_ERR("Failed to open root file handle on NFS server, ret: %d", ret);
 		nfs_umount(fsdev->nfs);
 		nfs_destroy_context(fsdev->nfs);
 		free(fsdev->ios_pool);
 		pthread_mutex_unlock(&(global->lock));
-		exit(10);
+		return ret;
 	}
 
 	if (!check_if_exist_by_left(global->db, 1)) {
@@ -1699,7 +1701,7 @@ void priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *globa
 			nfs_destroy_context(fsdev->nfs);
 			free(fsdev->ios_pool);
 			pthread_mutex_unlock(&(global->lock));
-			exit(-1);
+			return -EINVAL;
 		}
 	} else {
 		DOCA_LOG_WARN("Root file handle already exists in DB, restoring database");
@@ -1707,6 +1709,8 @@ void priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *globa
 
 	(void)nfs_close(fsdev->nfs, root_fh);
 	pthread_mutex_unlock(&(global->lock));
+
+	return 0;
 }
 
 void priv_nfs_fsdev_deinit(struct nfs_fsdev *fsdev)

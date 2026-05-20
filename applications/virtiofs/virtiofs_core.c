@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -39,7 +39,7 @@
 #include <virtiofs_mpool.h>
 #include <virtiofs_device.h>
 
-DOCA_LOG_REGISTER(VIRTIOFS_CORE)
+DOCA_LOG_REGISTER(VIRTIOFS_CORE);
 
 #define VIRTIOFS_THREAD_MAX_INFLIGHTS 128
 
@@ -243,7 +243,10 @@ doca_error_t virtiofs_start(struct virtiofs_resources *ctx)
 	return DOCA_SUCCESS;
 }
 
-doca_error_t virtiofs_device_create_static(struct virtiofs_resources *ctx, char *nfs_server, char *nfs_export)
+doca_error_t virtiofs_device_create_static(struct virtiofs_resources *ctx,
+					   char *nfs_server,
+					   char *nfs_export,
+					   uint16_t num_request_queues)
 {
 	doca_error_t err;
 	struct virtiofs_function *func;
@@ -256,10 +259,11 @@ doca_error_t virtiofs_device_create_static(struct virtiofs_resources *ctx, char 
 
 	static struct virtiofs_device_config config = {
 		.name = "vfs_controller0",
-		.num_request_queues = 32,
 		.queue_size = 256,
 		.tag = "docavirtiofs",
 	};
+
+	config.num_request_queues = num_request_queues,
 
 	err = virtiofs_function_get_available(ctx, &func);
 	if (err != DOCA_SUCCESS) {

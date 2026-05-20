@@ -22,97 +22,13 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-project('DOCA_SAMPLE', 'C', 'CPP', 'CUDA',
-	# Get version number from file.
-	version: run_command(find_program('cat'),
-		files('../../../VERSION'), check: true).stdout().strip(),
-	license: 'BSD-3',
-	default_options: ['buildtype=release'],
-	meson_version: '>= 0.61.2'
-)
-
-SAMPLE_NAME = 'gpunetio_verbs_write_lat'
-
-# Comment this line to restore warnings of experimental DOCA features
-add_project_arguments('-D DOCA_ALLOW_EXPERIMENTAL_API', language: ['c', 'cpp', 'cuda'])
-
-sample_dependencies = []
-sample_dependencies += dependency('doca-common')
-doca_gpu_dep = dependency('doca-gpunetio')
-sample_dependencies += doca_gpu_dep
-sample_dependencies += dependency('doca-argp')
-sample_dependencies += dependency('doca-verbs')
-sample_dependencies += dependency('libibverbs')
-
-cuda = import('unstable-cuda')
-nvcc = meson.get_compiler('cuda')
-
-cuda_dep = dependency('cuda', version: '>= 12-1', modules: ['cudart', 'cuda'])
-cuda_version = cuda_dep.version()
-
-nvcc_flags = []
-if cuda_version.version_compare('< 13-0')
-	nvcc_flags += ['-gencode', 'arch=compute_70,code=sm_70']
-endif
-nvcc_flags += ['-gencode', 'arch=compute_75,code=sm_75']
-nvcc_flags += ['-gencode', 'arch=compute_80,code=sm_80']
-nvcc_flags += ['-gencode', 'arch=compute_90,code=sm_90']
-if cuda_version.version_compare('>= 12-8')
-	nvcc_flags += ['-gencode', 'arch=compute_100,code=sm_100']
-endif
-add_project_arguments(nvcc_flags, language: 'cuda')
-
-# Refer to https://mesonbuild.com/Cuda-module.html
-add_project_arguments('-forward-unknown-to-host-compiler', language: 'cuda')
-add_project_arguments('-rdc=true', language: 'cuda')
-
-gpu_dependencies = []
-gpu_dependencies += cuda_dep
-
-nvcc_flags_link = []
-if cuda_version.version_compare('< 13-0')
-	nvcc_flags_link += ['-gencode=arch=compute_70,code=sm_70']
-endif
-nvcc_flags_link += ['-gencode=arch=compute_75,code=sm_75']
-nvcc_flags_link += ['-gencode=arch=compute_80,code=sm_80']
-nvcc_flags_link += ['-gencode=arch=compute_90,code=sm_90']
-if cuda_version.version_compare('>= 12-8')
-	nvcc_flags_link += ['-gencode=arch=compute_100,code=sm_100']
-endif
-add_project_link_arguments(nvcc_flags_link, language: 'cuda')
-
-sample_dependencies += gpu_dependencies
-
-gpunetio_device_path = doca_gpu_dep.get_variable(pkgconfig : 'libdir')
-dependency_gpunetio_device = declare_dependency(compile_args : '-Wl,--whole-archive',
-                                                link_args : ['-L' + gpunetio_device_path , '-ldoca_gpunetio_device'],)
-sample_dependencies += dependency_gpunetio_device
-
-sample_srcs = [
-	# The sample itself
+sample_srcs = files([
 	'device/' + SAMPLE_NAME + '_kernel.cu',
 	'host/' + SAMPLE_NAME + '_sample.c',
-	# Main function for the sample's executable
+])
+
+sample_main_srcs = files([
 	SAMPLE_NAME + '_main.c',
-	# Common code for RDMA-based GPUNetIO samples
-	'../verbs_common.c',
-	'../verbs_high_level.c',
-	# Common code for all DOCA samples
-	'../../common.c',
-]
+])
 
-sample_inc_dirs  = []
-# Common DOCA library logic
-sample_inc_dirs += include_directories('..')
-# Common DOCA logic (samples)
-sample_inc_dirs += include_directories('../..')
-# Common DOCA logic
-sample_inc_dirs += include_directories('../../..')
-# Common DOCA logic (applications)
-sample_inc_dirs += include_directories('../../../applications/common')
-
-executable('doca_' + SAMPLE_NAME, sample_srcs,
-	c_args : '-Wno-missing-braces',
-	dependencies : sample_dependencies,
-	include_directories: sample_inc_dirs,
-	install: false)
+sample_main_includes = [include_directories('.')]

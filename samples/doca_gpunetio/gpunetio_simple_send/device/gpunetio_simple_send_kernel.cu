@@ -115,7 +115,7 @@ __global__ void send_packets_shared_qp_disabled(struct doca_gpu_eth_txq *txq,
 
 		if (threadIdx.x == (blockDim.x - 1)) {
 			/*
-			 * Generic fucntion to update the dbrec and ring db checking if UAR is on GPU or CPU.
+			 * Generic function to update the dbrec and ring db checking if UAR is on GPU or CPU.
 			 * If these checks are not needed, a lower level combination of API can be used to reduce latency/
 			 * As an example, to ring GPU DB:
 			 * doca_priv_gpu_dev_eth_txq_update_dbr(txq, wqe_idx + 1);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -38,7 +38,7 @@
 #include "verbs_wait_cq_wr_sample.h"
 #include "common.h"
 
-DOCA_LOG_REGISTER(wait_cq_wr::SAMPLE);
+DOCA_LOG_REGISTER(WAIT_CQ_WR::SAMPLE);
 
 #define CQ_SIZE 64
 #define CQ_ENTRY_SIZE DOCA_VERBS_CQ_ENTRY_SIZE_64
@@ -929,15 +929,15 @@ doca_error_t send_chained_messages(struct wait_cq_wr_cfg *cfg)
 	memset((void *)buffers[0].addr, 0x11, MESSAGE_SIZE);
 
 	/* Sample logic:
-	 * 2 Pairs of QPs, each pair use it's own CQ.
+	 * 2 Pairs of QPs, each pair use its own CQ.
 	 * We will call the first pair of QPs "QP1" and "QP2" and the second pair of QPs "QP3" and "QP4".
 	 * QP1 sends a message (stored in buffer1) to QP2, which will be stored in buffer2.
 	 * In the meantime, QP3 will be waiting for the message to arrive at buffer2 using message chaining,
 	 * and once the message arrives it sends it's content from buffer2 to QP4, to be stored on buffer3.
-	 * Chaining the messages promises the send from QP3 will not be preformed until the data is ready in buffer2.
+	 * Chaining the messages promises the send from QP3 will not be performed until the data is ready in buffer2.
 	 */
 
-	/* Post recv WRs on QP2 and QP4 in preperation for the messages */
+	/* Post recv WRs on QP2 and QP4 in preparation for the messages */
 	result = post_recv(resources.conn1.qp2, next_id++, &buffers[1]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to post recv: %s", doca_error_get_descr(result));

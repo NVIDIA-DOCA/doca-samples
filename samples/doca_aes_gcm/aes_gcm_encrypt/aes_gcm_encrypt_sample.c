@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -130,13 +130,13 @@ doca_error_t aes_gcm_encrypt(struct aes_gcm_cfg *cfg, char *file_data, size_t fi
 	}
 
 	/* Construct DOCA buffer for each address range */
-	result = allocat_doca_buf_list(state->buf_inv,
-				       state->src_mmap,
-				       file_data,
-				       file_size,
-				       cfg->num_src_buf,
-				       true,
-				       &src_doca_buf);
+	result = allocate_doca_buf_list(state->buf_inv,
+					state->src_mmap,
+					file_data,
+					file_size,
+					cfg->num_src_buf,
+					true,
+					&src_doca_buf);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Unable to acquire DOCA buffer representing source buffer: %s",
 			     doca_error_get_descr(result));
@@ -144,13 +144,13 @@ doca_error_t aes_gcm_encrypt(struct aes_gcm_cfg *cfg, char *file_data, size_t fi
 	}
 
 	/* Construct DOCA buffer for each address range */
-	result = allocat_doca_buf_list(state->buf_inv,
-				       state->dst_mmap,
-				       dst_buffer,
-				       max_encrypt_buf_size,
-				       cfg->num_dst_buf,
-				       false,
-				       &dst_doca_buf);
+	result = allocate_doca_buf_list(state->buf_inv,
+					state->dst_mmap,
+					dst_buffer,
+					max_encrypt_buf_size,
+					cfg->num_dst_buf,
+					false,
+					&dst_doca_buf);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Unable to acquire DOCA buffer representing destination buffer: %s",
 			     doca_error_get_descr(result));

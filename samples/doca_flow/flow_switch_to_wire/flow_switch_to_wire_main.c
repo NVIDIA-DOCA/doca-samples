@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,8 +32,6 @@
  * the pkt based on the pkt content, so user can send the traffic
  * from different src and check if the pkt goes to the expected
  * destinations.
- * As this sample add the RSS pipe, so doca-flow isolated mode
- * is chosen without any internal RSS pipes.
  * In expert mode, the missed traffic will be tagged with port_id
  * and the traffic will be sent to egress root.
  *
@@ -96,7 +94,6 @@ int main(int argc, char **argv)
 		.port_config.nb_ports = SWITCH_TO_WIRE_PORTS,
 		.port_config.nb_queues = 1,
 		.port_config.switch_mode = 1,
-		.port_config.enable_mbuf_metadata = 1,
 	};
 	struct flow_switch_ctx ctx = {0};
 	uint16_t nr_ports;

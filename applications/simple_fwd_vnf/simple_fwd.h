@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -55,7 +55,7 @@ struct simple_fwd_app {
 
 /* Simple FWD flow entry representation */
 struct simple_fwd_pipe_entry {
-	bool is_hw;			       /* Wether the entry in HW or not */
+	bool is_hw;			       /* Whether the entry in HW or not */
 	uint64_t total_pkts;		       /* Total number of packets matched the flow */
 	uint64_t total_bytes;		       /* Total number of bytes matched the flow */
 	uint16_t pipe_queue;		       /* Pipe queue of the flow entry */

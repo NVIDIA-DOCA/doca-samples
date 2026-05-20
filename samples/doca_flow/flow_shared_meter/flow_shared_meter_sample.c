@@ -92,7 +92,6 @@ static doca_error_t create_color_matched_pipe(struct doca_flow_port *port,
 	*(uint8_t *)&green_match_mask.parser_meta.meter_color = METER_COLOR_MASK;
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  0,
 						  *color_pipe,
 						  &red_match,
 						  &red_match_mask,
@@ -101,13 +100,13 @@ static doca_error_t create_color_matched_pipe(struct doca_flow_port *port,
 						  NULL,
 						  NULL,
 						  NULL,
+						  0,
 						  fwd_on_red,
 						  NULL,
 						  NULL);
 	if (result)
 		return result;
 	result = doca_flow_pipe_control_add_entry(0,
-						  0,
 						  *color_pipe,
 						  &green_match,
 						  &green_match_mask,
@@ -116,6 +115,7 @@ static doca_error_t create_color_matched_pipe(struct doca_flow_port *port,
 						  NULL,
 						  NULL,
 						  NULL,
+						  0,
 						  fwd_on_green,
 						  NULL,
 						  NULL);
@@ -250,7 +250,7 @@ static doca_error_t add_shared_meter_pipe_entry(struct doca_flow_pipe *pipe,
 	SET_L4_PORT(outer, dst_port, dst_port);
 	SET_L4_PORT(outer, src_port, src_port);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, &monitor, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, &monitor, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 		return result;
@@ -319,7 +319,6 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	fwd.next_pipe = udp_pipe;
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  control_pipe,
 						  &match,
 						  NULL,
@@ -328,6 +327,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 						  NULL,
 						  NULL,
 						  NULL,
+						  priority,
 						  &fwd,
 						  status,
 						  NULL);
@@ -346,7 +346,6 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 	fwd.next_pipe = tcp_pipe;
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  control_pipe,
 						  &match,
 						  NULL,
@@ -355,6 +354,7 @@ static doca_error_t add_control_pipe_entries(struct doca_flow_pipe *control_pipe
 						  NULL,
 						  NULL,
 						  NULL,
+						  priority,
 						  &fwd,
 						  status,
 						  NULL);

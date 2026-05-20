@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -77,7 +77,7 @@ static doca_error_t parse_hex_to_bytes(const char *hex_str, size_t hex_str_size,
 
 	/* Parse every digit (nibble) and translate it to the matching numeric value */
 	for (i = 0; i < hex_str_size; i++) {
-		/* Must be alpha-numeric */
+		/* Must be alphanumeric */
 		if ('0' <= hex_str[i] && hex_str[i] <= '9')
 			digit = hex_str[i] - '0';
 		else if ('a' <= tolower(hex_str[i]) && tolower(hex_str[i]) <= 'f')

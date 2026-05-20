@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -35,7 +35,7 @@
 #include <remote_offload_common/control_message.hpp>
 #include <remote_offload_common/runtime_error.hpp>
 
-DOCA_LOG_REGISTER(orchestrator::comch_datapath);
+DOCA_LOG_REGISTER(ORCHESTRATOR::COMCH_DATAPATH);
 
 namespace {
 void doca_comch_producer_task_send_completion_cb(doca_comch_producer_task_send *task,

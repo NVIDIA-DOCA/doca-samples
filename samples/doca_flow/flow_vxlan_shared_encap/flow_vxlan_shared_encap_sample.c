@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -205,7 +205,7 @@ static doca_error_t add_match_pipe_entry(struct doca_flow_pipe *pipe, struct ent
 	actions.meta.pkt_meta = DOCA_HTOBE32(1);
 	actions.outer.transport.src_port = DOCA_HTOBE16(1235);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -236,7 +236,7 @@ static doca_error_t add_vxlan_shared_encap_pipe_entry(struct doca_flow_pipe *pip
 	actions.encap_type = DOCA_FLOW_RESOURCE_TYPE_SHARED;
 	actions.shared_encap_id = shared_encap_id;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -244,7 +244,7 @@ static doca_error_t add_vxlan_shared_encap_pipe_entry(struct doca_flow_pipe *pip
 }
 
 /*
- * Creat encap action
+ * Create encap action
  *
  * @encap [in]: encap action
  * @id [in]: encap resource id
@@ -278,7 +278,7 @@ static void create_encap_action(struct doca_flow_encap_action *encap, uint32_t i
 }
 
 /*
- * Creat encap action
+ * Create encap action
  *
  * @return: 0 on success and negative value otherwise
  */
@@ -297,7 +297,7 @@ static int create_shared_resource_encap(struct doca_flow_port *port, uint32_t *i
 }
 
 /*
- * Creat flow vxlan with encap
+ * Create flow vxlan with encap
  *
  * @nb_queues [in]: number of queues
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise

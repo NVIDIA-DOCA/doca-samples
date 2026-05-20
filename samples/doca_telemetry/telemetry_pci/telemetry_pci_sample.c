@@ -153,7 +153,7 @@ static void fetch_and_display_management_info(struct doca_devinfo *devinfo,
 
 	result = doca_telemetry_pci_read_management_info(pci, dpn, &data);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to read Managament info. Err: %s", doca_error_get_name(result));
+		DOCA_LOG_ERR("Failed to read Management info. Err: %s", doca_error_get_name(result));
 		return;
 	}
 
@@ -253,7 +253,7 @@ static void fetch_and_display_latency_histogram(struct doca_devinfo *devinfo,
 
 	result = doca_telemetry_pci_get_latency_histogram_dimensions(pci, dpn, &bucket_count, &bucket_width);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to read Latency histogram dimmensions. Err: %s", doca_error_get_name(result));
+		DOCA_LOG_ERR("Failed to read Latency histogram dimensions. Err: %s", doca_error_get_name(result));
 		return;
 	}
 
