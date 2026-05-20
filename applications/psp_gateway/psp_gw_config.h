@@ -176,7 +176,7 @@ struct psp_gw_app_config {
 	uint16_t print_perf_flags;	    /* Print performance information to the console */
 	enum doca_flow_l3_type outer;	    /* Indicate outer tunnel IP type */
 	enum doca_flow_l3_type inner;	    /* Indicate inner tunnel IP type */
-	struct rte_hash *ip6_table;	    /* Hash table with ipv6 addressess */
+	struct rte_hash *ip6_table;	    /* Hash table with ipv6 addresses */
 	enum psp_gw_mode mode;		    /* Indicate PSP mode */
 	std::vector<entries_status> status; /* Status variable for entries process per queue */
 };

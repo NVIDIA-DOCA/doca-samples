@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -202,7 +202,7 @@ struct nvmf_doca_io_create_attr {
 	struct doca_devemu_pci_dev *nvme_dev; /**< The emulated NVMe device */
 	struct doca_dpa *dpa;		      /**< DOCA DPA for accessing DPA resources */
 	uint32_t cq_id;			      /**< The NVMe CQ ID that is associated with this IO */
-	uint16_t cq_depth;		      /**< The size of the completeion queue */
+	uint16_t cq_depth;		      /**< The size of the completion queue */
 	struct doca_mmap *host_cq_mmap;	      /**< mmap granting access to the Host CQ memory */
 	uintptr_t host_cq_address;	      /**< I/O address of the CQ on the Host */
 	bool enable_msix;		      /**< Whether CQ should raise MSI-X towards the Host after posting a CQE */

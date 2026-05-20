@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -24,18 +24,17 @@
  */
 #include <string.h>
 
-#include <rte_ethdev.h>
-
 #include <doca_argp.h>
 #include <doca_log.h>
-#include <doca_dpdk.h>
-
+#ifndef FLOW_NO_DPDK
+#include <rte_ethdev.h>
 #include <dpdk_utils.h>
+#endif
 
 #include "flow_common.h"
 #include "flow_switch_common.h"
 
-DOCA_LOG_REGISTER(flow_switch_common);
+DOCA_LOG_REGISTER(FLOW_SWITCH_COMMON);
 
 /*
  * Get DOCA Flow switch mode
@@ -130,6 +129,10 @@ doca_error_t init_doca_flow_switch_ports(struct flow_devs_manager devs_manager[]
 
 uint8_t get_dpdk_nb_ports(void)
 {
+#ifdef FLOW_NO_DPDK
+	DOCA_LOG_WARN("DPDK is disabled for this build; returning 0 DPDK ports");
+	return 0;
+#else
 	uint8_t nb_ports = 0;
 	uint16_t port_id;
 
@@ -142,4 +145,5 @@ uint8_t get_dpdk_nb_ports(void)
 	}
 
 	return nb_ports;
+#endif
 }

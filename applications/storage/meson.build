@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -22,6 +22,10 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+# Check if we should skip the compilation of the applications
+if flag_disable_applications_compilation
+    subdir_done()
+endif
 
 storage_common_src = [
     'storage_common/binary_content.cpp',
@@ -34,12 +38,15 @@ storage_common_src = [
     'storage_common/ip_address.cpp',
 ]
 
-if host_machine.system() == 'linux'
+storage_include_dirs = app_inc_dirs + include_directories('.')
+storage_dependencies = app_dependencies
+
+if is_linux
     storage_common_src += [
         'storage_common/posix/os_utils.cpp',
         'storage_common/posix/tcp_socket.cpp',
     ]
-elif host_machine.system() == 'windows'
+elif is_windows
     message('Storage application does not currently support windows')
     subdir_done()
 else
@@ -49,9 +56,9 @@ endif
 
 lz4_dev_dep = dependency('liblz4', required : false)
 if lz4_dev_dep.found()
-    base_c_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=1']
-    base_cpp_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=1']
-    app_dependencies += [lz4_dev_dep]
+    apps_common_c_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=1']
+    apps_common_cpp_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=1']
+    storage_dependencies += [lz4_dev_dep]
     storage_common_src += [
         'storage_common/lz4_sw_context.cpp',
     ]
@@ -61,69 +68,58 @@ if lz4_dev_dep.found()
                    'gga_offload_sbc_generator.cpp',
                ] + storage_common_src,
                override_options : ['cpp_std=c++17'],
-               c_args : base_c_args,
-               cpp_args : base_cpp_args,
-               dependencies : app_dependencies,
-               include_directories : app_inc_dirs + include_directories('.'),
-               install : install_apps,
+               c_args : apps_common_cpp_args,
+               cpp_args : apps_common_cpp_args,
+               dependencies : storage_dependencies,
+               include_directories : storage_include_dirs,
+
     )
 else
     message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_gga_offload_sbc_generator' + ' - Missing library liblz4')
-    base_c_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=0']
-    base_cpp_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=0']
+    apps_common_c_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=0']
+    apps_common_cpp_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=0']
 endif
 
-if is_host
-    executable(DOCA_PREFIX + APP_NAME + '_initiator_comch',
-               [
-                   'initiator_comch.cpp',
-               ] + storage_common_src,
-               override_options : ['cpp_std=c++17'],
-               c_args : base_c_args,
-               cpp_args : base_cpp_args,
-               dependencies : app_dependencies,
-               include_directories : app_inc_dirs + include_directories('.'),
-               install : install_apps,
-    )
+executable(DOCA_PREFIX + APP_NAME + '_initiator_comch',
+           [
+               'initiator_comch.cpp',
+           ] + storage_common_src,
+           override_options : ['cpp_std=c++17'],
+           c_args : apps_common_c_args,
+           cpp_args : apps_common_cpp_args,
+           dependencies : storage_dependencies,
+           include_directories : storage_include_dirs,
+)
 
-endif
+executable(DOCA_PREFIX + APP_NAME + '_comch_to_rdma_zero_copy',
+           [
+               'comch_to_rdma_zero_copy.cpp',
+           ] + storage_common_src,
+           override_options : ['cpp_std=c++17'],
+           c_args : apps_common_c_args,
+           cpp_args : apps_common_cpp_args,
+           dependencies : storage_dependencies,
+           include_directories : storage_include_dirs,
+)
 
-if is_dpu
-    executable(DOCA_PREFIX + APP_NAME + '_comch_to_rdma_zero_copy',
-               [
-                   'comch_to_rdma_zero_copy.cpp',
-               ] + storage_common_src,
-               override_options : ['cpp_std=c++17'],
-               c_args : base_c_args,
-               cpp_args : base_cpp_args,
-               dependencies : app_dependencies,
-               include_directories : app_inc_dirs + include_directories('.'),
-               install : install_apps,
-    )
-
-    executable(DOCA_PREFIX + APP_NAME + '_comch_to_rdma_gga_offload',
-               [
-                   'comch_to_rdma_gga_offload.cpp',
-               ] + storage_common_src,
-               override_options : ['cpp_std=c++17'],
-               c_args : base_c_args,
-               cpp_args : base_cpp_args,
-               dependencies : app_dependencies,
-               include_directories : app_inc_dirs + include_directories('.'),
-               install : install_apps,
-    )
-endif
+executable(DOCA_PREFIX + APP_NAME + '_comch_to_rdma_gga_offload',
+           [
+               'comch_to_rdma_gga_offload.cpp',
+           ] + storage_common_src,
+           override_options : ['cpp_std=c++17'],
+           c_args : apps_common_c_args,
+           cpp_args : apps_common_cpp_args,
+           dependencies : storage_dependencies,
+           include_directories : storage_include_dirs,
+)
 
 executable(DOCA_PREFIX + APP_NAME + '_target_rdma',
            [
                'target_rdma.cpp',
            ] + storage_common_src,
            override_options : ['cpp_std=c++17'],
-           c_args : base_c_args,
-           cpp_args : base_cpp_args,
-           dependencies : app_dependencies,
-           include_directories : app_inc_dirs + include_directories('.'),
-           install : install_apps,
+           c_args : apps_common_c_args,
+           cpp_args : apps_common_cpp_args,
+           dependencies : storage_dependencies,
+           include_directories : storage_include_dirs,
 )
-
-

@@ -33,6 +33,10 @@
 #include "flow_common.h"
 #include "flow_switch_common.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define DUP_FILTER_CONN_NUM 512
 #define CT_DEFAULT_QUEUE_DEPTH 512
 
@@ -88,7 +92,7 @@ doca_error_t init_doca_flow_ct(uint32_t flags,
 doca_error_t flow_ct_capable(struct doca_devinfo *dev_info);
 
 /*
- * Calculates a 6 tuple hash for the givin match
+ * Calculates a 6 tuple hash for the given match
  *
  * @match [in]: Doca flow ct match struct that contains the 6 tuple data
  * @zone_field [in]: zone mask (field) in metadata
@@ -189,5 +193,9 @@ doca_error_t flow_ct_queue_reserve(struct doca_flow_port *port,
 				   uint16_t ct_queue,
 				   struct entries_status *status,
 				   uint32_t room);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 #endif /* FLOW_CT_COMMON_H_ */

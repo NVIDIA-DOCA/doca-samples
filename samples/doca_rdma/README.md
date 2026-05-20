@@ -378,4 +378,3 @@ The sample logic is as presented in the General Sample Steps, with attention to 
 - ` rdma_multi_conn_receive/rdma_multi_conn_receive_sample.c`
 - ` rdma_multi_conn_receive/rdma_multi_conn_receive_main.c`
 - ` rdma_multi_conn_receive/meson.build`
-

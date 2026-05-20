@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -67,7 +67,7 @@
 #include <storage_common/os_utils.hpp>
 #include <storage_common/doca_utils.hpp>
 
-DOCA_LOG_REGISTER(gga_offload);
+DOCA_LOG_REGISTER(GGA_OFFLOAD);
 
 using namespace std::string_literals;
 
@@ -401,7 +401,7 @@ struct worker_prepare_tasks_control_command : public worker_control_command {
  * Host and each of the 3 storage servers have a full block size * block count amount of storage.
  *
  * A host read will be split into two parts were each part comes from two of the 3 storage servers. In the case of a
- * "normal" read, the top half of the host request is filled by data_1 and the bottom half by data_2. These two halfs
+ * "normal" read, the top half of the host request is filled by data_1 and the bottom half by data_2. These two halves
  * are then treated as one region surrounded by a header and trailer to know how much compressed data is in the middle
  * part. That middle part is then decompressed as a single buffer and the output 2 * block_size is returned to the host.
  *
@@ -413,7 +413,7 @@ class gga_offload_app_worker {
 public:
 	struct alignas(storage::cache_line_size) transaction_context {
 		char *initiator_io_message = nullptr; /* Non owning pointer to io message received from the initiator,
-							 re-used when replying to the initiator. Memory owned by the
+							 reused when replying to the initiator. Memory owned by the
 							 worker m_io_message_region */
 		per_storage_connection<char *> storage_io_messages = {}; /* Non owning pointer to io messages to be sent
 								    to storage targets. Memory owned by the worker
@@ -422,13 +422,13 @@ public:
 										    transaction, resubmitted once the
 										    response to the initiator is
 										    completed */
-		doca_comch_producer_task_send *host_response_task = nullptr; /* Response to the initiator, can re-use
-										the same IO message received by the
-										consumer task as the consumer task is
-										not re-submitted until after this task
-										completes */
-		per_storage_connection<doca_rdma_task_send *> requests = {}; /* Storage request tasks */
-		doca_ec_task_recover *ec_recover_task = nullptr;	     /* Task used to perform EC data recovery */
+		doca_comch_producer_task_send *host_response_task = nullptr;	 /* Response to the initiator, can reuse
+										    the same IO message received by the
+										    consumer task as the consumer task is
+										    not re-submitted until after this task
+										    completes */
+		per_storage_connection<doca_rdma_task_send *> requests = {};	 /* Storage request tasks */
+		doca_ec_task_recover *ec_recover_task = nullptr; /* Task used to perform EC data recovery */
 		doca_compress_task_decompress_lz4_stream *decompress_task = nullptr; /* task used to perform data
 											decompression */
 #if WRITE_FLOW_ENABLED

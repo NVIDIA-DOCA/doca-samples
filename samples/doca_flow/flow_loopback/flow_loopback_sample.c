@@ -190,7 +190,7 @@ static doca_error_t add_rss_tcp_ip_pipe_entry(struct doca_flow_pipe *pipe, struc
 	match.outer.tcp.l4_port.dst_port = dst_port;
 	match.outer.tcp.l4_port.src_port = src_port;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -295,7 +295,7 @@ static doca_error_t add_rss_rss_udp_ip_pipe_entry(struct doca_flow_pipe *pipe, s
 	/* set meta value */
 	actions.meta.pkt_meta = DOCA_HTOBE32(10);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -453,7 +453,7 @@ static doca_error_t add_loopback_pipe_entry(struct doca_flow_pipe *pipe,
 	actions.encap_cfg.encap.tun.type = DOCA_FLOW_TUN_VXLAN;
 	actions.encap_cfg.encap.tun.vxlan_tun_id = encap_vxlan_tun_id;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 

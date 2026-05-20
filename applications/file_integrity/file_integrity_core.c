@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -45,7 +45,7 @@
 #define SHA_ALGORITHM (DOCA_SHA_ALGORITHM_SHA256) /* doca_sha_algorithm for the sample */
 #define LOG_NUM_SHA_TASKS (0)			  /* Log of SHA tasks number */
 
-DOCA_LOG_REGISTER(FILE_INTEGRITY::Core);
+DOCA_LOG_REGISTER(FILE_INTEGRITY::CORE);
 
 /*
  * Free callback - free doca_buf allocated pointer

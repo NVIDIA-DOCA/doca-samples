@@ -58,8 +58,8 @@ static void generate_synthetic_metrics(int32_t iteration,
 				       double *bandwidth_mbps)
 {
 	/* Generate synthetic data that varies with iteration and interface */
-	*packets_sent = (1000 + iteration * 100) * (interface_idx + 1);
-	*packets_received = (900 + iteration * 95) * (interface_idx + 1);
+	*packets_sent = (uint64_t)(1000 + iteration * 100) * (uint64_t)(interface_idx + 1);
+	*packets_received = (uint64_t)(900 + iteration * 95) * (uint64_t)(interface_idx + 1);
 	*bandwidth_mbps = (50.0 + iteration * 5.5) * (interface_idx + 1);
 }
 
@@ -75,19 +75,20 @@ static void generate_synthetic_metrics(int32_t iteration,
  *
  * Exporter Configuration:
  * - File exporter: Enabled by default (file_write_enable = true)
- * - IPC exporter: Disabled by default (ipc_enabled = false)
- * - Prometheus exporter: Disabled by default (prometheus_enabled = false)
- *   Set prometheus_enabled = true to enable
- *   Metrics exposed at: http://localhost:9090/metrics (or configured endpoint)
+ * - IPC exporter: Controlled by ENABLE_IPC environment variable (set to "1" to enable)
+ * - Prometheus exporter: Controlled by ENABLE_PROMETHEUS environment variable (set to "1" to enable)
+ *   When enabled, metrics exposed at: http://localhost:9090/metrics (or configured endpoint)
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t telemetry_export_metrics(void)
 {
-	bool file_write_enable = true;	 /* Enables writing to local machine as file */
-	bool ipc_enabled = false;	 /* Enables sending to DTS through ipc sockets */
-	bool prometheus_enabled = false; /* Enables Prometheus exporter - set endpoint below if enabled */
+	bool file_write_enable = true; /* Enables writing to local machine as file */
+	bool ipc_enabled;	       /* Enables sending to DTS through ipc sockets */
+	bool prometheus_enabled;       /* Enables Prometheus exporter - set endpoint below if enabled */
 	const char *prometheus_endpoint = "localhost:9090"; /* Prometheus endpoint (host:port or URL) */
+	const char *env_ipc;
+	const char *env_prometheus;
 	doca_error_t result;
 	int32_t iteration = 0;
 	int interface_idx = 0;
@@ -102,6 +103,13 @@ doca_error_t telemetry_export_metrics(void)
 	/* Label names for dynamic metrics */
 	const char *label_names[] = {"interface"};
 	const char *label_values[NB_INTERFACES][1] = {{interface_names[0]}, {interface_names[1]}};
+
+	/* Configure exporters via environment variables */
+	env_ipc = getenv("ENABLE_IPC");
+	ipc_enabled = (env_ipc != NULL && strcmp(env_ipc, "1") == 0);
+
+	env_prometheus = getenv("ENABLE_PROMETHEUS");
+	prometheus_enabled = (env_prometheus != NULL && strcmp(env_prometheus, "1") == 0);
 
 	DOCA_LOG_INFO("Starting DOCA Telemetry Exporter Metrics sample");
 

@@ -136,7 +136,7 @@ void mlxfwctl_device_close(struct mlxfwctl_device *fcdev);
  * @out: Pointer to the output buffer of the RPC
  * @out_len: The length of @out
  *
- * Issues an RPC on the fwctl deivce @fcdev using @in as input buffer and @out
+ * Issues an RPC on the fwctl device @fcdev using @in as input buffer and @out
  * as output buffer.
  *
  * Returns 0 on success and an errno error code on failure.

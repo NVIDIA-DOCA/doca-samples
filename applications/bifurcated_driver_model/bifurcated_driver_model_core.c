@@ -37,7 +37,7 @@
 
 #include "bifurcated_driver_model_core.h"
 
-DOCA_LOG_REGISTER(BIFURCATED_DRIVER_MODEL::Core);
+DOCA_LOG_REGISTER(BIFURCATED_DRIVER_MODEL::CORE);
 
 /* Constants */
 #define INGRESS_ENTRIES 9
@@ -66,8 +66,15 @@ static struct doca_flow_pipe_entry *egress_entries[EGRESS_ENTRIES];
  */
 static void handle_rx_tx_pkts(void)
 {
+	int rc;
 	uint32_t secs = PROCESSING_TIMEOUT_SECS, nb_rx, i;
 	struct rte_mbuf *mbufs[MAX_PKTS];
+
+	rc = rte_flow_dynf_metadata_register();
+	if (unlikely(rc)) {
+		DOCA_LOG_ERR("Enable metadata failed");
+		return;
+	}
 
 	while (secs--) {
 		sleep(1);
@@ -226,16 +233,16 @@ static doca_error_t add_ingress_classifier_entries(struct doca_flow_pipe *pipe,
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = egress_pipe;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  &monitor,
-					  &fwd,
-					  0,
-					  status,
-					  &ingress_entries[entry_idx++]);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						&monitor,
+						&fwd,
+						0,
+						status,
+						&ingress_entries[entry_idx++]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ingress classifier entry for PORT_P0 TCP: %s",
 			     doca_error_get_descr(result));
@@ -245,16 +252,16 @@ static doca_error_t add_ingress_classifier_entries(struct doca_flow_pipe *pipe,
 	/* Entry 1: PORT_P0 + UDP -> forward to egress pipe */
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  &monitor,
-					  &fwd,
-					  0,
-					  status,
-					  &ingress_entries[entry_idx++]);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						&monitor,
+						&fwd,
+						0,
+						status,
+						&ingress_entries[entry_idx++]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ingress classifier entry for PORT_P0 UDP: %s",
 			     doca_error_get_descr(result));
@@ -267,16 +274,16 @@ static doca_error_t add_ingress_classifier_entries(struct doca_flow_pipe *pipe,
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_TCP;
 	actions.meta.pkt_meta = DOCA_HTOBE32(PORT_P0);
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  &monitor,
-					  &fwd,
-					  0,
-					  status,
-					  &ingress_entries[entry_idx++]);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						&monitor,
+						&fwd,
+						0,
+						status,
+						&ingress_entries[entry_idx++]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ingress classifier entry for PORT_P1 TCP: %s",
 			     doca_error_get_descr(result));
@@ -286,16 +293,16 @@ static doca_error_t add_ingress_classifier_entries(struct doca_flow_pipe *pipe,
 	/* Entry 3: PORT_P1 + UDP -> forward to egress pipe */
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  &monitor,
-					  &fwd,
-					  0,
-					  status,
-					  &ingress_entries[entry_idx++]);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						&monitor,
+						&fwd,
+						0,
+						status,
+						&ingress_entries[entry_idx++]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ingress classifier entry for PORT_P1 UDP: %s",
 			     doca_error_get_descr(result));
@@ -315,16 +322,16 @@ static doca_error_t add_ingress_classifier_entries(struct doca_flow_pipe *pipe,
 	fwd.rss.queues_array = rss_queues;
 	fwd.rss.nr_queues = 1;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  &monitor,
-					  &fwd,
-					  0,
-					  status,
-					  &ingress_entries[entry_idx++]);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						&monitor,
+						&fwd,
+						0,
+						status,
+						&ingress_entries[entry_idx++]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ingress classifier entry for PORT_LINUX NONE: %s",
 			     doca_error_get_descr(result));
@@ -335,16 +342,16 @@ static doca_error_t add_ingress_classifier_entries(struct doca_flow_pipe *pipe,
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_TCP;
 	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV4 | DOCA_FLOW_RSS_TCP;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  &monitor,
-					  &fwd,
-					  0,
-					  status,
-					  &ingress_entries[entry_idx++]);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						&monitor,
+						&fwd,
+						0,
+						status,
+						&ingress_entries[entry_idx++]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ingress classifier entry for PORT_LINUX TCP: %s",
 			     doca_error_get_descr(result));
@@ -355,16 +362,16 @@ static doca_error_t add_ingress_classifier_entries(struct doca_flow_pipe *pipe,
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
 	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV4 | DOCA_FLOW_RSS_UDP;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  &monitor,
-					  &fwd,
-					  0,
-					  status,
-					  &ingress_entries[entry_idx++]);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						&monitor,
+						&fwd,
+						0,
+						status,
+						&ingress_entries[entry_idx++]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ingress classifier entry for PORT_LINUX UDP: %s",
 			     doca_error_get_descr(result));
@@ -374,16 +381,16 @@ static doca_error_t add_ingress_classifier_entries(struct doca_flow_pipe *pipe,
 	/* Entry 7: PORT_LINUX + ICMP -> forward to RSS */
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_ICMP;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  &monitor,
-					  &fwd,
-					  0,
-					  status,
-					  &ingress_entries[entry_idx++]);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						&monitor,
+						&fwd,
+						0,
+						status,
+						&ingress_entries[entry_idx++]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ingress classifier entry for PORT_LINUX ICMP: %s",
 			     doca_error_get_descr(result));
@@ -394,16 +401,16 @@ static doca_error_t add_ingress_classifier_entries(struct doca_flow_pipe *pipe,
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_ESP;
 	fwd.rss.outer_flags = DOCA_FLOW_RSS_ESP;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  &actions,
-					  &monitor,
-					  &fwd,
-					  0,
-					  status,
-					  &ingress_entries[entry_idx++]);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						&actions,
+						&monitor,
+						&fwd,
+						0,
+						status,
+						&ingress_entries[entry_idx++]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ingress classifier entry for PORT_LINUX ESP: %s",
 			     doca_error_get_descr(result));
@@ -509,7 +516,8 @@ static doca_error_t add_egress_pipe_entries(struct doca_flow_pipe *pipe, struct 
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = PORT_P0;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, &monitor, &fwd, 0, status, &egress_entries[0]);
+	result =
+		doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, &monitor, &fwd, 0, status, &egress_entries[0]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add egress pipe entry for PORT_P0: %s", doca_error_get_descr(result));
 		return result;
@@ -519,7 +527,8 @@ static doca_error_t add_egress_pipe_entries(struct doca_flow_pipe *pipe, struct 
 	match.meta.pkt_meta = DOCA_HTOBE32(PORT_LINUX);
 	fwd.port_id = PORT_LINUX;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, &monitor, &fwd, 0, status, &egress_entries[1]);
+	result =
+		doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, &monitor, &fwd, 0, status, &egress_entries[1]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add egress pipe entry for PORT_LINUX: %s", doca_error_get_descr(result));
 		return result;
@@ -529,7 +538,8 @@ static doca_error_t add_egress_pipe_entries(struct doca_flow_pipe *pipe, struct 
 	match.meta.pkt_meta = DOCA_HTOBE32(PORT_P1);
 	fwd.port_id = PORT_P1;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, &monitor, &fwd, 0, status, &egress_entries[2]);
+	result =
+		doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, &monitor, &fwd, 0, status, &egress_entries[2]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add egress pipe entry for PORT_P1: %s", doca_error_get_descr(result));
 		return result;

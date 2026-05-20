@@ -28,6 +28,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <rte_bitops.h>
+
 #include <doca_flow.h>
 #include <doca_log.h>
 

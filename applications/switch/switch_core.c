@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -33,7 +33,7 @@
 #include "switch_core.h"
 #include "flow_common.h"
 
-DOCA_LOG_REGISTER(SWITCH::Core);
+DOCA_LOG_REGISTER(SWITCH::CORE);
 
 #define MAX_PORT_STR_LEN 128	   /* Maximal length of port name */
 #define DEFAULT_TIMEOUT_US (10000) /* Timeout for processing pipe entries */
@@ -110,7 +110,7 @@ static void pipe_create(struct doca_flow_pipe_cfg *cfg,
  * @monitor [in]: DOCA Flow monitor
  * @fwd [in]: DOCA Flow forward
  * @fw_pipe_id [in]: Pipe ID to forward
- * @flags [in]: Hardware steering flag, current implementation supports DOCA_FLOW_NO_WAIT only
+ * @flags [in]: Hardware steering flag, current implementation supports DOCA_FLOW_ENTRY_FLAGS_NO_WAIT only
  */
 static void pipe_add_entry(uint16_t pipe_queue,
 			   uint64_t pipe_id,
@@ -148,12 +148,21 @@ static void pipe_add_entry(uint16_t pipe_queue,
 		return;
 	}
 
-	if (hws_flag != DOCA_FLOW_NO_WAIT) {
+	if (!DOCA_FLOW_FLAGS_IS_SET(hws_flag, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT)) {
 		DOCA_LOG_DBG("Batch insertion of pipe entries is not supported");
-		hws_flag = DOCA_FLOW_NO_WAIT;
+		hws_flag = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 	}
 
-	result = doca_flow_pipe_add_entry(0, pipe, match, action_idx, actions, monitor, fwd, hws_flag, &status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						match,
+						action_idx,
+						actions,
+						monitor,
+						fwd,
+						hws_flag,
+						&status,
+						&entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Entry creation failed: %s", doca_error_get_descr(result));
 		return;
@@ -172,7 +181,7 @@ static void pipe_add_entry(uint16_t pipe_queue,
 
 	if (pipes_manager_pipe_add_entry(pipes_manager, entry, pipe_id, &entry_id) != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Flow Pipes Manager failed to add entry");
-		doca_flow_pipe_remove_entry(0, DOCA_FLOW_NO_WAIT, entry);
+		doca_flow_pipe_remove_entry(0, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT, entry);
 		return;
 	}
 
@@ -222,7 +231,6 @@ static void pipe_control_add_entry(uint16_t pipe_queue,
 	}
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  priority,
 						  pipe,
 						  match,
 						  match_mask,
@@ -231,6 +239,7 @@ static void pipe_control_add_entry(uint16_t pipe_queue,
 						  NULL,
 						  NULL,
 						  NULL,
+						  priority,
 						  fwd,
 						  NULL,
 						  &entry);
@@ -241,7 +250,7 @@ static void pipe_control_add_entry(uint16_t pipe_queue,
 
 	if (pipes_manager_pipe_add_entry(pipes_manager, entry, pipe_id, &entry_id) != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Flow Pipes Manager failed to add control pipe entry");
-		doca_flow_pipe_remove_entry(0, DOCA_FLOW_NO_WAIT, entry);
+		doca_flow_pipe_remove_entry(0, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT, entry);
 		return;
 	}
 
@@ -273,7 +282,7 @@ static void pipe_destroy(uint64_t pipe_id)
  *
  * @pipe_queue [in]: Queue identifier
  * @entry_id [in]: Entry ID to remove
- * @flags [in]: Hardware steering flag, current implementation supports DOCA_FLOW_NO_WAIT only
+ * @flags [in]: Hardware steering flag, current implementation supports DOCA_FLOW_ENTRY_FLAGS_NO_WAIT only
  */
 static void pipe_rm_entry(uint16_t pipe_queue, uint64_t entry_id, uint32_t flags)
 {
@@ -290,9 +299,9 @@ static void pipe_rm_entry(uint16_t pipe_queue, uint64_t entry_id, uint32_t flags
 		return;
 	}
 
-	if (hws_flag != DOCA_FLOW_NO_WAIT) {
+	if (!DOCA_FLOW_FLAGS_IS_SET(hws_flag, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT)) {
 		DOCA_LOG_DBG("Batch insertion of pipe entries is not supported");
-		hws_flag = DOCA_FLOW_NO_WAIT;
+		hws_flag = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 	}
 
 	if (pipes_manager_pipe_rm_entry(pipes_manager, entry_id) == DOCA_SUCCESS) {
@@ -379,9 +388,9 @@ doca_error_t switch_init(struct application_dpdk_config *app_dpdk_config, struct
 	nb_ports = app_dpdk_config->port_config.nb_ports;
 
 	if (ctx->is_expert)
-		start_str = "switch,isolated,hws,expert";
+		start_str = "switch,hws,expert";
 	else
-		start_str = "switch,isolated,hws";
+		start_str = "switch,hws";
 
 	result = init_doca_flow(app_dpdk_config->port_config.nb_queues, start_str, &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {

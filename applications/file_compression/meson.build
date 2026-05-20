@@ -22,26 +22,26 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-app_dependencies += dependency('zlib')
-
-app_srcs += [
-	'file_compression_core.c',
+app_srcs = files([
+	APP_NAME + '.c',
+        APP_NAME + '_core.c',
 	common_dir_path + '/comch_utils.c',
 	common_dir_path + '/pack.c',
 	common_dir_path + '/utils.c',
 	samples_dir_path + '/common.c',
-	samples_dir_path + '/doca_compress/compress_common.c',
-]
+	samples_dir_path  + '/doca_compress/compress_common.c',
+])
 
-vanilla_app_srcs = [
-	APP_NAME + '.c',
-]
+app_inc_dirs += include_directories(samples_dir_path  + '/doca_compress')
 
-compress_sample_inc_dir = include_directories(samples_dir_path + '/doca_compress/')
+# Check if we should skip the compilation of the applications
+if flag_disable_applications_compilation
+	subdir_done()
+endif
 
-executable(DOCA_PREFIX + APP_NAME,
-	app_srcs + vanilla_app_srcs,
-	c_args : base_c_args,
-	dependencies : app_dependencies,
-	include_directories : app_inc_dirs + compress_sample_inc_dir,
-	install: install_apps)
+app_dependencies += dependency('zlib')
+
+executable(DOCA_PREFIX + APP_NAME, app_srcs,
+	c_args : apps_common_c_args,
+        dependencies : app_dependencies,
+        include_directories: app_inc_dirs)

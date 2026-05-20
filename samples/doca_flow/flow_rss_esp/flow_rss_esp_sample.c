@@ -165,7 +165,7 @@ static doca_error_t add_rss_esp_pipe_entry(struct doca_flow_pipe *pipe,
 	memset(&match, 0, sizeof(match));
 	memset(status, 0, sizeof(*status));
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to insert ESP RSS entry: %s", doca_error_get_descr(result));
 		return result;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -38,7 +38,7 @@
 
 struct doca_flow_port *df_port;
 
-DOCA_LOG_REGISTER(GPU_SEND_WAIT_TIME : SAMPLE);
+DOCA_LOG_REGISTER(GPU_SEND_WAIT_TIME::SAMPLE);
 
 /*
  * Retrieve host page size
@@ -104,7 +104,7 @@ static doca_error_t init_doca_flow(void)
 		return result;
 	}
 
-	result = doca_flow_cfg_set_mode_args(queue_flow_cfg, "vnf,isolated");
+	result = doca_flow_cfg_set_mode_args(queue_flow_cfg, "vnf");
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg mode_args: %s", doca_error_get_descr(result));
 		doca_flow_cfg_destroy(queue_flow_cfg);
@@ -439,7 +439,7 @@ static doca_error_t create_txq(struct txq_queue *txq,
 	/* Map GPU memory buffer used to send packets with DMABuf */
 	result = doca_gpu_dmabuf_fd(txq->gpu_dev, txq->pkt_buff_addr, buffer_size, &(txq->dmabuf_fd));
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_INFO("Mapping send queue buffer (0x%p size %dB) with nvidia-peermem mode",
+		DOCA_LOG_INFO("Mapping send queue buffer (%p size %dB) with nvidia-peermem mode",
 			      txq->pkt_buff_addr,
 			      buffer_size);
 
@@ -450,7 +450,7 @@ static doca_error_t create_txq(struct txq_queue *txq,
 			goto exit_error;
 		}
 	} else {
-		DOCA_LOG_INFO("Mapping send queue buffer (0x%p size %dB dmabuf fd %d) with dmabuf mode",
+		DOCA_LOG_INFO("Mapping send queue buffer (%p size %dB dmabuf fd %d) with dmabuf mode",
 			      txq->pkt_buff_addr,
 			      buffer_size,
 			      txq->dmabuf_fd);
@@ -588,7 +588,7 @@ exit:
 
 	result = destroy_txq(&txq);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Function destoy_txq returned %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Function destroy_txq returned %s", doca_error_get_descr(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 

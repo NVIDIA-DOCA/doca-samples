@@ -192,11 +192,11 @@ enum upf_accel_rule_type {
 
 enum upf_accel_entry_state {
 	UPF_ACCEL_ENTRY_STATE_NONE,		      /* Entry isn't active (not established yet or deleted) */
-	UPF_ACCEL_ENTRY_STATE_PENDING,		      /* Entry is in the proccess of being created */
+	UPF_ACCEL_ENTRY_STATE_PENDING,		      /* Entry is in the process of being created */
 	UPF_ACCEL_ENTRY_STATE_UNACCELERATED,	      /* Entry not accelerated yet */
-	UPF_ACCEL_ENTRY_STATE_PENDING_ACCELERATION,   /* Entry is in the proccess of HW acceleration */
+	UPF_ACCEL_ENTRY_STATE_PENDING_ACCELERATION,   /* Entry is in the process of HW acceleration */
 	UPF_ACCEL_ENTRY_STATE_ACCELERATED,	      /* Entry is accelerated (by HW) */
-	UPF_ACCEL_ENTRY_STATE_PENDING_DEACCELERATION, /* Flow is in the proccess of removal from acceleration */
+	UPF_ACCEL_ENTRY_STATE_PENDING_DEACCELERATION, /* Flow is in the process of removal from acceleration */
 };
 
 struct app_shared_counter_ids {

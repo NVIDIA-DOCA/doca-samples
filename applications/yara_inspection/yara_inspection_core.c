@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -34,7 +34,7 @@
 
 #include "yara_inspection_core.h"
 
-DOCA_LOG_REGISTER(YARA_APP::Core);
+DOCA_LOG_REGISTER(YARA_APP::CORE);
 
 /* This value is guaranteed to be 253 on Linux, and 16 bytes on Windows */
 #define MAX_HOSTNAME_LEN 253

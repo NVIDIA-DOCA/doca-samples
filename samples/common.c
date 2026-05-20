@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -576,48 +576,13 @@ char *hex_dump(const void *data, size_t size)
 	return buffer;
 }
 
-uint64_t align_up_uint64(uint64_t value, uint64_t alignment)
-{
-	uint64_t remainder = (value % alignment);
-
-	if (remainder == 0)
-		return value;
-
-	return value + (alignment - remainder);
-}
-
-uint64_t align_down_uint64(uint64_t value, uint64_t alignment)
-{
-	return value - (value % alignment);
-}
-
-uint32_t align_up_uint32(uint32_t value, uint32_t alignment)
-{
-	uint64_t remainder = (value % alignment);
-	if (remainder == 0)
-		return value;
-	return (uint32_t)(value + (alignment - remainder));
-}
-
-uint64_t next_power_of_two(uint64_t x)
-{
-	x--;
-	x |= x >> 1;
-	x |= x >> 2;
-	x |= x >> 4;
-	x |= x >> 8;
-	x |= x >> 16;
-	x |= x >> 32;
-	return x + 1;
-}
-
-doca_error_t allocat_doca_buf_list(struct doca_buf_inventory *buf_inv,
-				   struct doca_mmap *mmap,
-				   void *buf_addr,
-				   size_t buf_len,
-				   int num_buf,
-				   bool set_data_pos,
-				   struct doca_buf **dbuf)
+doca_error_t allocate_doca_buf_list(struct doca_buf_inventory *buf_inv,
+				    struct doca_mmap *mmap,
+				    void *buf_addr,
+				    size_t buf_len,
+				    int num_buf,
+				    bool set_data_pos,
+				    struct doca_buf **dbuf)
 {
 	int i = 0;
 	size_t other_seg_len = buf_len / num_buf;

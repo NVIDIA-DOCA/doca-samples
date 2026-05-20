@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,7 +29,7 @@
 #include "nfs_fsdev_gpm.hpp"
 #include <doca_log.h>
 
-DOCA_LOG_REGISTER(NFS_FSDEV_PIPE)
+DOCA_LOG_REGISTER(NFS_FSDEV_PIPE);
 
 struct database {
 public:

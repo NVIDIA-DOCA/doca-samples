@@ -108,7 +108,16 @@ static doca_error_t add_main_pipe_entry(struct doca_flow_pipe *pipe,
 
 	memset(&match, 0, sizeof(match));
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, status, entry);
+	return doca_flow_pipe_basic_add_entry(0,
+					      pipe,
+					      &match,
+					      0,
+					      NULL,
+					      NULL,
+					      NULL,
+					      DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+					      status,
+					      entry);
 }
 
 /*
@@ -150,6 +159,11 @@ static doca_error_t create_lpm_pipe(struct doca_flow_port *port, int port_id, st
 	result = set_flow_pipe_cfg(pipe_cfg, "LPM_PIPE", DOCA_FLOW_PIPE_LPM, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, FLOW_COMMON_PIPE_RULES);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg number of entries: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, NULL);
@@ -214,7 +228,7 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 					      NULL,
 					      NULL,
 					      &fwd,
-					      DOCA_FLOW_WAIT_FOR_BATCH,
+					      DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
 					      status,
 					      &entries[0]);
 	if (result != DOCA_SUCCESS) {
@@ -235,7 +249,7 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 					      NULL,
 					      NULL,
 					      &fwd,
-					      DOCA_FLOW_NO_WAIT,
+					      DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
 					      status,
 					      &entries[1]);
 	if (result != DOCA_SUCCESS) {
@@ -256,7 +270,7 @@ static doca_error_t add_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 					      NULL,
 					      NULL,
 					      &fwd,
-					      DOCA_FLOW_NO_WAIT,
+					      DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
 					      status,
 					      &entries[2]);
 	if (result != DOCA_SUCCESS) {

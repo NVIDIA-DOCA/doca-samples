@@ -264,28 +264,28 @@ static doca_error_t add_match_pipe_entries(struct doca_flow_pipe *pipe, struct e
 
 	actions.meta.pkt_meta = DOCA_HTOBE32(1);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
 	match.outer.tcp.l4_port.src_port = DOCA_HTOBE16(2345);
 	actions.meta.pkt_meta = DOCA_HTOBE32(2);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
 	match.outer.tcp.l4_port.src_port = DOCA_HTOBE16(3456);
 	actions.meta.pkt_meta = DOCA_HTOBE32(3);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
 	match.outer.tcp.l4_port.src_port = DOCA_HTOBE16(4567);
 	actions.meta.pkt_meta = DOCA_HTOBE32(4);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -340,7 +340,7 @@ static doca_error_t add_geneve_encap_pipe_entries(struct doca_flow_pipe *pipe, s
 	actions.encap_cfg.encap.tun.geneve.next_proto = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
 	match.meta.pkt_meta = DOCA_HTOBE32(1);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -361,7 +361,7 @@ static doca_error_t add_geneve_encap_pipe_entries(struct doca_flow_pipe *pipe, s
 	actions.encap_cfg.encap.tun.geneve_options[4].data = DOCA_HTOBE32(0xabbadeba);
 	match.meta.pkt_meta = DOCA_HTOBE32(2);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -371,7 +371,7 @@ static doca_error_t add_geneve_encap_pipe_entries(struct doca_flow_pipe *pipe, s
 	actions.encap_cfg.encap.tun.geneve.ver_opt_len = 0;
 	match.meta.pkt_meta = DOCA_HTOBE32(3);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 2, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 2, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -390,7 +390,7 @@ static doca_error_t add_geneve_encap_pipe_entries(struct doca_flow_pipe *pipe, s
 	actions.encap_cfg.encap.tun.geneve_options[4].data = DOCA_HTOBE32(0xddeeff00);
 	match.meta.pkt_meta = DOCA_HTOBE32(4);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 3, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 3, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 

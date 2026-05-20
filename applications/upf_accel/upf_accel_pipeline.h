@@ -61,7 +61,7 @@
  * @actions [in]: Pointer to modify actions, indicate specific modify information.
  * @mon [in]: Pointer to monitor actions.
  * @fwd [in]: Pointer to fwd actions.
- * @flags [in]: Flow entry will be pushed to hw immediately or not. enum doca_flow_flags_type.
+ * @flags [in]: Flow entry will be pushed to hw immediately or not. uint32_t.
  * @usr_ctx [in]: Pointer to user context.
  * @entry [out]: Pipe entry handler on success.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise

@@ -179,7 +179,7 @@ destroy_pipe_cfg:
 static doca_error_t add_hash_pipe_entries(struct doca_flow_pipe *pipe, struct entries_status *status)
 {
 	struct doca_flow_fwd fwd;
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	doca_error_t result;
 	int entry_index = 0;
 
@@ -191,9 +191,9 @@ static doca_error_t add_hash_pipe_entries(struct doca_flow_pipe *pipe, struct en
 		fwd.type = DOCA_FLOW_FWD_PORT;
 		fwd.port_id = entry_index + 1; /* The port to forward to is defined based on the entry index */
 
-		/* last entry should be inserted with DOCA_FLOW_NO_WAIT flag */
+		/* last entry should be inserted with DOCA_FLOW_ENTRY_FLAGS_NO_WAIT flag */
 		if (entry_index == NB_ENTRIES - 1)
-			flags = DOCA_FLOW_NO_WAIT;
+			flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 
 		result = doca_flow_pipe_hash_add_entry(0,
 						       pipe,

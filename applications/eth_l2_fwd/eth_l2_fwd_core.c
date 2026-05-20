@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -44,7 +44,7 @@
 #define NS_PER_SEC 1E9		 /* Nano-seconds per second */
 #define STATS_MAX_BUFF_SIZE 1024 /* Max buffer size to hold statistics string */
 
-DOCA_LOG_REGISTER(ETH_L2_FWD : Core);
+DOCA_LOG_REGISTER(ETH_L2_FWD::CORE);
 
 /* Flag for forcing the application to stop and terminate gracefully */
 static bool force_app_stop = false;

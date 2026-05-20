@@ -127,8 +127,17 @@ static doca_error_t port_init(struct rte_mempool *mbuf_pool, uint8_t port, struc
 		return DOCA_SUCCESS;
 	}
 
+	uint16_t current_mtu;
+	ret = rte_eth_dev_get_mtu(port, &current_mtu);
+	if (ret < 0) {
+		DOCA_LOG_ERR("Failed getting device (port %u) MTU, error=%s", port, strerror(-ret));
+		return DOCA_ERROR_DRIVER;
+	}
+
 	port_conf.rxmode.mq_mode = rss_support ? RTE_ETH_MQ_RX_RSS : RTE_ETH_MQ_RX_NONE;
 	port_conf.txmode.offloads = app_config->port_config.tx_offloads;
+	port_conf.rxmode.offloads = app_config->port_config.rx_offloads;
+	port_conf.rxmode.mtu = current_mtu; // Ensures that MTU is not changed by DPDK
 
 	/* Configure the Ethernet device */
 	ret = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
@@ -255,8 +264,6 @@ static doca_error_t dpdk_ports_init(struct application_dpdk_config *app_config)
 	if (app_config->port_config.enable_mbuf_metadata) {
 		ret = rte_flow_dynf_metadata_register();
 		if (ret < 0) {
-			rte_mempool_free(app_config->mbuf_pool);
-			app_config->mbuf_pool = NULL;
 			DOCA_LOG_ERR("Metadata register failed, ret=%d", ret);
 			return DOCA_ERROR_DRIVER;
 		}
@@ -405,7 +412,11 @@ static void print_l3_header(const struct rte_mbuf *packet)
 		struct rte_ipv6_hdr *ipv6_hdr =
 			rte_pktmbuf_mtod_offset(packet, struct rte_ipv6_hdr *, sizeof(struct rte_ether_hdr));
 
+#ifdef DOCA_BUNDLE_DPDK_FOUND
 		print_ipv6_addr(ipv6_hdr->dst_addr, ipv6_hdr->src_addr, rte_get_ptype_l4_name(packet->packet_type));
+#else
+		print_ipv6_addr(ipv6_hdr->dst_addr.a, ipv6_hdr->src_addr.a, rte_get_ptype_l4_name(packet->packet_type));
+#endif
 	}
 }
 
@@ -684,6 +695,20 @@ doca_error_t dpdk_init(int argc, char **argv)
 		return DOCA_ERROR_DRIVER;
 	}
 	return DOCA_SUCCESS;
+}
+
+doca_error_t dpdk_init_without_probing(int orig_argc, char **orig_argv)
+{
+	char *argv[orig_argc + 4];
+	int argc = orig_argc;
+
+	memcpy(argv, orig_argv, sizeof(argv[0]) * orig_argc);
+	argv[argc++] = "-a";
+	argv[argc++] = "pci:00:00.0";
+	argv[argc++] = "-a";
+	argv[argc++] = "auxiliary:";
+
+	return dpdk_init(argc, argv);
 }
 
 void dpdk_fini(void)

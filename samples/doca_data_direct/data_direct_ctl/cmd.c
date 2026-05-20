@@ -199,7 +199,7 @@ int cmd_opt_parse(int argc, char *argv[], struct cmd_mode *mode, char **device,
 
 	long_options = calloc(num_opts, sizeof(*long_options));
 	if (!long_options) {
-		fprintf(stderr, "Error: Failed to allcoate long options\n");
+		fprintf(stderr, "Error: Failed to allocate long options\n");
 		return ENOMEM;
 	}
 

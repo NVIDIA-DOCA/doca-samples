@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -40,7 +40,7 @@
 
 #include "urom_common.h"
 
-DOCA_LOG_REGISTER(UROM::SAMPLES : COMMON);
+DOCA_LOG_REGISTER(UROM::SAMPLES::COMMON);
 
 /*
  * ARGP Callback - Handle IB device name parameter

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,6 +29,7 @@
 #include <string.h>
 
 #include <doca_ctx.h>
+#include <doca_devemu_pci_ep.h>
 #include <doca_devemu_pci.h>
 #include <doca_dev.h>
 #include <doca_error.h>
@@ -66,12 +67,12 @@ doca_error_t create_msix_object(struct devemu_resources *resources, uint16_t msi
 
 	const struct bar_region_config *msix_table_region = &msix_table_configs[MSIX_TABLE_REGION_INDEX];
 
-	result = doca_devemu_pci_msix_create_on_dpa(resources->pci_dev,
-						    msix_table_region->bar_id,
-						    msix_table_region->start_address,
-						    msix_idx,
-						    /*dpa_user_data=*/0x0,
-						    &resources->data_path.msix);
+	result = doca_devemu_pci_ep_create_msix_on_dpa(doca_devemu_pci_dev_as_ep(resources->pci_dev),
+						       msix_table_region->bar_id,
+						       msix_table_region->start_address,
+						       msix_idx,
+						       /*dpa_user_data=*/0x0,
+						       &resources->data_path.msix);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create MSI-X to be used in DPA");
 		return result;

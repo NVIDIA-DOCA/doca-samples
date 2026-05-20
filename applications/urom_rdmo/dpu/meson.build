@@ -26,12 +26,16 @@ PLUGIN_NAME = 'worker_rdmo'
 lib_prefix = ''
 
 app_srcs += files([
-	'worker_rdmo.c',
+        'worker_rdmo.c',
 	'worker_rdmo_ops.c',
 ])
+
+# Check if we should skip the compilation of the applications
+if flag_disable_applications_compilation
+	subdir_done()
+endif
 
 rdmo_plugin = shared_library(PLUGIN_NAME, app_srcs + app_common_src,
 	name_prefix: lib_prefix,
 	dependencies : app_dependencies,
-	include_directories: app_inc_dirs + app_common_includes,
-	install: install_apps)
+	include_directories: app_inc_dirs + app_common_includes)

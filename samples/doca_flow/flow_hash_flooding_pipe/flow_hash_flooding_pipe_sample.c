@@ -65,7 +65,7 @@ static struct doca_flow_pipe_entry *egress_hash_vport_entries[EGRESS_HASH_PIPE_M
 
 /*
  * Create DOCA Flow forward pipe on the switch port.
- * The forward pipe forwads packet from ingress to egress root.
+ * The forward pipe forwards packet from ingress to egress root.
  *
  * @port [in]: port
  * @pipe [out]: created pipe pointer
@@ -128,7 +128,7 @@ destroy_pipe_cfg:
 
 /*
  * Create DOCA Flow ingress vport pipe on the switch port.
- * The traffic will be forwad to the dest VF port. That ingress vport
+ * The traffic will be forward to the dest VF port. That ingress vport
  * pipe will be used as flooding dest pipe.
  *
  * @port [in]: switch port
@@ -271,14 +271,14 @@ static doca_error_t add_const_fwd_pipe_entries(struct doca_flow_pipe *pipe,
 {
 	doca_error_t result;
 	struct doca_flow_match match;
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	uint32_t entry_index = 0;
 
 	memset(&match, 0, sizeof(match));
 	for (entry_index = 0; entry_index < nb_entries; entry_index++) {
-		/* last entry should be inserted with DOCA_FLOW_NO_WAIT flag */
+		/* last entry should be inserted with DOCA_FLOW_ENTRY_FLAGS_NO_WAIT flag */
 		if (entry_index == nb_entries - 1)
-			flags = DOCA_FLOW_NO_WAIT;
+			flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 
 		if (is_hash_pipe)
 			result = doca_flow_pipe_hash_add_entry(0,
@@ -292,16 +292,16 @@ static doca_error_t add_const_fwd_pipe_entries(struct doca_flow_pipe *pipe,
 							       status,
 							       &entries[entry_index]);
 		else
-			result = doca_flow_pipe_add_entry(0,
-							  pipe,
-							  &match,
-							  0,
-							  NULL,
-							  NULL,
-							  NULL,
-							  flags,
-							  status,
-							  &entries[entry_index]);
+			result = doca_flow_pipe_basic_add_entry(0,
+								pipe,
+								&match,
+								0,
+								NULL,
+								NULL,
+								NULL,
+								flags,
+								status,
+								&entries[entry_index]);
 
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add hash pipe entry: %s", doca_error_get_descr(result));
@@ -411,7 +411,7 @@ static doca_error_t add_egress_hash_pipe_entries(struct doca_flow_pipe *pipe,
 						       NULL,
 						       NULL,
 						       &fwd,
-						       DOCA_FLOW_WAIT_FOR_BATCH,
+						       DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
 						       status,
 						       &entries[entry_index]);
 
@@ -426,7 +426,7 @@ static doca_error_t add_egress_hash_pipe_entries(struct doca_flow_pipe *pipe,
 
 /*
  * Create DOCA Flow egress root pipe with source ip match on the switch port.
- * The foward will be either of the egress hash flooding pipe.
+ * The forward will be either of the egress hash flooding pipe.
  *
  * @sw_port [in]: switch port
  * @pipe [out]: created pipe pointer
@@ -516,16 +516,16 @@ static doca_error_t add_egress_root_pipe_entries(struct doca_flow_pipe *pipe, st
 		fwd.type = DOCA_FLOW_FWD_PIPE;
 		fwd.next_pipe = egress_hash_pipes[entry_index];
 
-		result = doca_flow_pipe_add_entry(0,
-						  pipe,
-						  &match,
-						  0,
-						  NULL,
-						  NULL,
-						  &fwd,
-						  DOCA_FLOW_WAIT_FOR_BATCH,
-						  status,
-						  &egress_root_entries[entry_index]);
+		result = doca_flow_pipe_basic_add_entry(0,
+							pipe,
+							&match,
+							0,
+							NULL,
+							NULL,
+							&fwd,
+							DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+							status,
+							&egress_root_entries[entry_index]);
 
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));

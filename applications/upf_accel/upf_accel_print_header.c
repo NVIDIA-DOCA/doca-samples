@@ -110,7 +110,11 @@ uint32_t upf_accel_print_l3_header(const struct rte_mbuf *packet, uint32_t cur_o
 		}
 		ipv6_hdr = rte_pktmbuf_mtod_offset(packet, struct rte_ipv6_hdr *, cur_offset);
 
+#ifdef DOCA_BUNDLE_DPDK_FOUND
 		upf_accel_print_ipv6_addr(ipv6_hdr->dst_addr, ipv6_hdr->src_addr);
+#else
+		upf_accel_print_ipv6_addr(ipv6_hdr->dst_addr.a, ipv6_hdr->src_addr.a);
+#endif
 		if (ipv6_hdr->proto != IPPROTO_UDP && ipv6_hdr->proto != IPPROTO_TCP) {
 			DOCA_LOG_DBG("Unidentified next header");
 			return 0;

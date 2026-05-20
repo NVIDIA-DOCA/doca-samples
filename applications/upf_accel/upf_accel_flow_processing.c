@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -478,8 +478,13 @@ static doca_error_t upf_accel_5t_match(struct conn_parser_ctx *parse_ctx,
 		*ip_version = DOCA_FLOW_L3_TYPE_IP4;
 		break;
 	case DOCA_FLOW_PROTO_IPV6:
+#ifdef DOCA_BUNDLE_DPDK_FOUND
 		memcpy(src_ip->v6, parse_ctx->network_ctx.ipv6.hdr->src_addr, UPF_ACCEL_NUM_BYTES_IPV6);
 		memcpy(dst_ip->v6, parse_ctx->network_ctx.ipv6.hdr->dst_addr, UPF_ACCEL_NUM_BYTES_IPV6);
+#else
+		memcpy(src_ip->v6, parse_ctx->network_ctx.ipv6.hdr->src_addr.a, UPF_ACCEL_NUM_BYTES_IPV6);
+		memcpy(dst_ip->v6, parse_ctx->network_ctx.ipv6.hdr->dst_addr.a, UPF_ACCEL_NUM_BYTES_IPV6);
+#endif
 		*ip_version = DOCA_FLOW_L3_TYPE_IP6;
 		break;
 	default:
@@ -528,7 +533,13 @@ static doca_error_t upf_accel_gtpu_match(struct tun_parser_ctx *tun_parse_ctx, s
 		match->outer.ip_version = DOCA_FLOW_L3_TYPE_IP4;
 		break;
 	case DOCA_FLOW_PROTO_IPV6:
-		memcpy(match->outer.te_ip.v6, tun_parse_ctx->network_ctx.ipv6.hdr->src_addr, UPF_ACCEL_NUM_BYTES_IPV6);
+		memcpy(match->outer.te_ip.v6,
+#ifdef DOCA_BUNDLE_DPDK_FOUND
+		       tun_parse_ctx->network_ctx.ipv6.hdr->src_addr,
+#else
+		       tun_parse_ctx->network_ctx.ipv6.hdr->src_addr.a,
+#endif
+		       UPF_ACCEL_NUM_BYTES_IPV6);
 		match->outer.ip_version = DOCA_FLOW_L3_TYPE_IP6;
 		break;
 	default:
@@ -731,7 +742,7 @@ static const struct upf_accel_pdr *upf_accel_wan_pdr_lookup(const struct upf_acc
 
 #define RTE_LOG_MAX_LCORE (31 - __builtin_clz(RTE_MAX_LCORE))
 static_assert(UPF_ACCEL_LOG_MAX_NUM_CONNECTIONS + RTE_LOG_MAX_LCORE <= 32,
-	      "Requried num of bits for match chain metadata is too large");
+	      "Required num of bits for match chain metadata is too large");
 /*
  * Calculate metadata value for a connection's match chain
  *
@@ -796,16 +807,16 @@ static doca_error_t upf_accel_pipe_8t_ipv4_accel(struct upf_accel_ctx *ctx,
 	}
 	actions.meta.pkt_meta = DOCA_HTOBE32(pdr_id);
 
-	res = doca_flow_pipe_add_entry(queue_id,
-				       pipe,
-				       &hw_match,
-				       0,
-				       &actions,
-				       NULL,
-				       NULL,
-				       DOCA_FLOW_WAIT_FOR_BATCH,
-				       entry_ctx,
-				       entry);
+	res = doca_flow_pipe_basic_add_entry(queue_id,
+					     pipe,
+					     &hw_match,
+					     0,
+					     &actions,
+					     NULL,
+					     NULL,
+					     DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+					     entry_ctx,
+					     entry);
 	if (res != DOCA_SUCCESS) {
 		DOCA_LOG_WARN("Failed to add dynamic 8T IPv4 entry: %s", doca_error_get_descr(res));
 		return res;
@@ -864,16 +875,16 @@ static doca_error_t upf_accel_pipe_8t_ipv6_accel(struct upf_accel_ctx *ctx,
 	}
 	actions.meta.pkt_meta = DOCA_HTOBE32(pdr_id);
 
-	res = doca_flow_pipe_add_entry(queue_id,
-				       pipe,
-				       &hw_match,
-				       0,
-				       &actions,
-				       NULL,
-				       NULL,
-				       DOCA_FLOW_WAIT_FOR_BATCH,
-				       entry_ctx,
-				       entry);
+	res = doca_flow_pipe_basic_add_entry(queue_id,
+					     pipe,
+					     &hw_match,
+					     0,
+					     &actions,
+					     NULL,
+					     NULL,
+					     DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+					     entry_ctx,
+					     entry);
 	if (res != DOCA_SUCCESS) {
 		DOCA_LOG_WARN("Failed to add dynamic 8T IPv6 entry: %s", doca_error_get_descr(res));
 		return res;
@@ -918,16 +929,16 @@ static doca_error_t upf_accel_pipe_8t_ipv6_ext_accel(struct upf_accel_ctx *ctx,
 	memcpy(hw_match.inner.ip6.src_ip, match->ue_ip, UPF_ACCEL_NUM_BYTES_IPV6);
 	actions.meta.pkt_meta = metadata_value;
 
-	res = doca_flow_pipe_add_entry(queue_id,
-				       pipe,
-				       &hw_match,
-				       0,
-				       &actions,
-				       NULL,
-				       NULL,
-				       DOCA_FLOW_WAIT_FOR_BATCH,
-				       entry_ctx,
-				       entry);
+	res = doca_flow_pipe_basic_add_entry(queue_id,
+					     pipe,
+					     &hw_match,
+					     0,
+					     &actions,
+					     NULL,
+					     NULL,
+					     DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+					     entry_ctx,
+					     entry);
 	if (res != DOCA_SUCCESS) {
 		DOCA_LOG_WARN("Failed to add dynamic 8T IPv6 extension entry: %s", doca_error_get_descr(res));
 		return res;
@@ -980,16 +991,16 @@ static doca_error_t upf_accel_pipe_5t_ipv4_accel(struct upf_accel_ctx *ctx,
 	}
 	actions.meta.pkt_meta = DOCA_HTOBE32(pdr_id);
 
-	res = doca_flow_pipe_add_entry(queue_id,
-				       pipe,
-				       &hw_match,
-				       0,
-				       &actions,
-				       NULL,
-				       NULL,
-				       DOCA_FLOW_WAIT_FOR_BATCH,
-				       entry_ctx,
-				       entry);
+	res = doca_flow_pipe_basic_add_entry(queue_id,
+					     pipe,
+					     &hw_match,
+					     0,
+					     &actions,
+					     NULL,
+					     NULL,
+					     DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+					     entry_ctx,
+					     entry);
 	if (res != DOCA_SUCCESS) {
 		DOCA_LOG_WARN("Failed to add dynamic 5T IPv4 entry: %s", doca_error_get_descr(res));
 		return res;
@@ -1044,16 +1055,16 @@ static doca_error_t upf_accel_pipe_5t_ipv6_accel(struct upf_accel_ctx *ctx,
 	}
 	actions.meta.pkt_meta = DOCA_HTOBE32(pdr_id);
 
-	res = doca_flow_pipe_add_entry(queue_id,
-				       pipe,
-				       &hw_match,
-				       0,
-				       &actions,
-				       NULL,
-				       NULL,
-				       DOCA_FLOW_WAIT_FOR_BATCH,
-				       entry_ctx,
-				       entry);
+	res = doca_flow_pipe_basic_add_entry(queue_id,
+					     pipe,
+					     &hw_match,
+					     0,
+					     &actions,
+					     NULL,
+					     NULL,
+					     DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+					     entry_ctx,
+					     entry);
 	if (res != DOCA_SUCCESS) {
 		DOCA_LOG_WARN("Failed to add dynamic 5T IPv6 entry: %s", doca_error_get_descr(res));
 		return res;
@@ -1091,16 +1102,16 @@ static doca_error_t upf_accel_pipe_5t_ipv6_ext_accel(struct upf_accel_ctx *ctx,
 	memcpy(hw_match.outer.ip6.dst_ip, match->ue_ip, UPF_ACCEL_NUM_BYTES_IPV6);
 	actions.meta.pkt_meta = metadata_value;
 
-	res = doca_flow_pipe_add_entry(queue_id,
-				       pipe,
-				       &hw_match,
-				       0,
-				       &actions,
-				       NULL,
-				       NULL,
-				       DOCA_FLOW_WAIT_FOR_BATCH,
-				       entry_ctx,
-				       entry);
+	res = doca_flow_pipe_basic_add_entry(queue_id,
+					     pipe,
+					     &hw_match,
+					     0,
+					     &actions,
+					     NULL,
+					     NULL,
+					     DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+					     entry_ctx,
+					     entry);
 	if (res != DOCA_SUCCESS) {
 		DOCA_LOG_WARN("Failed to add dynamic 5T IPv6 extension entry: %s", doca_error_get_descr(res));
 		return res;
@@ -1150,7 +1161,7 @@ static doca_error_t upf_accel_fp_pkt_match(enum parser_pkt_type pkt_type,
  * Fetch packet type from metadata.
  *
  * @pkt [in]: pointer to the pkt
- * @return: packet type (ran / wan)
+ * @return: packet type (RAN / WAN)
  */
 static enum parser_pkt_type upf_accel_fp_fetch_pkt_type(const struct rte_mbuf *pkt)
 {
@@ -1974,7 +1985,7 @@ static void upf_accel_dyn_entry_cb_age(struct upf_accel_entry_ctx *entry_ctx,
 		entry_to_delete = ext_entry_ctx->ext_ctx.entry;
 	}
 
-	ret = doca_flow_pipe_remove_entry(pipe_queue, DOCA_FLOW_WAIT_FOR_BATCH, entry_to_delete);
+	ret = doca_flow_pipe_remove_entry(pipe_queue, DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH, entry_to_delete);
 	if (ret != DOCA_SUCCESS) {
 		accel_counters->aging_errors++;
 		DOCA_LOG_ERR(
@@ -2113,7 +2124,7 @@ static void upf_accel_ext_entry_cb_del(struct upf_accel_entry_ctx *entry_ctx,
 
 	ret = upf_accel_fp_delete_extension_entry(fp_data, ext_entry);
 	if (ret == DOCA_SUCCESS) {
-		ret = doca_flow_pipe_remove_entry(pipe_queue, DOCA_FLOW_WAIT_FOR_BATCH, entry_to_delete);
+		ret = doca_flow_pipe_remove_entry(pipe_queue, DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH, entry_to_delete);
 		DOCA_LOG_DBG("Entry removed out of pipe");
 	} else {
 		fp_data->accel_counters[pkt_type].del_errors++;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -140,9 +140,13 @@ struct virtiofs_fsdev {
  * @param ctx [in]: VirtioFS resources
  * @param nfs_server [in]: NFS server
  * @param nfs_export [in]: NFS export
+ * @param num_request_queues ]in]: Number of request queues
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t virtiofs_device_create_static(struct virtiofs_resources *ctx, char *nfs_server, char *nfs_export);
+doca_error_t virtiofs_device_create_static(struct virtiofs_resources *ctx,
+					   char *nfs_server,
+					   char *nfs_export,
+					   uint16_t num_request_queues);
 
 /*
  * Create devices

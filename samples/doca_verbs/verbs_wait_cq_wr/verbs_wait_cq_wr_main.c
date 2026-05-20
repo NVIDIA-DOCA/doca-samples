@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -30,7 +30,7 @@
 #include <samples/common.h>
 #include "verbs_wait_cq_wr_sample.h"
 
-DOCA_LOG_REGISTER(wait_cq_wr::MAIN);
+DOCA_LOG_REGISTER(WAIT_CQ_WR::MAIN);
 
 #define DEFAULT_IS_IPV6 0
 
@@ -125,7 +125,7 @@ static doca_error_t register_params(void)
 	}
 	doca_argp_param_set_short_name(gid_index_param, "gi");
 	doca_argp_param_set_long_name(gid_index_param, "gid-index");
-	doca_argp_param_set_description(gid_index_param, "GID index to use, deafult: 0.");
+	doca_argp_param_set_description(gid_index_param, "GID index to use, default: 0.");
 	doca_argp_param_set_callback(gid_index_param, gid_index_callback);
 	doca_argp_param_set_type(gid_index_param, DOCA_ARGP_TYPE_INT);
 	result = doca_argp_register_param(gid_index_param);

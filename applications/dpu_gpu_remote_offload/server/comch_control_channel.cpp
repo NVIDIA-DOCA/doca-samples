@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,7 +32,7 @@
 #include <remote_offload_common/doca_utils.hpp>
 #include <remote_offload_common/runtime_error.hpp>
 
-DOCA_LOG_REGISTER(server::comch_control);
+DOCA_LOG_REGISTER(SERVER::COMCH_CONTROL);
 
 namespace {
 

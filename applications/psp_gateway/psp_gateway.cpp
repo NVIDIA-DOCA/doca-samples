@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -83,6 +83,7 @@ int main(int argc, char **argv)
 	doca_error_t result;
 	int nb_ports = 2;
 	int exit_status = EXIT_SUCCESS;
+	uint16_t mtu;
 
 	struct psp_gw_app_config app_config = {};
 	app_config.dpdk_config.port_config.nb_ports = nb_ports;
@@ -132,17 +133,29 @@ int main(int argc, char **argv)
 
 	result = psp_gw_argp_exec(argc, argv, &app_config);
 	if (result != DOCA_SUCCESS) {
+		doca_dev_rep_close(app_config.vf_dev_rep);
+		doca_dev_close(app_config.pf_dev);
+		doca_argp_destroy();
 		return EXIT_FAILURE;
 	}
 
 	// init DPDK
 	std::string pid_str = "pid_" + std::to_string(getpid());
-	const char *eal_args[] = {"", "-a00:00.0", "-c", app_config.core_mask.c_str(), "--file-prefix", pid_str.c_str()};
+	const char *eal_args[] = {"",
+				  "-a",
+				  "pci:00:00.0",
+				  "-a",
+				  "auxiliary:mlx5_core.sf.0",
+				  "-c",
+				  app_config.core_mask.c_str(),
+				  "--file-prefix",
+				  pid_str.c_str()};
 	int n_eal_args = sizeof(eal_args) / sizeof(eal_args[0]);
 	int rc = rte_eal_init(n_eal_args, (char **)eal_args);
 	if (rc < 0) {
 		DOCA_LOG_ERR("EAL initialization failed");
-		return DOCA_ERROR_DRIVER;
+		exit_status = EXIT_FAILURE;
+		goto device_cleanup;
 	}
 
 	result = psp_gw_parse_config_file(&app_config);
@@ -171,11 +184,9 @@ int main(int argc, char **argv)
 	}
 
 	// init devices
-	dev_probe_str = std::string("dv_flow_en=2,"	 // hardware steering
-				    "dv_xmeta_en=4,"	 // extended flow metadata support
-				    "fdb_def_rule_en=0," // disable default root flow table rule
-				    "vport_match=1,"
-				    "repr_matching_en=0");
+	dev_probe_str = std::string("dv_flow_en=2,"	  // hardware steering
+				    "dv_xmeta_en=4,"	  // extended flow metadata support
+				    "fdb_def_rule_en=0"); // disable default root flow table rule
 
 	result = doca_dpdk_port_probe_with_representors(app_config.pf_dev,
 							dev_probe_str.c_str(),
@@ -184,13 +195,24 @@ int main(int argc, char **argv)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to probe dpdk port for secured port: %s", doca_error_get_descr(result));
 		exit_status = EXIT_FAILURE;
-		goto dev_close;
+		goto dpdk_destroy;
 	}
 
-	pf_dev.dev = app_config.pf_dev;
 	pf_dev.port_id = 0;
+	pf_dev.dev = app_config.pf_dev;
 	vf_dev = app_config.vf_dev_rep;
 	vf_port_id = pf_dev.port_id + 1;
+
+	// Query the MTU of the PF port so that we can set the mbuf size accordingly
+	rc = rte_eth_dev_get_mtu(pf_dev.port_id, &mtu);
+	if (rc != 0) {
+		DOCA_LOG_ERR("Failed to get the MTU of the PF: %s", strerror(-rc));
+		exit_status = EXIT_FAILURE;
+		goto dpdk_destroy;
+	}
+	app_config.dpdk_config.port_config.mbuf_size =
+		mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM;
+	DOCA_LOG_DBG("PF MTU is %d, setting mbuf size to %d", mtu, app_config.dpdk_config.port_config.mbuf_size);
 
 	app_config.dpdk_config.port_config.nb_ports = rte_eth_dev_count_avail();
 
@@ -205,7 +227,7 @@ int main(int argc, char **argv)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to find IPv4 addr for PF: %s", doca_error_get_descr(result));
 			exit_status = EXIT_FAILURE;
-			goto dev_close;
+			goto dpdk_destroy;
 		}
 	} else {
 		pf_dev.src_pip.type = DOCA_FLOW_L3_TYPE_IP6;
@@ -215,7 +237,7 @@ int main(int argc, char **argv)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to find IPv6 addr for PF: %s", doca_error_get_descr(result));
 			exit_status = EXIT_FAILURE;
-			goto dev_close;
+			goto dpdk_destroy;
 		}
 	}
 	pf_dev.src_pip_str = ip_to_string(pf_dev.src_pip);
@@ -231,7 +253,7 @@ int main(int argc, char **argv)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to update application ports and queues: %s", doca_error_get_descr(result));
 		exit_status = EXIT_FAILURE;
-		goto dev_rep_close;
+		goto dpdk_destroy;
 	}
 
 	/* add one more queue for the grpc requests */
@@ -323,12 +345,11 @@ workers_cleanup:
 
 dpdk_cleanup:
 	dpdk_queues_and_ports_fini(&app_config.dpdk_config);
-dev_rep_close:
-	doca_dev_rep_close(vf_dev);
-dev_close:
-	doca_dev_close(pf_dev.dev);
 dpdk_destroy:
 	dpdk_fini();
+device_cleanup:
+	doca_dev_rep_close(app_config.vf_dev_rep);
+	doca_dev_close(app_config.pf_dev);
 	doca_argp_destroy();
 
 	return exit_status;

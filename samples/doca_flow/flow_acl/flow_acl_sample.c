@@ -36,7 +36,8 @@ DOCA_LOG_REGISTER(FLOW_ACL);
 #define ACL_MEM_REQ_PER_ENTRY (32)
 
 #define ACL_ACTIONS_MEM_SIZE(entries) \
-	rte_align32pow2((uint32_t)(entries * ACL_MEM_REQ_PER_ENTRY * DOCA_FLOW_MAX_ENTRY_ACTIONS_MEM_SIZE))
+	((uint32_t)common_utils_next_power_of_two((uint64_t)(entries)*ACL_MEM_REQ_PER_ENTRY * \
+						  DOCA_FLOW_MAX_ENTRY_ACTIONS_MEM_SIZE))
 
 /* for egress use domain = DOCA_FLOW_PIPE_DOMAIN_EGRESS*/
 static enum doca_flow_pipe_domain domain = DOCA_FLOW_PIPE_DOMAIN_DEFAULT;
@@ -84,7 +85,6 @@ doca_error_t create_rx_pipe(struct doca_flow_port *port, int port_id, struct doc
 	fwd.port_id = port_id ^ 1;
 
 	return doca_flow_pipe_control_add_entry(0,
-						0,
 						*pipe,
 						&match,
 						NULL,
@@ -93,6 +93,7 @@ doca_error_t create_rx_pipe(struct doca_flow_port *port, int port_id, struct doc
 						NULL,
 						NULL,
 						NULL,
+						0,
 						&fwd,
 						NULL,
 						NULL);
@@ -176,7 +177,16 @@ static doca_error_t add_main_pipe_entry(struct doca_flow_pipe *pipe,
 
 	memset(&match, 0, sizeof(match));
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, DOCA_FLOW_NO_WAIT, status, entry);
+	return doca_flow_pipe_basic_add_entry(0,
+					      pipe,
+					      &match,
+					      0,
+					      NULL,
+					      NULL,
+					      NULL,
+					      DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+					      status,
+					      entry);
 }
 
 /*
@@ -207,6 +217,7 @@ doca_error_t create_acl_pipe(struct doca_flow_port *port, bool is_root, struct d
 	match.outer.ip4.src_ip = 0xffffffff;
 	match.outer.ip4.dst_ip = 0xffffffff;
 
+	match.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
 	match.outer.tcp.l4_port.src_port = 0xffff;
 	match.outer.tcp.l4_port.dst_port = 0xffff;
 
@@ -286,9 +297,9 @@ destroy_pipe_cfg:
  * @priority [in]: priority of the entry. 0 <= priority <= 1024. the lowest parameter value is used as the highest
  *priority
  * @is_allow [in]: allow or deny the entry
- * @flag [in]: Flow entry will be pushed to hw immediately or not. enum doca_flow_flags_type.
- *	flag DOCA_FLOW_WAIT_FOR_BATCH is using for collecting entries by ACL module
- *	flag DOCA_FLOW_NO_WAIT is using for adding the entry and starting building and offloading
+ * @flag [in]: Flow entry will be pushed to hw immediately or not. uint32_t.
+ *	flag DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH is using for collecting entries by ACL module
+ *	flag DOCA_FLOW_ENTRY_FLAGS_NO_WAIT is using for adding the entry and starting building and offloading
  * @param[out] entry The entry inserted.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
@@ -306,7 +317,7 @@ doca_error_t add_acl_specific_entry(struct doca_flow_pipe *pipe,
 				    doca_be16_t dst_port_mask,
 				    uint16_t priority,
 				    bool is_allow,
-				    enum doca_flow_flags_type flag,
+				    uint32_t flag,
 				    struct doca_flow_pipe_entry **entry)
 {
 	struct doca_flow_match match;
@@ -395,7 +406,7 @@ doca_error_t add_acl_pipe_entries(struct doca_flow_pipe *pipe,
 					DOCA_HTOBE16(0x0),
 					10,
 					false,
-					DOCA_FLOW_WAIT_FOR_BATCH,
+					DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
 					&entries[i_entry++]);
 	if (result != DOCA_SUCCESS)
 		return result;
@@ -414,7 +425,7 @@ doca_error_t add_acl_pipe_entries(struct doca_flow_pipe *pipe,
 					DOCA_HTOBE16(3000),
 					50,
 					true,
-					DOCA_FLOW_WAIT_FOR_BATCH,
+					DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
 					&entries[i_entry++]);
 
 	if (result != DOCA_SUCCESS)
@@ -434,7 +445,7 @@ doca_error_t add_acl_pipe_entries(struct doca_flow_pipe *pipe,
 					DOCA_HTOBE16(0x0),
 					40,
 					true,
-					DOCA_FLOW_WAIT_FOR_BATCH,
+					DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
 					&entries[i_entry++]);
 
 	if (result != DOCA_SUCCESS)
@@ -454,7 +465,7 @@ doca_error_t add_acl_pipe_entries(struct doca_flow_pipe *pipe,
 					DOCA_HTOBE16(80),
 					20,
 					true,
-					DOCA_FLOW_NO_WAIT,
+					DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
 					&entries[i_entry++]);
 
 	if (result != DOCA_SUCCESS)

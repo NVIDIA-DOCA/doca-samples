@@ -164,3 +164,121 @@ The sample logic includes:
 - `mgmt_cc_global_status_sample.c`
 - `mgmt_cc_global_status_main.c`
 - `meson.build`
+
+# Management ICM Quota
+
+ICM (Interconnect Context Memory) is host memory that is allocated exclusively for the HCA, and is used to maintain and manage its control objects.
+The amount of ICM that is needed by the HCA may vary and depends on the capabilities and the amount of resources that the HCA is required to support.
+
+Host memory is a finite resource, and thus it may be useful to limit the HCA's usage of it. On devices that support it, it is possible to limit the amount of ICM that a function is allowed to use.
+
+This sample allows getting, setting, and querying capabilities for ICM quota on a given device or device representor (PF/VF/SF), and demonstrates how to do it using DOCA management library API.
+
+## Building
+
+To build the sample, run the following commands:
+
+```
+$ cd <doca_samples_dir>/doca_mgmt/mgmt_icm_quota
+$ meson setup build
+$ meson compile -C build
+```
+
+The sample binary `doca_mgmt_icm_quota` will be built under `build` directory.
+
+## Usage
+
+The sample has three commands:
+* `caps` which shows the ICM quota capabilities for the device.
+* `get` which shows the current ICM quota configuration (limit, current allocation, max reached allocation).
+* `set` which sets the ICM quota limit or resets the max reached allocation counter.
+
+For all commands, either a device or a device representor must be specified.
+
+Specifying a device is done using the `-d/--device` parameter with the following format: `pci/<pci_address>`.  
+For example, for device 0000:08:00.0, the identifier would be `pci/0000:08:00.0`.
+
+Specifying a VF representor is done using the `-r/--rep` parameter with the following format: `pci/<parent_pf_pci_address>,pf<pfnum>vf<vfnum>`.  
+For example, for VF whose VF number is 0 and parent PF is 0000:08:00.0 with PF number 0, the identifier would be `pci/0000:08:00.0,pf0vf0`.
+
+Specifying a SF representor is done using the `-r/--rep` parameter with the following format: `pci/<parent_pf_pci_address>,pf<pfnum>sf<sfnum>`.  
+For example, for SF whose SF number is 88 and parent PF is 0000:08:00.0 with PF number 0, the identifier would be `pci/0000:08:00.0,pf0sf88`.
+
+For a full documentation of device and representor identifiers patterns, please refer to the DOCA Arg Parser documentation.
+
+The `caps` command shows whether the device supports ICM quota and if so, it shows the maximum ICM qouta limit that can be set by `set` command.
+
+For `get` command, the following optional parameters can be specified to retrieve specific attributes:
+- `--limit` - Get the ICM quota limit that is configured for the device
+- `--cur-alloc` - Get the currently allocated ICM quota of the device
+- `--max-reached` - Get the maximum reached ICM quota that the device has reached so far
+
+If no parameters are specified, all attributes are retrieved.
+
+For `set` command, at least one of the following parameters must be specified:
+- `-L/--limit` - Set the ICM quota limit for the device (e.g., 4096, 4K, 1M, 1G, 1T, unlimited). The value must be aligned to 4K. The value must be less than or equal to the maximum ICM quota limit reported by `caps` command and less than or equal to 16TB-8KB. Value of 'unlimited' indicates no limit.
+- `--reset-max-reached` - Reset the maximum reached ICM quota counter
+
+## Examples
+
+- Get ICM quota capabilities for a device:
+```
+$ doca_mgmt_icm_quota caps --device pci/0000:08:00.0
+```
+
+- Get all ICM quota attributes for a device:
+```
+$ doca_mgmt_icm_quota get --device pci/0000:08:00.0
+```
+
+- Get only the ICM quota limit for a device:
+```
+$ doca_mgmt_icm_quota get --device pci/0000:08:00.0 --limit
+```
+
+- Set ICM quota limit to 1GB for a VF representor:
+```
+$ doca_mgmt_icm_quota set --rep pci/0000:08:00.0,pf0vf0 --limit 1G
+```
+
+- Set ICM quota limit to unlimited for a device:
+```
+$ doca_mgmt_icm_quota set --device pci/0000:08:00.0 --limit unlimited
+```
+
+- Reset the max reached counter for a SF representor:
+```
+$ doca_mgmt_icm_quota set --rep pci/0000:08:00.0,pf0sf88 --reset-max-reached
+```
+
+## Sample Logic
+
+The sample logic includes:
+
+### Get ICM Quota Operation:
+1. Opening the DOCA device or device representor that was specified in the command line arguments.
+2. Creating a DOCA management device context for the DOCA device, and a DOCA management device representor context for the device representor.
+3. Creating an ICM quota handle.
+4. Executing get operation through the DOCA management ICM quota API.
+5. Retrieving and displaying the requested attributes (limit, current allocation, max reached).
+6. Cleaning up all DOCA management and device structures.
+
+### Set ICM Quota Operation:
+1. Opening the DOCA device or device representor that was specified in the command line arguments.
+2. Creating a DOCA management device context for the DOCA device, and a DOCA management device representor context for the device representor.
+3. Creating an ICM quota handle and setting the requested attributes (limit, reset max reached).
+4. Executing set operation through the DOCA management ICM quota API.
+5. Cleaning up all DOCA management and device structures.
+
+### Get ICM Quota Capabilities Operation:
+1. Opening the DOCA device or device representor that was specified in the command line arguments.
+2. Creating a DOCA management device context for the DOCA device or for the DOCA device representor.
+3. Checking if ICM quota is supported on the device.
+4. Retrieving and displaying the maximum ICM quota limit supported by the device.
+5. Cleaning up all DOCA management and device structures.
+
+## References
+
+- `mgmt_icm_quota_sample.c`
+- `mgmt_icm_quota_main.c`
+- `meson.build`

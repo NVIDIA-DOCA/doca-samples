@@ -22,57 +22,20 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-project('DOCA_SAMPLE', 'C', 'CPP',
-	# Get version number from file.
-	version: run_command(find_program('cat'),
-		files('../../../VERSION'), check: true).stdout().strip(),
-	license: 'Proprietary',
-	default_options: ['buildtype=debug'],
-	meson_version: '>= 0.61.2'
-)
+sample_srcs = files([
+	SAMPLE_NAME + '_sample.c',
+])
 
-SAMPLE_NAME = 'telemetry_dpa'
+# Needed because we use some application utilities in the main
+apps_common_path = '/'.join([meson.project_source_root(), apps_common_base])
 
-json_c_dependency = dependency('json-c', required: false, version : '> 0.13') # earlier versions have different function signatures
-if not json_c_dependency.found()
-	error('Stopping compilation of DOCA Sample - @0@ - Missing json-c support.'.format(SAMPLE_NAME))
+sample_main_srcs = files([
+	SAMPLE_NAME + '_main.c',
+	apps_common_path + '/utils.c',
+])
+
+if skip_sample_compilation
+	subdir_done()
 endif
 
-# Comment this line to restore warnings of experimental DOCA features
-add_project_arguments('-D DOCA_ALLOW_EXPERIMENTAL_API', language: ['c', 'cpp'])
-
-sample_dependencies = []
-# Required for all DOCA programs
-sample_dependencies += dependency('doca-common')
-# The DOCA library of the sample itself
-sample_dependencies += dependency('doca-telemetry')
-# Utility DOCA library for executables
-sample_dependencies += dependency('doca-argp')
-# Dependency on json-c
-sample_dependencies += json_c_dependency
-
-sample_srcs = [
-	# The sample itself
-	SAMPLE_NAME + '_sample.c',
-	# Main function for the sample's executable
-	SAMPLE_NAME + '_main.c',
-	# Common code for all DOCA samples
-	'../../common.c',
-	# Common code for all DOCA applications
-	'../../../applications/common/utils.c',
-]
-
-sample_inc_dirs  = []
-# Common DOCA logic (samples)
-sample_inc_dirs += include_directories('../..')
-# Common DOCA logic
-sample_inc_dirs += include_directories('../../..')
-# Common DOCA logic (applications)
-sample_inc_dirs += include_directories('../../../applications/common/')
-
-
-executable('doca_' + SAMPLE_NAME, sample_srcs,
-	c_args : '-Wno-missing-braces',
-	dependencies : sample_dependencies,
-	include_directories: sample_inc_dirs,
-	install: false)
+sample_depends += dependency('json-c', version : '> 0.13') # earlier versions have different function signatures

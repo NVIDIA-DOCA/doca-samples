@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -36,7 +36,7 @@
 #include "ipsec_ctx.h"
 #include "flow_common.h"
 
-DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::ipsec_ctx);
+DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::IPSEC_CTX);
 
 #define SLEEP_IN_NANOS (10 * 1000) /* Sample the task every 10 microseconds  */
 
@@ -92,23 +92,31 @@ doca_error_t ipsec_security_gw_close_devices(const struct ipsec_security_gw_conf
 	doca_error_t result = DOCA_SUCCESS;
 	doca_error_t tmp_result;
 
-	tmp_result = doca_dev_close(app_cfg->objects.secured_dev.doca_dev);
-	if (tmp_result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to destroy secured DOCA dev: %s", doca_error_get_descr(tmp_result));
-		DOCA_ERROR_PROPAGATE(result, tmp_result);
+	if (app_cfg->objects.secured_dev.doca_dev != NULL) {
+		tmp_result = doca_dev_close(app_cfg->objects.secured_dev.doca_dev);
+		if (tmp_result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy secured DOCA dev: %s", doca_error_get_descr(tmp_result));
+			DOCA_ERROR_PROPAGATE(result, tmp_result);
+		}
 	}
 
 	if (app_cfg->objects.unsecured_dev.is_representor) {
-		tmp_result = doca_dev_rep_close(app_cfg->objects.unsecured_dev.doca_dev_rep);
-		if (tmp_result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to destroy unsecured DOCA dev rep: %s", doca_error_get_descr(tmp_result));
-			DOCA_ERROR_PROPAGATE(result, tmp_result);
+		if (app_cfg->objects.unsecured_dev.doca_dev_rep != NULL) {
+			tmp_result = doca_dev_rep_close(app_cfg->objects.unsecured_dev.doca_dev_rep);
+			if (tmp_result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy unsecured DOCA dev rep: %s",
+					     doca_error_get_descr(tmp_result));
+				DOCA_ERROR_PROPAGATE(result, tmp_result);
+			}
 		}
 	} else {
-		tmp_result = doca_dev_close(app_cfg->objects.unsecured_dev.doca_dev);
-		if (tmp_result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to destroy unsecured DOCA dev: %s", doca_error_get_descr(tmp_result));
-			DOCA_ERROR_PROPAGATE(result, tmp_result);
+		if (app_cfg->objects.unsecured_dev.doca_dev != NULL) {
+			tmp_result = doca_dev_close(app_cfg->objects.unsecured_dev.doca_dev);
+			if (tmp_result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy unsecured DOCA dev: %s",
+					     doca_error_get_descr(tmp_result));
+				DOCA_ERROR_PROPAGATE(result, tmp_result);
+			}
 		}
 	}
 	return result;
@@ -132,11 +140,10 @@ doca_error_t ipsec_security_gw_init_devices(struct ipsec_security_gw_config *app
 			return result;
 		}
 	} else {
-		result = doca_dpdk_port_probe_with_representors(
-			app_cfg->objects.secured_dev.doca_dev,
-			"dv_flow_en=2,dv_xmeta_en=4,fdb_def_rule_en=0,vport_match=1,repr_matching_en=0",
-			&app_cfg->objects.unsecured_dev.doca_dev_rep,
-			1);
+		result = doca_dpdk_port_probe_with_representors(app_cfg->objects.secured_dev.doca_dev,
+								"dv_flow_en=2,dv_xmeta_en=4,fdb_def_rule_en=0",
+								&app_cfg->objects.unsecured_dev.doca_dev_rep,
+								1);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to probe dpdk port for secured port and unsecured port representor: %s",
 				     doca_error_get_descr(result));

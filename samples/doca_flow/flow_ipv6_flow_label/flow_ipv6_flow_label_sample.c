@@ -69,7 +69,7 @@ static doca_error_t create_ingress_pipe(struct doca_flow_port *port,
 	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
-	enum doca_flow_flags_type flags;
+	uint32_t flags;
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
@@ -132,15 +132,15 @@ static doca_error_t create_ingress_pipe(struct doca_flow_port *port,
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_TCP;
 	match.outer.transport.src_port = DOCA_HTOBE16(1234);
 	actions.meta.pkt_meta = DOCA_HTOBE32(1);
-	flags = DOCA_FLOW_WAIT_FOR_BATCH;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
+	flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add TCP entry with source port 1234: %s", doca_error_get_descr(result));
 		return result;
 	}
 
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add UDP entry with source port 1234: %s", doca_error_get_descr(result));
 		return result;
@@ -149,15 +149,15 @@ static doca_error_t create_ingress_pipe(struct doca_flow_port *port,
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_TCP;
 	match.outer.transport.src_port = DOCA_HTOBE16(5678);
 	actions.meta.pkt_meta = DOCA_HTOBE32(2);
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add TCP entry with source port 5678: %s", doca_error_get_descr(result));
 		return result;
 	}
 
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
-	flags = DOCA_FLOW_NO_WAIT;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
+	flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add UDP entry with source port 5678: %s", doca_error_get_descr(result));
 		return result;
@@ -217,7 +217,7 @@ static doca_error_t add_encap_pipe_entries(struct doca_flow_pipe *pipe, struct e
 		return result;
 	}
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry matching on pkt meta 1: %s", doca_error_get_descr(result));
 		return result;
@@ -247,7 +247,7 @@ static doca_error_t add_encap_pipe_entries(struct doca_flow_pipe *pipe, struct e
 		return result;
 	}
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry matching on pkt meta 2: %s", doca_error_get_descr(result));
 		return result;
@@ -496,14 +496,14 @@ static doca_error_t add_modify_pipe_entries(struct doca_flow_pipe *pipe, struct 
 	memset(&actions, 0, sizeof(actions));
 
 	match.parser_meta.inner_l3_type = DOCA_FLOW_L3_META_IPV4;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add IPv4 entry to modify pipe: %s", doca_error_get_descr(result));
 		return result;
 	}
 
 	match.parser_meta.inner_l3_type = DOCA_FLOW_L3_META_IPV6;
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add IPv6 entry to modify pipe: %s", doca_error_get_descr(result));
 		return result;

@@ -117,7 +117,7 @@ static doca_error_t add_match_meta_pipe_entry(struct doca_flow_pipe *pipe, struc
 	/* setting match on meta */
 	match.meta.u32[0] = DOCA_HTOBE32(IP_TCP_DEFAULT_HDR_LEN);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -183,7 +183,6 @@ static doca_error_t add_match_comparison_pipe_entry(struct doca_flow_pipe *pipe,
 	fwd.next_pipe = next_pipe;
 
 	result = doca_flow_pipe_control_add_entry(0,
-						  0,
 						  pipe,
 						  NULL,
 						  NULL,
@@ -192,6 +191,7 @@ static doca_error_t add_match_comparison_pipe_entry(struct doca_flow_pipe *pipe,
 						  NULL,
 						  NULL,
 						  NULL,
+						  0,
 						  &fwd,
 						  status,
 						  NULL);
@@ -325,7 +325,7 @@ static doca_error_t add_sum_to_meta_pipe_entry(struct doca_flow_pipe *pipe, stru
 	match.outer.tcp.l4_port.dst_port = dst_port;
 	match.outer.tcp.l4_port.src_port = src_port;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 

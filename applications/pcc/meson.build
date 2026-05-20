@@ -22,57 +22,38 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-host_srcs = files([
-	'host/' + APP_NAME + '.c',
-	'host/' + APP_NAME + '_core.c',
-])
+# Public build does not use these meson files
+app_install_excludes += 'host' / regular_meson_file_name
+app_install_excludes += 'device' / regular_meson_file_name
+app_install_excludes += 'device' / 'rp' / regular_meson_file_name
+app_install_excludes += 'device' / 'rp' / 'rtt_template' / regular_meson_file_name
+app_install_excludes += 'device' / 'rp' / 'switch_telemetry' / regular_meson_file_name
+app_install_excludes += 'device' / 'np' / regular_meson_file_name
+app_install_excludes += 'device' / 'np' / 'switch_telemetry' / regular_meson_file_name
 
 device_code_build_script_name = 'build_device_code.sh'
 device_code_build_script = meson.current_source_dir() / device_code_build_script_name
 
-app_device_build_dir = meson.project_build_root() + '/' + APP_NAME + '/device/build_dpacc'
+# We need to install the public version of the build scripts on our own
+app_install_excludes += device_code_build_script_name + public_file_suffix
 
-# Command to compile the application
-app_builds = find_program(device_code_build_script)
+install_data(sources : device_code_build_script + public_file_suffix, rename : [device_code_build_script_name],
+		install_dir : app_install_dir)
 
-doca_dep = dependency('doca-common')
-doca_lib_dir = doca_dep.get_variable(pkgconfig : 'libdir')
-pcc_app_dev_src_dir = meson.project_source_root() + '/' + APP_NAME + '/device/'
-
-# check user option to enable TX bytes counter sampling
-if get_option('enable_pcc_application_tx_counter_sampling')
-	enable_tx_counter_sampling = 'true'
-else
-	enable_tx_counter_sampling = 'false'
+# Check if we should skip the compilation of the applications after checking installation configurations
+if flag_disable_applications_compilation
+	subdir_done()
 endif
 
-# Compile DOCA PCC Reaction Point RTT Template DPA program
-pcc_app_name = 'pcc_rp_rtt_template_app'
-pcc_dev_stubs_keep_dir_path = app_device_build_dir + '/' + pcc_app_name
-run_command(app_builds, pcc_app_dev_src_dir, app_device_build_dir, doca_lib_dir, pcc_app_name,
-	pcc_dev_stubs_keep_dir_path, enable_tx_counter_sampling, dpacc_mcpu_flag, check: true)
-pcc_rp_rtt_template_app = meson.get_compiler('c').find_library(pcc_app_name, dirs : pcc_dev_stubs_keep_dir_path, static: true)
+address_sanitizer = get_option('b_sanitize')
 
-# Compile DOCA PCC Reaction Point Switch Telemetry DPA program
-pcc_app_name = 'pcc_rp_switch_telemetry_app'
-pcc_dev_stubs_keep_dir_path = app_device_build_dir + '/' + pcc_app_name
-run_command(app_builds, pcc_app_dev_src_dir, app_device_build_dir, doca_lib_dir, pcc_app_name,
-	pcc_dev_stubs_keep_dir_path, enable_tx_counter_sampling, dpacc_mcpu_flag, check: true)
-pcc_rp_switch_telemetry_app = meson.get_compiler('c').find_library(pcc_app_name, dirs : pcc_dev_stubs_keep_dir_path, static: true)
+subdir('host')
+subdir('device')
 
-# Compile DOCA PCC Notification Point Switch Telemetry DPA program
-pcc_app_name = 'pcc_np_switch_telemetry_app'
-pcc_dev_stubs_keep_dir_path = app_device_build_dir + '/' + pcc_app_name
-run_command(app_builds, pcc_app_dev_src_dir, app_device_build_dir, doca_lib_dir, pcc_app_name,
-	pcc_dev_stubs_keep_dir_path, enable_tx_counter_sampling, dpacc_mcpu_flag, check: true)
-pcc_np_switch_telemetry_app = meson.get_compiler('c').find_library(pcc_app_name, dirs : pcc_dev_stubs_keep_dir_path, static: true)
-
-# Build executable
-doca_pcc_test = executable(DOCA_PREFIX + APP_NAME,
-	host_srcs,
-	c_args : base_c_args,
-	include_directories: [app_inc_dirs, './host'],
-	install_dir : app_install_dir,
-	dependencies : [app_dependencies, pcc_rp_rtt_template_app, pcc_rp_switch_telemetry_app, pcc_np_switch_telemetry_app],
-	install: install_apps
+# Build host executable
+executable(DOCA_PREFIX + APP_NAME,
+	app_srcs,
+	c_args : apps_common_c_args,
+	include_directories: [app_inc_dirs],
+	dependencies : [app_dependencies]
 )

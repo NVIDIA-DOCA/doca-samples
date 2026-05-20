@@ -69,7 +69,7 @@ __global__ void put_signal_bw(struct doca_gpu_dev_verbs_qp *qp,
 	}
 
 	// Check signal atomic fetch add correctness: wait until all atomic flags have been updated locally by threads.
-	// Can re-use previous flag value where the atomic operation assigns (updated_value - 1).
+	// Can reuse previous flag value where the atomic operation assigns (updated_value - 1).
 	if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD) {
 		do {
 			final_val = doca_gpu_dev_verbs_atomic_read<uint64_t, DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(&prev_flag_buf[tidx]);

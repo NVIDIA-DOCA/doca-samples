@@ -50,7 +50,7 @@ __device__ bool verify_message(uintptr_t addr, uint32_t msg_len)
 
 	remote_offload::control::message_header *header = (remote_offload::control::message_header *)addr;
 
-	// Message header is in big endian byte order, so it needs swaped before being checked
+	// Message header is in big endian byte order, so it needs swapped before being checked
 	uint32_t msg_id = byte_swap_32((uint32_t)header->msg_id);
 
 	if (msg_id != (uint32_t)remote_offload::control::message_id::client_request) {

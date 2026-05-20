@@ -53,8 +53,16 @@ doca_error_t upf_accel_pipe_static_entry_add(struct upf_accel_ctx *upf_accel_ctx
 					     void *usr_ctx,
 					     struct doca_flow_pipe_entry **entry)
 {
-	const doca_error_t result =
-		doca_flow_pipe_add_entry(pipe_queue, pipe, match, action_idx, actions, mon, fwd, flags, usr_ctx, entry);
+	const doca_error_t result = doca_flow_pipe_basic_add_entry(pipe_queue,
+								   pipe,
+								   match,
+								   action_idx,
+								   actions,
+								   mon,
+								   fwd,
+								   flags,
+								   usr_ctx,
+								   entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add static entry: %s", doca_error_get_descr(result));
 		return result;

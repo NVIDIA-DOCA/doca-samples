@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -136,8 +136,8 @@ doca_be16_t simple_fwd_pinfo_outer_dst_port(struct simple_fwd_pkt_info *pinfo)
  *
  * @data [in]: packet raw data
  * @len [in]: length of the packet raw data in bytes
- * @l2 [in]: whther or not to set the data pointer in layer 2 field in the packet representation in the application\
- * @fmt [out]: the parsed packet as should be represented in the application fo further processing
+ * @l2 [in]: whether or not to set the data pointer in layer 2 field in the packet representation in the application\
+ * @fmt [out]: the parsed packet as should be represented in the application for further processing
  * @return: 0 on success, negative value otherwise
  */
 static int simple_fwd_parse_pkt_format(uint8_t *data, int len, bool l2, struct simple_fwd_pkt_format *fmt)

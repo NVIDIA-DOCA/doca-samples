@@ -37,6 +37,11 @@
 
 #define META_DMAC_47_32_FIELD (DOCA_BE32_GENMASK(15, 0))
 
+enum copy_to_meta {
+	COPY_MAC_TO_META,
+	COPY_NVGRE_TO_META,
+};
+
 DOCA_LOG_REGISTER(FLOW_COPY_TO_META);
 
 /*
@@ -53,6 +58,7 @@ static doca_error_t create_match_meta_pipe(struct doca_flow_port *port, int port
 	struct doca_flow_match match_mask;
 	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
+	struct doca_flow_fwd fwd_miss;
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	doca_error_t result;
 
@@ -60,6 +66,7 @@ static doca_error_t create_match_meta_pipe(struct doca_flow_port *port, int port
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
+	memset(&fwd_miss, 0, sizeof(fwd_miss));
 
 	/* set match_mask on meta */
 	match_mask.meta.u32[0] = UINT32_MAX;
@@ -93,7 +100,8 @@ static doca_error_t create_match_meta_pipe(struct doca_flow_port *port, int port
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = port_id ^ 1;
 
-	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
+	fwd_miss.type = DOCA_FLOW_FWD_DROP;
+	result = doca_flow_pipe_create(pipe_cfg, &fwd, &fwd_miss, pipe);
 destroy_pipe_cfg:
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 	return result;
@@ -106,7 +114,9 @@ destroy_pipe_cfg:
  * @status [in]: user context for adding entry
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t add_match_meta_pipe_entry(struct doca_flow_pipe *pipe, struct entries_status *status)
+static doca_error_t add_match_meta_pipe_entry(struct doca_flow_pipe *pipe,
+					      struct entries_status *status,
+					      enum copy_to_meta copy_type)
 {
 	struct doca_flow_match match;
 	struct doca_flow_actions actions;
@@ -116,11 +126,20 @@ static doca_error_t add_match_meta_pipe_entry(struct doca_flow_pipe *pipe, struc
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
 
-	/* setting match on meta */
-	match.meta.u32[0] = DOCA_HTOBE32(0xccddeeff);
-	match.meta.u32[1] |= DOCA_BE32_SET(META_DMAC_47_32_FIELD, 0xaabb);
+	if (copy_type == COPY_MAC_TO_META) {
+		/* setting mac match on meta */
+		match.meta.u32[0] = DOCA_HTOBE32(0xccddeeff);
+		match.meta.u32[1] |= DOCA_BE32_SET(META_DMAC_47_32_FIELD, 0xaabb);
+	} else if (copy_type == COPY_NVGRE_TO_META) {
+		/* setting nvgre_vs_id match on meta */
+		match.meta.u32[0] = DOCA_HTOBE32(0x00666666);
+		match.meta.u32[1] = 0;
+	} else {
+		DOCA_LOG_ERR("Incorrect meta match provided");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -135,9 +154,9 @@ static doca_error_t add_match_meta_pipe_entry(struct doca_flow_pipe *pipe, struc
  * @pipe [out]: created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t create_copy_to_meta_pipe(struct doca_flow_port *port,
-					     struct doca_flow_pipe *match_meta_pipe,
-					     struct doca_flow_pipe **pipe)
+static doca_error_t create_copy_mac_to_meta_pipe(struct doca_flow_port *port,
+						 struct doca_flow_pipe *match_meta_pipe,
+						 struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
 	struct doca_flow_actions actions;
@@ -194,7 +213,7 @@ static doca_error_t create_copy_to_meta_pipe(struct doca_flow_port *port,
 		return result;
 	}
 
-	result = set_flow_pipe_cfg(pipe_cfg, "COPY_TO_META_PIPE", DOCA_FLOW_PIPE_BASIC, true);
+	result = set_flow_pipe_cfg(pipe_cfg, "COPY_TO_META_PIPE", DOCA_FLOW_PIPE_BASIC, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -213,7 +232,9 @@ static doca_error_t create_copy_to_meta_pipe(struct doca_flow_port *port,
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = match_meta_pipe;
 
-	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
+	fwd_miss.type = DOCA_FLOW_FWD_DROP;
+
+	result = doca_flow_pipe_create(pipe_cfg, &fwd, &fwd_miss, pipe);
 destroy_pipe_cfg:
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 	return result;
@@ -249,13 +270,186 @@ static doca_error_t add_copy_to_meta_pipe_entry(struct doca_flow_pipe *pipe, str
 
 	SET_MAC_ADDR(match.outer.eth.src_mac, src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
 	return DOCA_SUCCESS;
 }
 
+static doca_error_t create_copy_vsid_to_meta_pipe(struct doca_flow_port *port,
+						  struct doca_flow_pipe *match_meta_pipe,
+						  struct doca_flow_pipe **pipe)
+{
+	struct doca_flow_match match;
+	struct doca_flow_actions actions;
+	struct doca_flow_actions *actions_arr[NB_ACTIONS_ARR];
+	struct doca_flow_fwd fwd;
+	struct doca_flow_fwd fwd_miss;
+	struct doca_flow_pipe_cfg *pipe_cfg;
+	struct doca_flow_action_descs descs;
+	struct doca_flow_action_descs *descs_arr[NB_ACTIONS_ARR];
+	struct doca_flow_action_desc desc_array[NB_ACTION_DESC] = {0};
+	doca_error_t result;
+
+	memset(&match, 0, sizeof(match));
+	memset(&actions, 0, sizeof(actions));
+	memset(&fwd, 0, sizeof(fwd));
+	memset(&fwd_miss, 0, sizeof(fwd_miss));
+	memset(&descs, 0, sizeof(descs));
+
+	/* copy nvgre_vs_id to meta */
+	desc_array[0].type = DOCA_FLOW_ACTION_COPY;
+	desc_array[0].field_op.src.field_string = "tunnel.nvgre.nvgre_vs_id";
+	desc_array[0].field_op.src.bit_offset = 0;
+	desc_array[0].field_op.dst.field_string = "meta.data";
+	desc_array[0].field_op.dst.bit_offset = META_U32_BIT_OFFSET(0);
+	desc_array[0].field_op.width = 24;
+
+	actions_arr[0] = &actions;
+	descs_arr[0] = &descs;
+	descs.nb_action_desc = NB_ACTION_DESC;
+	descs.desc_array = desc_array;
+
+	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = set_flow_pipe_cfg(pipe_cfg, "COPY_VSID_TO_META_PIPE", DOCA_FLOW_PIPE_BASIC, false);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, descs_arr, NB_ACTIONS_ARR);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = match_meta_pipe;
+	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
+destroy_pipe_cfg:
+	doca_flow_pipe_cfg_destroy(pipe_cfg);
+	return result;
+}
+
+static doca_error_t add_copy_vsid_to_meta_pipe_entry(struct doca_flow_pipe *pipe, struct entries_status *status)
+{
+	struct doca_flow_match match;
+	struct doca_flow_pipe_entry *entry;
+
+	/*
+	 * All fields are not changeable, thus we need to add only 1 entry, all values will be
+	 * inherited from the pipe creation
+	 */
+	memset(&match, 0, sizeof(match));
+
+	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, &entry);
+}
+
+static doca_error_t create_root_pipe(struct doca_flow_port *port, struct doca_flow_pipe **pipe)
+{
+	struct doca_flow_match match;
+	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
+	struct doca_flow_monitor monitor;
+	struct doca_flow_fwd fwd;
+	struct doca_flow_fwd fwd_miss;
+	struct doca_flow_pipe_cfg *pipe_cfg;
+	doca_error_t result;
+
+	memset(&match, 0, sizeof(match));
+	memset(&actions, 0, sizeof(actions));
+	memset(&monitor, 0, sizeof(monitor));
+	memset(&fwd, 0, sizeof(fwd));
+	memset(&fwd_miss, 0, sizeof(fwd_miss));
+
+	/* Match on header types */
+	match.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+	match.outer.ip4.next_proto = 0xFF;
+
+	actions_arr[0] = &actions;
+
+	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = set_flow_pipe_cfg(pipe_cfg, "ROOT_PIPE", DOCA_FLOW_PIPE_BASIC, true);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = NULL;
+
+	fwd_miss.type = DOCA_FLOW_FWD_DROP;
+
+	result = doca_flow_pipe_create(pipe_cfg, &fwd, &fwd_miss, pipe);
+destroy_pipe_cfg:
+	doca_flow_pipe_cfg_destroy(pipe_cfg);
+	return result;
+}
+
+static doca_error_t add_root_pipe_entry(struct doca_flow_pipe *pipe,
+					struct doca_flow_pipe *nvgre_pipe,
+					struct doca_flow_pipe *regular_pipe,
+					struct entries_status *status)
+{
+	struct doca_flow_pipe_entry *entry;
+	struct doca_flow_match match;
+	struct doca_flow_fwd fwd;
+	doca_error_t result;
+
+	memset(&match, 0, sizeof(match));
+	memset(&fwd, 0, sizeof(fwd));
+
+	match.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+	match.outer.ip4.next_proto = DOCA_FLOW_PROTO_TCP;
+
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = regular_pipe;
+
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, &entry);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	match.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+	match.outer.ip4.next_proto = DOCA_FLOW_PROTO_GRE;
+
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = nvgre_pipe;
+
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, &entry);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	return DOCA_SUCCESS;
+}
 /*
  * Run flow_copy_to_meta sample
  *
@@ -269,10 +463,12 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
-	struct doca_flow_pipe *pipe;
+	struct doca_flow_pipe *mac_pipe;
+	struct doca_flow_pipe *nvgre_pipe;
+	struct doca_flow_pipe *root_pipe;
 	struct doca_flow_pipe *match_meta_pipe;
 	struct entries_status status;
-	int num_of_entries = 2;
+	int num_of_entries = 6;
 	doca_error_t result;
 	int port_id;
 
@@ -301,7 +497,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 			return result;
 		}
 
-		result = add_match_meta_pipe_entry(match_meta_pipe, &status);
+		result = add_match_meta_pipe_entry(match_meta_pipe, &status, COPY_MAC_TO_META);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
@@ -309,7 +505,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 			return result;
 		}
 
-		result = create_copy_to_meta_pipe(ports[port_id], match_meta_pipe, &pipe);
+		result = create_copy_mac_to_meta_pipe(ports[port_id], match_meta_pipe, &mac_pipe);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
@@ -317,9 +513,49 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 			return result;
 		}
 
-		result = add_copy_to_meta_pipe_entry(pipe, &status);
+		result = add_copy_to_meta_pipe_entry(mac_pipe, &status);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
+			stop_doca_flow_ports(nb_ports, ports);
+			doca_flow_destroy();
+			return result;
+		}
+
+		result = create_copy_vsid_to_meta_pipe(ports[port_id], match_meta_pipe, &nvgre_pipe);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create nvgre pipe: %s", doca_error_get_descr(result));
+			stop_doca_flow_ports(nb_ports, ports);
+			doca_flow_destroy();
+			return result;
+		}
+
+		result = add_copy_vsid_to_meta_pipe_entry(nvgre_pipe, &status);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to add entry to nvgre pipe: %s", doca_error_get_descr(result));
+			stop_doca_flow_ports(nb_ports, ports);
+			doca_flow_destroy();
+			return result;
+		}
+
+		result = add_match_meta_pipe_entry(match_meta_pipe, &status, COPY_NVGRE_TO_META);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
+			stop_doca_flow_ports(nb_ports, ports);
+			doca_flow_destroy();
+			return result;
+		}
+
+		result = create_root_pipe(ports[port_id], &root_pipe);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create root pipe: %s", doca_error_get_descr(result));
+			stop_doca_flow_ports(nb_ports, ports);
+			doca_flow_destroy();
+			return result;
+		}
+
+		result = add_root_pipe_entry(root_pipe, nvgre_pipe, mac_pipe, &status);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to add entry to nvgre pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;

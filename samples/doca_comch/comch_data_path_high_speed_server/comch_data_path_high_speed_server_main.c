@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -35,7 +35,7 @@
 #define DEFAULT_REP_PCI_ADDR "b1:00.0"
 #define DEFAULT_MESSAGE "Message from the client"
 
-DOCA_LOG_REGISTER(COMCH_DATA_PATH_HIGH_SPEED_SERVER : MAIN);
+DOCA_LOG_REGISTER(COMCH_DATA_PATH_HIGH_SPEED_SERVER::MAIN);
 
 /* Sample's Logic */
 doca_error_t start_comch_data_path_server_sample(const char *server_name,

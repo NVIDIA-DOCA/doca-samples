@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -22,11 +22,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-# Check if mpicc exists
-mpicc = find_program('mpicc', required: false)
-if not mpicc.found()
-	reason = 'missing mpicc'
-	warning('Skipping compilation of @0@'.format(APP_NAME) + ' - ' + reason)
+# Check if openMPI is enabled
+if not flag_enable_openmpi_support and skip_app_build
+	set_variable('app_' + APP_NAME + '_disable_reason', 'Missing mpicc')
 	subdir_done()
 endif
 
@@ -35,31 +33,59 @@ host_srcs = files([
 	'host/' + APP_NAME + '_core.c',
 ])
 
-host_hdrs = files([
-	'host/' + APP_NAME + '_core.h',
-])
-
 device_srcs = files([
 	'device/' + APP_NAME + '_dev.c',
 ])
 
+build_script_name = 'build_' + APP_NAME + '.sh'
+build_script = meson.current_source_dir() / build_script_name
+device_code_build_script_name = 'build_device_code.sh'
+device_code_build_script = meson.current_source_dir() / device_code_build_script_name
+if flag_amalgamation_build
+	dpa_script_amalgamation = 'true'
+else
+	dpa_script_amalgamation = 'false'
+endif
+
+# We need to install the public version of the build scripts on our own
+app_install_excludes += build_script_name
+app_install_excludes += build_script_name + public_file_suffix
+app_install_excludes += device_code_build_script_name
+app_install_excludes += device_code_build_script_name + public_file_suffix
+
+install_data(sources : build_script + public_file_suffix, rename : [build_script_name],
+		install_dir : app_install_dir)
+install_data(sources : device_code_build_script + public_file_suffix, rename : [device_code_build_script_name],
+		install_dir : app_install_dir)
+
+# Check if we should skip the compilation of the applications
+if flag_disable_applications_compilation
+	subdir_done()
+endif
+
+# Custom-target samples & apps are only supported in amalgamation build
+if not flag_amalgamation_build
+	set_variable('app_' + APP_NAME + '_disable_reason', 'Internal compilation isn\'t supported for this App outside of amalgamation mode')
+	subdir_done()
+endif
+
+# Can now safely access the runtime variable
+app_lib_dependencies = []
+app_lib_dependencies += doca_dpa_runtime_lib
+
 address_sanitizer = get_option('b_sanitize')
 
 debug_mode = 'none'
-if get_option('buildtype') == 'debug' or get_option('buildtype') == 'debugoptimized'
+if build_debug_mode
 	debug_mode = 'true'
 endif
 
-build_script = meson.current_source_dir() / 'build_dpa_all_to_all.sh'
+# Command to compile the application
 app_builds = find_program(build_script)
-doca_dep = dependency('doca-dpa')
-doca_lib_dir = doca_dep.get_variable(pkgconfig : 'libdir')
-command = [app_builds, meson.current_source_dir(), meson.project_build_root(), address_sanitizer, debug_mode, dpacc_mcpu_flag, doca_lib_dir]
+command = [app_builds, meson.project_source_root(), meson.project_build_root(), doca_version, address_sanitizer, debug_mode, dpa_script_amalgamation, default_dpacc_mcpu_flag]
 
 custom_target(DOCA_PREFIX + APP_NAME,
 		command: command,
 		output : DOCA_PREFIX + APP_NAME,
-		install_dir : app_install_dir,
-		install : install_apps,
+		depends: app_lib_dependencies,
 		build_by_default: true)
-

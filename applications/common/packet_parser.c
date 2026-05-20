@@ -167,6 +167,15 @@ doca_error_t network_parse(uint8_t *data, uint8_t *data_end, uint16_t expected_p
 	return DOCA_SUCCESS;
 }
 
+#ifndef DOCA_BUNDLE_DPDK_FOUND
+static inline uint8_t get_rte_tcp_hdr_len(const struct rte_tcp_hdr *tcp_hdr)
+{
+	uint8_t data_off = (tcp_hdr->data_off & 0xf0) >> 4;
+
+	return data_off * 4;
+}
+#endif
+
 doca_error_t transport_parse(uint8_t *data, uint8_t *data_end, uint8_t proto, struct transport_parser_ctx *ctx)
 {
 	struct rte_tcp_hdr *tcp_hdr;
@@ -181,7 +190,11 @@ doca_error_t transport_parse(uint8_t *data, uint8_t *data_end, uint8_t proto, st
 			DOCA_LOG_DBG("Error parsing TCP header");
 			return DOCA_ERROR_INVALID_VALUE;
 		}
+#ifdef DOCA_BUNDLE_DPDK_FOUND
 		hdr_len = rte_tcp_hdr_len(tcp_hdr);
+#else
+		hdr_len = get_rte_tcp_hdr_len(tcp_hdr);
+#endif
 		if (data + hdr_len > data_end) {
 			DOCA_LOG_DBG("Error parsing TCP options");
 			return DOCA_ERROR_INVALID_VALUE;

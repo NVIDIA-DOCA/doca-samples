@@ -26,14 +26,13 @@
 #ifndef FLOW_COMMON_H_
 #define FLOW_COMMON_H_
 
-#include <rte_common.h>
-
 #include <doca_argp.h>
 #include <doca_flow.h>
 #include <doca_dev.h>
 #include <doca_bitfield.h>
 
 #include <common.h>
+#include <common_utils.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -78,9 +77,10 @@ extern "C" {
 #define SHARED_RESOURCE_NUM_VALUES (7) /* Number of doca_flow_shared_resource_type values */
 #endif
 
-#define FLOW_COMMON_DEV_MAX (8)	   /* Max number of devices */
-#define FLOW_COMMON_REPS_MAX (16)  /* Max number of reps per device */
-#define FLOW_COMMON_PORTS_MAX (16) /* Max number of ports overall */
+#define FLOW_COMMON_DEV_MAX (8)	      /* Max number of devices */
+#define FLOW_COMMON_REPS_MAX (16)     /* Max number of reps per device */
+#define FLOW_COMMON_PORTS_MAX (16)    /* Max number of ports overall */
+#define FLOW_COMMON_PIPE_RULES (8192) /* Max number of rules per pipe */
 
 #ifndef MAX
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
@@ -92,7 +92,8 @@ extern "C" {
 
 #ifndef ACTIONS_MEM_SIZE
 #define ACTIONS_MEM_SIZE(entries) \
-	rte_align32pow2((uint32_t)(entries * DOCA_FLOW_MAX_ENTRY_ACTIONS_MEM_SIZE + GLOBAL_ACTIONS_MEM_SIZE));
+	((uint32_t)common_utils_next_power_of_two((uint64_t)(entries)*DOCA_FLOW_MAX_ENTRY_ACTIONS_MEM_SIZE + \
+						  GLOBAL_ACTIONS_MEM_SIZE))
 #endif
 
 #ifndef ARRAY_DIM

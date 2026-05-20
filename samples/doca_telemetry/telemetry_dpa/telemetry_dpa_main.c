@@ -188,7 +188,7 @@ static doca_error_t register_telemetry_dpa_params(void)
 	}
 	doca_argp_param_set_short_name(run_time_param, "rt");
 	doca_argp_param_set_long_name(run_time_param, "sample-run-time");
-	doca_argp_param_set_description(run_time_param, "Total sample run time, in miliseconds");
+	doca_argp_param_set_description(run_time_param, "Total sample run time, in milliseconds");
 	doca_argp_param_set_callback(run_time_param, run_time_callback);
 	doca_argp_param_set_type(run_time_param, DOCA_ARGP_TYPE_INT);
 	result = doca_argp_register_param(run_time_param);

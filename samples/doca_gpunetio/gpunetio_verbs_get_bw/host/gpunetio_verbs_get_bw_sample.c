@@ -77,7 +77,7 @@ static void client_validate_test(struct verbs_resources *resources)
 		}
 	}
 
-	DOCA_LOG_WARN("Validation successfull! Data received correctly from server");
+	DOCA_LOG_WARN("Validation successful! Data received correctly from server");
 
 	free(buffer);
 }

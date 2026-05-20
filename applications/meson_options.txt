@@ -97,6 +97,8 @@ option('enable_stream_receive_perf', type: 'boolean', value: false,
 	description: 'Enable the Stream Receive Performance application.')
 option('enable_switch', type: 'boolean', value: false,
 	description: 'Enable Switch application.')
+option('enable_time_sync', type: 'boolean', value: false,
+	description: 'Enable Time Sync application.')
 option('enable_upf_accel', type: 'boolean', value: false,
 	description: 'Enable UPF Acceleration application.')
 option('enable_urom_rdmo', type: 'boolean', value: false,

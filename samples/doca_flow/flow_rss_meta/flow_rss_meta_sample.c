@@ -169,7 +169,7 @@ static doca_error_t add_rss_meta_pipe_entry(struct doca_flow_pipe *pipe, struct 
 	/* set meta value */
 	actions.meta.pkt_meta = DOCA_HTOBE32(10);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 

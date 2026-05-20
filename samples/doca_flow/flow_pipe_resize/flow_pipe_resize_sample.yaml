@@ -30,7 +30,7 @@ ports_description:
   port_1: doca_rep_dev
   port_2: doca_rep_dev
 description: "This sample shows how the DOCA Flow pipe resize feature behaves as pipe size increases. Once the pipe reaches 80% of
-              its size, a callback is called that preforms the resize of the pipe. The initial max pipe size is configured to 10. Then 80 entries are added
+              its size, a callback is called that performs the resize of the pipe. The initial max pipe size is configured to 10. Then 80 entries are added
               which will cause pipe resizing 4 times: 10 -> 16 -> 32 -> 64 -> 128. Each of the following packets are related to different resize cycle.
               In the sample odd queue numbers are excluded. For those queues it is optional to call doca_flow_entries_process to get RESIZED event, specifically,
               queue number 1 is skipped during entries processing while the remaining odd queues are not.

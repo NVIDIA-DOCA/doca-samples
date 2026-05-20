@@ -221,7 +221,7 @@ int main(int argc, char **argv)
 
 	/*
 	 * A CUDA context must be initialized before calling GPUNetIO functions.
-	 * cudaFree(0) triggers tje CUDA runtime initialization and report any errors.
+	 * cudaFree(0) triggers the CUDA runtime initialization and report any errors.
 	 */
 	cuda_ret = cudaFree(0);
 	if (cuda_ret != cudaSuccess) {

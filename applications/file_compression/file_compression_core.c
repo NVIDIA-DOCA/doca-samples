@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -46,7 +46,7 @@
 #define DECOMPRESS_RATIO 1032		   /* Maximal decompress ratio size */
 #define DEFAULT_TIMEOUT 10		   /* default timeout for receiving messages */
 
-DOCA_LOG_REGISTER(FILE_COMPRESSION::Core);
+DOCA_LOG_REGISTER(FILE_COMPRESSION::CORE);
 
 struct file_info_message {
 	uint64_t checksum; /* Checksum of file to be transferred */

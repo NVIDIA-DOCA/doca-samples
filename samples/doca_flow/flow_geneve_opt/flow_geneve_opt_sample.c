@@ -297,7 +297,7 @@ static doca_error_t add_geneve_opt_pipe_entries(struct doca_flow_pipe *pipe, str
 	/* Third option - data example */
 	match.tun.geneve_options[13].data = DOCA_HTOBE32(0x00abcdef);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -313,7 +313,7 @@ static doca_error_t add_geneve_opt_pipe_entries(struct doca_flow_pipe *pipe, str
 	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, mac2[0], mac2[1], mac2[2], mac2[3], mac2[4], mac2[5]);
 	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV6);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -329,7 +329,7 @@ static doca_error_t add_geneve_opt_pipe_entries(struct doca_flow_pipe *pipe, str
 	SET_MAC_ADDR(actions.decap_cfg.eth.dst_mac, mac2[5], mac2[4], mac2[3], mac2[2], mac2[1], mac2[0]);
 	actions.decap_cfg.eth.type = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_IPV4);
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 1, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 

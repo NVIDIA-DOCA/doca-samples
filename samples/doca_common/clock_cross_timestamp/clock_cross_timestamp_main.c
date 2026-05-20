@@ -50,7 +50,7 @@ static uint64_t get_clock_id(char *clock_type)
 		return DOCA_CLOCK_NIC_REAL_TIME;
 	if (strcmp(clock_type, "nic_dpa") == 0)
 		return DOCA_CLOCK_NIC_DPA_TIMER;
-	if (strcmp(clock_type, "host_cyles") == 0)
+	if (strcmp(clock_type, "host_cycles") == 0)
 		return DOCA_CLOCK_HOST_COUNTER_CYCLES;
 	if (strcmp(clock_type, "host_rt") == 0)
 		return DOCA_CLOCK_HOST_REAL_TIME;
@@ -171,7 +171,7 @@ static doca_error_t register_clock_cross_timestamp_params(void)
 	doca_argp_param_set_long_name(prim_clock, "primary-clock");
 	doca_argp_param_set_description(
 		prim_clock,
-		"'nic_fr', 'nic_rt', 'nic_dpa', 'host_cyles', 'host_rt', 'host_mon', or 'host_mon_raw'");
+		"'nic_fr', 'nic_rt', 'nic_dpa', 'host_cycles', 'host_rt', 'host_mon', or 'host_mon_raw'");
 	doca_argp_param_set_mandatory(prim_clock);
 	doca_argp_param_set_callback(prim_clock, prim_clock_callback);
 	doca_argp_param_set_type(prim_clock, DOCA_ARGP_TYPE_STRING);

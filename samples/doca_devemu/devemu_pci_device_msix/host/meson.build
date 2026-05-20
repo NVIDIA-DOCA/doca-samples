@@ -22,51 +22,13 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-project('DOCA_SAMPLE', 'C', 'CPP',
-	# Get version number from file.
-	version: run_command(find_program('cat'),
-		files('../../../../VERSION'), check: true).stdout().strip(),
-	license: 'BSD-3',
-	default_options: ['buildtype=debug'],
-	meson_version: '>= 0.61.2'
-)
+sample_srcs = files([
+	SAMPLE_NAME + '_host_sample.c',
+])
 
-SAMPLE_NAME = 'devemu_pci_device_msix_host'
+# Needed because we use common DOCA-Wide utilities in the main
+common_dir_path = '/'.join([meson.project_source_root(), 'common', 'public'])
 
-# Comment this line to restore warnings of experimental DOCA features
-add_project_arguments('-D DOCA_ALLOW_EXPERIMENTAL_API', language: ['c', 'cpp'])
-
-sample_dependencies = []
-# Required for all DOCA programs
-sample_dependencies += dependency('doca-common')
-# The DOCA library of the sample itself
-sample_dependencies += dependency('doca-devemu')
-# Utility DOCA library for executables
-sample_dependencies += dependency('doca-argp')
-
-sample_srcs = [
-	# The sample itself
-	SAMPLE_NAME + '_sample.c',
-	# Main function for the sample's executable
-	SAMPLE_NAME + '_main.c',
-	# Common code for the DOCA library samples
-	'../../devemu_pci_host_common.c',
-	# Common code for all DOCA samples
-	'../../../common.c',
-]
-
-sample_inc_dirs  = []
-# Common DOCA library logic
-sample_inc_dirs += include_directories('../..')
-# Common DOCA logic (samples)
-sample_inc_dirs += include_directories('../../..')
-# Common DOCA logic
-sample_inc_dirs += include_directories('../../../..')
-# Common DOCA logic (applications)
-sample_inc_dirs += include_directories('../../../../applications/common/')
-
-executable('doca_' + SAMPLE_NAME, sample_srcs,
-	c_args : '-Wno-missing-braces',
-	dependencies : sample_dependencies,
-	include_directories: sample_inc_dirs,
-	install: false)
+sample_main_srcs = files([
+	SAMPLE_NAME + '_host_main.c',
+])

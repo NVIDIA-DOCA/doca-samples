@@ -120,7 +120,7 @@ static doca_error_t add_rss_pipe_entry(struct doca_flow_pipe *pipe, struct entri
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &rss_entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &rss_entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -221,7 +221,7 @@ static doca_error_t add_to_kernel_pipe_entry(struct doca_flow_pipe *pipe, struct
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &to_kernel_entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &to_kernel_entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -320,7 +320,7 @@ static doca_error_t add_switch_pipe_entries(struct doca_flow_pipe *pipe, struct 
 {
 	struct doca_flow_match match;
 	struct doca_flow_fwd fwd;
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	doca_error_t result;
 	int entry_index = 0;
 
@@ -346,20 +346,20 @@ static doca_error_t add_switch_pipe_entries(struct doca_flow_pipe *pipe, struct 
 		fwd.type = DOCA_FLOW_FWD_PORT;
 		fwd.port_id = entry_index + 1; /* The port to forward to is defined based on the entry index */
 
-		/* last entry should be inserted with DOCA_FLOW_NO_WAIT flag */
+		/* last entry should be inserted with DOCA_FLOW_ENTRY_FLAGS_NO_WAIT flag */
 		if (entry_index == NB_ENTRIES - 1)
-			flags = DOCA_FLOW_NO_WAIT;
+			flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 
-		result = doca_flow_pipe_add_entry(0,
-						  pipe,
-						  &match,
-						  0,
-						  NULL,
-						  NULL,
-						  &fwd,
-						  flags,
-						  status,
-						  &entries[entry_index]);
+		result = doca_flow_pipe_basic_add_entry(0,
+							pipe,
+							&match,
+							0,
+							NULL,
+							NULL,
+							&fwd,
+							flags,
+							status,
+							&entries[entry_index]);
 
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
@@ -457,7 +457,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_switch_ctx *ct
 	resource.nr_counters = TOTAL_ENTRIES; /* counter per entry */
 	resource.nr_rss = 1;
 
-	result = init_doca_flow(nb_queues, "switch,isolated,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;

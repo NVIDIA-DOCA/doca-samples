@@ -85,7 +85,7 @@ static doca_error_t create_classifier_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to create classifier pipe: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, &entry);
 
 destroy_pipe_cfg:
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
@@ -213,7 +213,7 @@ static doca_error_t add_gtp_encap_pipe_entry(struct doca_flow_pipe *pipe, struct
 	actions.encap_cfg.encap.tun.gtp_next_ext_hdr_type = DOCA_FLOW_GTP_EXT_PSC;
 	actions.encap_cfg.encap.tun.gtp_ext_psc_qfi = 0x26;
 
-	result = doca_flow_pipe_add_entry(0, pipe, NULL, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, NULL, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 

@@ -68,7 +68,7 @@ static void check_for_valid_entry_aging(struct doca_flow_pipe_entry *entry,
 	if (status != DOCA_FLOW_ENTRY_STATUS_SUCCESS)
 		entry_status->status->failure = true; /* set failure to true if processing failed */
 	if (op == DOCA_FLOW_ENTRY_OP_AGED) {
-		result = doca_flow_pipe_remove_entry(pipe_queue, DOCA_FLOW_NO_WAIT, entry);
+		result = doca_flow_pipe_remove_entry(pipe_queue, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT, entry);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to remove entry number %d from port %d: %s",
 				     entry_status->entry_num,
@@ -200,7 +200,7 @@ static doca_error_t add_aging_pipe_entries(struct doca_flow_pipe *pipe,
 	struct doca_flow_actions actions;
 	struct doca_flow_monitor monitor;
 	int i;
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	doca_be32_t dst_ip_addr = BE_IPV4_ADDR(8, 8, 8, 8);
 	doca_be16_t dst_port = DOCA_HTOBE16(80);
 	doca_be16_t src_port = DOCA_HTOBE16(1234);
@@ -227,19 +227,19 @@ static doca_error_t add_aging_pipe_entries(struct doca_flow_pipe *pipe,
 		user_data[i].status = status;
 
 		if (i == num_of_aging_entries - 1)
-			flags = DOCA_FLOW_NO_WAIT; /* send the last entry with DOCA_FLOW_NO_WAIT flag for pushing all
-						      the entries */
+			flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT; /* send the last entry with DOCA_FLOW_ENTRY_FLAGS_NO_WAIT
+						      flag for pushing all the entries */
 
-		result = doca_flow_pipe_add_entry(0,
-						  pipe,
-						  &match,
-						  0,
-						  &actions,
-						  &monitor,
-						  NULL,
-						  flags,
-						  &user_data[i],
-						  NULL);
+		result = doca_flow_pipe_basic_add_entry(0,
+							pipe,
+							&match,
+							0,
+							&actions,
+							&monitor,
+							NULL,
+							flags,
+							&user_data[i],
+							NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			return result;

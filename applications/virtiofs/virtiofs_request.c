@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -33,7 +33,7 @@
 #include <virtiofs_mpool.h>
 #include <virtiofs_core.h>
 
-DOCA_LOG_REGISTER(VIRTIOFS_REQUEST)
+DOCA_LOG_REGISTER(VIRTIOFS_REQUEST);
 
 extern bool skip_rw;
 
@@ -89,7 +89,7 @@ static bool virtiofs_is_resource_available(struct virtiofs_request *dreq)
 {
 	/* if no dma resources, queue the request for later */
 	if (dreq->dio->reqs_avail == 0) {
-		DOCA_LOG_WARN("dev %s: adding req 0x%p to dio 0x%p pending list",
+		DOCA_LOG_WARN("dev %s: adding req %p to dio %p pending list",
 			      dreq->dio->dev->config.name,
 			      dreq,
 			      dreq->dio);
@@ -124,11 +124,7 @@ static doca_error_t virtiofs_process_datain(struct virtiofs_request *dreq)
 		goto out_err;
 	}
 	/* Reset data_len as the "entry" is reused */
-	err = doca_buf_reset_data_len(dreq->datain.arm_doca_buf);
-	if (doca_unlikely(err != DOCA_SUCCESS)) {
-		DOCA_LOG_ERR("Failed to reset data len for datain doca_buf, err: [%s]", doca_error_get_name(err));
-		goto out_err;
-	}
+	(void)doca_buf_reset_data_len(dreq->datain.arm_doca_buf);
 
 	dreq->dma_op = VIRTIOFS_REQUEST_DMA_OP_FROM_HOST;
 
@@ -153,18 +149,12 @@ static doca_error_t virtiofs_request_dma_from_host_done(struct virtiofs_request 
 	doca_error_t err;
 
 	if (dreq->in_datain) {
-		err = doca_buf_get_data(dreq->datain.arm_doca_buf, &datain_data);
-		if (err != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to get doca buf data, err: %s", doca_error_get_name(err));
-			return err;
-		}
+		(void)doca_buf_get_data(dreq->datain.arm_doca_buf, &datain_data);
 	}
 
 	if (dreq->out_dataout) {
 		dataout->host_doca_buf = dreq->out_dataout;
 		dataout->length = doca_devemu_vfs_fuse_req_get_dataout_data_len(dreq->devemu_fuse_req);
-		size_t len;
-		doca_buf_get_data_len(dataout->host_doca_buf, &len);
 
 		err = virtiofs_mpool_set_buf_get(dreq->dio->mpool_set, dataout->length, &dreq->dataout.arm_doca_buf);
 		if (err != DOCA_SUCCESS) {
@@ -172,11 +162,7 @@ static doca_error_t virtiofs_request_dma_from_host_done(struct virtiofs_request 
 			return err;
 		}
 
-		err = doca_buf_get_data(dreq->dataout.arm_doca_buf, &dataout_data);
-		if (err != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to get doca buffer data, err: %s", doca_error_get_name(err));
-			return err;
-		}
+		(void)doca_buf_get_data(dreq->dataout.arm_doca_buf, &dataout_data);
 	}
 
 	if (doca_unlikely(skip_rw)) {
@@ -206,6 +192,7 @@ static doca_error_t virtiofs_request_dma_from_host_done(struct virtiofs_request 
 		dreq->dio->fsdev_tctx = dreq->dio->dev->fsdev->ops->thread_ctx_get(dreq->dio->dev->fsdev);
 		if (doca_unlikely(dreq->dio->fsdev_tctx == NULL)) {
 			DOCA_LOG_ERR("Failed to get fsdev thread ctx");
+			virtiofs_req_complete(dreq, DOCA_ERROR_UNKNOWN);
 			return DOCA_ERROR_UNKNOWN;
 		}
 	}
@@ -236,7 +223,7 @@ static void virtiofs_request_handle(struct virtiofs_request *dreq)
 
 	if (dreq->in_datain) {
 		/* If a request has "datain", we can submit it to doca_dma and add it to order list,
-		 * since the doca_dma gurantees ordered completions. */
+		 * since the doca_dma guarantees ordered completions. */
 		if (virtiofs_process_datain(dreq) == DOCA_SUCCESS)
 			TAILQ_INSERT_TAIL(&dreq->dio->order, dreq, order);
 	} else {
@@ -269,8 +256,8 @@ static void virtiofs_req_complete(struct virtiofs_request *dreq, doca_error_t er
 
 	if (dreq->dataout.arm_doca_buf) {
 		/* Reset the "data" ptr of dataout doca_buf */
-		doca_buf_get_head(dreq->dataout.arm_doca_buf, &head);
-		doca_buf_set_data(dreq->dataout.arm_doca_buf, head, 0);
+		(void)doca_buf_get_head(dreq->dataout.arm_doca_buf, &head);
+		(void)doca_buf_set_data(dreq->dataout.arm_doca_buf, head, 0);
 
 		virtiofs_mpool_buf_put(dreq->dataout.arm_doca_buf);
 		dreq->dataout.arm_doca_buf = NULL;
@@ -315,28 +302,16 @@ static doca_error_t virtiofs_request_dma_to_host_progress(struct virtiofs_reques
 	 */
 
 	/* Get current writable descriptor len */
-	err = doca_buf_get_data_len(dataout->host_doca_buf, &curr_host_buf_len);
-	if (err != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get doca_buf data len, err: [%s]", doca_error_get_name(err));
-		return err;
-	}
+	(void)doca_buf_get_data_len(dataout->host_doca_buf, &curr_host_buf_len);
 
 	/* Set arm_doca_buf's data addr/len to the next dataout segment to be DMAed to host */
-	err = doca_buf_get_head(dataout->arm_doca_buf, (void **)&arm_buf_head);
-	if (doca_unlikely(err != DOCA_SUCCESS)) {
-		DOCA_LOG_ERR("Failed to get data from doca_buf, err: [%s]", doca_error_get_name(err));
-		return err;
-	}
+	(void)doca_buf_get_head(dataout->arm_doca_buf, (void **)&arm_buf_head);
 
-	err = doca_buf_set_data(dataout->arm_doca_buf, arm_buf_head + dreq->dma_to_host_offset, curr_host_buf_len);
-	if (doca_unlikely(err != DOCA_SUCCESS)) {
-		DOCA_LOG_ERR("Failed to set data from doca_buf, err: [%s]", doca_error_get_name(err));
-		return err;
-	}
+	(void)doca_buf_set_data(dataout->arm_doca_buf, arm_buf_head + dreq->dma_to_host_offset, curr_host_buf_len);
 
 	/* Set current host_doca_buf's data_len to 0 as this is the dest now */
-	err = doca_buf_get_data(dataout->host_doca_buf, (void **)&host_buf_data);
-	err = doca_buf_set_data(dataout->host_doca_buf, host_buf_data, 0);
+	(void)doca_buf_get_data(dataout->host_doca_buf, (void **)&host_buf_data);
+	(void)doca_buf_set_data(dataout->host_doca_buf, host_buf_data, 0);
 
 	dreq->dma_op = VIRTIOFS_REQUEST_DMA_OP_TO_HOST;
 

@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -21,6 +21,11 @@
 # STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
+
+# Check if we should skip the compilation of the applications
+if flag_disable_applications_compilation
+	subdir_done()
+endif
 
 # Check for libnfs library
 dependency_libnfs = dependency('libnfs', required: false)
@@ -60,7 +65,6 @@ app_inc_dirs += include_directories('.')
 
 executable(DOCA_PREFIX + APP_NAME, app_srcs,
 	override_options: ['cpp_std=c++17'],
-	c_args : base_c_args,
+	c_args : apps_common_c_args,
 	dependencies : app_dependencies,
-	include_directories : app_inc_dirs,
-	install: install_apps)
+	include_directories: app_inc_dirs)

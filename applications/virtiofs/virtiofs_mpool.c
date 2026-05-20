@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,6 +26,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <unistd.h>
+#include <stdio.h>
+
 #include <doca_mmap.h>
 #include <doca_log.h>
 #include <doca_buf_pool.h>
@@ -42,20 +45,64 @@ struct virtiofs_mpool {
 	struct doca_buf_pool *bpool;
 	struct doca_mmap *mmap;
 	void *memory;
+	size_t aligned_size;
 	struct virtiofs_mpool_attr attr;
 };
 
-#define HUGE_PAGE_SIZE (2 * 1024 * 1024)
+#define HUGE_PAGE_SIZE_2MB (2UL * 1024 * 1024)
+
+/* Get the huge page size from the system */
+static size_t virtiofs_mpool_get_hugepage_size(void)
+{
+	FILE *fp;
+	char line[256];
+	size_t hugepage_size = HUGE_PAGE_SIZE_2MB; /* Default to 2MB */
+
+	fp = fopen("/proc/meminfo", "r");
+	if (fp == NULL) {
+		DOCA_LOG_WARN("Failed to open /proc/meminfo, using default 2MB hugepage");
+		return hugepage_size;
+	}
+
+	while (fgets(line, sizeof(line), fp)) {
+		if (strncmp(line, "Hugepagesize:", 13) == 0) {
+			unsigned long size_kb;
+			if (sscanf(line, "Hugepagesize: %lu kB", &size_kb) == 1) {
+				if (size_kb > 0)
+					hugepage_size = size_kb * 1024;
+				break;
+			}
+		}
+	}
+
+	fclose(fp);
+	return hugepage_size;
+}
 
 static size_t virtiofs_mpool_hp_align(size_t size)
 {
-	return (size + HUGE_PAGE_SIZE - 1) & ~(HUGE_PAGE_SIZE - 1);
+	size_t hugepage_size = virtiofs_mpool_get_hugepage_size();
+	size_t mask;
+
+	/* Check for potential overflow in (size + hugepage_size) */
+	if (size > SIZE_MAX - hugepage_size) {
+		DOCA_LOG_ERR("Size too large for hugepage alignment: %zu", size);
+		return 0;
+	}
+
+	mask = hugepage_size - 1;
+	return (size + mask) & ~mask;
 }
 
-static void *virtiofs_mpool_hp_malloc(size_t size)
+static void *virtiofs_mpool_hp_malloc(size_t size, size_t *aligned_size)
 {
-	size_t aligned_size = virtiofs_mpool_hp_align(size);
-	void *ptr = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+	*aligned_size = virtiofs_mpool_hp_align(size);
+	if (*aligned_size == 0) {
+		DOCA_LOG_ERR("Failed to align size for hugepage allocation");
+		return NULL;
+	}
+
+	void *ptr = mmap(NULL, *aligned_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 	if (ptr == MAP_FAILED) {
 		DOCA_LOG_ERR("Failed to allocate huge page memory, err: %s", strerror(errno));
 		return NULL;
@@ -64,9 +111,9 @@ static void *virtiofs_mpool_hp_malloc(size_t size)
 	return ptr;
 }
 
-static void virtiofs_mpool_hp_free(void *ptr, size_t size)
+static void virtiofs_mpool_hp_free(void *ptr, size_t aligned_size)
 {
-	if (munmap(ptr, virtiofs_mpool_hp_align(size)) != 0)
+	if (munmap(ptr, aligned_size) != 0)
 		DOCA_LOG_ERR("Failed to free huge page memory, err: %s", strerror(errno));
 }
 
@@ -85,7 +132,7 @@ struct virtiofs_mpool *virtiofs_mpool_create(struct virtiofs_mpool_attr *attr)
 
 	mpool->attr = *attr;
 
-	mpool->memory = virtiofs_mpool_hp_malloc(attr->num_bufs * attr->buf_size);
+	mpool->memory = virtiofs_mpool_hp_malloc(attr->num_bufs * attr->buf_size, &mpool->aligned_size);
 	if (mpool->memory == NULL) {
 		DOCA_LOG_ERR("Failed to allocate memory for mpool");
 		goto mpool_free;
@@ -178,7 +225,7 @@ void virtiofs_mpool_destroy(struct virtiofs_mpool *mpool)
 	doca_buf_pool_destroy(mpool->bpool);
 	doca_mmap_stop(mpool->mmap);
 	doca_mmap_destroy(mpool->mmap);
-	virtiofs_mpool_hp_free(mpool->memory, mpool->attr.num_bufs * mpool->attr.buf_size);
+	virtiofs_mpool_hp_free(mpool->memory, mpool->aligned_size);
 	free(mpool);
 }
 

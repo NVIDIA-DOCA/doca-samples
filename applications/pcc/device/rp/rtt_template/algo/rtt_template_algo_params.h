@@ -34,7 +34,7 @@
 #define NEW_FLOW_RATE (1 << (20))	       /* Rate format in fixed point 20 */
 #define MIN_RATE (1 << (20 - 14))	       /* Rate format in fixed point 20 */
 #define MAX_DELAY (150000)		       /* Maximum delay - in nanosec */
-#define INITIAL_MIN_RTT (200000)	       /* Inital minimal RTT - in nanosec */
+#define INITIAL_MIN_RTT (200000)	       /* Initial minimal RTT - in nanosec */
 
 #define UPDATE_FACTOR_MAX (10 * (1 << 16)) /* Maximum value of update factor */
 #define AI_MAX (1 << (20))		   /* Maximum value of AI */

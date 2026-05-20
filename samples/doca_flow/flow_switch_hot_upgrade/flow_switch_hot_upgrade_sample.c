@@ -164,16 +164,16 @@ static doca_error_t add_switch_pipe_entries(uint8_t switch_port_idx,
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = (switch_port_idx * 3) + 1; /* first representor of this port */
 
-	result = doca_flow_pipe_add_entry(0,
-					  control->pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  status,
-					  &control->tcp_entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						control->pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						status,
+						&control->tcp_entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add TCP pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -182,16 +182,16 @@ static doca_error_t add_switch_pipe_entries(uint8_t switch_port_idx,
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
 	fwd.port_id = (switch_port_idx * 3) + 2; /* second representor of this port */
 
-	result = doca_flow_pipe_add_entry(0,
-					  control->pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_NO_WAIT,
-					  status,
-					  &control->udp_entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						control->pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						status,
+						&control->udp_entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add UDP pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -532,7 +532,7 @@ doca_error_t flow_switch_hot_upgrade(int nb_queues,
 	uint8_t switch_port_idx;
 	doca_error_t result;
 
-	result = init_doca_flow(nb_queues, "switch,isolated", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;

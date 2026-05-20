@@ -97,7 +97,7 @@ static void server_validate_test(struct verbs_resources *resources)
 		free(buffer);
 	}
 
-	DOCA_LOG_WARN("Data validation successfull! Data received correctly from client\n");
+	DOCA_LOG_WARN("Data validation successful! Data received correctly from client\n");
 }
 
 static doca_error_t destroy_local_memory_objects(struct verbs_resources *resources)

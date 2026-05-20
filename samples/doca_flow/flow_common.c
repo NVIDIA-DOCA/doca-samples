@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -22,18 +22,21 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
+#include "doca_error.h"
 #include <string.h>
 #include <unistd.h>
 
 #include <doca_log.h>
-#include <doca_dpdk.h>
 #include <doca_argp.h>
 
-#include <rte_eal.h>
+#ifndef FLOW_NO_DPDK
+#include <doca_dpdk.h>
+#include <dpdk_utils.h>
+#endif
 
 #include "flow_common.h"
 
-DOCA_LOG_REGISTER(flow_common);
+DOCA_LOG_REGISTER(FLOW_COMMON);
 
 /* Hold the converter function for the flow_param_dev_callback (if exists) */
 static flow_dev_ctx_from_user_ctx_t global_user_ctx_converter = NULL;
@@ -299,7 +302,7 @@ static doca_error_t create_doca_flow_port_cfg(int port_id,
 	if (resources && resources->mode == DOCA_FLOW_RESOURCE_MODE_PORT) {
 		result = set_port_level_resources(port_cfg, resources);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set port levle resources: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed to set port level resources: %s", doca_error_get_descr(result));
 			doca_flow_port_cfg_destroy(port_cfg);
 			return result;
 		}
@@ -339,6 +342,13 @@ static doca_error_t create_doca_flow_port(int port_id,
 	result = doca_flow_port_cfg_set_dev(port_cfg, dev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg dev: %s", doca_error_get_descr(result));
+		goto destroy_port_cfg;
+	}
+
+	/* Set thread window interval to match thread interval internally */
+	result = doca_flow_port_cfg_set_devargs(port_cfg, "th_win_us=0");
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg devargs: %s", doca_error_get_descr(result));
 		goto destroy_port_cfg;
 	}
 
@@ -537,6 +547,13 @@ doca_error_t init_doca_flow_vnf_ports(int nb_ports,
 				      uint32_t actions_mem_size[],
 				      struct flow_resources *resources)
 {
+#ifdef FLOW_NO_DPDK
+	(void)nb_ports;
+	(void)ports;
+	(void)actions_mem_size;
+	(void)resources;
+	return DOCA_ERROR_NOT_SUPPORTED;
+#else
 	struct doca_dev *dev_arr[nb_ports];
 	doca_error_t result;
 	int i;
@@ -551,6 +568,7 @@ doca_error_t init_doca_flow_vnf_ports(int nb_ports,
 	}
 
 	return init_doca_flow_ports(nb_ports, ports, true, dev_arr, actions_mem_size, resources);
+#endif
 }
 
 doca_error_t set_flow_pipe_cfg(struct doca_flow_pipe_cfg *cfg,
@@ -700,6 +718,8 @@ doca_error_t flow_param_rep_callback(void *param, void *config)
 			ctx->devs_manager[dev_idx].dev_arg = rep_ctx->dev_ctx.devargs;
 		else
 			ctx->devs_manager[dev_idx].dev_arg = ctx->default_dev_args;
+		/* Count the parent device as a port */
+		ctx->nb_ports++;
 	} else {
 		if (ctx->devs_manager[dev_idx].nb_reps == FLOW_COMMON_REPS_MAX) {
 			DOCA_LOG_ERR("Encountered too many representors for device %p, maximal number of reps is: %d",
@@ -791,26 +811,30 @@ doca_error_t register_flow_device_params(flow_dev_ctx_from_user_ctx_t converter)
 
 doca_error_t flow_init_dpdk(int argc, char **dpdk_argv)
 {
-	char *argv[argc + 2];
-	doca_error_t result;
-
-	memcpy(argv, dpdk_argv, sizeof(argv[0]) * argc);
-	argv[argc++] = "-a";
-	argv[argc++] = "pci:00:00.0";
-
-	result = rte_eal_init(argc, argv);
-	if (result < 0) {
-		DOCA_LOG_ERR("EAL initialization failed");
-		return DOCA_ERROR_DRIVER;
-	}
-	return DOCA_SUCCESS;
+#ifdef FLOW_NO_DPDK
+	(void)argc;
+	(void)dpdk_argv;
+	return DOCA_ERROR_NOT_SUPPORTED;
+#else
+	return dpdk_init_without_probing(argc, dpdk_argv);
+#endif
 }
 
 doca_error_t init_doca_flow_devs(struct flow_dev_ctx *ctx)
 {
-	doca_error_t result;
+#ifndef FLOW_NO_DPDK
+	doca_error_t result = DOCA_SUCCESS;
 	int i;
+#endif
+	if (!ctx->nb_devs) {
+		DOCA_LOG_ERR("No available devices");
+		return DOCA_ERROR_BAD_STATE;
+	}
 
+#ifdef FLOW_NO_DPDK
+	/* In DPDK-free mode, devices are already opened by argp. nothing to probe via DPDK */
+	return DOCA_SUCCESS;
+#else
 	for (i = 0; i < ctx->nb_devs; i++) {
 		/* If we have a required capability callback, we need to check if the device supports it */
 		if (ctx->port_cap != NULL) {
@@ -857,6 +881,7 @@ quit:
 	if (result != DOCA_SUCCESS)
 		destroy_doca_flow_devs(ctx);
 	return result;
+#endif
 }
 
 doca_error_t close_doca_dev_reps(struct doca_dev_rep *dev_reps[], uint16_t nb_reps)

@@ -122,7 +122,7 @@ static doca_error_t add_root_pipe_entry(struct doca_flow_pipe *pipe,
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = next_pipe;
 
-	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, &entry);
+	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, &fwd, 0, status, &entry);
 }
 
 /*
@@ -225,13 +225,13 @@ static doca_error_t add_comparison_pipe_entry(struct doca_flow_pipe *pipe,
 	 * The immediate value to compare with ESP sequence number field is provided in the match structure.
 	 * The value is hard-coded 3 (arbitrary).
 	 */
+	match.tun.type = DOCA_FLOW_TUN_ESP;
 	match.tun.esp_sn = DOCA_HTOBE32(3);
 
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = port_id ^ 1;
 
 	return doca_flow_pipe_control_add_entry(0 /* queue */,
-						0 /* priority */,
 						pipe,
 						&match,
 						NULL /* match_mask */,
@@ -240,6 +240,7 @@ static doca_error_t add_comparison_pipe_entry(struct doca_flow_pipe *pipe,
 						NULL,
 						NULL,
 						NULL,
+						0 /* priority */,
 						&fwd,
 						status,
 						&entry);

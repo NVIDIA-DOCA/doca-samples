@@ -100,7 +100,7 @@ static doca_error_t create_rss_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add RSS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -172,7 +172,7 @@ static doca_error_t create_egress_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add EGRESS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -256,7 +256,7 @@ static doca_error_t create_tcp_flags_filter_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	match.outer.tcp.flags = 0;
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create TCP flags filter pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -371,12 +371,14 @@ static void parse_packet(struct rte_mbuf *packet,
  *
  * @port [in]: Port id to which an entry should be inserted
  * @ct_queue [in]: DOCA Flow CT queue number
+ * @ct_pipe [in]: DOCA Flow CT pipe
  * @ct_status [in]: User context for adding CT entry
  * @entry [in/out]: CT entry
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t process_packets(struct doca_flow_port *port,
 				    uint16_t ct_queue,
+				    struct doca_flow_pipe *ct_pipe,
 				    struct entries_status *ct_status,
 				    struct doca_flow_pipe_entry **entry)
 {
@@ -389,12 +391,18 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 			       DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_COUNTER_ORIGIN;
 	uint8_t tcp_state;
 	doca_error_t result;
-	int i, nb_packets, nb_processed = 0, total_valid_packets = 0;
+	int rc, i, nb_packets, nb_processed = 0, total_valid_packets = 0;
 	uint64_t timeout_s = 5; /* Timeout in seconds */
 	time_t end_time, max_end_time;
 
 	memset(&match_o, 0, sizeof(match_o));
 	memset(&match_r, 0, sizeof(match_r));
+
+	rc = rte_flow_dynf_metadata_register();
+	if (unlikely(rc)) {
+		DOCA_LOG_ERR("Enable metadata failed");
+		return DOCA_ERROR_BAD_STATE;
+	}
 
 	max_end_time = time(NULL) + timeout_s; /* Absolute maximum timeout */
 	end_time = max_end_time;	       /* Current timeout */
@@ -419,7 +427,7 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 
 				result = flow_ct_create_entry(port,
 							      ct_queue,
-							      NULL,
+							      ct_pipe,
 							      prepare_flags,
 							      entry_flags,
 							      &match_o,
@@ -451,7 +459,7 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 				total_valid_packets++;
 				/* Updated timeout */
 				end_time = MIN(time(NULL) + 2, max_end_time);
-				result = doca_flow_ct_rm_entry(ct_queue, NULL, entry_flags, *entry);
+				result = doca_flow_ct_rm_entry(ct_queue, ct_pipe, entry_flags, *entry);
 				if (result != DOCA_SUCCESS) {
 					DOCA_LOG_ERR("Failed to remove CT pipe entry: %s",
 						     doca_error_get_descr(result));
@@ -582,13 +590,13 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct flow_switch_c
 	resource.nr_counters = 1;
 	resource.nr_rss = 1;
 
-	result = init_doca_flow(nb_queues, "switch,hws,isolated,expert", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws,expert", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
 	}
 
-	/* Dont use zone masking */
+	/* Don't use zone masking */
 	memset(&o_zone_mask, 0, sizeof(o_zone_mask));
 	memset(&o_modify_mask, 0, sizeof(o_modify_mask));
 	memset(&r_zone_mask, 0, sizeof(r_zone_mask));
@@ -661,13 +669,13 @@ doca_error_t flow_ct_tcp_entry_finalize(uint16_t nb_queues, struct flow_switch_c
 	}
 
 	DOCA_LOG_INFO("Wait a few seconds for 'SYN' packets to arrive");
-	result = process_packets(ports[0], ct_queue, &ct_status, &tcp_entry);
+	result = process_packets(ports[0], ct_queue, ct_pipe, &ct_status, &tcp_entry);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
 	DOCA_LOG_INFO("Waiting for 'FIN'/'RST' packets to arrive before ending the session");
 	entry_get(ct_pipe, tcp_entry, ct_queue);
-	result = process_packets(ports[0], ct_queue, &ct_status, &tcp_entry);
+	result = process_packets(ports[0], ct_queue, ct_pipe, &ct_status, &tcp_entry);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 

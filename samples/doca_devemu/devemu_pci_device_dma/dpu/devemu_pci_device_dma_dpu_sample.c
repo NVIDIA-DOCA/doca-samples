@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,6 +32,7 @@
 #include <time.h>
 
 #include <doca_ctx.h>
+#include <doca_devemu_pci_ep.h>
 #include <doca_devemu_pci.h>
 #include <doca_dev.h>
 #include <doca_error.h>
@@ -232,7 +233,8 @@ static doca_error_t setup_dma_ctx(struct dma_resources *resources, const char *d
 static doca_error_t setup_remote_mmap(struct dma_resources *resources, char *buf, int len)
 {
 	doca_error_t result;
-	result = doca_devemu_pci_mmap_create(resources->devemu_res.pci_dev, &resources->remote_mmap);
+	result = doca_devemu_pci_ep_mmap_create(doca_devemu_pci_dev_as_ep(resources->devemu_res.pci_dev),
+						&resources->remote_mmap);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create mmap for devemu pci device: %s", doca_error_get_descr(result));
 		return result;

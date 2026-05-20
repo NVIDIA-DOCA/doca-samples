@@ -30,7 +30,7 @@ mode_args:
 ports_description:
   port_0: doca_dev
   port_1: doca_rep_dev
-description: "This sample illustrates how to use the mark action in CT. Note that the mark action requires the DOCA_FLOW_CT_FLAG_WIRE_TO_WIRE flag and the expert mode needs to be used.
+description: "This sample illustrates how to use the mark action in CT. Note that the mark action requires the DOCA_FLOW_CT_FLAG_*_WIRE flags and the expert mode needs to be used.
               Sample Command Line: ./build/doca_flow_ct_tcp_wire_to_wire -- -l 60 -r pci/08:00.1 ( = in mpesw mode use second pf as representor)"
 use_cases:
   - name: "Flow ct tcp wire to wire use case #1"

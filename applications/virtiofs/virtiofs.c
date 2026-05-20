@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -33,7 +33,7 @@
 
 #include <virtiofs_core.h>
 
-DOCA_LOG_REGISTER(VIRTIOFS)
+DOCA_LOG_REGISTER(VIRTIOFS);
 
 volatile bool force_quit;
 bool skip_rw;
@@ -51,7 +51,7 @@ static doca_error_t core_mask_callback(void *param, void *config)
 	char *core_mask = (char *)param;
 
 	if (strnlen(core_mask, VIRTIOFS_CORE_MASK_SIZE) == VIRTIOFS_CORE_MASK_SIZE) {
-		DOCA_LOG_ERR("core mask lenght is too long - MAX=%d", VIRTIOFS_CORE_MASK_SIZE - 1);
+		DOCA_LOG_ERR("core mask length is too long - MAX=%d", VIRTIOFS_CORE_MASK_SIZE - 1);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -102,6 +102,33 @@ static doca_error_t nfs_export_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - Handle num_request_queues parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t num_request_queues_callback(void *param, void *config)
+{
+	struct virtiofs_cfg *conf = (struct virtiofs_cfg *)config;
+	int *num_request_queues = (int *)param;
+
+	if (*num_request_queues <= 0) {
+		DOCA_LOG_ERR("num_request_queues parameter must be a positive value");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (*num_request_queues > 254) {
+		DOCA_LOG_ERR("Max num_request_queues supported is 254");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	conf->num_request_queues = *num_request_queues;
+
+	return DOCA_SUCCESS;
+}
+
+/*
  * Registers all flags used by the application for DOCA argument parser, so that when parsing
  * it can be parsed accordingly
  *
@@ -110,7 +137,7 @@ static doca_error_t nfs_export_callback(void *param, void *config)
 static doca_error_t register_virtiofs_params(void)
 {
 	doca_error_t result;
-	struct doca_argp_param *core_mask, *nfs_server, *nfs_export;
+	struct doca_argp_param *core_mask, *nfs_server, *nfs_export, *num_request_queues;
 
 	/* Create and register core mask param */
 	result = doca_argp_param_create(&core_mask);
@@ -161,6 +188,24 @@ static doca_error_t register_virtiofs_params(void)
 	doca_argp_param_set_callback(nfs_export, nfs_export_callback);
 	doca_argp_param_set_type(nfs_export, DOCA_ARGP_TYPE_STRING);
 	result = doca_argp_register_param(nfs_export);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* Create and register num_request_queues param */
+	result = doca_argp_param_create(&num_request_queues);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(num_request_queues, "q");
+	doca_argp_param_set_long_name(num_request_queues, "num-request-queues");
+	doca_argp_param_set_arguments(num_request_queues, "<num_request_queues>");
+	doca_argp_param_set_description(num_request_queues, "Set number of request queues to be used.");
+	doca_argp_param_set_callback(num_request_queues, num_request_queues_callback);
+	doca_argp_param_set_type(num_request_queues, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(num_request_queues);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
 		return result;
@@ -232,7 +277,8 @@ int main(int argc, char **argv)
 {
 	struct virtiofs_cfg app_cfg = {.core_mask = VIRTIOFS_CORE_MASK_DEFAULT,
 				       .nfs_server = VIRTIOFS_NFS_SERVER_DEFAULT,
-				       .nfs_export = VIRTIOFS_NFS_EXPORT_DEFAULT};
+				       .nfs_export = VIRTIOFS_NFS_EXPORT_DEFAULT,
+				       .num_request_queues = VIRTIOFS_NUM_REQUEST_QUEUES_DEFAULT};
 	struct doca_log_backend *sdk_log;
 	doca_error_t result;
 	struct virtiofs_resources *ctx;
@@ -293,7 +339,7 @@ int main(int argc, char **argv)
 
 	skip_rw = virtiofs_skip_rw();
 
-	result = virtiofs_device_create_static(ctx, app_cfg.nfs_server, app_cfg.nfs_export);
+	result = virtiofs_device_create_static(ctx, app_cfg.nfs_server, app_cfg.nfs_export, app_cfg.num_request_queues);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create static devices");
 		exit_status = EXIT_FAILURE;

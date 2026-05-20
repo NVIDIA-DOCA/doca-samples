@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -25,6 +25,7 @@
 #include <stdlib.h>
 
 #include <rte_ethdev.h>
+#include <rte_bitops.h>
 
 #include <doca_log.h>
 #include <doca_flow.h>
@@ -36,7 +37,7 @@
 #include "flow_decrypt.h"
 #include "flow_encrypt.h"
 
-DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::flow_common);
+DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::FLOW_COMMON);
 
 /* Array of allocated IPSEC ids */
 uint32_t *allocated_ipsec_id = NULL;
@@ -265,9 +266,9 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 		return result;
 	}
 	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_VNF)
-		mode_args = "vnf,hws,isolated";
+		mode_args = "vnf,hws";
 	else
-		mode_args = "switch,hws,isolated,expert";
+		mode_args = "switch,hws,expert";
 	result = doca_flow_cfg_set_mode_args(flow_cfg, mode_args);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg mode_args: %s", doca_error_get_descr(result));
@@ -489,6 +490,9 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 	struct doca_flow_match match_mask;
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
+	struct security_gateway_pipe_info *pipe_info = &app_cfg->switch_pipes.rss_pipe;
+	struct doca_flow_pipe_entry **entry = NULL;
+	struct doca_flow_monitor monitor;
 	int num_of_entries = 4;
 	uint16_t rss_queues[nb_queues - 1];
 	int i;
@@ -498,6 +502,7 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 
 	memset(&match, 0, sizeof(match));
 	memset(&match_mask, 0, sizeof(match_mask));
+	memset(&monitor, 0, sizeof(monitor));
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&app_cfg->secured_status[0], 0, sizeof(app_cfg->secured_status[0]));
 
@@ -539,10 +544,30 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 		goto destroy_pipe_cfg;
 	}
 
+	if (app_cfg->debug_mode) {
+		monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
+		result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
+			goto destroy_pipe_cfg;
+		}
+	}
+
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, rss_pipe);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create RSS pipe: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
+	}
+
+	if (app_cfg->debug_mode) {
+		pipe_info->entries_info =
+			(struct security_gateway_entry_info *)calloc(num_of_entries,
+								     sizeof(struct security_gateway_entry_info));
+		if (pipe_info->entries_info == NULL) {
+			DOCA_LOG_ERR("Failed to allocate entries array");
+			result = DOCA_ERROR_NO_MEMORY;
+			goto destroy_pipe_cfg;
+		}
 	}
 
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
@@ -558,34 +583,44 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 	match.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
 	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV4;
-	result = doca_flow_pipe_add_entry(0,
-					  *rss_pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  &app_cfg->secured_status[0],
-					  NULL);
+
+	if (app_cfg->debug_mode) {
+		snprintf(pipe_info->entries_info[pipe_info->nb_entries].name, MAX_NAME_LEN, "rss_encrypt_ipv4");
+		entry = &(pipe_info->entries_info[pipe_info->nb_entries++].entry);
+	}
+	result = doca_flow_pipe_basic_add_entry(0,
+						*rss_pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry to RSS pipe: %s", doca_error_get_descr(result));
 		return result;
 	}
 
+	if (app_cfg->debug_mode) {
+		snprintf(pipe_info->entries_info[pipe_info->nb_entries].name, MAX_NAME_LEN, "rss_encrypt_ipv6");
+		entry = &(pipe_info->entries_info[pipe_info->nb_entries++].entry);
+	}
+
 	/* encrypt IPv6 */
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV6;
 	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV6;
-	result = doca_flow_pipe_add_entry(0,
-					  *rss_pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  &app_cfg->secured_status[0],
-					  NULL);
+	result = doca_flow_pipe_basic_add_entry(0,
+						*rss_pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry to RSS pipe: %s", doca_error_get_descr(result));
 		return result;
@@ -597,16 +632,21 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 	match.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
 	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV4;
-	result = doca_flow_pipe_add_entry(0,
-					  *rss_pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  &app_cfg->secured_status[0],
-					  NULL);
+
+	if (app_cfg->debug_mode) {
+		snprintf(pipe_info->entries_info[pipe_info->nb_entries].name, MAX_NAME_LEN, "rss_decrypt_ipv4");
+		entry = &(pipe_info->entries_info[pipe_info->nb_entries++].entry);
+	}
+	result = doca_flow_pipe_basic_add_entry(0,
+						*rss_pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry to RSS pipe: %s", doca_error_get_descr(result));
 		return result;
@@ -615,16 +655,22 @@ doca_error_t create_rss_pipe(struct ipsec_security_gw_config *app_cfg,
 	/* decrypt IPv6 */
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV6;
 	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV6;
-	result = doca_flow_pipe_add_entry(0,
-					  *rss_pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_NO_WAIT,
-					  &app_cfg->secured_status[0],
-					  NULL);
+
+	if (app_cfg->debug_mode) {
+		snprintf(pipe_info->entries_info[pipe_info->nb_entries].name, MAX_NAME_LEN, "rss_decrypt_ipv6");
+		entry = &(pipe_info->entries_info[pipe_info->nb_entries++].entry);
+	}
+
+	result = doca_flow_pipe_basic_add_entry(0,
+						*rss_pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry to RSS pipe: %s", doca_error_get_descr(result));
 		return result;
@@ -778,16 +824,16 @@ static doca_error_t add_switch_port_meta_entries(struct ipsec_security_gw_ports_
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = encrypt_root;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  &app_cfg->secured_status[0],
-					  NULL);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						&app_cfg->secured_status[0],
+						NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry to port meta pipe: %s", doca_error_get_descr(result));
 		return result;
@@ -799,16 +845,16 @@ static doca_error_t add_switch_port_meta_entries(struct ipsec_security_gw_ports_
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = decrypt_root;
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_NO_WAIT,
-					  &app_cfg->secured_status[0],
-					  NULL);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						&app_cfg->secured_status[0],
+						NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry to port meta pipe: %s", doca_error_get_descr(result));
 		return result;
@@ -939,16 +985,16 @@ static doca_error_t add_switch_pkt_meta_entries(struct ipsec_security_gw_ports_m
 		entry = &(pipe_info->entries_info[pipe_info->nb_entries++].entry);
 	}
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_WAIT_FOR_BATCH,
-					  &app_cfg->secured_status[0],
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry to pkt meta pipe: %s", doca_error_get_descr(result));
 		return result;
@@ -965,16 +1011,16 @@ static doca_error_t add_switch_pkt_meta_entries(struct ipsec_security_gw_ports_m
 		entry = &pipe_info->entries_info[pipe_info->nb_entries++].entry;
 	}
 
-	result = doca_flow_pipe_add_entry(0,
-					  pipe,
-					  &match,
-					  0,
-					  NULL,
-					  NULL,
-					  &fwd,
-					  DOCA_FLOW_NO_WAIT,
-					  &app_cfg->secured_status[0],
-					  entry);
+	result = doca_flow_pipe_basic_add_entry(0,
+						pipe,
+						&match,
+						0,
+						NULL,
+						NULL,
+						&fwd,
+						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						&app_cfg->secured_status[0],
+						entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry to pkt meta pipe: %s", doca_error_get_descr(result));
 		return result;
@@ -1138,6 +1184,8 @@ static void security_gateway_free_decrypt_resources(struct decrypt_pipes *decryp
  */
 static void security_gateway_free_switch_pipes_resources(struct switch_pipes *switch_pipes)
 {
+	if (switch_pipes->rss_pipe.entries_info)
+		free(switch_pipes->rss_pipe.entries_info);
 	if (switch_pipes->pkt_meta_pipe.entries_info)
 		free(switch_pipes->pkt_meta_pipe.entries_info);
 }

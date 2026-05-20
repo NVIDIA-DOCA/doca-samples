@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -57,7 +57,6 @@ DOCA_LOG_REGISTER(SIMPLE_FWD_PORT);
  */
 static int simple_fwd_port_stats_display(uint16_t port, FILE *f)
 {
-	uint32_t i;
 	int result;
 	static uint64_t prev_pkts_rx[RTE_MAX_ETHPORTS];
 	static uint64_t prev_pkts_tx[RTE_MAX_ETHPORTS];
@@ -70,7 +69,6 @@ static int simple_fwd_port_stats_display(uint16_t port, FILE *f)
 	struct rte_eth_stats ethernet_stats;
 	struct rte_eth_dev_info dev_info;
 	static const char *nic_stats_border = "########################";
-	uint32_t max_rx_queues, max_tx_queues;
 
 	result = rte_eth_stats_get(port, &ethernet_stats);
 	if (result != 0)
@@ -79,10 +77,12 @@ static int simple_fwd_port_stats_display(uint16_t port, FILE *f)
 	if (result != 0)
 		return result;
 
-	max_rx_queues = dev_info.nb_rx_queues < RTE_ETHDEV_QUEUE_STAT_CNTRS ? dev_info.nb_rx_queues :
-									      RTE_ETHDEV_QUEUE_STAT_CNTRS;
-	max_tx_queues = dev_info.nb_tx_queues < RTE_ETHDEV_QUEUE_STAT_CNTRS ? dev_info.nb_tx_queues :
-									      RTE_ETHDEV_QUEUE_STAT_CNTRS;
+#ifdef DOCA_BUNDLE_DPDK_FOUND
+	uint32_t max_rx_queues = dev_info.nb_rx_queues < RTE_ETHDEV_QUEUE_STAT_CNTRS ? dev_info.nb_rx_queues :
+										       RTE_ETHDEV_QUEUE_STAT_CNTRS;
+	uint32_t max_tx_queues = dev_info.nb_tx_queues < RTE_ETHDEV_QUEUE_STAT_CNTRS ? dev_info.nb_tx_queues :
+										       RTE_ETHDEV_QUEUE_STAT_CNTRS;
+#endif
 	fprintf(f, "\n  %s NIC statistics for port %-2d %s\n", nic_stats_border, port, nic_stats_border);
 
 	fprintf(f,
@@ -98,9 +98,10 @@ static int simple_fwd_port_stats_display(uint16_t port, FILE *f)
 		ethernet_stats.oerrors,
 		ethernet_stats.obytes);
 
+#ifdef DOCA_BUNDLE_DPDK_FOUND
 	fprintf(f, "\n");
 
-	for (i = 0; i < max_rx_queues; i++) {
+	for (uint32_t i = 0; i < max_rx_queues; i++) {
 		printf("  ethernet_stats reg %2d RX-packets: %-10" PRIu64 "  RX-errors: %-10" PRIu64
 		       "  RX-bytes: %-10" PRIu64 "\n",
 		       i,
@@ -110,13 +111,14 @@ static int simple_fwd_port_stats_display(uint16_t port, FILE *f)
 	}
 
 	fprintf(f, "\n");
-	for (i = 0; i < max_tx_queues; i++) {
+	for (uint32_t i = 0; i < max_tx_queues; i++) {
 		fprintf(stdout,
 			"  ethernet_stats reg %2d TX-packets: %-10" PRIu64 "  TX-bytes: %-10" PRIu64 "\n",
 			i,
 			ethernet_stats.q_opackets[i],
 			ethernet_stats.q_obytes[i]);
 	}
+#endif
 
 	diff_ns = 0;
 	if (clock_gettime(CLOCK_TYPE_ID, &cur_time) == 0) {

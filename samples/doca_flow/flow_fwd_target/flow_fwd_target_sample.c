@@ -135,7 +135,7 @@ static doca_error_t add_ipv4_pipe_entry(struct doca_flow_pipe *pipe, struct entr
 	match.outer.tcp.l4_port.dst_port = dst_port;
 	match.outer.tcp.l4_port.src_port = src_port;
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -196,7 +196,6 @@ static doca_error_t add_main_pipe_entry(struct doca_flow_pipe *pipe,
 	fwd.next_pipe = next_pipe;
 
 	return doca_flow_pipe_control_add_entry(0,
-						0,
 						pipe,
 						&match,
 						NULL,
@@ -205,6 +204,7 @@ static doca_error_t add_main_pipe_entry(struct doca_flow_pipe *pipe,
 						NULL,
 						NULL,
 						NULL,
+						0,
 						&fwd,
 						status,
 						NULL);
@@ -231,7 +231,7 @@ doca_error_t flow_fwd_target(int nb_queues)
 	doca_error_t result;
 	int port_id;
 
-	result = init_doca_flow(nb_queues, "vnf,isolated,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;

@@ -22,23 +22,19 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-if is_host
-	warning('@0@ is only supported on the DPU, and is not supported on the Host'.format(APP_NAME))
-endif
-
-app_srcs += [
-	'app_shield_agent_core.c',
+app_srcs = files([
+	APP_NAME + '.c',
+	APP_NAME + '_core.c',
 	common_dir_path + '/utils.c',
 	samples_dir_path + '/common.c',
-]
+])
 
-vanilla_app_srcs = [
-	APP_NAME + '.c',
-]
+# Check if we should skip the compilation of the applications
+if flag_disable_applications_compilation
+	subdir_done()
+endif
 
-executable(DOCA_PREFIX + APP_NAME,
-	app_srcs + vanilla_app_srcs,
-	c_args : base_c_args,
+executable(DOCA_PREFIX + APP_NAME, app_srcs,
+	c_args : apps_common_c_args,
 	dependencies : app_dependencies,
-	include_directories : app_inc_dirs,
-	install: install_apps)
+	include_directories: app_inc_dirs)

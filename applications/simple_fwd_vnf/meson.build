@@ -22,25 +22,28 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-app_srcs += [
+app_srcs = files([
 	APP_NAME + '.c',
-	'simple_fwd.c',
+	APP_NAME + '_core.c',
 	'simple_fwd_ft.c',
 	'simple_fwd_pkt.c',
 	'simple_fwd_port.c',
-	'simple_fwd_vnf_core.c',
+	'simple_fwd.c',
 	samples_dir_path + '/common.c',
 	samples_dir_path + '/doca_flow/flow_common.c',
 	common_dir_path + '/dpdk_utils.c',
 	common_dir_path + '/utils.c',
-]
+])
 
 app_inc_dirs += include_directories(samples_dir_path)
 app_inc_dirs += include_directories(samples_dir_path + '/doca_flow')
 
-executable(DOCA_PREFIX + APP_NAME,
-	app_srcs,
-	c_args : base_c_args,
+# Check if we should skip the compilation of the applications
+if flag_disable_applications_compilation
+	subdir_done()
+endif
+
+executable(DOCA_PREFIX + APP_NAME, app_srcs,
+	c_args : apps_common_c_args,
 	dependencies : app_dependencies,
-	include_directories : app_inc_dirs,
-	install: install_apps)
+	include_directories: app_inc_dirs)

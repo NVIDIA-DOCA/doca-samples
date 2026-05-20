@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -133,7 +133,7 @@ __global__ void server(struct doca_gpu_dev_verbs_qp *qp,
 				/*
 				 * First thread in block waits for all recv posted in this iteration.
 				 * As an alternative, doca_gpu_dev_verbs_recv_wait() can be called with a specific out_ticket.
-				 * This way a specific CUDA thread can wait on a specific Recv WQE. 
+				 * This way a specific CUDA thread can wait on a specific Recv WQE.
 				 *
 				 * pre-Hopper GPU memory regions require to ensure the memory consistency before returning.
 				 */

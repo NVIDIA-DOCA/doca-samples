@@ -23,20 +23,15 @@
  *
  */
 
-#include <string.h>
-#include <unistd.h>
-
-#include <rte_ethdev.h>
-#include <rte_mempool.h>
-#include <rte_mbuf.h>
-#include <rte_net.h>
-
 #include <doca_log.h>
 #include <doca_flow.h>
 #include <doca_dev.h>
+#include <doca_pe.h>
+#include <doca_error.h>
 
 #include <flow_common.h>
 #include "flow_switch_common.h"
+#include "flow_eth_common.h"
 
 DOCA_LOG_REGISTER(FLOW_SWITCH_SWITCH_RSS);
 
@@ -83,8 +78,6 @@ enum switch_rss_pipe_dom_type {
 #define NB_TOTAL_ENTRIES \
 	(1 + NB_INGRESS_ENTRIES + NB_EGRESS_ENTRIES + NB_VPORT_ENTRIES + \
 	 (SWITCH_RSS_BASIC_PIPE_MAX + SWITCH_RSS_CONTROL_MAX) * SWITCH_RSS_PIPE_DOM_MAX)
-
-#define MAX_PKTS 16
 
 #define WAIT_SECS 15
 
@@ -136,38 +129,32 @@ static struct doca_flow_pipe_entry *ingress_entries[NB_INGRESS_ENTRIES];
 /* array for storing created ingress entries */
 static struct doca_flow_pipe_entry *vport_entries[NB_VPORT_ENTRIES];
 
-/*
- * Handle received traffic and check the pkt_meta value added by internal pipe.
- *
- * @port_id [in]: proxy port id
- * @nb_queues [in]: number of queues the sample has
- */
-static void handle_rx_tx_pkts(uint32_t port_id, uint16_t nb_queues)
+static void rx_success_cb(struct doca_eth_rxq_event_batch_managed_recv *event_batch,
+			  uint16_t packets_count,
+			  union doca_data event_batch_user_data,
+			  doca_error_t status,
+			  struct doca_buf **pkt_array)
 {
-	uint32_t queue_id;
-	uint32_t secs = WAIT_SECS;
-	uint32_t nb_rx;
-	uint32_t i;
-	uint32_t sw_packet_type;
-	struct rte_mbuf *mbufs[MAX_PKTS];
+	(void)event_batch;
+	(void)status;
 
-	while (secs--) {
-		sleep(1);
-		for (queue_id = 0; queue_id < nb_queues; queue_id++) {
-			nb_rx = rte_eth_rx_burst(port_id, queue_id, mbufs, MAX_PKTS);
-			for (i = 0; i < nb_rx; i++) {
-				sw_packet_type = rte_net_get_ptype(mbufs[i], NULL, RTE_PTYPE_ALL_MASK);
-				if (mbufs[i]->ol_flags & RTE_MBUF_F_RX_FDIR_ID)
-					DOCA_LOG_INFO("The pkt meta:0x%x, src_q:%d, type:0x%x",
-						      mbufs[i]->hash.fdir.hi,
-						      queue_id,
-						      sw_packet_type);
-				else
-					DOCA_LOG_INFO("The pkt src_q:%d, type: 0x%x\n", queue_id, sw_packet_type);
-				rte_pktmbuf_free(mbufs[i]);
-			}
-		}
-	}
+	DOCA_LOG_INFO("Received %d packets on queue %d", packets_count, (int)event_batch_user_data.u64);
+
+	doca_eth_rxq_event_batch_managed_recv_pkt_array_free(pkt_array);
+}
+
+static void rx_error_cb(struct doca_eth_rxq_event_batch_managed_recv *event_batch,
+			uint16_t packets_count,
+			union doca_data event_batch_user_data,
+			doca_error_t status,
+			struct doca_buf **pkt_array)
+{
+	(void)event_batch;
+	(void)packets_count;
+	(void)event_batch_user_data;
+	(void)status;
+	(void)pkt_array;
+	DOCA_LOG_ERR("Failed to receive packets: %s", doca_error_get_name(status));
 }
 
 /*
@@ -247,7 +234,7 @@ static doca_error_t add_rss_pipe_entry(struct doca_flow_pipe *pipe, struct entri
 	memset(&match, 0, sizeof(match));
 	memset(&actions, 0, sizeof(actions));
 
-	result = doca_flow_pipe_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &rss_entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &rss_entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -614,7 +601,7 @@ static doca_error_t add_switch_egress_pipe_entries(struct doca_flow_pipe *pipe, 
 {
 	struct doca_flow_match match;
 	struct doca_flow_fwd fwd;
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	doca_error_t result;
 	int entry_index = 0;
 	doca_be32_t src_ip_addr;
@@ -634,16 +621,16 @@ static doca_error_t add_switch_egress_pipe_entries(struct doca_flow_pipe *pipe, 
 		else if (entry_index < INGRESS_ROOT_TO_CONTROL)
 			fwd.next_pipe = pipe_control_switch_rss[SWITCH_RSS_PIPE_DOM_EGRESS];
 
-		result = doca_flow_pipe_add_entry(0,
-						  pipe,
-						  &match,
-						  0,
-						  NULL,
-						  NULL,
-						  &fwd,
-						  flags,
-						  status,
-						  &egress_entries[entry_index]);
+		result = doca_flow_pipe_basic_add_entry(0,
+							pipe,
+							&match,
+							0,
+							NULL,
+							NULL,
+							&fwd,
+							flags,
+							status,
+							&egress_entries[entry_index]);
 
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry %d: %s", entry_index, doca_error_get_descr(result));
@@ -665,7 +652,7 @@ static doca_error_t add_switch_ingress_pipe_entries(struct doca_flow_pipe *pipe,
 {
 	struct doca_flow_match match;
 	struct doca_flow_fwd fwd;
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	doca_error_t result;
 	int entry_index = 0;
 	doca_be32_t src_ip_addr;
@@ -689,16 +676,16 @@ static doca_error_t add_switch_ingress_pipe_entries(struct doca_flow_pipe *pipe,
 			fwd.next_pipe = pipe_egress;
 		else if (entry_index < INGRESS_ROOT_TO_VPORT)
 			fwd.next_pipe = pipe_vport;
-		result = doca_flow_pipe_add_entry(0,
-						  pipe,
-						  &match,
-						  0,
-						  NULL,
-						  NULL,
-						  &fwd,
-						  flags,
-						  status,
-						  &ingress_entries[entry_index]);
+		result = doca_flow_pipe_basic_add_entry(0,
+							pipe,
+							&match,
+							0,
+							NULL,
+							NULL,
+							&fwd,
+							flags,
+							status,
+							&ingress_entries[entry_index]);
 
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry %d: %s", entry_index, doca_error_get_descr(result));
@@ -720,7 +707,7 @@ static doca_error_t add_switch_vport_pipe_entries(struct doca_flow_pipe *pipe, s
 {
 	struct doca_flow_match match;
 	struct doca_flow_fwd fwd;
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	doca_error_t result;
 	int entry_index = 0;
 	doca_be32_t dst_ip_addr;
@@ -739,16 +726,16 @@ static doca_error_t add_switch_vport_pipe_entries(struct doca_flow_pipe *pipe, s
 		/* First port as wire to wire, second wire to VF */
 		fwd.port_id = entry_index;
 
-		result = doca_flow_pipe_add_entry(0,
-						  pipe,
-						  &match,
-						  0,
-						  NULL,
-						  NULL,
-						  &fwd,
-						  flags,
-						  status,
-						  &vport_entries[entry_index]);
+		result = doca_flow_pipe_basic_add_entry(0,
+							pipe,
+							&match,
+							0,
+							NULL,
+							NULL,
+							&fwd,
+							flags,
+							status,
+							&vport_entries[entry_index]);
 
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
@@ -802,7 +789,7 @@ static int add_switch_rss_pipe_entries(enum switch_rss_pipe_dom_type dir, struct
 	struct doca_flow_match match;
 	struct doca_flow_fwd fwd;
 	struct doca_flow_fwd *efwd = &fwd;
-	enum doca_flow_flags_type flags = 0; // DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT; // DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	doca_error_t result;
 	int entry_index = 0;
 	doca_be32_t dst_ip_addr;
@@ -831,16 +818,16 @@ static int add_switch_rss_pipe_entries(enum switch_rss_pipe_dom_type dir, struct
 			fwd.rss.nr_queues = 1;
 		}
 
-		result = doca_flow_pipe_add_entry(0,
-						  pipe_basic_switch_rss[dir][entry_index],
-						  &match,
-						  0,
-						  NULL,
-						  NULL,
-						  efwd,
-						  flags,
-						  status,
-						  &entry_basic_switch_rss[dir][entry_index]);
+		result = doca_flow_pipe_basic_add_entry(0,
+							pipe_basic_switch_rss[dir][entry_index],
+							&match,
+							0,
+							NULL,
+							NULL,
+							efwd,
+							flags,
+							status,
+							&entry_basic_switch_rss[dir][entry_index]);
 
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe %d entry: %s", entry_index, doca_error_get_descr(result));
@@ -869,7 +856,6 @@ static int add_switch_rss_pipe_entries(enum switch_rss_pipe_dom_type dir, struct
 			fwd.shared_rss_id = shared_rss_ids[control_queue_map[dir][entry_index]];
 		}
 		result = doca_flow_pipe_control_add_entry(0,
-							  entry_index,
 							  pipe_control_switch_rss[dir],
 							  &match,
 							  NULL,
@@ -878,6 +864,7 @@ static int add_switch_rss_pipe_entries(enum switch_rss_pipe_dom_type dir, struct
 							  NULL,
 							  NULL,
 							  &monitor,
+							  entry_index,
 							  efwd,
 							  status,
 							  &entry_control_switch_rss[dir][entry_index]);
@@ -898,7 +885,10 @@ static int add_switch_rss_pipe_entries(enum switch_rss_pipe_dom_type dir, struct
  * @ctx [in]: flow switch context the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
+doca_error_t flow_switch_rss(int nb_queues,
+			     int nb_ports,
+			     struct flow_devs_manager devs_manager[],
+			     struct flow_switch_ctx *ctx)
 {
 	struct flow_resources resource = {0};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
@@ -915,24 +905,43 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	bool is_expert = ctx->is_expert;
 	int i;
 	uint16_t queues[1];
+	struct doca_pe *pe = NULL;
+	struct flow_eth_common_rx_cfg eth_cfg = {0};
+	struct flow_eth_common_dev_context *dev_ctx = NULL;
 
 	memset(&status, 0, sizeof(status));
-	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
-	resource.nr_counters = 2 * NB_TOTAL_ENTRIES; /* counter per entry */
-	resource.nr_rss = 10;
-	/* Use isolated mode as we will create the RSS pipe later */
-	if (is_expert)
-		start_str = "switch,hws,isolated,hairpinq_num=4,expert";
-	else
-		start_str = "switch,hws,isolated,hairpinq_num=4";
-	result = init_doca_flow(nb_queues, start_str, &resource, nr_shared_resources);
+
+	/* Create shared progress engine */
+	result = doca_pe_create(&pe);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to create progress engine: %s", doca_error_get_descr(result));
 		return result;
 	}
 
+	/* Configure and create doca-eth rx resources */
+	flow_eth_common_set_dev_cfg(nb_queues, false, (union doca_data){0}, rx_success_cb, rx_error_cb, &eth_cfg);
+	result = flow_eth_common_create_dev_resources(ctx->devs_ctx.devs_manager[0].doca_dev, pe, &eth_cfg, &dev_ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create DOCA ETH resources: %s", doca_error_get_descr(result));
+		goto pe_cleanup;
+	}
+
+	/* Initialize DOCA Flow */
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
+	resource.nr_counters = 2 * NB_TOTAL_ENTRIES; /* counter per entry */
+	resource.nr_rss = 10;
+	if (is_expert)
+		start_str = "switch,hws,hairpinq_num=4,expert";
+	else
+		start_str = "switch,hws,hairpinq_num=4";
+	result = init_doca_flow(nb_queues, start_str, &resource, nr_shared_resources);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
+		goto dev_cleanup;
+	}
+
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(NB_TOTAL_ENTRIES));
-	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
+	result = init_doca_flow_switch_ports(devs_manager,
 					     ctx->devs_ctx.nb_devs,
 					     ports,
 					     nb_ports,
@@ -940,8 +949,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
-		return result;
+		goto flow_and_eth_cleanup;
 	}
 
 	rss_cfg.outer_flags = DOCA_FLOW_RSS_IPV4;
@@ -956,9 +964,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 							    &shared_rss_id);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to get shared resource RSS %d", i);
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto full_cleanup;
 		}
 		result = doca_flow_port_shared_resource_set_cfg(doca_flow_port_switch_get(ports[0]),
 								DOCA_FLOW_SHARED_RESOURCE_RSS,
@@ -966,9 +972,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 								&cfg);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to cfg shared rss %d", i);
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto full_cleanup;
 		}
 		shared_rss_ids[i] = i;
 	}
@@ -977,132 +981,102 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	result = create_rss_pipe(doca_flow_port_switch_get(ports[0]), &pipe_rss);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create rss pipe: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	result = add_rss_pipe_entry(pipe_rss, &status);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	/* Create Newtowrk to host rss pipes */
 	result = create_switch_rss_pipes(doca_flow_port_switch_get(ports[0]), SWITCH_RSS_PIPE_DOM_INGRESS);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create rx rss pipe: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	result = add_switch_rss_pipe_entries(SWITCH_RSS_PIPE_DOM_INGRESS, &status);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add rx entry: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	/* Create bi-direction rss pipe */
 	result = create_switch_rss_pipes(doca_flow_port_switch_get(ports[0]), SWITCH_RSS_PIPE_DOM_EGRESS);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create unified rss pipe: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	result = add_switch_rss_pipe_entries(SWITCH_RSS_PIPE_DOM_EGRESS, &status);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add unified entry: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	/* Create egress pipe and entries */
 	result = create_switch_egress_pipe(doca_flow_port_switch_get(ports[0]), &pipe_egress);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create egress pipe: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	result = add_switch_egress_pipe_entries(pipe_egress, &status);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add egress_entries to the pipe: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	/* Create vport pipe and entries */
 	result = create_switch_vport_pipe(doca_flow_port_switch_get(ports[0]), &pipe_vport);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create vport pipe: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	result = add_switch_vport_pipe_entries(pipe_vport, &status);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add vport_entries to the pipe: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	/* Create ingress pipe and entries */
 	result = create_switch_ingress_pipe(doca_flow_port_switch_get(ports[0]), &pipe_ingress);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ingress pipe: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	result = add_switch_ingress_pipe_entries(pipe_ingress, &status);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ingress_entries to the pipe: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	result =
 		doca_flow_entries_process(doca_flow_port_switch_get(ports[0]), 0, DEFAULT_TIMEOUT_US, NB_TOTAL_ENTRIES);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to process egress_entries: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 
 	if (status.nb_processed != NB_TOTAL_ENTRIES || status.failure) {
 		DOCA_LOG_ERR("Failed to process all entries %d", status.nb_processed);
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return DOCA_ERROR_BAD_STATE;
+		goto full_cleanup;
 	}
 
 	DOCA_LOG_INFO("Wait few seconds for packets to arrive");
 
-	handle_rx_tx_pkts(0, nb_queues);
+	flow_eth_common_handle_pkts(pe, WAIT_SECS);
 
 	/* dump egress entries counters */
 	for (entry_idx = 0; entry_idx < NB_EGRESS_ENTRIES; entry_idx++) {
 		result = doca_flow_resource_query_entry(egress_entries[entry_idx], &query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto full_cleanup;
 		}
 		DOCA_LOG_INFO("Egress Entry in index: %d", entry_idx);
 		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
@@ -1113,9 +1087,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 		result = doca_flow_resource_query_entry(vport_entries[entry_idx], &query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query vport pipe entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto full_cleanup;
 		}
 		DOCA_LOG_INFO("Vport Entry in index: %d", entry_idx);
 		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
@@ -1126,9 +1098,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 		result = doca_flow_resource_query_entry(ingress_entries[entry_idx], &query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto full_cleanup;
 		}
 		DOCA_LOG_INFO("Ingress Entry in index: %d", entry_idx);
 		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
@@ -1140,9 +1110,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 							&query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto full_cleanup;
 		}
 		DOCA_LOG_INFO("Rx Basic PIPE Entry in index: %d", entry_idx);
 		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
@@ -1154,9 +1122,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 							&query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto full_cleanup;
 		}
 		DOCA_LOG_INFO("Unified Basic PIPE Entry in index: %d", entry_idx);
 		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
@@ -1168,9 +1134,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 							&query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto full_cleanup;
 		}
 		DOCA_LOG_INFO("Rx Control PIPE Entry in index: %d", entry_idx);
 		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
@@ -1182,9 +1146,7 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 							&query_stats);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto full_cleanup;
 		}
 		DOCA_LOG_INFO("Unified Control PIPE Entry in index: %d", entry_idx);
 		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
@@ -1194,15 +1156,22 @@ doca_error_t flow_switch_rss(int nb_queues, int nb_ports, struct flow_switch_ctx
 	result = doca_flow_resource_query_entry(rss_entry, &query_stats);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
-		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
-		return result;
+		goto full_cleanup;
 	}
 	DOCA_LOG_INFO("Miss RSS Entry");
 	DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
 	DOCA_LOG_INFO("Total packets: %ld", query_stats.counter.total_pkts);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
+	goto flow_and_eth_cleanup;
+
+full_cleanup:
+	stop_doca_flow_ports(nb_ports, ports);
+flow_and_eth_cleanup:
 	doca_flow_destroy();
+dev_cleanup:
+	flow_eth_common_destroy_dev_resources(dev_ctx);
+pe_cleanup:
+	doca_pe_destroy(pe);
 	return result;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -64,6 +64,7 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 	uint32_t lane_id = doca_gpu_dev_eth_get_lane_id();
 	uint32_t sem_idx = 0;
 	uint8_t *payload;
+	uint16_t pkt_len;
 
 	if (blockIdx.x == 0) {
 		rxq = rxq0;
@@ -83,12 +84,19 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 	if (threadIdx.x == 0) {
 		DOCA_GPUNETIO_VOLATILE(stats_sh.dns) = 0;
 		DOCA_GPUNETIO_VOLATILE(stats_sh.others) = 0;
+		DOCA_GPUNETIO_VOLATILE(stats_sh.dns_bytes) = 0;
+		DOCA_GPUNETIO_VOLATILE(stats_sh.others) = 0;
+		DOCA_GPUNETIO_VOLATILE(stats_sh.others_bytes) = 0;
+		DOCA_GPUNETIO_VOLATILE(stats_sh.total_bytes) = 0;
 	}
 	__syncthreads();
 
 	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
 		stats_thread.dns = 0;
 		stats_thread.others = 0;
+		stats_thread.dns_bytes = 0;
+		stats_thread.others_bytes = 0;
+		stats_thread.total_bytes = 0;
 
 		/* No need to impose packet limit here as we want the max number of packets every time */
 		ret = doca_gpu_dev_eth_rxq_recv<DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK,
@@ -126,10 +134,17 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 			buf_addr = doca_gpu_dev_eth_rxq_get_pkt_addr(rxq, out_first_pkt_idx + buf_idx);
 			raw_to_udp(buf_addr, &hdr, &payload);
 
-			if (filter_is_dns(&(hdr->l4_hdr), payload))
+			if (filter_is_dns(&(hdr->l4_hdr), payload)) {
 				stats_thread.dns++;
-			else
+				pkt_len = BYTE_SWAP16(hdr->l3_hdr.total_length) + sizeof(struct ether_hdr);
+				stats_thread.dns_bytes += pkt_len;
+				stats_thread.total_bytes += pkt_len;
+			} else {
 				stats_thread.others++;
+				pkt_len = BYTE_SWAP16(hdr->l3_hdr.total_length) + sizeof(struct ether_hdr);
+				stats_thread.others_bytes += pkt_len;
+				stats_thread.total_bytes += pkt_len;
+			}
 
 			/* Double-proof it's not reading old packets */
 			wipe_packet_32b((uint8_t *)&(hdr->l4_hdr));
@@ -140,13 +155,19 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 #pragma unroll
 		for (int offset = 16; offset > 0; offset /= 2) {
 			stats_thread.dns += __shfl_down_sync(WARP_FULL_MASK, stats_thread.dns, offset);
+			stats_thread.dns_bytes += __shfl_down_sync(WARP_FULL_MASK, stats_thread.dns_bytes, offset);
 			stats_thread.others += __shfl_down_sync(WARP_FULL_MASK, stats_thread.others, offset);
+			stats_thread.others_bytes += __shfl_down_sync(WARP_FULL_MASK, stats_thread.others_bytes, offset);
+			stats_thread.total_bytes += __shfl_down_sync(WARP_FULL_MASK, stats_thread.total_bytes, offset);
 			__syncwarp();
 		}
 
 		if (lane_id == 0) {
 			atomicAdd_block((uint32_t *)&(stats_sh.dns), stats_thread.dns);
+			atomicAdd_block((unsigned long long *)&(stats_sh.dns_bytes), stats_thread.dns_bytes);
 			atomicAdd_block((uint32_t *)&(stats_sh.others), stats_thread.others);
+			atomicAdd_block((unsigned long long *)&(stats_sh.others_bytes), stats_thread.others_bytes);
+			atomicAdd_block((unsigned long long *)&(stats_sh.total_bytes), stats_thread.total_bytes);
 		}
 		__syncthreads();
 
@@ -163,6 +184,9 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 
 			DOCA_GPUNETIO_VOLATILE(stats_global->dns) = DOCA_GPUNETIO_VOLATILE(stats_sh.dns);
 			DOCA_GPUNETIO_VOLATILE(stats_global->others) = DOCA_GPUNETIO_VOLATILE(stats_sh.others);
+			DOCA_GPUNETIO_VOLATILE(stats_global->dns_bytes) = DOCA_GPUNETIO_VOLATILE(stats_sh.dns_bytes);
+			DOCA_GPUNETIO_VOLATILE(stats_global->others_bytes) = DOCA_GPUNETIO_VOLATILE(stats_sh.others_bytes);
+			DOCA_GPUNETIO_VOLATILE(stats_global->total_bytes) = DOCA_GPUNETIO_VOLATILE(stats_sh.total_bytes);
 			DOCA_GPUNETIO_VOLATILE(stats_global->total) = out_pkt_num;
 			doca_gpu_dev_semaphore_set_status(sem, sem_idx, DOCA_GPU_SEMAPHORE_STATUS_READY);
 			__threadfence_system();
@@ -171,6 +195,9 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 
 			DOCA_GPUNETIO_VOLATILE(stats_sh.dns) = 0;
 			DOCA_GPUNETIO_VOLATILE(stats_sh.others) = 0;
+			DOCA_GPUNETIO_VOLATILE(stats_sh.dns_bytes) = 0;
+			DOCA_GPUNETIO_VOLATILE(stats_sh.others_bytes) = 0;
+			DOCA_GPUNETIO_VOLATILE(stats_sh.total_bytes) = 0;
 		}
 
 		__syncthreads();

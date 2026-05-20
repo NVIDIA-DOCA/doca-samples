@@ -36,9 +36,10 @@
 #include "flow_switch_common.h"
 
 #define PACKET_BURST 128
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define NB_ENTRIES 25000
 
 static uint16_t sessions = 0;
+static struct doca_flow_pipe_entry *entries[NB_ENTRIES];
 
 DOCA_LOG_REGISTER(FLOW_CT_TCP_IPV4_IPV6);
 
@@ -95,7 +96,7 @@ static doca_error_t create_rss_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add RSS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -162,7 +163,7 @@ static doca_error_t create_egress_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add EGRESS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -234,7 +235,7 @@ static doca_error_t create_ct_miss_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add CT miss pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -318,7 +319,7 @@ static doca_error_t create_tcp_flags_filter_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	match.outer.tcp.flags = 0;
-	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create TCP flags filter pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -391,217 +392,81 @@ destroy_pipe_cfg:
 }
 
 /*
- * Parse TCP packet to update CT tables
- *
- * @packet [in]: Packet to parse
- * @match_o [out]: Origin match struct to fill
- * @match_r [out]: Reply match struct to fill
- * @tcp_state [out]: Packet TCP state
- */
-static void parse_packet(struct rte_mbuf *packet,
-			 struct doca_flow_ct_match *match_o,
-			 struct doca_flow_ct_match *match_r,
-			 uint8_t *tcp_state)
-{
-	static bool expect_ipv4_pkt = true;
-	*tcp_state = 0;
-	uint8_t *ip_hdr = rte_pktmbuf_mtod_offset(packet, uint8_t *, sizeof(struct rte_ether_hdr));
-
-	if (expect_ipv4_pkt) {
-		uint8_t *l4_hdr;
-		struct rte_ipv4_hdr *ipv4_hdr = (struct rte_ipv4_hdr *)ip_hdr;
-		const struct rte_tcp_hdr *tcp_hdr;
-		doca_be32_t src_ipv6[] = {0x11111111, 0x11111111, 0x11111111, 0x11111111};
-		doca_be32_t dst_ipv6[] = {0x22222222, 0x22222222, 0x22222222, 0x22222222};
-
-		if ((ip_hdr[0] >> 4) != 4)
-			return;
-
-		/* initialize match origin with the extracted data from the ipv4 packet */
-		match_o->ipv4.src_ip = ipv4_hdr->src_addr;
-		match_o->ipv4.src_ip = ipv4_hdr->src_addr;
-
-		l4_hdr = (typeof(l4_hdr))ipv4_hdr + rte_ipv4_hdr_len(ipv4_hdr);
-		tcp_hdr = (typeof(tcp_hdr))l4_hdr;
-
-		match_o->ipv4.l4_port.src_port = tcp_hdr->src_port;
-		match_o->ipv4.l4_port.dst_port = tcp_hdr->dst_port;
-		match_o->ipv4.next_proto = DOCA_FLOW_PROTO_TCP;
-
-		/* initialize match reply with data from other source, currently hard coded */
-		memcpy(match_r->ipv6.src_ip, src_ipv6, sizeof(src_ipv6));
-		memcpy(match_r->ipv6.dst_ip, dst_ipv6, sizeof(dst_ipv6));
-		match_r->ipv6.l4_port.src_port = match_o->ipv4.l4_port.dst_port;
-		match_r->ipv6.l4_port.dst_port = match_o->ipv4.l4_port.src_port;
-		match_r->ipv6.next_proto = DOCA_FLOW_PROTO_TCP;
-
-		*tcp_state = tcp_hdr->tcp_flags;
-		expect_ipv4_pkt = false;
-	} else {
-		uint8_t *l6_hdr;
-		struct rte_ipv6_hdr *ipv6_hdr = (struct rte_ipv6_hdr *)ip_hdr;
-		const struct rte_tcp_hdr *tcp_hdr;
-
-		if ((ip_hdr[0] >> 4) != 6)
-			return;
-
-		l6_hdr = (typeof(l6_hdr))ipv6_hdr + sizeof(struct rte_ipv6_hdr);
-		tcp_hdr = (typeof(tcp_hdr))l6_hdr;
-
-		*tcp_state = tcp_hdr->tcp_flags;
-	}
-}
-
-/*
  * Dequeue packets from DPDK queues, parse and update CT tables with new connection 5 tuple
  *
  * @port [in]: Port id to which an entry should be inserted
  * @ct_queue [in]: DOCA Flow CT queue number
+ * @ct_pipe [in]: DOCA Flow CT pipe
  * @ct_status [in]: User context for adding CT entry
  * @entry [in/out]: CT entry
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t process_packets(struct doca_flow_port *port,
 				    uint16_t ct_queue,
+				    struct doca_flow_pipe *ct_pipe,
 				    struct entries_status *ct_status,
 				    struct doca_flow_pipe_entry **entry)
 {
-	struct rte_mbuf *packets[PACKET_BURST];
 	struct doca_flow_ct_match match_o;
 	struct doca_flow_ct_match match_r;
-	uint32_t entry_flags_o = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN;
-	uint32_t entry_flags_r = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY |
-				 DOCA_FLOW_CT_ENTRY_FLAGS_IPV6_REPLY;
-	uint32_t entry_flags_rm = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
-				  DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY;
 	uint32_t prepare_flags = DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS;
-	uint8_t tcp_state;
+	uint32_t entry_flags = DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT | DOCA_FLOW_CT_ENTRY_FLAGS_DIR_ORIGIN |
+			       DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY | DOCA_FLOW_CT_ENTRY_FLAGS_IPV6_ORIGIN |
+			       DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_REPLY;
 	doca_error_t result;
-	int i, nb_packets, nb_process = 0, total_valid_packets = 0;
-	bool conn_exist = false;
-	uint64_t timeout_s = 5; /* Timeout in seconds */
-	time_t end_time, max_end_time;
+	int i;
 
 	memset(&match_o, 0, sizeof(match_o));
 	memset(&match_r, 0, sizeof(match_r));
 
-	max_end_time = time(NULL) + timeout_s; /* Absolute maximum timeout */
-	end_time = max_end_time;	       /* Current timeout */
-	do {
-		nb_packets = rte_eth_rx_burst(0, 0, packets, PACKET_BURST);
-		if (nb_packets == 0) {
-			/* No packets received, continue immediately without blocking */
-			continue;
+	for (i = 0; i < NB_ENTRIES; i++) {
+		match_o.ipv6.l4_port.src_port = i;
+		match_o.ipv6.l4_port.dst_port = i;
+		match_o.ipv6.next_proto = 6;
+		match_r.ipv4.l4_port.src_port = i;
+		match_r.ipv4.l4_port.dst_port = i;
+		match_r.ipv4.next_proto = 6;
+
+		/* tcp state - SYN flag */
+		result = flow_ct_create_entry(port,
+					      ct_queue,
+					      ct_pipe,
+					      prepare_flags,
+					      entry_flags,
+					      &match_o,
+					      &match_r,
+					      0,
+					      0,
+					      NULL,
+					      NULL,
+					      0,
+					      0,
+					      0,
+					      ct_status,
+					      &entry[i]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create CT entry\n");
+			return result;
 		}
-
-		DOCA_LOG_INFO("%d packets received on rx_burst()", nb_packets);
-		for (i = 0; i < PACKET_BURST && i < nb_packets; i++) {
-			parse_packet(packets[i], &match_o, &match_r, &tcp_state);
-			if (tcp_state & DOCA_FLOW_MATCH_TCP_FLAG_SYN) {
-				total_valid_packets++;
-				/* Updated timeout */
-				end_time = MIN(time(NULL) + 2, max_end_time);
-
-				result = doca_flow_ct_entry_prepare(ct_queue,
-								    NULL,
-								    prepare_flags,
-								    &match_o,
-								    0,
-								    &match_r,
-								    0,
-								    entry,
-								    &conn_exist);
-				if (result != DOCA_SUCCESS) {
-					DOCA_LOG_ERR("Failed to prepare CT entry\n");
-					return result;
-				}
-				result = doca_flow_ct_add_entry(ct_queue,
-								NULL,
-								entry_flags_o,
-								&match_o,
-								&match_r,
-								NULL,
-								NULL,
-								0,
-								0,
-								0,
-								ct_status,
-								*entry);
-				if (result != DOCA_SUCCESS) {
-					DOCA_LOG_ERR("Failed to add CT pipe an entry with origin only: %s",
-						     doca_error_get_descr(result));
-					return result;
-				}
-
-				/* add IPV6 reply direction using internal info */
-				result = doca_flow_ct_entry_add_dir(ct_queue,
-								    NULL,
-								    entry_flags_r,
-								    &match_r,
-								    NULL,
-								    0,
-								    *entry);
-				if (result != DOCA_SUCCESS) {
-					DOCA_LOG_ERR("Failed to add CT pipe an reply IPv6 direction: %s",
-						     doca_error_get_descr(result));
-					return result;
-				}
-				sessions++;
-				nb_process++;
-
-				/*process entries*/
-				result = flow_ct_queue_reserve(port, ct_queue, ct_status, 0);
-				if (result != DOCA_SUCCESS) {
-					DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
-					return result;
-				}
-				DOCA_LOG_INFO("TCP session was created");
-				DOCA_LOG_INFO(
-					"Origin IPv4 + Reply IPv6 entries created. Origin - matches on the 5-tuple of the incoming packet, reply - matches on the inversed port addresses and on ipv6 addresses src='2222:2222:2222:2222:2222:2222:2222:2222', dst='101:101:101:101:101:101:101:101'");
-			} else if (tcp_state & DOCA_FLOW_MATCH_TCP_FLAG_FIN ||
-				   tcp_state & DOCA_FLOW_MATCH_TCP_FLAG_RST) {
-				if (sessions == 0) {
-					DOCA_LOG_INFO("No alive session to destroy, skip destroy");
-					continue;
-				}
-				total_valid_packets++;
-				/* Updated timeout */
-				end_time = MIN(time(NULL) + 2, max_end_time);
-				result = doca_flow_ct_rm_entry(ct_queue, NULL, entry_flags_rm, *entry);
-				if (result != DOCA_SUCCESS) {
-					DOCA_LOG_ERR("Failed to remove CT pipe entry: %s",
-						     doca_error_get_descr(result));
-					return result;
-				}
-				/*process entries*/
-				result = flow_ct_queue_reserve(port, ct_queue, ct_status, 0);
-				if (result != DOCA_SUCCESS) {
-					DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
-					return result;
-				}
-				sessions--;
-				DOCA_LOG_INFO("TCP session was ended");
-			} else {
-				DOCA_LOG_WARN("Sample is only able to process IPv4 'SYN', IPv6 'FIN'");
-				return DOCA_ERROR_NOT_SUPPORTED;
-			}
-			rte_flow_dynf_metadata_set(packets[i], 1);
-			packets[i]->ol_flags |= RTE_MBUF_DYNFLAG_TX_METADATA;
-			rte_eth_tx_burst(0, 0, &packets[i], 1);
-		}
-	} while (time(NULL) < end_time);
-
-	if (total_valid_packets == 0) {
-		if (sessions == 0) {
-			DOCA_LOG_ERR("Sample didn't receive SYN packets within 5 seconds timeout");
-		} else {
-			DOCA_LOG_ERR("Sample didn't receive 'FIN' packets within 5 seconds timeout");
-		}
-		return DOCA_ERROR_BAD_STATE;
+		sessions++;
 	}
-
-	ct_status->nb_processed = 0;
-
+	DOCA_LOG_INFO("%d TCP IPV4+IPV6 sessions were created", sessions);
+	/* tcp state - FIN flag */
+	for (i = 0; i < NB_ENTRIES; i++) {
+		result = doca_flow_ct_rm_entry(ct_queue, ct_pipe, entry_flags, entry[i]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to remove CT pipe entry: %s", doca_error_get_descr(result));
+			return result;
+		}
+		/*process entries*/
+		result = flow_ct_queue_reserve(port, ct_queue, ct_status, 0);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
+			return result;
+		}
+		sessions--;
+	}
+	DOCA_LOG_INFO("%d TCP IPV4+IPV6sessions were ended", NB_ENTRIES - sessions);
 	return DOCA_SUCCESS;
 }
 
@@ -618,7 +483,6 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct flow_switch_ctx *c
 	const int nb_entries = 9;
 	struct flow_resources resource;
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
-	struct doca_flow_pipe_entry *tcp_entry;
 	struct doca_flow_pipe *egress_pipe, *ct_miss_pipe, *tcp_flags_filter_pipe, *rss_pipe, *tcp_pipe;
 	struct doca_flow_pipe *ct_pipe = NULL;
 	struct doca_flow_port *ports[nb_ports];
@@ -626,8 +490,8 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct flow_switch_ctx *c
 	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ctrl_status, ct_status;
-	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 0, nb_ipv4_sessions = 1024,
-			   nb_ipv6_sessions = 2048;
+	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 0, nb_ipv4_sessions = NB_ENTRIES,
+			   nb_ipv6_sessions = NB_ENTRIES;
 	uint16_t ct_queue = nb_queues;
 	doca_error_t result;
 
@@ -639,13 +503,13 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct flow_switch_ctx *c
 	resource.nr_counters = 1;
 	resource.nr_rss = 1;
 
-	result = init_doca_flow(nb_queues, "switch,hws,isolated", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
 	}
 
-	/* Dont use zone masking */
+	/* Don't use zone masking */
 	memset(&o_zone_mask, 0, sizeof(o_zone_mask));
 	memset(&o_modify_mask, 0, sizeof(o_modify_mask));
 	memset(&r_zone_mask, 0, sizeof(r_zone_mask));
@@ -721,13 +585,7 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct flow_switch_ctx *c
 		goto cleanup;
 	}
 
-	DOCA_LOG_INFO("Wait a few seconds for 'SYN' ipv4 packets to arrive");
-	result = process_packets(ports[0], ct_queue, &ct_status, &tcp_entry);
-	if (result != DOCA_SUCCESS)
-		goto cleanup;
-
-	DOCA_LOG_INFO("Waiting for IPv6 'FIN' packets to arrive before ending the session");
-	result = process_packets(ports[0], ct_queue, &ct_status, &tcp_entry);
+	result = process_packets(ports[0], ct_queue, ct_pipe, &ct_status, entries);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 

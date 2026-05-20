@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -265,13 +265,13 @@ doca_error_t dma_copy_dpu(char *export_desc_file_path,
 	}
 
 	/* Construct DOCA buffer for each address range */
-	result = allocat_doca_buf_list(state->buf_inv,
-				       remote_mmap,
-				       remote_addr,
-				       remote_addr_len,
-				       num_src_buf,
-				       true,
-				       &src_doca_buf);
+	result = allocate_doca_buf_list(state->buf_inv,
+					remote_mmap,
+					remote_addr,
+					remote_addr_len,
+					num_src_buf,
+					true,
+					&src_doca_buf);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Unable to acquire DOCA buffer representing remote buffer: %s",
 			     doca_error_get_descr(result));
@@ -279,13 +279,13 @@ doca_error_t dma_copy_dpu(char *export_desc_file_path,
 	}
 
 	/* Construct DOCA buffer for each address range */
-	result = allocat_doca_buf_list(state->buf_inv,
-				       state->dst_mmap,
-				       dpu_buffer,
-				       dst_buffer_size,
-				       num_dst_buf,
-				       false,
-				       &dst_doca_buf);
+	result = allocate_doca_buf_list(state->buf_inv,
+					state->dst_mmap,
+					dpu_buffer,
+					dst_buffer_size,
+					num_dst_buf,
+					false,
+					&dst_doca_buf);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Unable to acquire DOCA buffer representing destination buffer: %s",
 			     doca_error_get_descr(result));

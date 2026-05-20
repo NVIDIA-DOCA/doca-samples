@@ -127,7 +127,7 @@ static doca_error_t add_switch_pipe_entries(int switch_num, struct doca_flow_pip
 {
 	struct doca_flow_match match;
 	struct doca_flow_fwd fwd;
-	enum doca_flow_flags_type flags = DOCA_FLOW_WAIT_FOR_BATCH;
+	uint32_t flags = DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH;
 	doca_error_t result;
 	int entry_index = 0;
 	int port_base;
@@ -157,20 +157,20 @@ static doca_error_t add_switch_pipe_entries(int switch_num, struct doca_flow_pip
 		fwd.port_id = port_base + 1 + entry_index; /* The port to forward to is defined based on the entry index
 							    */
 
-		/* last entry should be inserted with DOCA_FLOW_NO_WAIT flag */
+		/* last entry should be inserted with DOCA_FLOW_ENTRY_FLAGS_NO_WAIT flag */
 		if (entry_index == NB_ENTRIES - 1)
-			flags = DOCA_FLOW_NO_WAIT;
+			flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
 
-		result = doca_flow_pipe_add_entry(0,
-						  pipe,
-						  &match,
-						  0,
-						  NULL,
-						  NULL,
-						  &fwd,
-						  flags,
-						  status,
-						  &entries[entry_base + entry_index]);
+		result = doca_flow_pipe_basic_add_entry(0,
+							pipe,
+							&match,
+							0,
+							NULL,
+							NULL,
+							&fwd,
+							flags,
+							status,
+							&entries[entry_base + entry_index]);
 
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add pipe entry: %s", doca_error_get_descr(result));
@@ -246,7 +246,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_devs_manager d
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 2 * NB_ENTRIES; /* counter per entry */
 
-	result = init_doca_flow(nb_queues, "switch,hws,isolated", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
