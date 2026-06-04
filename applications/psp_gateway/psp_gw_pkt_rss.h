@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -63,9 +63,11 @@ int lcore_pkt_proc_func(void *lcore_args);
  *
  * @packet [in]: the packet to submit into the egress pipeline
  * @port_id [in]: the port on which to send the packet, usually the host PF
+ * @pkt_meta [in]: metadata tag written to the mbuf so the egress root pipe can
+ *        identify reinjected packets regardless of source port
  * @return: true if the packet was successfully sent, false if too many retries failed
  */
-bool reinject_packet(struct rte_mbuf *packet, uint16_t port_id);
+bool reinject_packet(struct rte_mbuf *packet, uint16_t port_id, uint32_t pkt_meta);
 
 /**
  * @brief Used to reply to an ARP request.

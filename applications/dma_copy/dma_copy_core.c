@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -77,9 +77,9 @@ static doca_error_t get_dma_max_buf_size(struct dma_copy_resources *resources, u
 /*
  * Validate file size
  *
- * @file_path [in]: File to validate
- * @file_size [out]: File size
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ * @param file_path [in]: File to validate
+ * @param file_size [out]: File size
+ * @return DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t validate_file_size(const char *file_path, uint64_t *file_size)
 {
@@ -685,7 +685,7 @@ static doca_error_t host_process_dma_direction_and_size(struct dma_copy_cfg *cfg
 							struct doca_comch_connection *comch_connection,
 							struct comch_msg_dma_direction *dir_msg)
 {
-	struct comch_msg_dma_export_discriptor *exp_msg;
+	struct comch_msg_dma_export_descriptor *exp_msg;
 	char export_msg[cfg->max_comch_buffer];
 	size_t exp_msg_len;
 	const void *export_desc;
@@ -707,7 +707,7 @@ static doca_error_t host_process_dma_direction_and_size(struct dma_copy_cfg *cfg
 	}
 
 	/* Export the host mmap to the DPU to start the DMA */
-	exp_msg = (struct comch_msg_dma_export_discriptor *)export_msg;
+	exp_msg = (struct comch_msg_dma_export_descriptor *)export_msg;
 	exp_msg->type = COMCH_MSG_EXPORT_DESCRIPTOR;
 	exp_msg->host_addr = htonq((uintptr_t)cfg->file_buffer);
 
@@ -717,7 +717,7 @@ static doca_error_t host_process_dma_direction_and_size(struct dma_copy_cfg *cfg
 		return result;
 	}
 
-	exp_msg_len = export_desc_len + sizeof(struct comch_msg_dma_export_discriptor);
+	exp_msg_len = export_desc_len + sizeof(struct comch_msg_dma_export_descriptor);
 	if (exp_msg_len > cfg->max_comch_buffer) {
 		DOCA_LOG_ERR("Export message exceeds max length of comch. Message len: %lu, Max len: %u",
 			     exp_msg_len,
@@ -998,7 +998,7 @@ static doca_error_t dpu_process_dma_direction_and_size(struct dma_copy_cfg *cfg,
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t dpu_process_export_descriptor(struct dma_copy_cfg *cfg,
-						  struct comch_msg_dma_export_discriptor *des_msg)
+						  struct comch_msg_dma_export_descriptor *des_msg)
 {
 	size_t desc_len = ntohq(des_msg->export_desc_len);
 
@@ -1022,7 +1022,7 @@ void dpu_recv_event_cb(struct doca_comch_event_msg_recv *event,
 		       struct doca_comch_connection *comch_connection)
 {
 	struct dma_copy_cfg *cfg = comch_utils_get_user_data(comch_connection);
-	struct comch_msg_dma_export_discriptor *comch_msg_export = NULL;
+	struct comch_msg_dma_export_descriptor *comch_msg_export = NULL;
 	struct comch_msg_dma_status *status = NULL;
 	struct comch_msg *comch_msg = NULL;
 	doca_error_t result = DOCA_ERROR_UNKNOWN;
@@ -1073,7 +1073,7 @@ void dpu_recv_event_cb(struct doca_comch_event_msg_recv *event,
 		}
 		break;
 	case COMCH_MSG_EXPORT_DESCRIPTOR:
-		if (msg_len <= sizeof(struct comch_msg_dma_export_discriptor)) {
+		if (msg_len <= sizeof(struct comch_msg_dma_export_descriptor)) {
 			DOCA_LOG_ERR("Export descriptor message has bad length. Length: %u, expected at least: %lu",
 				     msg_len,
 				     sizeof(struct comch_msg_dma_direction));
@@ -1082,7 +1082,7 @@ void dpu_recv_event_cb(struct doca_comch_event_msg_recv *event,
 			return;
 		}
 
-		comch_msg_export = (struct comch_msg_dma_export_discriptor *)recv_buffer;
+		comch_msg_export = (struct comch_msg_dma_export_descriptor *)recv_buffer;
 		if (ntohq(comch_msg_export->export_desc_len) > msg_len) {
 			DOCA_LOG_ERR(
 				"Export descriptor message validation failed: declared length: %lu exceeds message buffer size :%u",

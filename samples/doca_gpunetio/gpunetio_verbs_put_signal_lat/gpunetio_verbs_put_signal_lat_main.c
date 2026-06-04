@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -139,7 +139,9 @@ static doca_error_t register_verbs_params(void)
 	}
 	doca_argp_param_set_short_name(nic_handler_param, "n");
 	doca_argp_param_set_long_name(nic_handler_param, "nic handler");
-	doca_argp_param_set_arguments(nic_handler_param, "<NIC handler type (0: AUTO, 1: CPU Proxy 2: GPU DB)>");
+	doca_argp_param_set_arguments(
+		nic_handler_param,
+		"<NIC handler type (0: AUTO, 1: CPU Proxy 2: GPU DB 3: BlueFlame 4: GPU DB no DBR 5: CPU Proxy no DBR)>");
 	doca_argp_param_set_description(nic_handler_param, "NIC handler type");
 	doca_argp_param_set_callback(nic_handler_param, nic_handler_callback);
 	doca_argp_param_set_type(nic_handler_param, DOCA_ARGP_TYPE_INT);

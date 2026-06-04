@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,6 +23,9 @@
  *
  */
 
+#ifndef CLOCK_CROSS_TIMESTAMP_SAMPLE_H_
+#define CLOCK_CROSS_TIMESTAMP_SAMPLE_H_
+
 #include <stdlib.h>
 
 #include <doca_error.h>
@@ -43,3 +46,5 @@ struct clock_cross_timestamp_sample_cfg {
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
  */
 doca_error_t run_clock_cross_timestamp_sample(const struct clock_cross_timestamp_sample_cfg *cfg);
+
+#endif /* CLOCK_CROSS_TIMESTAMP_SAMPLE_H_ */

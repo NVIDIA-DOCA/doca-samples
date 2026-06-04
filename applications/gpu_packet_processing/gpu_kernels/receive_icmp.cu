@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -34,7 +34,7 @@
 #include "packets.h"
 #include "filters.cuh"
 
-DOCA_LOG_REGISTER(GPU_SANITY::KernelReceiveIcmp);
+DOCA_LOG_REGISTER(GPU_SANITY::KERNEL_RECEIVE_ICMP);
 
 static __device__ void icmp_swap_mac_addr(struct eth_ip_icmp_hdr *hdr)
 {
@@ -116,16 +116,13 @@ __global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond, struct doca_gpu_et
 		/* If any thread returns receive error, the whole execution stops */
 		if (ret != DOCA_SUCCESS) {
 			if (lane_id == 0) {
-				/*
-				 * printf in CUDA kernel may be a good idea only to report critical errors or debugging.
-				 * If application prints this message on the console, something bad happened and
-				 * applications needs to exit
-				 */
+				#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 				printf("Receive ICMP kernel error %d warp %d lane %d error %d\n",
 				       ret,
 				       warp_id,
 				       out_pkt_num,
 				       ret);
+				#endif
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 			}
 			break;
@@ -161,11 +158,13 @@ __global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond, struct doca_gpu_et
 										DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD>(txq, buf_addr, buf_mkey, nbytes,
 											DOCA_GPUNETIO_ETH_SEND_FLAG_NOTIFY, &out_ticket);
 			} else
+				#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 				printf("Unknown ICMP type %d code %d id %d seq %d\n",
 				       hdr->l4_hdr.type,
 				       hdr->l4_hdr.code,
 				       BYTE_SWAP16(hdr->l4_hdr.ident),
 				       BYTE_SWAP16(hdr->l4_hdr.seq_nb));
+				#endif
 
 			buf_idx += WARP_SIZE;
 		}

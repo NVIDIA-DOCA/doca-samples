@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -81,5 +81,5 @@ custom_target(DOCA_PREFIX + SAMPLE_NAME,
 	output : DOCA_PREFIX + SAMPLE_NAME,
 	build_by_default: true)
 
-# No need to to compile again from the main meson
+# No need to compile again from the main meson
 skip_sample_compilation = true

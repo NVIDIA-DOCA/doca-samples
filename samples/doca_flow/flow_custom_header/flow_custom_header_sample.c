@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -84,7 +84,7 @@ struct application_graph_config {
 	struct application_header_config app_header[HEADER_MAX];
 };
 
-struct application_graph_config app_graph_config = {0};
+static struct application_graph_config app_graph_config = {0};
 
 struct custom_match {
 	struct doca_flow_match base_match;
@@ -1400,7 +1400,7 @@ doca_error_t flow_custom_header(int nb_queues)
 
 	result = init_defs(&defs);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create DOCA Flow definitionss: %s", doca_error_get_name(result));
+		DOCA_LOG_ERR("Failed to create DOCA Flow definitions: %s", doca_error_get_name(result));
 		return result;
 	}
 

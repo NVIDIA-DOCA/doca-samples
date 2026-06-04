@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -67,18 +67,19 @@ For both commands, the device (VF/SF) to operate on must be specified.
 
 Specifying a VF can be done in two ways:
 1. Specifying the VF PCI address, e.g., 0000:08:00.2, using the `-v/--vf-pci-addr` parameter.
-2. Specifying the VF representor, using the `-r/--rep` parameter with the following format: `pci/<parent_pf_pci_address>,pf<pfnum>vf<vfnum>`.  
+2. Specifying the VF representor, using the `-r/--rep` parameter with the following format: `pci/<parent_pf_pci_address>,pf<pfnum>vf<vfnum>`.
    For example, for VF 0000:08:00.2 whose VF number is 0 and parent PF is 0000:08:00.0 with PF number 0, the identifier would be `pci/0000:08:00.0,pf0vf0`.
 
-Specifying a SF is done by its representor, using the `-r/--rep` parameter with the following format: `pci/<parent_pf_pci_address>,pf<pfnum>sf<sfnum>`.  
+Specifying a SF is done by its representor, using the `-r/--rep` parameter with the following format: `pci/<parent_pf_pci_address>,pf<pfnum>sf<sfnum>`.
 For example, for SF whose SF number is 88 and parent PF is 0000:08:00.0 with PF number 0, the identifier would be `pci/0000:08:00.0,pf0sf88`.
 
 For `set` command, `-e/--enabled` parameter must be specified as well with true/false values, which indicates whether data direct capability should be enabled or disabled, respectively.
 
 Important notes:
 1. In order get or set data direct, the VF or SF must have a representor, i.e., their parent PF must be in switchdev mode.
-2. In order to set data direct, the VF or SF must be uninitialized, meaning, for example, that they must not be bound to mlx5_core driver.
-3. Data direct will remain enabled for a VF even after it's destroyed and re-created, so data direct must be explicitly disabled if it's no longer needed for a VF.
+2. If the device port type is Infiniband, which doesn't support representors, it's still possible to configure data direct for a VF by the `-v/--vf-pci-addr` parameter.
+3. In order to set data direct, the VF or SF must be uninitialized, meaning, for example, that they must not be bound to mlx5_core driver.
+4. Data direct will remain enabled for a VF even after it's destroyed and re-created, so data direct must be explicitly disabled if it's no longer needed for a VF.
 
 ## Examples
 
@@ -148,7 +149,7 @@ The sample logic includes:
 2. Creating a DOCA management device context for the DOCA device.
 3. Creating a congestion control global status handle and setting priority and protocol attributes.
 4. Executing get operation through the DOCA management congestion control global status API.
-5. Parsing the command response to extract error code and retrieving the congestion control global status enabled attribute for the specified priority and rotocol.
+5. Parsing the command response to extract error code and retrieving the congestion control global status enabled attribute for the specified priority and protocol.
 6. Cleaning up all DOCA management and device structures.
 
 ### Set Congestion Control Global Status Operation:
@@ -195,13 +196,13 @@ The sample has three commands:
 
 For all commands, either a device or a device representor must be specified.
 
-Specifying a device is done using the `-d/--device` parameter with the following format: `pci/<pci_address>`.  
+Specifying a device is done using the `-d/--device` parameter with the following format: `pci/<pci_address>`.
 For example, for device 0000:08:00.0, the identifier would be `pci/0000:08:00.0`.
 
-Specifying a VF representor is done using the `-r/--rep` parameter with the following format: `pci/<parent_pf_pci_address>,pf<pfnum>vf<vfnum>`.  
+Specifying a VF representor is done using the `-r/--rep` parameter with the following format: `pci/<parent_pf_pci_address>,pf<pfnum>vf<vfnum>`.
 For example, for VF whose VF number is 0 and parent PF is 0000:08:00.0 with PF number 0, the identifier would be `pci/0000:08:00.0,pf0vf0`.
 
-Specifying a SF representor is done using the `-r/--rep` parameter with the following format: `pci/<parent_pf_pci_address>,pf<pfnum>sf<sfnum>`.  
+Specifying a SF representor is done using the `-r/--rep` parameter with the following format: `pci/<parent_pf_pci_address>,pf<pfnum>sf<sfnum>`.
 For example, for SF whose SF number is 88 and parent PF is 0000:08:00.0 with PF number 0, the identifier would be `pci/0000:08:00.0,pf0sf88`.
 
 For a full documentation of device and representor identifiers patterns, please refer to the DOCA Arg Parser documentation.
@@ -281,4 +282,90 @@ The sample logic includes:
 
 - `mgmt_icm_quota_sample.c`
 - `mgmt_icm_quota_main.c`
+- `meson.build`
+
+# Management Diagnostics Data
+
+This sample demonstrates how to use the DOCA Management diagnostics data API on a device that supports it: check capability, read the current multi-domain setting, and apply a new multi-domain setting.
+
+## Building
+
+To build the sample, run the following commands:
+
+```
+$ cd <doca_samples_dir>/doca_mgmt/mgmt_diagnostics_data
+$ meson setup build
+$ meson compile -C build
+```
+
+The sample binary `doca_mgmt_diagnostics_data` is produced under the `build` directory.
+
+## Usage
+
+The sample provides three commands:
+
+* `caps` — reports whether diagnostics data is supported on the given device.
+* `get` — queries the device and prints the current `multi_domain` value (`true` / `false`).
+* `set` — sets the desired `multi_domain` value on the device.
+
+For every command, the target device is mandatory and is passed with `-d` / `--device` using the form `pci/<pci_address>`.
+For example, for PCI function `0000:08:00.0`, use `pci/0000:08:00.0`.
+
+For `set`, you must also pass `--multi-domain` with `true` or `false` (enable or disable multi-domain mode).
+
+**Note:** Changing multi_domain may be rejected by the device if any of the relevant diagnostics data domains of the device has ownership; in that case an appropriate error is returned.
+
+## Examples
+
+- Check whether diagnostics data is supported:
+
+```
+$ doca_mgmt_diagnostics_data caps --device pci/0000:08:00.0
+```
+
+- Read the current multi-domain setting:
+
+```
+$ doca_mgmt_diagnostics_data get --device pci/0000:08:00.0
+```
+
+- Enable multi-domain:
+
+```
+$ doca_mgmt_diagnostics_data set --device pci/0000:08:00.0 --multi-domain true
+```
+
+- Disable multi-domain:
+
+```
+$ doca_mgmt_diagnostics_data set --device pci/0000:08:00.0 --multi-domain false
+```
+
+## Sample Logic
+
+The sample logic includes:
+
+### Caps (support check)
+
+1. Open the DOCA device from the command line.
+2. Create a DOCA management device context.
+3. Call `doca_mgmt_cap_diagnostics_data_multi_domain_is_supported` and print supported / unsupported (or an error).
+4. Destroy the management device context.
+
+### Get (query)
+
+1. Open the DOCA device and create a DOCA management device context.
+2. Create a diagnostics data handle, `doca_mgmt_diagnostics_data_query_for_dev`, then `doca_mgmt_diagnostics_data_get_multi_domain` and print the value.
+3. Destroy the handle and management context.
+
+### Set (modify)
+
+1. Open the DOCA device and create a DOCA management device context.
+2. Create a diagnostics data handle, `doca_mgmt_diagnostics_data_set_multi_domain`, then `doca_mgmt_diagnostics_data_modify_for_dev`.
+3. Destroy the handle and management context.
+
+## References
+
+- `mgmt_diagnostics_data_sample.c`
+- `mgmt_diagnostics_data_main.c`
 - `meson.build`

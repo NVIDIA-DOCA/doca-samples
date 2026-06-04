@@ -135,11 +135,15 @@ static void check_for_valid_entry_aging(struct doca_flow_pipe_entry *entry,
  *
  * @port [in]: Pipe port
  * @fwd_pipe [in]: Forward pipe pointer
+ * @nb_ipv4_sessions [in]: Number of IPv4 sessions
+ * @nb_ipv6_sessions [in]: Number of IPv6 sessions
  * @pipe [out]: Created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t create_ct_pipe(struct doca_flow_port *port,
 				   struct doca_flow_pipe *fwd_pipe,
+				   uint32_t nb_ipv4_sessions,
+				   uint32_t nb_ipv6_sessions,
 				   struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
@@ -163,6 +167,16 @@ static doca_error_t create_ct_pipe(struct doca_flow_port *port,
 	result = set_flow_pipe_cfg(cfg, "CT_PIPE", DOCA_FLOW_PIPE_CT, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_ct_connections(cfg, nb_ipv4_sessions, nb_ipv6_sessions, 0);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set CT connections: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_ct_max_connections_per_zone(cfg, CT_DEFAULT_MAX_ZONE_SESSIONS);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set CT max connections per zone: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 	result = doca_flow_pipe_cfg_set_match(cfg, &match, &mask);
@@ -356,8 +370,8 @@ static doca_error_t add_age_ct_entries(struct doca_flow_port *port,
 						&match_r,
 						NULL,
 						NULL,
-						0,
-						0,
+						NULL,
+						NULL,
 						aging_sec,
 						user_data[i],
 						entry);
@@ -392,7 +406,7 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 	struct aging_user_data *user_data[nb_aged_entries];
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ct_status;
-	uint32_t ct_flags = 0, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 0,
+	uint32_t ct_flags = 0, nb_arm_queues = 1, nb_ctrl_queues = 1, ct_actions_mem_size = 0,
 		 nb_ipv6_sessions = 0; /* On BF2 should always be 0 */
 	uint16_t ct_queue = nb_queues;
 	doca_error_t result;
@@ -403,6 +417,7 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 1;
+	resource.nr_ct_counters = (nb_aged_entries + nb_ipv6_sessions) * 2;
 
 	result = init_doca_flow_cb(nb_queues,
 				   "switch,hws",
@@ -425,12 +440,8 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 	result = init_doca_flow_ct(ct_flags,
 				   nb_arm_queues,
 				   nb_ctrl_queues,
-				   nb_user_actions,
+				   ct_actions_mem_size,
 				   NULL,
-				   nb_aged_entries,
-				   nb_ipv6_sessions,
-				   0,
-				   0,
 				   false,
 				   &o_zone_mask,
 				   &o_modify_mask,
@@ -460,7 +471,7 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
-	result = create_ct_pipe(ports[0], count_pipe, &ct_pipe);
+	result = create_ct_pipe(ports[0], count_pipe, nb_aged_entries, nb_ipv6_sessions, &ct_pipe);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 

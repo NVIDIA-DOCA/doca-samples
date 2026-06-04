@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -59,32 +59,45 @@ extern doca_dpa_func_t raise_msix_rpc;
  *
  * @resources [in]: The sample resources
  * @msix_idx [in]: MSI-X vector index
+ * @msix_on_dpu [in]: If true, create MSI-X using the DPU datapath; otherwise use DPA
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t create_msix_object(struct devemu_resources *resources, uint16_t msix_idx)
+doca_error_t create_msix_object(struct devemu_resources *resources, uint16_t msix_idx, bool msix_on_dpu)
 {
 	doca_error_t result;
 
 	const struct bar_region_config *msix_table_region = &msix_table_configs[MSIX_TABLE_REGION_INDEX];
 
-	result = doca_devemu_pci_ep_create_msix_on_dpa(doca_devemu_pci_dev_as_ep(resources->pci_dev),
-						       msix_table_region->bar_id,
-						       msix_table_region->start_address,
-						       msix_idx,
-						       /*dpa_user_data=*/0x0,
-						       &resources->data_path.msix);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create MSI-X to be used in DPA");
-		return result;
+	if (msix_on_dpu) {
+		result = doca_devemu_pci_ep_create_msix(doca_devemu_pci_dev_as_ep(resources->pci_dev),
+							msix_table_region->bar_id,
+							msix_table_region->start_address,
+							msix_idx,
+							&resources->data_path.msix);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create MSI-X to be used in DPU");
+			return result;
+		}
+	} else {
+		result = doca_devemu_pci_ep_create_msix_on_dpa(doca_devemu_pci_dev_as_ep(resources->pci_dev),
+							       msix_table_region->bar_id,
+							       msix_table_region->start_address,
+							       msix_idx,
+							       &resources->data_path.msix);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create MSI-X to be used in DPA");
+			return result;
+		}
+
+		result = doca_devemu_pci_msix_get_dpa_handle(resources->data_path.msix,
+							     &resources->data_path.msix_handle);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get MSI-X DPA handle");
+			return result;
+		}
 	}
 
-	result = doca_devemu_pci_msix_get_dpa_handle(resources->data_path.msix, &resources->data_path.msix_handle);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get MSI-X DPA handle");
-		return result;
-	}
-
-	return result;
+	return DOCA_SUCCESS;
 }
 
 /*
@@ -93,9 +106,13 @@ doca_error_t create_msix_object(struct devemu_resources *resources, uint16_t msi
  * @pci_address [in]: Device PCI address
  * @emulated_dev_vuid [in]: VUID of the emulated device
  * @msix_idx [in]: MSI-X vector index
+ * @msix_on_dpu [in]: If true, raise MSI-X from DPU datapath; otherwise raise from DPA
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t devemu_pci_device_msix_dpu(const char *pci_address, const char *emulated_dev_vuid, uint16_t msix_idx)
+doca_error_t devemu_pci_device_msix_dpu(const char *pci_address,
+					const char *emulated_dev_vuid,
+					uint16_t msix_idx,
+					bool msix_on_dpu)
 {
 	doca_error_t result;
 	struct devemu_resources resources = {0};
@@ -131,13 +148,6 @@ doca_error_t devemu_pci_device_msix_dpu(const char *pci_address, const char *emu
 		return result;
 	}
 
-	/* Initialize DPA context */
-	result = init_dpa(&resources, devemu_pci_sample_app);
-	if (result != DOCA_SUCCESS) {
-		devemu_resources_cleanup(&resources, destroy_rep);
-		return result;
-	}
-
 	/* Find existing emulated device */
 	result = find_emulated_device(resources.pci_type, emulated_dev_vuid, &resources.rep);
 	if (result != DOCA_SUCCESS) {
@@ -154,12 +164,21 @@ doca_error_t devemu_pci_device_msix_dpu(const char *pci_address, const char *emu
 		return result;
 	}
 
-	result = doca_ctx_set_datapath_on_dpa(doca_devemu_pci_dev_as_ctx(resources.pci_dev), resources.dpa);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set PCI emulated device context datapath on DPA: %s",
-			     doca_error_get_descr(result));
-		devemu_resources_cleanup(&resources, destroy_rep);
-		return result;
+	if (!msix_on_dpu) {
+		/* Initialize DPA context */
+		result = init_dpa(&resources, devemu_pci_sample_app);
+		if (result != DOCA_SUCCESS) {
+			devemu_resources_cleanup(&resources, destroy_rep);
+			return result;
+		}
+
+		result = doca_ctx_set_datapath_on_dpa(doca_devemu_pci_dev_as_ctx(resources.pci_dev), resources.dpa);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set PCI emulated device context datapath on DPA: %s",
+				     doca_error_get_descr(result));
+			devemu_resources_cleanup(&resources, destroy_rep);
+			return result;
+		}
 	}
 
 	result = doca_ctx_start(doca_devemu_pci_dev_as_ctx(resources.pci_dev));
@@ -187,7 +206,7 @@ doca_error_t devemu_pci_device_msix_dpu(const char *pci_address, const char *emu
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	result = create_msix_object(&resources, msix_idx);
+	result = create_msix_object(&resources, msix_idx, msix_on_dpu);
 	if (result != DOCA_SUCCESS) {
 		devemu_resources_cleanup(&resources, destroy_rep);
 		return result;
@@ -195,12 +214,16 @@ doca_error_t devemu_pci_device_msix_dpu(const char *pci_address, const char *emu
 
 	DOCA_LOG_INFO("Raising MSI-X at index %u", msix_idx);
 
-	uint64_t rpc_ret;
-	result = doca_dpa_rpc(resources.dpa, &raise_msix_rpc, &rpc_ret, resources.data_path.msix_handle);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Raise MSI-X RPC execution failed");
-		devemu_resources_cleanup(&resources, destroy_rep);
-		return result;
+	if (msix_on_dpu) {
+		doca_devemu_pci_msix_raise(resources.data_path.msix);
+	} else {
+		uint64_t rpc_ret;
+		result = doca_dpa_rpc(resources.dpa, &raise_msix_rpc, &rpc_ret, resources.data_path.msix_handle);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Raise MSI-X RPC execution failed");
+			devemu_resources_cleanup(&resources, destroy_rep);
+			return result;
+		}
 	}
 
 	DOCA_LOG_INFO("MSI-X raised successfully");

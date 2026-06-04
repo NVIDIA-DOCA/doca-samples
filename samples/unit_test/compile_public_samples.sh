@@ -67,7 +67,10 @@ skip_lib_dir_array=(
 	'unit_test'
 )
 
-skip_sample_dir_array=()
+skip_sample_dir_array=(
+	'devemu_pci_device_tlp_handler' # Temp until TLP is part of packaging
+	'devemu_pci_device_tlp_bridge_handler' # Temp until TLP is part of packaging
+)
 skip_host_sample_dir_array=(
 	'doca_urom'
 )

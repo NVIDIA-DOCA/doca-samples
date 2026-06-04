@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -25,10 +25,93 @@
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <cctype>
+#include <cstdint>
 
 #include <rte_ether.h>
 
 #include "psp_gw_utils.h"
+
+/* Max decimal digits in a uint16 port number ("65535") */
+static constexpr size_t MAX_PORT_DIGITS = 5;
+
+static bool is_valid_port_string(const std::string &s)
+{
+	if (s.empty() || s.length() > MAX_PORT_DIGITS)
+		return false;
+	for (char c : s) {
+		if (!std::isdigit(static_cast<unsigned char>(c)))
+			return false;
+	}
+	int v = std::stoi(s);
+	return v >= 0 && v <= UINT16_MAX;
+}
+
+static bool parse_grpc_host_port(const std::string &s, std::string &host, std::string &port, bool &has_port)
+{
+	host.clear();
+	port.clear();
+	has_port = false;
+
+	if (s.empty())
+		return false;
+
+	if (s[0] == '[') {
+		size_t bracket_end = s.find("]:");
+		if (bracket_end != std::string::npos) {
+			port = s.substr(bracket_end + 2);
+			if (is_valid_port_string(port)) {
+				host = s.substr(0, bracket_end + 1);
+				has_port = true;
+				return true;
+			}
+			return false;
+		}
+		if (s.back() == ']') {
+			host = s;
+			return true;
+		}
+		return false;
+	}
+
+	size_t last_colon = s.rfind(':');
+	if (last_colon == std::string::npos) {
+		host = s;
+		return true;
+	}
+	/* Bare IPv6 (no brackets) must not be split on last colon; check if whole string is IPv6 */
+	uint8_t ip6[16];
+	if (inet_pton(AF_INET6, s.c_str(), ip6) == 1) {
+		host = s;
+		return true;
+	}
+	std::string port_candidate = s.substr(last_colon + 1);
+	if (!is_valid_port_string(port_candidate)) {
+		host = s;
+		return true;
+	}
+	std::string host_candidate = s.substr(0, last_colon);
+	if (host_candidate.empty())
+		return false;
+	if (host_candidate.find(':') != std::string::npos) {
+		host = host_candidate;
+		port = port_candidate;
+		has_port = true;
+		return true;
+	}
+	host = host_candidate;
+	port = port_candidate;
+	has_port = true;
+	return true;
+}
+
+/* Strip surrounding brackets from an IPv6 host, e.g. "[::1]" -> "::1" */
+static std::string unbracket_host(const std::string &host)
+{
+	if (host.size() >= 2 && host[0] == '[' && host.back() == ']')
+		return host.substr(1, host.size() - 2);
+	return host;
+}
 
 std::string mac_to_string(const rte_ether_addr &mac_addr)
 {
@@ -117,6 +200,53 @@ void copy_ip_addr(const struct doca_flow_ip_addr &src, struct doca_flow_ip_addr 
 		dst.type = DOCA_FLOW_L3_TYPE_IP6;
 		memcpy(dst.ipv6_addr, src.ipv6_addr, sizeof(src.ipv6_addr));
 	} // else dst.type is already 0 == DOCA_FLOW_L3_TYPE_NONE
+}
+
+std::string grpc_target_with_port(const std::string &host_or_target, uint16_t default_port)
+{
+	std::string s = host_or_target;
+	if (s.empty())
+		return "[::]:" + std::to_string(default_port);
+
+	std::string host, port;
+	bool has_port = false;
+	if (!parse_grpc_host_port(s, host, port, has_port))
+		return "[::]:" + std::to_string(default_port);
+
+	if (has_port) {
+		if (host[0] != '[' && host.find(':') != std::string::npos)
+			return "[" + host + "]:" + port;
+		return host + ":" + port;
+	}
+
+	uint8_t ip6_buf[16];
+	std::string host_plain = unbracket_host(host);
+	if (inet_pton(AF_INET6, host_plain.c_str(), ip6_buf) == 1)
+		return "[" + host_plain + "]:" + std::to_string(default_port);
+	return host + ":" + std::to_string(default_port);
+}
+
+doca_error_t validate_grpc_address(const std::string &address)
+{
+	if (address.empty())
+		return DOCA_SUCCESS;
+
+	std::string host, port;
+	bool has_port = false;
+	if (!parse_grpc_host_port(address, host, port, has_port))
+		return DOCA_ERROR_INVALID_VALUE;
+
+	std::string host_plain = unbracket_host(host);
+
+	uint32_t ip4;
+	uint8_t ip6[16];
+	if (inet_pton(AF_INET, host_plain.c_str(), &ip4) == 1)
+		return DOCA_SUCCESS;
+	if (inet_pton(AF_INET6, host_plain.c_str(), ip6) == 1)
+		return DOCA_SUCCESS;
+	if (host_plain.find(':') == std::string::npos)
+		return DOCA_SUCCESS;	 /* hostname */
+	return DOCA_ERROR_INVALID_VALUE; /* malformed IPv6 */
 }
 
 psp_gw_peer *lookup_vip_pair(std::vector<psp_gw_peer> *peers, ip_pair &vip_pair)

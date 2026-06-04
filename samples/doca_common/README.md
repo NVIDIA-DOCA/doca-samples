@@ -1,3 +1,13 @@
+#
+# This software product is a proprietary product of NVIDIA CORPORATION &
+# AFFILIATES (the "Company") and all right, title, and interest in and to the
+# software product, including all associated intellectual property rights, are
+# and shall remain exclusively with the Company.
+#
+# This software product is governed by the End User License Agreement
+# provided with the software product.
+#
+
 # DOCA Core Samples
 
 ## Info
@@ -161,3 +171,37 @@ The sample uses two nodes of DOCA DMA and one user node.
 The graph runs both DMA nodes (copying a source buffer to two destinations). Once both nodes are complete, the graph runs the user node that compares the buffers.
 
 The sample runs 10 instances of the graph in parallel.
+
+### log_common
+`log_common.c` and `log_common.h` contain code that is shared in log_limits_client and log_limits_server samples.
+
+### Log_limits_client Sample
+This sample sends a single UDP command (get-limits, set-lower-limits, or set-upper-limits) to the log_limit_server to either read the current DOCA_LOG limits or set the lower/upper limit.
+- do not accept multiple command, only the first command is processed.
+- Usage:
+```bash
+# Read current global lower and upper limits
+./doca_log_limits_client [-i <server_ip>] [-p <port>] -g
+
+# Set global lower limit (e.g. 60 = DEBUG)
+./doca_log_limits_client [-i <server_ip>] [-p <port>] -sl 60
+
+# Set global upper limit (e.g. 20 = CRIT)
+./doca_log_limits_client [-i <server_ip>] [-p <port>] -su 20
+```
+
+### Log_limits_server Sample
+This sample runs a UDP server that continuously prints DOCA log messages at various levels (CRIT, ERROR, WARN, INFO, DEBUG, TRACE).
+- Provide a UDP socket that will accept incoming connections from a log_limits_client
+- According to the command (get-limits, set-lower-limits, set-upper-limits) from the log_limits_client, the log_limits_server executes the DOCA_LOG API:
+-- doca_log_level_get_global_lower_limit
+-- doca_log_level_get_global_upper_limit
+-- doca_log_level_set_global_lower_limit
+-- doca_log_level_set_global_upper_limit
+- For the command 'get-limits', both lower and upper limit values are returned to the log_limits_client
+- For the command 'set-lower-limit' and 'set-upper-limit', no response is back to the log_limits_client
+- The server will continue to output log messages (at various levels) to show the impacts of the above DOCA_LOG API operations, until Ctrl+C is received.
+- Usage:
+```bash
+./doca_log_limits_server [-p port]
+```

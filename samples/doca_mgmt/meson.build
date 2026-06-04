@@ -25,6 +25,7 @@
 samples = [
 	'mgmt_cc_global_status',
 	'mgmt_data_direct',
+	'mgmt_diagnostics_data',
 	'mgmt_icm_quota',
 ]
 

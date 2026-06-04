@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -63,11 +63,11 @@ static void sigint_handler(int signum)
 /**
  * @brief Get available EUs
  *
- * This function indicates in a boolian array which EU is available
+ * This function indicates in a boolean array which EU is available
  *
  * @dpa [in]: Doca DPA struct
  * @total_num_eus [in]: Total number of possible EUs
- * @available_eus [out]: Boolian array of EUs filled with 'true' if available
+ * @available_eus [out]: Boolean array of EUs filled with 'true' if available
  * @available_eus_size [out]: Size of available EUs
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -169,8 +169,8 @@ static doca_error_t get_available_eus(struct doca_dpa *dpa,
  *
  * This function returns the number of used EUs
  *
- * @available_eus [in]: Boolian array of available EUs
- * @excluded_eus [in]: Boolian array of excluded EUs
+ * @available_eus [in]: Boolean array of available EUs
+ * @excluded_eus [in]: Boolean array of excluded EUs
  * @total_num_eus [in]: Total number of possible EUs
  * @return: Number of used EUs
  */

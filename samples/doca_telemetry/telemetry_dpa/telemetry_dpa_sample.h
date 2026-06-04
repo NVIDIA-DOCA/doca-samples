@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -22,6 +22,9 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
+
+#ifndef TELEMETRY_DPA_SAMPLE_H_
+#define TELEMETRY_DPA_SAMPLE_H_
 
 #include <stdlib.h>
 
@@ -48,3 +51,5 @@ struct telemetry_dpa_sample_cfg {
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
  */
 doca_error_t telemetry_dpa_sample_run(const struct telemetry_dpa_sample_cfg *cfg);
+
+#endif /* TELEMETRY_DPA_SAMPLE_H_ */

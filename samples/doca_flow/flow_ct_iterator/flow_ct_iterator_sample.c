@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -146,6 +146,7 @@ destroy_pipe_cfg:
 static doca_error_t create_ct_pipe(struct doca_flow_port *port,
 				   struct doca_flow_pipe *fwd_match_pipe,
 				   struct doca_flow_pipe *fwd_miss_pipe,
+				   uint32_t nb_ipv4_sessions,
 				   struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_pipe_cfg *cfg;
@@ -163,6 +164,16 @@ static doca_error_t create_ct_pipe(struct doca_flow_port *port,
 	result = set_flow_pipe_cfg(cfg, "CT_PIPE", DOCA_FLOW_PIPE_CT, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_ct_connections(cfg, nb_ipv4_sessions, 0, 0);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set CT connections: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_ct_max_connections_per_zone(cfg, CT_DEFAULT_MAX_ZONE_SESSIONS);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set CT max connections per zone: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 	result = doca_flow_pipe_cfg_set_match(cfg, &match, NULL);
@@ -213,8 +224,8 @@ static doca_error_t create_ct_entries(uint32_t n_ct_entries,
 					   i,
 					   &action,
 					   &action,
-					   0,
-					   0,
+					   NULL,
+					   NULL,
 					   0,
 					   &ct_status,
 					   &entry);
@@ -280,8 +291,8 @@ void iterate_cb(uint16_t pipe_queue,
 					   hash_reply,
 					   &action,
 					   &action,
-					   0,
-					   0,
+					   NULL,
+					   NULL,
 					   0,
 					   &ctx->ct_status,
 					   &entry);
@@ -415,7 +426,9 @@ doca_error_t flow_ct_iterator(uint32_t n_ct_entries, struct flow_dev_ctx *ctx, b
 	const int nb_entries = 4;
 	int nb_ports = 2;
 	struct doca_flow_port *ports[2];
-	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT, .nr_counters = 1024};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT,
+					  .nr_counters = 1024,
+					  .nr_ct_counters = n_ct_entries};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_fwd port_forward_fwd = {.type = DOCA_FLOW_FWD_PORT};
 	struct doca_flow_fwd miss_drop_fwd = {.type = DOCA_FLOW_FWD_DROP};
@@ -453,10 +466,6 @@ doca_error_t flow_ct_iterator(uint32_t n_ct_entries, struct flow_dev_ctx *ctx, b
 				   0,
 				   0,
 				   NULL,
-				   n_ct_entries,
-				   0,
-				   0,
-				   0, /* CT pipe decide it in iterator mode */
 				   false,
 				   &zone_mask,
 				   &modify_mask,
@@ -500,7 +509,8 @@ doca_error_t flow_ct_iterator(uint32_t n_ct_entries, struct flow_dev_ctx *ctx, b
 			goto cleanup;
 
 		/* Create CT pipe with built-in counter: match->port_forward (direct) and miss->counter_miss */
-		result = create_ct_pipe(ports[i], port_forward_pipes[i], miss_drop_pipes[i], &ct_pipes[i]);
+		result =
+			create_ct_pipe(ports[i], port_forward_pipes[i], miss_drop_pipes[i], n_ct_entries, &ct_pipes[i]);
 		if (result != DOCA_SUCCESS)
 			goto cleanup;
 

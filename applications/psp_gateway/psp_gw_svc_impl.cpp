@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -88,25 +88,35 @@ doca_error_t PSP_GatewayImpl::handle_miss_packet(struct rte_mbuf *packet)
 		src_vip_addr.type = DOCA_FLOW_L3_TYPE_IP6;
 	}
 
-	// Create the new tunnel instance, if one does not already exist
-	if (sessions.count({src_vip, dst_vip}) == 0) {
-		// Determine the peer which owns the virtual destination
+	// Atomically check whether a session exists and insert a placeholder
+	// if not, so concurrent miss packets for the same VIP pair skip
+	// duplicate creation.  The actual tunnel setup (which includes a
+	// blocking outgoing gRPC call) runs outside the lock.
+	bool need_tunnel;
+	{
+		std::lock_guard<std::mutex> lock(tunnel_mutex_);
+		need_tunnel = sessions.emplace(session_key{src_vip, dst_vip}, psp_session_t{}).second;
+	}
+	if (need_tunnel) {
 		struct ip_pair vip_pair = {src_vip_addr, dst_vip_addr};
 		auto *peer = lookup_vip_pair(vip_pair);
 		if (!peer) {
 			DOCA_LOG_WARN("Virtual Destination IP Addr not found: %s", dst_vip.c_str());
+			std::lock_guard<std::mutex> lock(tunnel_mutex_);
+			sessions.erase({src_vip, dst_vip});
 			return DOCA_ERROR_NOT_FOUND;
 		}
 
 		doca_error_t result = request_tunnel_to_host(peer, &vip_pair, true, false, true);
 		if (result != DOCA_SUCCESS) {
+			std::lock_guard<std::mutex> lock(tunnel_mutex_);
+			sessions.erase({src_vip, dst_vip});
 			return result;
 		}
 	}
 
-	// A new tunnel was created; we can now resubmit the packet
-	// and it will be encrypted and sent to the right port.
-	if (!reinject_packet(packet, pf->port_id)) {
+	// Resubmit the packet now that a matching flow exists.
+	if (!reinject_packet(packet, pf->port_id, config->egress_reinject_meta_indicator)) {
 		DOCA_LOG_ERR("Failed to resubmit packet from vnet addr %s to %s on port %d",
 			     src_vip.c_str(),
 			     dst_vip.c_str(),
@@ -122,26 +132,41 @@ doca_error_t PSP_GatewayImpl::request_tunnel_to_host(struct psp_gw_peer *peer,
 						     bool suppress_failure_msg,
 						     bool has_vip_pair)
 {
-	doca_error_t result;
+	tunnel_request_ctx ctx = {peer, vip_pair, supply_reverse_params, suppress_failure_msg, has_vip_pair};
+
+	std::unique_lock<std::mutex> lock(tunnel_mutex_);
+	doca_error_t result = build_tunnel_request(ctx);
+	lock.unlock();
+
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	result = send_tunnel_request(ctx);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	lock.lock();
+	result = process_tunnel_response(ctx);
+	return result;
+}
+
+doca_error_t PSP_GatewayImpl::build_tunnel_request(tunnel_request_ctx &ctx)
+{
 	uint32_t key_len_bits = psp_version_to_key_length_bits(config->net_config.default_psp_proto_ver);
 	uint32_t key_len_words = key_len_bits / 32;
-	uint32_t nb_pairs = has_vip_pair ? 1 : peer->vip_pairs.size();
+	uint32_t nb_pairs = ctx.has_vip_pair ? 1 : ctx.peer->vip_pairs.size();
 	std::vector<uint32_t> keys(nb_pairs * key_len_words);
 	std::vector<uint32_t> spis(nb_pairs);
-
-	const std::string &peer_svc_pip = peer->svc_addr;
 	int spi_key_idx = 0;
-	int vip_pair_id = -1;
 
-	auto *stub = get_stub(peer_svc_pip);
+	const std::string &peer_svc_pip = ctx.peer->svc_addr;
 
-	::grpc::ClientContext context;
-	::psp_gateway::MultiTunnelRequest request;
-	request.set_request_id(++next_request_id);
-	request.add_psp_versions_accepted(config->net_config.default_psp_proto_ver);
+	ctx.stub = get_stub(peer_svc_pip);
+	ctx.request.set_request_id(++next_request_id);
+	ctx.request.add_psp_versions_accepted(config->net_config.default_psp_proto_ver);
 
-	if (supply_reverse_params) {
-		result = generate_keys_spis(key_len_bits, nb_pairs, keys.data(), spis.data());
+	if (ctx.supply_reverse_params) {
+		doca_error_t result = generate_keys_spis(key_len_bits, nb_pairs, keys.data(), spis.data());
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to generate SPI/Key's for peer %s: %s",
 				     peer_svc_pip.c_str(),
@@ -150,33 +175,31 @@ doca_error_t PSP_GatewayImpl::request_tunnel_to_host(struct psp_gw_peer *peer,
 		}
 	}
 
-	for (size_t vip_pair_idx = 0; vip_pair_idx < peer->vip_pairs.size(); vip_pair_idx++) {
-		doca_flow_ip_addr *peer_virt_ip = &peer->vip_pairs[vip_pair_idx].dst_vip;
-		doca_flow_ip_addr *local_virt_ip = &peer->vip_pairs[vip_pair_idx].src_vip;
+	for (size_t vip_pair_idx = 0; vip_pair_idx < ctx.peer->vip_pairs.size(); vip_pair_idx++) {
+		doca_flow_ip_addr *peer_virt_ip = &ctx.peer->vip_pairs[vip_pair_idx].dst_vip;
+		doca_flow_ip_addr *local_virt_ip = &ctx.peer->vip_pairs[vip_pair_idx].src_vip;
 
-		if (has_vip_pair) {
-			if (!is_ip_equal(peer_virt_ip, &vip_pair->dst_vip) ||
-			    !is_ip_equal(local_virt_ip, &vip_pair->src_vip))
+		if (ctx.has_vip_pair) {
+			if (!is_ip_equal(peer_virt_ip, &ctx.vip_pair->dst_vip) ||
+			    !is_ip_equal(local_virt_ip, &ctx.vip_pair->src_vip))
 				continue;
 			else
-				vip_pair_id = vip_pair_idx;
+				ctx.vip_pair_id = vip_pair_idx;
 		} else
 			spi_key_idx = vip_pair_idx;
-		std::string local_vip;
-		std::string peer_vip;
-		::psp_gateway::SingleTunnelRequest *single_request = request.add_tunnels();
+
+		::psp_gateway::SingleTunnelRequest *single_request = ctx.request.add_tunnels();
 		if (config->inner == DOCA_FLOW_L3_TYPE_IP4)
 			single_request->set_inner_type(4);
 		else
 			single_request->set_inner_type(6);
-		local_vip = ip_to_string(*local_virt_ip);
-		peer_vip = ip_to_string(*peer_virt_ip);
+
+		std::string local_vip = ip_to_string(*local_virt_ip);
+		std::string peer_vip = ip_to_string(*peer_virt_ip);
 		single_request->set_virt_src_ip(local_vip);
 		single_request->set_virt_dst_ip(peer_vip);
 
-		// Save a round-trip, if a local virtual IP was given.
-		// Otherwise, expect the peer to send a separate request.
-		if (supply_reverse_params) {
+		if (ctx.supply_reverse_params) {
 			fill_tunnel_params(config->net_config.default_psp_proto_ver,
 					   &(keys[spi_key_idx * key_len_words]),
 					   spis[spi_key_idx],
@@ -192,9 +215,9 @@ doca_error_t PSP_GatewayImpl::request_tunnel_to_host(struct psp_gw_peer *peer,
 				copy_ip_addr(*peer_virt_ip, session.dst_vip);
 				session.pkt_count_ingress = UINT64_MAX;
 
-				result = psp_flows->add_ingress_acl_entry(&session, 0);
+				doca_error_t result = psp_flows->add_ingress_acl_entry(&session, 0);
 				if (result != DOCA_SUCCESS) {
-					DOCA_LOG_ERR("Failed to open ACL (%s <- %s) on SPI %d: %s",
+					DOCA_LOG_ERR("Failed to open ACL (%s <- %s) on SPI %u: %s",
 						     local_vip.c_str(),
 						     peer_vip.c_str(),
 						     session.spi_ingress,
@@ -202,7 +225,7 @@ doca_error_t PSP_GatewayImpl::request_tunnel_to_host(struct psp_gw_peer *peer,
 					return result;
 				}
 
-				DOCA_LOG_DBG("Opened ACL (%s <- %s) on SPI %d",
+				DOCA_LOG_DBG("Opened ACL (%s <- %s) on SPI %u",
 					     local_vip.c_str(),
 					     peer_vip.c_str(),
 					     session.spi_ingress);
@@ -210,50 +233,62 @@ doca_error_t PSP_GatewayImpl::request_tunnel_to_host(struct psp_gw_peer *peer,
 		}
 	}
 
-	if (has_vip_pair && vip_pair_id == -1) {
+	if (ctx.has_vip_pair && ctx.vip_pair_id == -1) {
 		DOCA_LOG_ERR("Virtual IPs not found");
 		return DOCA_ERROR_NOT_FOUND;
 	}
 
-	::psp_gateway::MultiTunnelResponse response;
-	::grpc::Status status = stub->RequestMultipleTunnelParams(&context, request, &response);
+	return DOCA_SUCCESS;
+}
 
-	if (!status.ok() || response.tunnels_params_size() != request.tunnels_size()) {
-		if (!suppress_failure_msg) {
+doca_error_t PSP_GatewayImpl::send_tunnel_request(tunnel_request_ctx &ctx)
+{
+	::grpc::Status status = ctx.stub->RequestMultipleTunnelParams(&ctx.grpc_ctx, ctx.request, &ctx.response);
+
+	if (!status.ok() || ctx.response.tunnels_params_size() != ctx.request.tunnels_size()) {
+		if (!ctx.suppress_failure_msg) {
 			DOCA_LOG_ERR("Request for new SPI/Key's to peer %s failed: %s",
-				     peer_svc_pip.c_str(),
+				     ctx.peer->svc_addr.c_str(),
 				     status.error_message().c_str());
 		}
 		return DOCA_ERROR_IO_FAILED;
 	}
 
+	return DOCA_SUCCESS;
+}
+
+doca_error_t PSP_GatewayImpl::process_tunnel_response(tunnel_request_ctx &ctx)
+{
+	const std::string &peer_svc_pip = ctx.peer->svc_addr;
+
 	std::vector<psp_session_and_key_t> new_session_keys;
-	for (int i = 0; i < response.tunnels_params_size(); i++) {
-		if (supply_reverse_params) {
-			if (response.tunnels_params(i).encap_type() !=
-			    request.tunnels(i).reverse_params().encap_type()) {
-				if (!suppress_failure_msg)
+	for (int i = 0; i < ctx.response.tunnels_params_size(); i++) {
+		if (ctx.supply_reverse_params) {
+			if (ctx.response.tunnels_params(i).encap_type() !=
+			    ctx.request.tunnels(i).reverse_params().encap_type()) {
+				if (!ctx.suppress_failure_msg)
 					DOCA_LOG_ERR("Encap type is different between request and response");
 				return DOCA_ERROR_INVALID_VALUE;
 			}
 		}
-		if (!has_vip_pair)
-			vip_pair_id = i;
-		result = prepare_session(peer_svc_pip,
-					 peer->vip_pairs[vip_pair_id],
-					 response.tunnels_params(i),
-					 new_session_keys);
+		if (!ctx.has_vip_pair)
+			ctx.vip_pair_id = i;
+		doca_error_t result = prepare_session(peer_svc_pip,
+						      ctx.peer->vip_pairs[ctx.vip_pair_id],
+						      ctx.response.tunnels_params(i),
+						      new_session_keys);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to prepare session for peer %s, request %ld: (%s -> %s): %s",
 				     peer_svc_pip.c_str(),
-				     request.request_id(),
-				     ip_to_string(peer->vip_pairs[i].src_vip).c_str(),
-				     ip_to_string(peer->vip_pairs[i].dst_vip).c_str(),
+				     ctx.request.request_id(),
+				     ip_to_string(ctx.peer->vip_pairs[i].src_vip).c_str(),
+				     ip_to_string(ctx.peer->vip_pairs[i].dst_vip).c_str(),
 				     doca_error_get_descr(result));
 			return result;
 		}
 	}
-	result = add_encrypt_entries(new_session_keys, peer_svc_pip, 0);
+
+	doca_error_t result = add_encrypt_entries(new_session_keys, peer_svc_pip, 0);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add encrypt entries for peer %s: %s",
 			     peer_svc_pip.c_str(),
@@ -394,6 +429,8 @@ int PSP_GatewayImpl::select_psp_version(const ::psp_gateway::MultiTunnelRequest 
 
 	response->set_request_id(request->request_id());
 
+	std::lock_guard<std::mutex> lock(tunnel_mutex_);
+
 	std::vector<psp_session_and_key_t> reversed_sessions_keys;
 
 	for (int tun_idx = 0; tun_idx < request->tunnels_size(); tun_idx++) {
@@ -415,7 +452,7 @@ int PSP_GatewayImpl::select_psp_version(const ::psp_gateway::MultiTunnelRequest 
 		}
 
 		fill_tunnel_params(psp_ver, &(keys[tun_idx * key_len_words]), spis[tun_idx], params);
-		DOCA_LOG_DBG("#%d: SPI %d generated for virtual addr %s on peer %s",
+		DOCA_LOG_DBG("#%d: SPI %u generated for virtual addr %s on peer %s",
 			     tun_idx,
 			     params->spi(),
 			     peer_vip_str.c_str(),
@@ -431,7 +468,7 @@ int PSP_GatewayImpl::select_psp_version(const ::psp_gateway::MultiTunnelRequest 
 
 			result = psp_flows->add_ingress_acl_entry(&session, config->grpc_queue_id);
 			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to open ACL (%s <- %s) on SPI %d: %s",
+				DOCA_LOG_ERR("Failed to open ACL (%s <- %s) on SPI %u: %s",
 					     local_vip_str.c_str(),
 					     peer_vip_str.c_str(),
 					     session.spi_ingress,
@@ -439,7 +476,7 @@ int PSP_GatewayImpl::select_psp_version(const ::psp_gateway::MultiTunnelRequest 
 				return ::grpc::Status(grpc::INTERNAL, "Failed to create ingress ACL session flow");
 			}
 
-			DOCA_LOG_DBG("Opened ACL (%s <- %s) on SPI %d",
+			DOCA_LOG_DBG("Opened ACL (%s <- %s) on SPI %u",
 				     local_vip_str.c_str(),
 				     peer_vip_str.c_str(),
 				     session.spi_ingress);
@@ -463,7 +500,7 @@ int PSP_GatewayImpl::select_psp_version(const ::psp_gateway::MultiTunnelRequest 
 						      "Failed to prepare session for peer " +
 							      std::to_string(request->request_id()));
 			}
-			DOCA_LOG_DBG("Created return flow (%s -> %s) on SPI %d to peer %s",
+			DOCA_LOG_DBG("Created return flow (%s -> %s) on SPI %u to peer %s",
 				     local_vip_str.c_str(),
 				     peer_vip_str.c_str(),
 				     single_request.reverse_params().spi(),
@@ -617,10 +654,7 @@ uint32_t PSP_GatewayImpl::next_crypto_id(void)
 		return stubs_iter->second.get();
 	}
 
-	std::string peer_addr = peer_ip;
-	if (peer_addr.find(":") == std::string::npos) {
-		peer_addr += ":" + std::to_string(DEFAULT_HTTP_PORT_NUM);
-	}
+	std::string peer_addr = grpc_target_with_port(peer_ip, DEFAULT_HTTP_PORT_NUM);
 	grpc::ChannelArguments args;
 	args.SetMaxReceiveMessageSize(10 * 1024 * 1024); // 10 MB
 	auto channel = grpc::CreateCustomChannel(peer_addr, grpc::InsecureChannelCredentials(), args);

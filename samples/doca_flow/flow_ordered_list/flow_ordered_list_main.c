@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,7 +23,9 @@
  *
  */
 
+#include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <doca_argp.h>
 #include <doca_flow.h>
@@ -36,7 +38,51 @@
 DOCA_LOG_REGISTER(FLOW_ORDERED_LIST::MAIN);
 
 /* Sample's Logic */
-doca_error_t flow_ordered_list(int nb_queues);
+doca_error_t flow_ordered_list(int nb_queues, bool use_meta_fwd_mode);
+
+static bool use_meta_fwd_mode;
+
+static doca_error_t flow_ordered_list_fwd_mode_callback(void *param, void *config)
+{
+	const char *str = (const char *)param;
+
+	(void)config;
+	if (strcmp(str, "index") == 0)
+		use_meta_fwd_mode = false;
+	else if (strcmp(str, "meta") == 0)
+		use_meta_fwd_mode = true;
+	else {
+		DOCA_LOG_ERR("Unknown fwd-mode '%s', use 'index' or 'meta'", str);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	DOCA_LOG_INFO("Ordered list forwarding mode: %s", str);
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t flow_ordered_list_register_params(void)
+{
+	struct doca_argp_param *fwd_mode_param;
+	doca_error_t result;
+
+	result = doca_argp_param_create(&fwd_mode_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create fwd-mode ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(fwd_mode_param, "m");
+	doca_argp_param_set_long_name(fwd_mode_param, "fwd-mode");
+	doca_argp_param_set_arguments(fwd_mode_param, "<index|meta>");
+	doca_argp_param_set_description(fwd_mode_param, "Ordered list forwarding mode: 'index' (default) or 'meta'.");
+	doca_argp_param_set_callback(fwd_mode_param, flow_ordered_list_fwd_mode_callback);
+	doca_argp_param_set_type(fwd_mode_param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(fwd_mode_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register fwd-mode param: %s", doca_error_get_descr(result));
+		(void)doca_argp_param_destroy(fwd_mode_param);
+		return result;
+	}
+	return DOCA_SUCCESS;
+}
 
 /*
  * Sample main function
@@ -89,6 +135,12 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
+	result = flow_ordered_list_register_params();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register ordered list params: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+
 	doca_argp_set_dpdk_program(flow_init_dpdk);
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
@@ -110,7 +162,7 @@ int main(int argc, char **argv)
 	}
 
 	/* run sample */
-	result = flow_ordered_list(dpdk_config.port_config.nb_queues);
+	result = flow_ordered_list(dpdk_config.port_config.nb_queues, use_meta_fwd_mode);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("flow_ordered_list() encountered an error: %s", doca_error_get_descr(result));
 		goto dpdk_ports_queues_cleanup;

@@ -38,28 +38,6 @@
 DOCA_LOG_REGISTER(GPUVERBS::COMMON);
 
 /*
- * ARGP Callback - Set send DBR mode to external
- *
- * @param [in]: Input parameter
- * @config [in/out]: Program configuration context
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-doca_error_t send_dbr_mode_ext_callback(void *param, void *config)
-{
-	struct verbs_config *verbs_cfg = (struct verbs_config *)config;
-	const int send_dbr_mode_ext = *(uint32_t *)param;
-
-	if (send_dbr_mode_ext != 0 && send_dbr_mode_ext != 1) {
-		DOCA_LOG_ERR("Send DBR mode for DOCA Verbs must be 0 (disabled) or 1 (enabled)");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-
-	verbs_cfg->send_dbr_mode_ext = send_dbr_mode_ext;
-
-	return DOCA_SUCCESS;
-}
-
-/*
  * ARGP Callback - Set DB ring mode
  *
  * @param [in]: Input parameter
@@ -76,7 +54,20 @@ doca_error_t nic_handler_callback(void *param, void *config)
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	verbs_cfg->nic_handler = (enum doca_gpu_dev_verbs_nic_handler)nic_handler;
+	if (nic_handler == 0)
+		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
+	else if (nic_handler == 1)
+		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY;
+	else if (nic_handler == 2)
+		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_DB;
+	else if (nic_handler == 3)
+		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF;
+	else if (nic_handler == 4)
+		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_NO_DBR;
+	else if (nic_handler == 5)
+		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR;
+	else
+		return DOCA_ERROR_INVALID_VALUE;
 
 	return DOCA_SUCCESS;
 }
@@ -589,7 +580,7 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 	qp_init.sq_nwqe = VERBS_TEST_QUEUE_SIZE;
 	qp_init.nic_handler = resources->nic_handler;
 	qp_init.recv_inline = resources->recv_inline;
-	qp_init.send_dbr_mode_ext = resources->send_dbr_mode_ext;
+	qp_init.cq_collapsed = resources->cq_collapsed;
 
 	if (resources->qp_group) {
 		status = doca_gpu_verbs_create_qp_group_hl(&qp_init, &(resources->qpg));
@@ -716,12 +707,18 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 	}
 
 	/* IB only parameter */
-	if (port_attr.link_layer == 1) {
+	if (port_attr.link_layer == IBV_LINK_LAYER_INFINIBAND) {
 		status = doca_verbs_ah_attr_set_dlid(resources->verbs_ah_attr, resources->dlid);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set dlid");
 			return status;
 		}
+	}
+
+	status = doca_verbs_ah_attr_set_sl(resources->verbs_ah_attr, 0);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set sl");
+		return status;
 	}
 
 	status = doca_verbs_qp_attr_create(&verbs_qp_attr);
@@ -730,7 +727,7 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 		return status;
 	}
 
-	status = doca_verbs_qp_attr_set_path_mtu(verbs_qp_attr, DOCA_MTU_SIZE_1K_BYTES);
+	status = doca_verbs_qp_attr_set_path_mtu(verbs_qp_attr, DOCA_MTU_SIZE_4K_BYTES);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set path MTU: %s", doca_error_get_descr(status));
 		goto destroy_verbs_qp_attr;
@@ -808,23 +805,15 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 		goto destroy_verbs_qp_attr;
 	}
 
-	max_rd_atomic = doca_verbs_device_attr_get_max_qp_rd_atom(verbs_device_attr);
-	status = doca_verbs_qp_attr_set_max_rd_atomic(verbs_qp_attr, max_rd_atomic);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set max_rd_atomic: %s", doca_error_get_descr(status));
-		goto destroy_verbs_qp_attr;
-	}
-
-	max_dest_rd_atomic = doca_verbs_device_attr_get_max_qp_init_rd_atom(verbs_device_attr);
-	status = doca_verbs_qp_attr_set_max_dest_rd_atomic(verbs_qp_attr, max_dest_rd_atomic);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set max_dest_rd_atomic: %s", doca_error_get_descr(status));
-		goto destroy_verbs_qp_attr;
-	}
-
 	status = doca_verbs_qp_attr_set_ah_attr(verbs_qp_attr, resources->verbs_ah_attr);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set address handle: %s", doca_error_get_descr(status));
+		goto destroy_verbs_qp_attr;
+	}
+
+	status = doca_verbs_qp_attr_set_pkey_index(verbs_qp_attr, 0);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set PKey index: %d", status);
 		goto destroy_verbs_qp_attr;
 	}
 
@@ -933,6 +922,13 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 			goto destroy_verbs_qp_attr;
 		}
 
+		max_dest_rd_atomic = doca_verbs_device_attr_get_max_qp_init_rd_atom(verbs_device_attr);
+		status = doca_verbs_qp_attr_set_max_dest_rd_atomic(verbs_qp_attr, max_dest_rd_atomic);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set max_dest_rd_atomic: %s", doca_error_get_descr(status));
+			goto destroy_verbs_qp_attr;
+		}
+
 		status = doca_verbs_qp_modify(resources->qp->qp,
 					      verbs_qp_attr,
 					      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE |
@@ -954,7 +950,8 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 					      verbs_qp_attr,
 					      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_RQ_PSN |
 						      DOCA_VERBS_QP_ATTR_DEST_QP_NUM | DOCA_VERBS_QP_ATTR_PATH_MTU |
-						      DOCA_VERBS_QP_ATTR_AH_ATTR | DOCA_VERBS_QP_ATTR_MIN_RNR_TIMER);
+						      DOCA_VERBS_QP_ATTR_AH_ATTR | DOCA_VERBS_QP_ATTR_MIN_RNR_TIMER |
+						      DOCA_VERBS_QP_ATTR_MAX_DEST_RD_ATOMIC);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to modify QP: %s", doca_error_get_descr(status));
 			goto destroy_verbs_qp_attr;
@@ -966,11 +963,19 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 			goto destroy_verbs_qp_attr;
 		}
 
+		max_rd_atomic = doca_verbs_device_attr_get_max_qp_rd_atom(verbs_device_attr);
+		status = doca_verbs_qp_attr_set_max_rd_atomic(verbs_qp_attr, max_rd_atomic);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set max_rd_atomic: %s", doca_error_get_descr(status));
+			goto destroy_verbs_qp_attr;
+		}
+
 		status = doca_verbs_qp_modify(resources->qp->qp,
 					      verbs_qp_attr,
 					      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_SQ_PSN |
 						      DOCA_VERBS_QP_ATTR_ACK_TIMEOUT | DOCA_VERBS_QP_ATTR_RETRY_CNT |
-						      DOCA_VERBS_QP_ATTR_RNR_RETRY);
+						      DOCA_VERBS_QP_ATTR_RNR_RETRY |
+						      DOCA_VERBS_QP_ATTR_MAX_QP_RD_ATOMIC);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to modify QP: %s", doca_error_get_descr(status));
 			goto destroy_verbs_qp_attr;

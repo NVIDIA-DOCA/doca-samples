@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -64,10 +64,7 @@ doca_error_t devemu_pci_device_list(const char *pci_address)
 		return result;
 	}
 
-	result = find_supported_device(pci_address,
-				       resources.pci_type,
-				       doca_devemu_pci_cap_type_is_mgmt_supported,
-				       &resources.dev);
+	result = find_generic_emulation_manager_device(pci_address, &resources.dev);
 	if (result != DOCA_SUCCESS) {
 		devemu_resources_cleanup(&resources, destroy_rep);
 		return result;

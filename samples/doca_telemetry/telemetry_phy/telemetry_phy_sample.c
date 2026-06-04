@@ -44,10 +44,25 @@ struct telemetry_phy_sample_objects {
 	struct doca_dev *dev;						 /* Doca device*/
 	struct doca_telemetry_phy_operation_info *operation_info_struct; /* Structure that represent the operation info
 									  */
-	struct doca_telemetry_phy_module_info *module_info_struct;	 /* Structure that represent the module info */
-	struct doca_telemetry_phy_counter_and_ber_info *counter_and_ber_info_struct; /* Structure that
-												 represent the physical
-												 counter and BER info */
+	struct doca_telemetry_phy_supported_info *supported_info_struct; /* Structure that represent the supported info
+									  */
+	struct doca_telemetry_phy_troubleshooting_info *troubleshooting_info_struct; /* Structure that represent the *
+											troubleshooting info */
+	struct doca_telemetry_phy_module_info *module_info_struct; /* Structure that represent the module info */
+	struct doca_telemetry_phy_counter_and_ber_info *counter_and_ber_info_struct; /* Structure that represent the
+											physical counter and BER info */
+	struct doca_telemetry_phy_fec_histogram_info *fec_histogram_info_struct;     /* Structure that represent the FEC
+											Histogram info */
+	struct doca_telemetry_phy_management_cable_raw_info *management_cable_raw_info_struct; /* Structure that
+												  represent the
+												  management cable raw
+												  info */
+	struct doca_telemetry_phy_management_cable_ddm_info *management_cable_ddm_info_struct; /* Structure that
+												  represent the
+												  management cable
+												  Digital Diagnostic
+												  Monitoring (DDM) info
+												*/
 };
 
 /*
@@ -382,6 +397,325 @@ static void telemetry_phy_print_operation_info(struct doca_telemetry_phy_operati
 }
 
 /*
+ * Print Support info speed for Ethernet protocol
+ *
+ * Print the contents of the extracted Support info speed.
+ *
+ * @link_speed [in]: Extracted link speed to print
+ */
+static void telemetry_phy_print_supported_info_speed_active_eth(uint32_t link_speed_eth)
+{
+	bool added_value = false;
+	if (link_speed_eth == 0) {
+		printf("N/A\n");
+		return;
+	}
+
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_1600G) {
+		printf("1600G");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_800G) {
+		printf("%s800G", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_400G) {
+		printf("%s400G", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_200G) {
+		printf("%s200G", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_100G) {
+		printf("%s100G", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_50G) {
+		printf("%s50G", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_40G) {
+		printf("%s40G", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_25G) {
+		printf("%s25G", added_value ? ", " : "");
+		added_value = true;
+	}
+	if ((link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_10G) ||
+	    (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_10G_BASE_T)) {
+		printf("%s10G", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_5G) {
+		printf("%s5G", added_value ? ", " : "");
+		added_value = true;
+	}
+	if ((link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_1G) ||
+	    (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_1000M_BASE_T)) {
+		printf("%s1G", added_value ? ", " : "");
+		added_value = true;
+	}
+	if ((link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_100M) ||
+	    (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_100M_BASE_TX)) {
+		printf("%s100M", added_value ? ", " : "");
+		added_value = true;
+	}
+	if ((link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_10M) ||
+	    (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_10M_BASE_T)) {
+		printf("%s10M", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_CX) {
+		printf("%sCX", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_KX) {
+		printf("%sKX", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_CX4) {
+		printf("%sCX4", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_eth & DOCA_TELEMETRY_PHY_ETH_LINK_SPEED_KX4) {
+		printf("%sKX4", added_value ? ", " : "");
+	}
+
+	printf("\n");
+}
+
+/*
+ * Print Support info speed for Infiniband protocol
+ *
+ * Print the contents of the extracted Support info speed.
+ *
+ * @link_speed [in]: Extracted link speed to print
+ */
+static void telemetry_phy_print_supported_info_speed_active_ib(uint16_t link_speed_ib)
+{
+	bool added_value = false;
+	if (link_speed_ib == 0) {
+		printf("N/A\n");
+		return;
+	}
+
+	if (link_speed_ib & DOCA_TELEMETRY_PHY_IB_LINK_SPEED_XDR) {
+		printf("XDR");
+		added_value = true;
+	}
+	if (link_speed_ib & DOCA_TELEMETRY_PHY_IB_LINK_SPEED_NDR) {
+		printf("%sNDR", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_ib & DOCA_TELEMETRY_PHY_IB_LINK_SPEED_HDR) {
+		printf("%sHDR", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_ib & DOCA_TELEMETRY_PHY_IB_LINK_SPEED_EDR) {
+		printf("%sEDR", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_ib & DOCA_TELEMETRY_PHY_IB_LINK_SPEED_FDR) {
+		printf("%sFDR", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_ib & DOCA_TELEMETRY_PHY_IB_LINK_SPEED_FDR10) {
+		printf("%sFDR10", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_ib & DOCA_TELEMETRY_PHY_IB_LINK_SPEED_QDR) {
+		printf("%sQDR", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_ib & DOCA_TELEMETRY_PHY_IB_LINK_SPEED_DDR) {
+		printf("%sDDR", added_value ? ", " : "");
+		added_value = true;
+	}
+	if (link_speed_ib & DOCA_TELEMETRY_PHY_IB_LINK_SPEED_SDR) {
+		printf("%sSDR", added_value ? ", " : "");
+	}
+
+	printf("\n");
+}
+
+/*
+ * Print supported info
+ *
+ * Print the contents of the extracted supported info.
+ *
+ * @supported_info_struct [in]: Extracted supported_info_struct to print
+ */
+static void telemetry_phy_print_supported_info(struct doca_telemetry_phy_supported_info *supported_info_struct)
+{
+	printf("Supported info\n");
+	printf("--------------\n");
+
+	switch (supported_info_struct->active_protocol) {
+	case DOCA_TELEMETRY_PHY_PROTOCOL_ETH:
+		printf("Enabled Link Speed: ");
+		telemetry_phy_print_supported_info_speed_active_eth(
+			supported_info_struct->enabled_link_speed.speed_eth);
+		printf("Supported Cable Speed: ");
+		telemetry_phy_print_supported_info_speed_active_eth(
+			supported_info_struct->supported_cable_speed.speed_eth);
+		break;
+	case DOCA_TELEMETRY_PHY_PROTOCOL_IB:
+		printf("Enabled Link Speed: ");
+		telemetry_phy_print_supported_info_speed_active_ib(supported_info_struct->enabled_link_speed.speed_ib);
+		printf("Supported Cable Speed: ");
+		telemetry_phy_print_supported_info_speed_active_ib(
+			supported_info_struct->supported_cable_speed.speed_ib);
+		break;
+	default:
+		printf("Enabled Link Speed: N/A\n");
+		printf("Supported Cable Speed: N/A\n");
+	}
+
+	printf("\n");
+}
+
+/*
+ * Print troubleshooting info
+ *
+ * Print the contents of the extracted troubleshooting info.
+ *
+ * @troubleshooting_info_struct [in]: Extracted troubleshooting_info_struct to print
+ */
+static void telemetry_phy_print_troubleshooting_info(
+	struct doca_telemetry_phy_troubleshooting_info *troubleshooting_info_struct)
+{
+	printf("Troubleshooting info\n");
+	printf("--------------------\n");
+
+	printf("Status Opcode: ");
+	switch (troubleshooting_info_struct->status_opcode) {
+	case DOCA_TELEMETRY_PHY_FW_NO_ISSUE_OBSERVED:
+		printf("No issue observed\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_PORT_IS_CLOSE_BY_COMM:
+		printf("Port is close by command (see PAOS).\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_AN_FAIL:
+		printf("AN failure\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_LINK_TRAINING_FAIL:
+		printf("Link training failure.\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_LOGICAL_MISMATCH_BETWEEN_LINK_PARTNERS:
+		printf("Logical mismatch between link partners\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_REMOTE_FAULT_RECEIVED:
+		printf("Remote fault received\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_BAD_SIGNAL_INTEGRITY:
+		printf("Bad signal integrity\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_CABLE_CC_MISMATCH:
+		printf("Cable compliance code mismatch (protocol mismatch between cable and port)\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_INTERNAL_ERROR:
+		printf("23,22,19,18,50,55- Internal error\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_SPEED_DEGRADATION:
+		printf("Speed degradation\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_MDL_LANES_FREQUENCY_NOT_SYNCED:
+		printf("Module lanes frequency not_synced\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_SIGNAL_NOT_DETECTED:
+		printf("Signal not detected\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_NO_PARTNER_DETECTED_FOR_LONG_TIME:
+		printf("No partner detected for long time\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_TROUBLESHOOTING_IN_PROCESS:
+		printf("Troubleshooting in process\n");
+		break;
+	case DOCA_TELEMETRY_PHY_FW_INFO_NOT_AVAILABLE:
+		printf("1023- Info not available\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_CABLE_IS_UNPLUGGED:
+		printf("Cable is unplugged\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_LONG_RANGE_FOR_NON_MLX_CABLE_MDL:
+		printf("Long Range for non Mellanox\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_BUS_STUCK_I2C_DATA_OR_CLOCK_SHORTED:
+		printf("Bus stuck (I2C Data or clock shorted)\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_BAD_OR_UNSUPPORTED_EEPROM:
+		printf("Bad/unsupported EEPROM\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_PART_NUMBER_LIST:
+		printf("Part number list\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_UNSUPPORTED_CABLE:
+		printf("Unsupported cable\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_MDL_TEMPERATURE_SHUTDOWN:
+		printf("Module temperature shutdown\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_SHORTED_CABLE:
+		printf("Shorted cable\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_PWD_BUDGET_EXCEEDED:
+		printf("Power budget exceeded\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_MANAGEMENT_FORCED_DOWN_THE_PORT:
+		printf("Management forced down the port\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_MDL_IS_DISABLED_BY_COMM:
+		printf("Module is disabled by command\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_SYS_PWR_EXCEEDED_SO_MDL_PWD_OFF:
+		printf("System Power is exceeded\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_MDLS_PMD_TYPE_IS_NOT_ENABLED:
+		printf("Module’s PMD type is not enabled (see PMTPS).\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_PCIE_SYS_PWD_SLOT_EXCEEDED:
+		printf("PCIe system power slot E\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_MDL_STATE_MACHINE_FAULT:
+		printf("Module state machine fault\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_MDLS_STAMPING_SPEED_DEGENERATION:
+		printf("Module’s stamping speed degeneration\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_MDLS_DATAPATH_FSM_FAULT:
+		printf("Modules DataPath FSM fault\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_MDL_BOOT_ERROR:
+		printf("1050, 1051, 1052, 1053- Module Boot Error\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_MDL_FORCED_TO_LOW_PWD_BY_COM:
+		printf("Module Forced to Low Power by command\n");
+		break;
+	default:
+		printf("N/A\n");
+	}
+
+	printf("Group Opcode: ");
+	switch (troubleshooting_info_struct->group_opcode) {
+	case DOCA_TELEMETRY_PHY_FW_GOP:
+		printf("PHY FW\n");
+		break;
+	case DOCA_TELEMETRY_PHY_MNG_FW_GOP:
+		printf("MNG FW\n");
+		break;
+	case DOCA_TELEMETRY_PHY_GOP_NA:
+	default:
+		printf("N/A\n");
+	}
+
+	printf("Recommendation: %s\n", troubleshooting_info_struct->status_message);
+
+	printf("\n");
+}
+
+/*
  * Print QSFP CMIS cable technology info
  *
  * Print the contents of the extracted Module info QSFP CMIS cable technology.
@@ -556,63 +890,45 @@ static void telemetry_phy_print_module_info_cable_vendor(enum doca_telemetry_phy
  */
 static void telemetry_phy_print_QSFP_cc(uint8_t qsfp_cc)
 {
-	int text_printed = 0;
+	bool added_value = false;
 
 	printf("[QSFP] ");
 	if (qsfp_cc & DOCA_TELEMETRY_PHY_QSFP_CC_40G_ACTIVE_CABLE_XLPPI) {
 		printf("40G Active Cable (XLPPI)");
-		text_printed = 1;
+		added_value = true;
 	}
 
 	if (qsfp_cc & DOCA_TELEMETRY_PHY_QSFP_CC_40GBASE_LR4) {
-		if (text_printed) {
-			printf(",");
-		}
-		printf("40GBASE-LR4");
-		text_printed = 1;
+		printf("%s40GBASE-LR4", added_value ? ", " : "");
+		added_value = true;
 	}
 
 	if (qsfp_cc & DOCA_TELEMETRY_PHY_QSFP_CC_40GBASE_SR4) {
-		if (text_printed) {
-			printf(",");
-		}
-		printf("40GBASE-SR4");
-		text_printed = 1;
+		printf("%s40GBASE-SR4", added_value ? ", " : "");
+		added_value = true;
 	}
 
 	if (qsfp_cc & DOCA_TELEMETRY_PHY_QSFP_CC_40GBASE_CR4) {
-		if (text_printed) {
-			printf(",");
-		}
-		printf("40GBASE-CR4");
-		text_printed = 1;
+		printf("%s40GBASE-CR4", added_value ? ", " : "");
+		added_value = true;
 	}
 
 	if (qsfp_cc & DOCA_TELEMETRY_PHY_QSFP_CC_10GBASE_SR) {
-		if (text_printed) {
-			printf(",");
-		}
-		printf("10GBASE-SR");
-		text_printed = 1;
+		printf("%s10GBASE-SR", added_value ? ", " : "");
+		added_value = true;
 	}
 
 	if (qsfp_cc & DOCA_TELEMETRY_PHY_QSFP_CC_10GBASE_LR) {
-		if (text_printed) {
-			printf(",");
-		}
-		printf("10GBASE-LR");
-		text_printed = 1;
+		printf("%s10GBASE-LR", added_value ? ", " : "");
+		added_value = true;
 	}
 
 	if (qsfp_cc & DOCA_TELEMETRY_PHY_QSFP_CC_10GBASE_LRM) {
-		if (text_printed) {
-			printf(",");
-		}
-		printf("10GBASE-LRM");
-		text_printed = 1;
+		printf("%s10GBASE-LRM", added_value ? ", " : "");
+		added_value = true;
 	}
 
-	if (!text_printed) {
+	if (!added_value) {
 		printf("N/A");
 	}
 }
@@ -624,39 +940,30 @@ static void telemetry_phy_print_QSFP_cc(uint8_t qsfp_cc)
  */
 static void telemetry_phy_print_SFP_cc(uint8_t sfp_cc)
 {
-	int text_printed = 0;
+	bool added_value = false;
 
 	printf("[SFP] ");
 	if (sfp_cc & DOCA_TELEMETRY_PHY_SFP_CC_10G_BASE_SR) {
 		printf("10GBASE-SR");
-		text_printed = 1;
+		added_value = true;
 	}
 
 	if (sfp_cc & DOCA_TELEMETRY_PHY_SFP_CC_10G_BASE_LR) {
-		if (text_printed) {
-			printf(",");
-		}
-		printf("10GBASE-LR");
-		text_printed = 1;
+		printf("%s10GBASE-LR", added_value ? ", " : "");
+		added_value = true;
 	}
 
 	if (sfp_cc & DOCA_TELEMETRY_PHY_SFP_CC_10G_BASE_LRM) {
-		if (text_printed) {
-			printf(",");
-		}
-		printf("10GBASE-LRM");
-		text_printed = 1;
+		printf("%s10GBASE-LRM", added_value ? ", " : "");
+		added_value = true;
 	}
 
 	if (sfp_cc & DOCA_TELEMETRY_PHY_SFP_CC_10G_BASE_ER) {
-		if (text_printed) {
-			printf(",");
-		}
-		printf("10GBASE-ER");
-		text_printed = 1;
+		printf("%s10GBASE-ER", added_value ? ", " : "");
+		added_value = true;
 	}
 
-	if (!text_printed) {
+	if (!added_value) {
 		printf("N/A");
 	}
 }
@@ -993,7 +1300,7 @@ static void telemetry_phy_print_CMIS_common_cc(enum doca_telemetry_phy_CMIS_comm
  */
 static void telemetry_phy_print_CMIS_copper_cc(enum doca_telemetry_phy_CMIS_copper CMIS_copper_cc)
 {
-	printf("[Copper] ");
+	printf(" [Copper] ");
 	switch (CMIS_copper_cc) {
 	case DOCA_TELEMETRY_PHY_CMIS_COPPER_CC_UNSPECIFIED:
 		printf("N/A");
@@ -1230,8 +1537,9 @@ static void telemetry_phy_print_module_info_eth_QSFP_compliance_code(
 	enum doca_telemetry_phy_QSFP_SFP_common_cc common_cc =
 		module_info_struct->cable_general_properties_info.compliance_code.qsfp_sfp_cc.common_cc;
 
-	printf("Compliance: ");
+	printf("Compliance:\n    ");
 	telemetry_phy_print_QSFP_cc(qsfp_cc);
+	printf("\n    ");
 	telemetry_phy_print_QSFP_SFP_common_cc(common_cc);
 	printf("\n");
 }
@@ -1249,8 +1557,9 @@ static void telemetry_phy_print_module_info_eth_SFP_compliance_code(
 	enum doca_telemetry_phy_QSFP_SFP_common_cc common_cc =
 		module_info_struct->cable_general_properties_info.compliance_code.qsfp_sfp_cc.common_cc;
 
-	printf("Compliance: ");
+	printf("Compliance:\n    ");
 	telemetry_phy_print_SFP_cc(sfp_cc);
+	printf("\n    ");
 	telemetry_phy_print_QSFP_SFP_common_cc(common_cc);
 	printf("\n");
 }
@@ -1284,8 +1593,9 @@ static void telemetry_phy_print_module_info_CMIS_active_compliance_code(
 	enum doca_telemetry_phy_CMIS_copper copper_cc =
 		module_info_struct->cable_general_properties_info.compliance_code.cmis_cc.specific_cc.copper_cc;
 
-	printf("Compliance: ");
+	printf("Compliance: \n    ");
 	telemetry_phy_print_CMIS_common_cc(common_cc);
+	printf("\n    ");
 	telemetry_phy_print_CMIS_copper_cc(copper_cc);
 	printf("\n");
 }
@@ -1507,8 +1817,9 @@ static void telemetry_phy_print_qsfp_cable_breakout_near_end(enum doca_telemetry
 static void telemetry_phy_print_module_info_QSFP_cable_breakout(
 	struct doca_telemetry_phy_QSFP_cable_breakout qsfp_cable_breakout)
 {
-	printf("Cable Breakout: ");
+	printf("Cable Breakout: \n    ");
 	telemetry_phy_print_qsfp_cable_breakout_near_end(qsfp_cable_breakout.near_end);
+	printf("\n    ");
 	telemetry_phy_print_qsfp_cable_breakout_far_end(qsfp_cable_breakout.far_end);
 	printf("\n");
 }
@@ -1679,8 +1990,8 @@ static void telemetry_phy_print_module_info(struct doca_telemetry_phy_module_inf
 static void telemetry_phy_print_counter_and_ber_info(
 	struct doca_telemetry_phy_counter_and_ber_info *counter_and_ber_info_struct)
 {
-	printf("counter and BER info\n");
-	printf("-----------\n");
+	printf("Counter and BER info\n");
+	printf("--------------------\n");
 
 	printf("Time Since Last Clear [Min]: %.1f\n",
 	       (double)(counter_and_ber_info_struct->time_since_last_clear) / TIME_CONVERT_MS_MIN);
@@ -1727,6 +2038,289 @@ static void telemetry_phy_print_counter_and_ber_info(
 }
 
 /*
+ * Print FEC Histogram info
+ *
+ * Print the contents of the extracted FEC Histogram info.
+ *
+ * @fec_histogram_info_struct [in]: Extracted fec_histogram_info_struct to print
+ */
+static void telemetry_phy_print_fec_histogram_info(
+	struct doca_telemetry_phy_fec_histogram_info *fec_histogram_info_struct)
+{
+	printf("Histogram of FEC Errors\n");
+	printf("-----------------------\n");
+
+	printf("Header        Range        Occurrences\n");
+	for (uint8_t i = 0; i < fec_histogram_info_struct->num_of_bins; i++) {
+		if (fec_histogram_info_struct->bin_range[i].low_val !=
+		    fec_histogram_info_struct->bin_range[i].high_val) {
+			printf("Bin %02u:       [%u:%u]        %lu\n",
+			       i,
+			       fec_histogram_info_struct->bin_range[i].low_val,
+			       fec_histogram_info_struct->bin_range[i].high_val,
+			       fec_histogram_info_struct->bin_errors[i]);
+		} else {
+			printf("Bin %02u:       [%u]        %lu\n",
+			       i,
+			       fec_histogram_info_struct->bin_range[i].low_val,
+			       fec_histogram_info_struct->bin_errors[i]);
+		}
+	}
+	printf("\n");
+}
+
+/*
+ * Print management cable page data info
+ *
+ * Print the contents of the extracted management cable page lower of upper offset info.
+ *
+ * @page_info [in]: management cable page data to be printed
+ * @lower_offset [in]: Indication if lower offset is to be printed, upper offset otherwise
+ */
+static void print_management_cable_page_data_info(struct doca_telemetry_phy_page_info *page_info, bool lower_offset)
+{
+	uint8_t offset = (lower_offset) ? page_info->data_size_lower_offset : page_info->data_size_upper_offset;
+
+	for (uint8_t data_idx = 0; data_idx < offset; data_idx += 4) {
+		if (lower_offset) {
+			printf("%03u: %02X,%02X,%02X,%02X\n",
+			       data_idx,
+			       page_info->page_lower_offset_data[data_idx],
+			       page_info->page_lower_offset_data[data_idx + 1],
+			       page_info->page_lower_offset_data[data_idx + 2],
+			       page_info->page_lower_offset_data[data_idx + 3]);
+		} else {
+			printf("%03u: %02X,%02X,%02X,%02X\n",
+			       data_idx + 128,
+			       page_info->page_upper_offset_data[data_idx],
+			       page_info->page_upper_offset_data[data_idx + 1],
+			       page_info->page_upper_offset_data[data_idx + 2],
+			       page_info->page_upper_offset_data[data_idx + 3]);
+		}
+	}
+	printf("\n");
+}
+
+/*
+ * Print management cable page info
+ *
+ * Print the contents of the extracted management cable page info.
+ *
+ * @management_cable_raw_info_struct [in]: Extracted management_cable_raw_info_struct to print
+ */
+static void telemetry_phy_print_management_cable_page_info(
+	struct doca_telemetry_phy_management_cable_raw_info *management_cable_raw_info_struct)
+{
+	printf("Management cable raw info\n");
+	printf("-------------------------\n\n");
+
+	for (uint16_t page_idx = 0; page_idx < management_cable_raw_info_struct->num_of_pages; page_idx++) {
+		if (management_cable_raw_info_struct->page_info[page_idx].data_size_lower_offset != 0) {
+			printf("Page: 0x%u, Offset: 000, Length: 0x%u\n",
+			       management_cable_raw_info_struct->page_info[page_idx].page_id,
+			       management_cable_raw_info_struct->page_info[page_idx].data_size_lower_offset);
+
+			printf("-------------------------------------\n");
+			print_management_cable_page_data_info(&(management_cable_raw_info_struct->page_info[page_idx]),
+							      true);
+		}
+
+		if (management_cable_raw_info_struct->page_info[page_idx].data_size_upper_offset != 0) {
+			printf("Page: 0x%u, Offset: 128, Length: 0x%u\n",
+			       management_cable_raw_info_struct->page_info[page_idx].page_id,
+			       management_cable_raw_info_struct->page_info[page_idx].data_size_upper_offset);
+			printf("-------------------------------------\n");
+			print_management_cable_page_data_info(&(management_cable_raw_info_struct->page_info[page_idx]),
+							      false);
+		}
+	}
+}
+
+static void telemetry_phy_print_ddm_value(const char *field_name,
+					  const char *field_unit,
+					  float *field_value,
+					  uint8_t num_of_elements)
+{
+	printf("%s", field_name);
+	for (uint8_t i = 0; i < num_of_elements; i++) {
+		if (i != 0) {
+			printf(", ");
+		}
+		printf("%.3f %s", (double)field_value[i], field_unit);
+	}
+	printf("\n");
+}
+
+static void telemetry_phy_print_ddm_flag_array(const char *field_name, int8_t *field_value, uint8_t num_of_elements)
+{
+	printf("%s", field_name);
+	for (int8_t i = 0; i < num_of_elements; i++) {
+		if (i != 0) {
+			printf(", ");
+		}
+		printf("%d", field_value[i]);
+	}
+	printf("\n");
+}
+
+static void telemetry_phy_print_ddm_values(
+	struct doca_telemetry_phy_management_cable_ddm_info *management_cable_ddm_info_struct)
+{
+	printf("Temperature: %dC\n", management_cable_ddm_info_struct->module_temperature.temperature);
+	printf("Voltage: %dmV\n", management_cable_ddm_info_struct->module_voltage.voltage);
+
+	printf("\nChannels [1,..,%u]\n", management_cable_ddm_info_struct->number_of_lanes);
+
+	telemetry_phy_print_ddm_value("RX Power: ",
+				      "dBm",
+				      management_cable_ddm_info_struct->rx_power.rx_power_per_lane,
+				      management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_value("TX Power: ",
+				      "dBm",
+				      management_cable_ddm_info_struct->tx_power.tx_power_per_lane,
+				      management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_value("TX Bias:  ",
+				      "mA",
+				      management_cable_ddm_info_struct->tx_bias.tx_bias_per_lane,
+				      management_cable_ddm_info_struct->number_of_lanes);
+	printf("\n");
+}
+
+static void telemetry_phy_print_ddm_flags(
+	struct doca_telemetry_phy_management_cable_ddm_info *management_cable_ddm_info_struct)
+{
+	printf("Temperature alarm high: %d\n",
+	       management_cable_ddm_info_struct->module_temperature.temperature_high_alarm_flag);
+	printf("Temperature warning high: %d\n",
+	       management_cable_ddm_info_struct->module_temperature.temperature_high_warning_flag);
+	printf("Temperature warning low: %d\n",
+	       management_cable_ddm_info_struct->module_temperature.temperature_low_warning_flag);
+	printf("Temperature alarm low: %d\n",
+	       management_cable_ddm_info_struct->module_temperature.temperature_low_alarm_flag);
+	printf("Voltage alarm high: %d\n", management_cable_ddm_info_struct->module_voltage.voltage_high_alarm_flag);
+	printf("Voltage warning high: %d\n",
+	       management_cable_ddm_info_struct->module_voltage.voltage_high_warning_flag);
+	printf("Voltage warning low: %d\n", management_cable_ddm_info_struct->module_voltage.voltage_low_warning_flag);
+	printf("Voltage alarm low: %d\n", management_cable_ddm_info_struct->module_voltage.voltage_low_alarm_flag);
+
+	printf("\nChannels [1,..,%u]\n", management_cable_ddm_info_struct->number_of_lanes);
+
+	telemetry_phy_print_ddm_flag_array("RX Power alarm high:   ",
+					   management_cable_ddm_info_struct->rx_power.rx_power_high_alarm_flag_per_lane,
+					   management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_flag_array(
+		"RX Power warning high: ",
+		management_cable_ddm_info_struct->rx_power.rx_power_high_warning_flag_per_lane,
+		management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_flag_array(
+		"RX Power warning low:  ",
+		management_cable_ddm_info_struct->rx_power.rx_power_low_warning_flag_per_lane,
+		management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_flag_array("RX Power alarm low:    ",
+					   management_cable_ddm_info_struct->rx_power.rx_power_low_alarm_flag_per_lane,
+					   management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_flag_array("TX Power alarm high:   ",
+					   management_cable_ddm_info_struct->tx_power.tx_power_high_alarm_flag_per_lane,
+					   management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_flag_array(
+		"TX Power warning high: ",
+		management_cable_ddm_info_struct->tx_power.tx_power_high_warning_flag_per_lane,
+		management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_flag_array(
+		"TX Power warning low:  ",
+		management_cable_ddm_info_struct->tx_power.tx_power_low_warning_flag_per_lane,
+		management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_flag_array("TX Power alarm low:    ",
+					   management_cable_ddm_info_struct->tx_power.tx_power_low_alarm_flag_per_lane,
+					   management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_flag_array("TX Bias alarm high:    ",
+					   management_cable_ddm_info_struct->tx_bias.tx_bias_high_alarm_flag_per_lane,
+					   management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_flag_array("TX Bias warning high:  ",
+					   management_cable_ddm_info_struct->tx_bias.tx_bias_high_warning_flag_per_lane,
+					   management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_flag_array("TX Bias warning low:   ",
+					   management_cable_ddm_info_struct->tx_bias.tx_bias_low_warning_flag_per_lane,
+					   management_cable_ddm_info_struct->number_of_lanes);
+	telemetry_phy_print_ddm_flag_array("TX Bias alarm low:     ",
+					   management_cable_ddm_info_struct->tx_bias.tx_bias_low_alarm_flag_per_lane,
+					   management_cable_ddm_info_struct->number_of_lanes);
+	printf("\n");
+}
+
+static void telemetry_phy_print_ddm_thresholds(
+	struct doca_telemetry_phy_management_cable_ddm_info *management_cable_ddm_info_struct)
+{
+	printf("Temperature alarm high thresholds: %dC\n",
+	       management_cable_ddm_info_struct->module_temperature.temperature_high_alarm);
+	printf("Temperature warning high thresholds: %dC\n",
+	       management_cable_ddm_info_struct->module_temperature.temperature_high_warning);
+	printf("Temperature warning low thresholds: %dC\n",
+	       management_cable_ddm_info_struct->module_temperature.temperature_low_warning);
+	printf("Temperature alarm low thresholds: %dC\n",
+	       management_cable_ddm_info_struct->module_temperature.temperature_low_alarm);
+	printf("Voltage alarm high thresholds: %umV\n",
+	       management_cable_ddm_info_struct->module_voltage.voltage_high_alarm);
+	printf("Voltage warning high thresholds: %umV\n",
+	       management_cable_ddm_info_struct->module_voltage.voltage_high_warning);
+	printf("Voltage warning low thresholds: %umV\n",
+	       management_cable_ddm_info_struct->module_voltage.voltage_low_warning);
+	printf("Voltage alarm low thresholds: %umV\n",
+	       management_cable_ddm_info_struct->module_voltage.voltage_low_alarm);
+	printf("RX Power alarm high thresholds: %.3fdBm\n",
+	       (double)management_cable_ddm_info_struct->rx_power.rx_power_high_alarm);
+	printf("RX Power warning high thresholds: %.3fdBm\n",
+	       (double)management_cable_ddm_info_struct->rx_power.rx_power_high_warning);
+	printf("RX Power warning low thresholds: %.3fdBm\n",
+	       (double)management_cable_ddm_info_struct->rx_power.rx_power_low_warning);
+	printf("RX Power alarm low thresholds: %.3fdBm\n",
+	       (double)management_cable_ddm_info_struct->rx_power.rx_power_low_alarm);
+	printf("TX Power alarm high thresholds: %.3fdBm\n",
+	       (double)management_cable_ddm_info_struct->tx_power.tx_power_high_alarm);
+	printf("TX Power warning high thresholds: %.3fdBm\n",
+	       (double)management_cable_ddm_info_struct->tx_power.tx_power_high_warning);
+	printf("TX Power warning low thresholds: %.3fdBm\n",
+	       (double)management_cable_ddm_info_struct->tx_power.tx_power_low_warning);
+	printf("TX Power alarm low thresholds: %.3fdBm\n",
+	       (double)management_cable_ddm_info_struct->tx_power.tx_power_low_alarm);
+	printf("TX Bias alarm high thresholds: %.3fmA\n",
+	       (double)management_cable_ddm_info_struct->tx_bias.tx_bias_high_alarm);
+	printf("TX Bias warning high thresholds: %.3fmA\n",
+	       (double)management_cable_ddm_info_struct->tx_bias.tx_bias_high_warning);
+	printf("TX Bias warning low thresholds: %.3fmA\n",
+	       (double)management_cable_ddm_info_struct->tx_bias.tx_bias_low_warning);
+	printf("TX Bias alarm low thresholds: %.3fmA\n",
+	       (double)management_cable_ddm_info_struct->tx_bias.tx_bias_low_alarm);
+	printf("\n");
+}
+
+/*
+ * Print management cable DDM info
+ *
+ * Print the contents of the extracted management cable DDM info.
+ *
+ * @management_cable_ddm_info_struct [in]: Extracted management_cable_ddm_info_struct to print
+ */
+static void telemetry_phy_print_management_cable_ddm_info(
+	struct doca_telemetry_phy_management_cable_ddm_info *management_cable_ddm_info_struct)
+{
+	printf("Cable DDM Information\n");
+	printf("---------------------\n");
+
+	telemetry_phy_print_ddm_values(management_cable_ddm_info_struct);
+
+	printf("DDM Flags\n");
+	printf("---------\n");
+
+	telemetry_phy_print_ddm_flags(management_cable_ddm_info_struct);
+
+	printf("DDM Thresholds\n");
+	printf("--------------\n");
+
+	telemetry_phy_print_ddm_thresholds(management_cable_ddm_info_struct);
+}
+
+/*
  * Clean sample objects
  *
  * Closes and frees sample resources.
@@ -1746,6 +2340,20 @@ static doca_error_t telemetry_phy_sample_cleanup(struct telemetry_phy_sample_obj
 		sample_objects->operation_info_struct = NULL;
 	}
 
+	if (sample_objects->supported_info_struct) {
+		DOCA_LOG_INFO("supported_info_struct %p: supported_info_struct was destroyed",
+			      sample_objects->supported_info_struct);
+		free(sample_objects->supported_info_struct);
+		sample_objects->supported_info_struct = NULL;
+	}
+
+	if (sample_objects->troubleshooting_info_struct) {
+		DOCA_LOG_INFO("troubleshooting_info_struct %p: troubleshooting_info_struct was destroyed",
+			      sample_objects->troubleshooting_info_struct);
+		free(sample_objects->troubleshooting_info_struct);
+		sample_objects->troubleshooting_info_struct = NULL;
+	}
+
 	if (sample_objects->module_info_struct) {
 		DOCA_LOG_INFO("module_info_struct %p: module_info_struct was destroyed",
 			      sample_objects->module_info_struct);
@@ -1758,6 +2366,27 @@ static doca_error_t telemetry_phy_sample_cleanup(struct telemetry_phy_sample_obj
 			      sample_objects->counter_and_ber_info_struct);
 		free(sample_objects->counter_and_ber_info_struct);
 		sample_objects->counter_and_ber_info_struct = NULL;
+	}
+
+	if (sample_objects->fec_histogram_info_struct) {
+		DOCA_LOG_INFO("fec_histogram_info_struct %p: fec_histogram_info_struct was destroyed",
+			      sample_objects->fec_histogram_info_struct);
+		free(sample_objects->fec_histogram_info_struct);
+		sample_objects->fec_histogram_info_struct = NULL;
+	}
+
+	if (sample_objects->management_cable_raw_info_struct) {
+		DOCA_LOG_INFO("management_cable_raw_info_struct %p: management_cable_raw_info_struct was destroyed",
+			      sample_objects->management_cable_raw_info_struct);
+		free(sample_objects->management_cable_raw_info_struct);
+		sample_objects->management_cable_raw_info_struct = NULL;
+	}
+
+	if (sample_objects->management_cable_ddm_info_struct) {
+		DOCA_LOG_INFO("management_cable_ddm_info_struct %p: management_cable_ddm_info_struct was destroyed",
+			      sample_objects->management_cable_ddm_info_struct);
+		free(sample_objects->management_cable_ddm_info_struct);
+		sample_objects->management_cable_ddm_info_struct = NULL;
 	}
 
 	if (sample_objects->telemetry_phy_obj != NULL) {
@@ -1807,6 +2436,24 @@ static doca_error_t doca_telemetry_phy_sample_allocate_output_objects(
 		}
 	}
 
+	if (cfg->get_supported_info) {
+		sample_objects->supported_info_struct = (struct doca_telemetry_phy_supported_info *)malloc(
+			sizeof(struct doca_telemetry_phy_supported_info));
+		if (sample_objects->supported_info_struct == NULL) {
+			DOCA_LOG_ERR("Failed to allocate output objects: failed to allocate memory for supported info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+	if (cfg->get_troubleshooting_info) {
+		sample_objects->troubleshooting_info_struct = (struct doca_telemetry_phy_troubleshooting_info *)malloc(
+			sizeof(struct doca_telemetry_phy_troubleshooting_info));
+		if (sample_objects->troubleshooting_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for troubleshooting info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
 	if (cfg->get_module_info) {
 		sample_objects->module_info_struct =
 			(struct doca_telemetry_phy_module_info *)malloc(sizeof(struct doca_telemetry_phy_module_info));
@@ -1822,6 +2469,38 @@ static doca_error_t doca_telemetry_phy_sample_allocate_output_objects(
 		if (sample_objects->counter_and_ber_info_struct == NULL) {
 			DOCA_LOG_ERR(
 				"Failed to allocate output objects: failed to allocate memory for counter and BER info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_fec_histogram_info) {
+		sample_objects->fec_histogram_info_struct = (struct doca_telemetry_phy_fec_histogram_info *)malloc(
+			sizeof(struct doca_telemetry_phy_fec_histogram_info));
+		if (sample_objects->fec_histogram_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for FEC Histogram info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_management_cable_single_page_info || cfg->get_management_cable_dump_info) {
+		sample_objects->management_cable_raw_info_struct =
+			(struct doca_telemetry_phy_management_cable_raw_info *)malloc(
+				sizeof(struct doca_telemetry_phy_management_cable_raw_info));
+		if (sample_objects->management_cable_raw_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for management cable single page or dump info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_management_cable_ddm_info) {
+		sample_objects->management_cable_ddm_info_struct =
+			(struct doca_telemetry_phy_management_cable_ddm_info *)malloc(
+				sizeof(struct doca_telemetry_phy_management_cable_ddm_info));
+		if (sample_objects->management_cable_ddm_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for management cable DDM info");
 			return DOCA_ERROR_NO_MEMORY;
 		}
 	}
@@ -1865,6 +2544,31 @@ static doca_error_t telemetry_phy_sample_context_init(const struct telemetry_phy
 		}
 	}
 
+	if (cfg->get_supported_info) {
+		result = doca_telemetry_phy_cap_supported_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy supported info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to start telemetry_phy: failed to query capability for supported info");
+			return result;
+		}
+	}
+
+	if (cfg->get_troubleshooting_info) {
+		result = doca_telemetry_phy_cap_troubleshooting_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy troubleshooting info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: failed to query capability for troubleshooting info");
+			return result;
+		}
+	}
+
 	if (cfg->get_module_info) {
 		result = doca_telemetry_phy_cap_module_info_is_supported(devinfo);
 		if (result == DOCA_ERROR_NOT_SUPPORTED) {
@@ -1886,6 +2590,32 @@ static doca_error_t telemetry_phy_sample_context_init(const struct telemetry_phy
 		} else if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR(
 				"Failed to start telemetry_phy: failed to query capability for counter and BER info");
+			return result;
+		}
+	}
+
+	if (cfg->get_fec_histogram_info) {
+		result = doca_telemetry_phy_cap_fec_histogram_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy FEC Histogram info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: failed to query capability for FEC Histogram info");
+			return result;
+		}
+	}
+
+	if (cfg->get_management_cable_single_page_info || cfg->get_management_cable_dump_info ||
+	    cfg->get_management_cable_ddm_info) {
+		result = doca_telemetry_phy_cap_management_cable_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy management cable info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to start telemetry_phy: failed to query capability for management info");
 			return result;
 		}
 	}
@@ -1924,11 +2654,29 @@ doca_error_t telemetry_phy_sample_run(const struct telemetry_phy_sample_cfg *cfg
 	if (cfg->get_operation_info) {
 		DOCA_LOG_INFO("	Retrieve operation info");
 	}
+	if (cfg->get_supported_info) {
+		DOCA_LOG_INFO("	Retrieve supported info");
+	}
+	if (cfg->get_troubleshooting_info) {
+		DOCA_LOG_INFO("	Retrieve troubleshooting info");
+	}
 	if (cfg->get_module_info) {
 		DOCA_LOG_INFO("	Retrieve module info");
 	}
 	if (cfg->get_counter_and_ber_info) {
 		DOCA_LOG_INFO("	Retrieve counter and BER info");
+	}
+	if (cfg->get_fec_histogram_info) {
+		DOCA_LOG_INFO("	Retrieve FEC Histogram info");
+	}
+	if (cfg->get_management_cable_single_page_info) {
+		DOCA_LOG_INFO("	Retrieve management cable single page (%u) info", cfg->management_cable_page_id);
+	}
+	if (cfg->get_management_cable_dump_info) {
+		DOCA_LOG_INFO("	Retrieve management cable dump info");
+	}
+	if (cfg->get_management_cable_ddm_info) {
+		DOCA_LOG_INFO("	Retrieve management cable DDM info");
 	}
 
 	/* Open DOCA device based on the given PCI address */
@@ -1955,6 +2703,28 @@ doca_error_t telemetry_phy_sample_run(const struct telemetry_phy_sample_cfg *cfg
 		telemetry_phy_print_operation_info(sample_objects.operation_info_struct);
 	}
 
+	if (cfg->get_supported_info) {
+		result = doca_telemetry_phy_get_supported_info(sample_objects.telemetry_phy_obj,
+							       sample_objects.supported_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read supported info with error=%s", doca_error_get_name(result));
+			goto teardown;
+		}
+
+		telemetry_phy_print_supported_info(sample_objects.supported_info_struct);
+	}
+
+	if (cfg->get_troubleshooting_info) {
+		result = doca_telemetry_phy_get_troubleshooting_info(sample_objects.telemetry_phy_obj,
+								     sample_objects.troubleshooting_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read troubleshooting info with error=%s", doca_error_get_name(result));
+			goto teardown;
+		}
+
+		telemetry_phy_print_troubleshooting_info(sample_objects.troubleshooting_info_struct);
+	}
+
 	if (cfg->get_module_info) {
 		result = doca_telemetry_phy_get_module_info(sample_objects.telemetry_phy_obj,
 							    sample_objects.module_info_struct);
@@ -1975,6 +2745,57 @@ doca_error_t telemetry_phy_sample_run(const struct telemetry_phy_sample_cfg *cfg
 		}
 
 		telemetry_phy_print_counter_and_ber_info(sample_objects.counter_and_ber_info_struct);
+	}
+
+	if (cfg->get_fec_histogram_info) {
+		result = doca_telemetry_phy_get_fec_histogram_info(sample_objects.telemetry_phy_obj,
+								   sample_objects.fec_histogram_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read FEC Histogram info with error=%s", doca_error_get_name(result));
+			goto teardown;
+		}
+
+		telemetry_phy_print_fec_histogram_info(sample_objects.fec_histogram_info_struct);
+	}
+
+	if (cfg->get_management_cable_single_page_info) {
+		result = doca_telemetry_phy_get_management_cable_single_page_info(
+			sample_objects.telemetry_phy_obj,
+			cfg->management_cable_page_id,
+			sample_objects.management_cable_raw_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read management cable single page info with error=%s",
+				     doca_error_get_name(result));
+			goto teardown;
+		}
+
+		telemetry_phy_print_management_cable_page_info(sample_objects.management_cable_raw_info_struct);
+	}
+
+	if (cfg->get_management_cable_dump_info) {
+		result = doca_telemetry_phy_get_management_cable_dump_info(
+			sample_objects.telemetry_phy_obj,
+			sample_objects.management_cable_raw_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read management cable dump info with error=%s",
+				     doca_error_get_name(result));
+			goto teardown;
+		}
+
+		telemetry_phy_print_management_cable_page_info(sample_objects.management_cable_raw_info_struct);
+	}
+
+	if (cfg->get_management_cable_ddm_info) {
+		result = doca_telemetry_phy_get_management_cable_ddm_info(
+			sample_objects.telemetry_phy_obj,
+			sample_objects.management_cable_ddm_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read management cable DDM info with error=%s",
+				     doca_error_get_name(result));
+			goto teardown;
+		}
+
+		telemetry_phy_print_management_cable_ddm_info(sample_objects.management_cable_ddm_info_struct);
 	}
 
 teardown:

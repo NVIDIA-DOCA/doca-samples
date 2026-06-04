@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,11 +29,11 @@
 DOCA_LOG_REGISTER(VERBS_WRITE_BW);
 
 #define RESULT_LINE "------------------------------------------------------------------------------------\n"
-#define RESULT_FMT_G " #bytes     #iterations    BW average[MB/sec]   MsgRate[Mpps]    CUDA Kernel[ms]"
+#define RESULT_FMT_G " #bytes     #iterations    BW average[Gbps]   MsgRate[Mpps]    CUDA Kernel[ms]"
 #define REPORT_FMT_EXT " %-7u    	%-7u           %-7.6lf            %-7.6lf            %-7.6f"
 
 cudaStream_t cstream = NULL;
-int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384};
+int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144};
 volatile bool server_force_quit = false;
 
 /*
@@ -115,11 +115,11 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 
 			memset(resources->data_buf[idx], 0, message_size[idx]);
 
-			resources->data_mr[idx] =
-				ibv_reg_mr(resources->pd,
-					   resources->data_buf[idx],
-					   size_data,
-					   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+			resources->data_mr[idx] = ibv_reg_mr(resources->pd,
+							     resources->data_buf[idx],
+							     size_data,
+							     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+								     IBV_ACCESS_RELAXED_ORDERING);
 			if (resources->data_mr[idx] == NULL) {
 				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
 				doca_gpu_mem_free(resources->gpu_dev, (void *)resources->data_buf[idx]);
@@ -148,23 +148,21 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 			status =
 				doca_gpu_dmabuf_fd(resources->gpu_dev, resources->data_buf[idx], size_data, &dmabuf_fd);
 			if (status == DOCA_SUCCESS) {
-				resources->data_mr[idx] =
-					ibv_reg_dmabuf_mr(resources->pd,
-							  0,
-							  size_data,
-							  (uint64_t)resources->data_buf[idx],
-							  dmabuf_fd,
-							  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-								  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+				resources->data_mr[idx] = ibv_reg_dmabuf_mr(
+					resources->pd,
+					0,
+					size_data,
+					(uint64_t)resources->data_buf[idx],
+					dmabuf_fd,
+					IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING);
 			}
 
 			if (resources->data_mr[idx] == NULL) {
-				resources->data_mr[idx] =
-					ibv_reg_mr(resources->pd,
-						   resources->data_buf[idx],
-						   size_data,
-						   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-							   IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+				resources->data_mr[idx] = ibv_reg_mr(resources->pd,
+								     resources->data_buf[idx],
+								     size_data,
+								     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+									     IBV_ACCESS_RELAXED_ORDERING);
 				if (resources->data_mr[idx] == NULL) {
 					DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
 					goto exit_error;
@@ -321,8 +319,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	CUresult cu_result;
 	CUevent e_start = NULL, e_end = NULL;
 	float et_ms = 0.0f;
-	const unsigned long format_factor = 0x100000; // -> MBS
-	// 125000000;
+
 	const unsigned long num_messages = cfg->num_iters * NUM_QP;
 	pthread_t thread_id;
 	struct cpu_proxy_args args;
@@ -333,6 +330,10 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	resources.cuda_threads = cfg->cuda_threads;
 	resources.nic_handler = cfg->nic_handler;
 	resources.qp_group = false;
+
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF)
+		DOCA_LOG_WARN(
+			"BlueFlame mode selected. In this bandwidth test, the UAR will be created as BlueFlame but the DB will be rung as GPU_SM_DB mode");
 
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
@@ -393,14 +394,15 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	}
 
 	DOCA_LOG_INFO(
-		"Launching gpunetio_verbs_write_bw kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread %d cpu proxy",
+		"Launching gpunetio_verbs_write_bw kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread, %s nic handler mode",
 		NUM_QP,
 		resources.cuda_threads,
 		resources.num_iters,
-		resources.num_iters / resources.cuda_threads, // check this is ok
-		resources.nic_handler);
+		resources.num_iters / resources.cuda_threads,
+		doca_gpu_nic_handler_to_string(resources.nic_handler));
 
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
+	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
 		args.qp_cpu_main = resources.qp->qp_gverbs;
 		args.qp_cpu_companion = NULL;
 		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
@@ -484,8 +486,8 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 			goto stop_thread;
 		}
 
-		// Check calculation is the same as in case of perftest
-		double bw = (double)((message_size[idx] * num_messages) / et_ms * 1000.0f / format_factor);
+		double bw = (double)((double)((message_size[idx] * num_messages) / et_ms * 1000.0f) * ((double)8.0) /
+				     BW_FORMAT_FACTOR);
 		double msgrate = (double)(num_messages / et_ms * 1000.0f / 1000000.0f);
 
 		printf(REPORT_FMT_EXT, message_size[idx], resources.num_iters, bw, msgrate, (double)et_ms);
@@ -494,7 +496,8 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	}
 
 stop_thread:
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
+	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
 		WRITE_ONCE_64b(*args.exit_flag, 1);
 		pthread_join(thread_id, NULL);
 	}

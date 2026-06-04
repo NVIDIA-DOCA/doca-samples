@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,10 +26,8 @@
 #ifndef COMMON_UTILS_H_
 #define COMMON_UTILS_H_
 
-#include <stdio.h>
-#include <stdlib.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <unistd.h>
 
 #include <doca_error.h>
 #include <doca_types.h>

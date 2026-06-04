@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -137,7 +137,7 @@ struct rdma_resources {
 	struct doca_rdma_addr *cm_addr;				       /* Server address to connect by a client */
 	struct doca_rdma_connection *connections[MAX_NUM_CONNECTIONS]; /* The RDMA_CM connection instance */
 	bool connection_established[MAX_NUM_CONNECTIONS]; /* Indication whether the corresponding connection have been
-							     estableshed */
+							     established */
 	uint32_t num_connection_established;		  /* Indicate how many connections has been established */
 	struct doca_mmap *mmap_descriptor_mmap;		  /* Used to send local mmap descriptor to remote peer */
 	struct doca_mmap *remote_mmap_descriptor_mmap;	  /* Used to receive remote peer mmap descriptor */

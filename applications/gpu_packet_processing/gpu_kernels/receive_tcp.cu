@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -34,7 +34,7 @@
 #include "packets.h"
 #include "filters.cuh"
 
-DOCA_LOG_REGISTER(GPU_SANITY::KernelReceiveTcp);
+DOCA_LOG_REGISTER(GPU_SANITY::KERNEL_RECEIVE_TCP);
 
 static __device__ void report_http_info(struct info_http *http_global, struct eth_ip_tcp_hdr *hdr, uint8_t *payload)
 {
@@ -163,16 +163,13 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 		/* If any thread returns receive error, the whole execution stops */
 		if (ret != DOCA_SUCCESS) {
 			if (threadIdx.x == 0) {
-				/*
-				 * printf in CUDA kernel may be a good idea only to report critical errors or debugging.
-				 * If application prints this message on the console, something bad happened and
-				 * applications needs to exit
-				 */
+				#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 				printf("Receive TCP kernel error %d Block %d rxpkts %d error %d\n",
 				       ret,
 				       blockIdx.x,
 				       out_pkt_num,
 				       ret);
+				#endif
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 			}
 			break;
@@ -196,10 +193,12 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 											  idx_tmp,
 											  (void **)&http_global);
 					if (ret != DOCA_SUCCESS) {
+						#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 						printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n",
 						       ret,
 						       blockIdx.x,
 						       threadIdx.x);
+						#endif
 						DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 						break;
 					}
@@ -264,10 +263,12 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 									  sem_stats_idx,
 									  (void **)&stats_global);
 			if (ret != DOCA_SUCCESS) {
+				#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 				printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n",
 				       ret,
 				       blockIdx.x,
 				       threadIdx.x);
+				#endif
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 				break;
 			}

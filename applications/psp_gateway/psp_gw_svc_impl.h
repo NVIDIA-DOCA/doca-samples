@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -28,6 +28,7 @@
 
 #include <memory>
 #include <map>
+#include <mutex>
 
 #include <doca_flow.h>
 
@@ -133,27 +134,39 @@ private:
 	}
 
 	/**
-	 * @brief Sends a request to the given peer
-	 * The request includes the parameters required for
-	 * traffic in the reverse direction (remote to local).
-	 * An ACL is also provided for return traffic, if the
-	 * local/remote virtual addresses are provided.
+	 * @brief Per-request state shared across the three phases of
+	 *        request_tunnel_to_host.
+	 */
+	struct tunnel_request_ctx {
+		psp_gw_peer *peer;
+		ip_pair *vip_pair;
+		bool supply_reverse_params;
+		bool suppress_failure_msg;
+		bool has_vip_pair;
+
+		::grpc::ClientContext grpc_ctx;
+		::psp_gateway::MultiTunnelRequest request;
+		::psp_gateway::MultiTunnelResponse response;
+		::psp_gateway::PSP_Gateway::Stub *stub = nullptr;
+		int vip_pair_id = -1;
+	};
+
+	/**
+	 * @brief Orchestrates a three-phase tunnel creation to a peer.
 	 *
-	 * @peer [in]: The peer to which we will create a tunnel
-	 * @vip_pair [in]: The source and destination IP addresses of the traffic flow
-	 * @supply_reverse_params [in]: Whether to include tunnel parameters for traffic
-	 * returning to the sender of the request.
-	 * @suppress_failure_msg [in]: Indicates we are okay with a failure to connect, such
-	 * as during application startup.
-	 * @has_remote [in]: true if remote_virt_ip was send to the function -
-	 * when true, generate one pair of SPI and key and insert one rule
-	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+	 * Phase 1 (locked)  : build_tunnel_request  — build gRPC request, create ingress ACL entries.
+	 * Phase 2 (unlocked): send_tunnel_request    — blocking outgoing gRPC call.
+	 * Phase 3 (locked)  : process_tunnel_response — create encrypt entries from response.
 	 */
 	doca_error_t request_tunnel_to_host(struct psp_gw_peer *peer,
 					    ip_pair *vip_pair,
 					    bool supply_reverse_params,
 					    bool suppress_failure_msg,
-					    bool has_remote);
+					    bool has_vip_pair);
+
+	doca_error_t build_tunnel_request(tunnel_request_ctx &ctx);
+	doca_error_t send_tunnel_request(tunnel_request_ctx &ctx);
+	doca_error_t process_tunnel_response(tunnel_request_ctx &ctx);
 
 	/**
 	 * @brief Returns a gRPC client for a given peer
@@ -254,6 +267,12 @@ private:
 	 * @return: The crypto_id to use for the PSP shared resource
 	 */
 	uint32_t next_crypto_id(void);
+
+	// Serializes tunnel creation across the miss handler (RSS lcore threads)
+	// and the incoming gRPC handler. request_tunnel_to_host releases the
+	// lock around the outgoing gRPC call so that incoming requests are not
+	// blocked during the round-trip.
+	std::mutex tunnel_mutex_;
 
 	// Application state data:
 

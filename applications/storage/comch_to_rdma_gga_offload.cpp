@@ -791,7 +791,7 @@ private:
 
 	storage::control::message process_stop_storage(storage::control::message const &client_request);
 
-	storage::control::message process_shutdown(storage::control::message const &client_requeste);
+	storage::control::message process_shutdown(storage::control::message const &client_request);
 
 	void prepare_thread_contexts(storage::control::correlation_id cid);
 
@@ -2317,21 +2317,21 @@ void gga_offload_app_worker::prepare_transaction(uint32_t transaction_idx,
 		storage::io_message_view::set_user_data(doca_data{.u64 = transaction_idx}, io_msg_addr);
 		storage::io_message_view::set_io_size(m_hot_data->half_block_size, io_msg_addr);
 
-		doca_buf *io_requset_buf;
+		doca_buf *io_request_buf;
 		ret = doca_buf_inventory_buf_get_by_addr(m_buf_inv,
 							 m_io_message_mmap,
 							 io_msg_addr,
 							 storage::size_of_io_message,
-							 &io_requset_buf);
+							 &io_request_buf);
 		if (ret != DOCA_SUCCESS) {
 			throw storage::runtime_error{ret, "Unable to get storage request io message[0] doca_buf"};
 		}
 		io_msg_addr += storage::size_of_io_message;
-		m_doca_bufs.push_back(io_requset_buf);
+		m_doca_bufs.push_back(io_request_buf);
 
 		ret = doca_rdma_task_send_allocate_init(m_rdma[role].ctrl.rdma,
 							m_rdma[role].ctrl.conn,
-							io_requset_buf,
+							io_request_buf,
 							doca_data{.u64 = transaction_idx},
 							std::addressof(transaction.requests[role]));
 		if (ret != DOCA_SUCCESS) {
@@ -2646,7 +2646,7 @@ void gga_offload_app_worker::doca_rdma_task_receive_error_cb(doca_rdma_task_rece
 
 	auto *const hot_data = static_cast<gga_offload_app_worker::hot_data *>(ctx_user_data.ptr);
 	if (!hot_data->run_flag) {
-		/* Ignore the error in-case of tasks being cancelled as part of the shutdown process */
+		/* Ignore the error in-case of tasks being canceled as part of the shutdown process */
 		return;
 	}
 

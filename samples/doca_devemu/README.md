@@ -1,3 +1,13 @@
+#
+# This software product is a proprietary product of NVIDIA CORPORATION &
+# AFFILIATES (the "Company") and all right, title, and interest in and to the
+# software product, including all associated intellectual property rights, are
+# and shall remain exclusively with the Company.
+#
+# This software product is governed by the End User License Agreement
+# provided with the software product.
+#
+
 # PCI Device Samples
 
 ## PCI Device List
@@ -173,7 +183,7 @@ This sample illustrates how the host driver can ring the doorbell and how the Bl
 
 ## PCI Device MSI-X
 
-This sample illustrates how BlueField can raise an MSI-X vector, sending a signal towards the host, and shows how the host can retrieve this signal.
+This sample illustrates how BlueField can raise an MSI-X vector, either from the DPA or the DPU, sending a signal towards the host, and shows how the host can retrieve this signal.
 
 ### Sample Logic
 
@@ -182,18 +192,26 @@ This sample illustrates how BlueField can raise an MSI-X vector, sending a signa
 ##### Host (BlueField Arm) Logic
 
 - Initializing the generic PCIe type based on `devemu_pci_type_config.h`.
-- Initializing DPA resources:
-  - Creating a DPA instance and associating it with the DPA application.
-  - Creating a DPA thread and associating it with the DPA DB handler.
-- Acquiring the emulated device representor that matches the provided VUID.
-- Creating a PCIe device context to manage the emulated device and connecting it to a progress engine (PE).
-- Creating an MSI-X vector and acquiring its DPA handle.
-- Sending an RPC to the DPA to raise the MSI-X vector.
+- According to the selected MSI-X datapath:
+  - **DPA path (default)**:
+    - Initializing DPA resources:
+      - Creating a DPA instance and associating it with the DPA application.
+      - Creating a DPA thread and associating it with the DPA MSI-X handler.
+    - Setting the PCI device context datapath on DPA.
+    - Acquiring the emulated device representor that matches the provided VUID.
+    - Creating a PCIe device context to manage the emulated device and connecting it to a progress engine (PE).
+    - Creating an MSI-X vector on the DPA and acquiring its DPA handle.
+    - Sending an RPC to the DPA to raise the MSI-X vector.
+  - **DPU path**:
+    - Acquiring the emulated device representor that matches the provided VUID.
+    - Creating a PCIe device context to manage the emulated device and connecting it to a progress engine (PE).
+    - Creating an MSI-X vector on the DPU.
+    - Raising the MSI-X vector directly from the DPU.
 - Cleaning up resources.
 
 ##### Device (BlueField DPA) Logic
 
-- Raising the MSI-X RPC by using the MSI-X vector handle.
+- Raising the MSI-X RPC by using the MSI-X vector handle (DPA path only).
 
 #### Host Sample Logic
 
@@ -262,3 +280,111 @@ This sample illustrates how the host driver can set up memory for DMA, then the 
         - `devemu_pci_device_dma_host_sample.c`
         - `devemu_pci_device_dma_host_main.c`
         - `meson.build`
+
+## PCI Device TLP Handler
+
+This sample illustrates how to handle raw Transaction Layer Packets (TLPs) at the BlueField DPU level, providing low-level PCIe protocol processing capabilities for custom device emulation. It also demonstrates how the host driver can interact with transaction regions for testing TLP processing functionality. In addition, the sample supports TLP channel handover (live upgrade): a running source instance can transfer its active TLP channel to a newly started destination instance with zero host-visible disruption, enabling seamless in-service software upgrades.
+This sample implements a single PCIe endpoint and is limited to a single TLP channel downstream port, therefore the user must set the number of TLP ports to 1 via mlxconfig before running the sample.
+
+### Sample Logic
+
+#### BlueField Sample Logic
+
+- Initializing a custom PCI TLP type with specific device and vendor IDs.
+- Creating and configuring a TLP channel to receive and process raw PCIe transactions.
+- Setting up PCI configuration space structure with proper headers, BARs, and device capabilities.
+- Registering a TLP request handler callback function to process incoming transactions.
+- Creating a device representor to enable host-side device enumeration.
+- Initializing a TLP device context for transaction processing.
+- Processing various types of TLP requests including:
+  - Configuration space read/write operations (Type 0)
+  - Memory read/write operations
+  - Completion handling with appropriate status codes
+- Handling PCIe protocol-specific fields such as:
+  - Transaction tags and request IDs
+  - Bus/Device/Function (BDF) addressing
+  - Byte enable masks and data alignment
+  - Completion status codes (Success, Unsupported Request, etc.)
+- Parsing TLP headers to extract transaction information and routing details.
+- Generating appropriate TLP completion responses for posted and non-posted transactions.
+- Managing device state and configuration space updates.
+- Supporting TLP channel handover for live upgrade between two instances:
+  - Both the **source** and **destination** must be started with the same `--shm-dir-path` (shared memory directory); handover is not available without this path on either side.
+  - The **source** instance runs normally and listens for an incoming handover request on a Unix domain socket.
+  - The **destination** instance is started with the `--handover-destination` flag. It connects to the source and performs a multi-step handover protocol:
+    1. **SETUP** — receives the ibverbs `cmd_fd` via `SCM_RIGHTS` to import the same DOCA device context.
+    2. **EXPORT** — receives the serialized TLP channel export descriptor to reconstruct the channel.
+    3. **BEGIN** — receives the PCI configuration space, TLP handler context, transaction region contents, and Expansion ROM contents; the source stops the channel.
+    4. **END** — notifies the source of success or failure; on success the source destroys its channel and exits, and the destination starts handling incoming TLP channel requests.
+  - If the destination fails during a handover, the source attempts rollback to continue serving the host.
+- The sample polls indefinitely for TLP requests until the user presses `[Ctrl+c]` to close the sample.
+
+#### Host Sample Logic
+
+- Initializing the VFIO device with a matching PCIe address and VFIO group.
+- Mapping the transaction memory region from the BAR to the process address space.
+- Writing the values provided as input to the beginning of the transaction region, or reading existing values if no input is provided.
+- The sample demonstrates interaction with transaction regions that can be processed by the TLP handler on the BlueField DPU.
+
+### References
+
+- `doca_devemu/`
+    - `devemu_pci_device_tlp_handler/dpu/`
+        - `devemu_pci_device_tlp_handler_dpu_sample.c`
+        - `devemu_pci_device_tlp_handler_dpu_main.c`
+        - `meson.build`
+    - `devemu_pci_device_tlp_handler/host/`
+        - `devemu_pci_device_tlp_handler_host_sample.c`
+        - `devemu_pci_device_tlp_handler_host_main.c`
+        - `meson.build`
+    - `devemu_pci_common.h`
+    - `devemu_pci_common.c`
+    - `devemu_pci_host_common.h`
+    - `devemu_pci_host_common.c`
+    - `devemu_pci_type_config.h`
+
+## PCI Device TLP Bridge Handler
+
+This sample illustrates how to emulate a complete PCIe switch topology with multiple bridges and endpoints using raw Transaction Layer Packets (TLPs). It demonstrates advanced PCIe fabric emulation capabilities by implementing a hierarchical bus architecture with upstream/downstream ports and multiple endpoint devices.
+
+### Sample Logic
+
+- Initializing a custom PCI TLP type for bridge and multi-endpoint topology.
+- Creating and configuring a TLP channel to receive and process PCIe transactions across the entire topology.
+- Initializing a complex PCIe device topology with one sub-topology per TLP channel DSP, each consisting of:
+  - 1 Upstream Switch Port (USP)
+  - N Downstream Switch Ports (DSPs) connected to the USP, where N is the number of endpoints assigned to this channel DSP
+  - N Single-PF endpoint devices, each connected to a DSP
+- Setting up PCI configuration space structures for both Type 0 (endpoint) and Type 1 (bridge) headers.
+- Implementing PCIe switch routing logic:
+  - Type 0 configuration requests routing to USPs
+  - Type 1 configuration requests routing to DSPs and endpoints
+  - Bus number management and secondary bus assignment
+  - Device number mapping across the switch fabric
+- Creating device representors for all endpoint devices to enable host enumeration.
+- Initializing TLP device contexts for hardware-accelerated endpoint processing.
+- Allocating independent transaction memory regions for each endpoint device.
+- Processing various types of TLP requests with topology-aware routing:
+  - Configuration space read/write operations (Type 0 and Type 1)
+  - Memory read/write operations with BDF-based device lookup
+  - Bridge-specific configuration (bus numbers, memory windows)
+  - Endpoint-specific configuration (BARs, capabilities)
+- Handling PCIe capabilities for endpoints:
+  - PCIe Express capability
+  - MSI-X capability
+  - VPD (Vital Product Data) capability
+  - Power Management capability
+- Managing bridge and endpoint device states independently.
+- The sample polls indefinitely for TLP requests until the user presses `[Ctrl+c]` to close the sample.
+
+### References
+
+- `doca_devemu/`
+    - `devemu_pci_device_tlp_bridge_handler/`
+        - `devemu_pci_device_tlp_bridge_handler_config.h`
+        - `devemu_pci_device_tlp_bridge_handler_sample.c`
+        - `devemu_pci_device_tlp_bridge_handler_main.c`
+        - `meson.build`
+    - `devemu_pci_common.h`
+    - `devemu_pci_common.c`
+    - `devemu_pci_type_config.h`

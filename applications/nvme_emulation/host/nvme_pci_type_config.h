@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -103,6 +103,7 @@ static const struct bar_region_config msix_pba_configs[PCI_TYPE_NUM_BAR_MSIX_PBA
 };
 
 /* Configure number of doorbells and regions and how they operate */
+#define PCI_TYPE_NUM_DB 64
 #define PCI_TYPE_NUM_BAR_DB_REGIONS 1
 
 static const struct bar_db_region_config db_configs[PCI_TYPE_NUM_BAR_DB_REGIONS] = {

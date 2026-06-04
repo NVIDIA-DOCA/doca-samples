@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -109,5 +109,24 @@ void copy_ip_addr(const struct doca_flow_ip_addr &src, struct doca_flow_ip_addr 
  * @return: pointer to the peer if found, nullptr otherwise
  */
 psp_gw_peer *lookup_vip_pair(std::vector<psp_gw_peer> *peers, ip_pair &vip_pair);
+
+/**
+ * @brief Build a gRPC target string (host:port or [ipv6]:port) with default port if missing.
+ *        Supports IPv4, IPv6 (bare or bracketed), and hostnames. Empty input returns
+ *        "[::]:default_port" for server listen (dual-stack). Empty input uses this.
+ *
+ * @host_or_target [in]: address or "address:port" (IPv4, "[IPv6]:port", or hostname)
+ * @default_port [in]: port to append when no port is present
+ * @return: normalized target string for gRPC CreateCustomChannel / AddListeningPort
+ */
+std::string grpc_target_with_port(const std::string &host_or_target, uint16_t default_port);
+
+/**
+ * @brief Validate a gRPC address string (optional port, IPv4 / [IPv6] / hostname).
+ *
+ * @address [in]: string to validate (e.g. "192.168.1.1:50051", "[::1]:50051", "::")
+ * @return: DOCA_SUCCESS if format is valid, DOCA_ERROR_INVALID_VALUE otherwise
+ */
+doca_error_t validate_grpc_address(const std::string &address);
 
 #endif /* _PSP_GW_UTILS_H_ */

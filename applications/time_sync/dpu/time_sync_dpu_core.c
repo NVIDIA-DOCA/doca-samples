@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -80,13 +80,6 @@ static doca_error_t time_sync_dpu_cap_check(struct doca_devinfo *devinfo)
 	result = doca_dpa_cap_is_supported(devinfo);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Doca DPA is not supported on device: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	/* DPU side needs real time clock support enabled on NIC */
-	result = doca_clock_cap_nic_real_time_is_supported(devinfo);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Real time clock is not supported on device: %s", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -264,7 +257,7 @@ static void msg_recv_cb(struct doca_comch_event_msg_recv *event,
 	/* Populate response DPU host and NIC times for recv event */
 	result = doca_clock_get_crosstimestamp(ts_cfg->clock,
 					       DOCA_CLOCK_HOST_REAL_TIME,
-					       DOCA_CLOCK_NIC_REAL_TIME,
+					       ts_cfg->nic_clock,
 					       &resp.dpu_event_time,
 					       &resp.dpu_event_time_nic,
 					       &resp.dpu_event_error_margin);

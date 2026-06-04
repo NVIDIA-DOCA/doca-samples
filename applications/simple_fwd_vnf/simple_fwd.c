@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -73,8 +73,8 @@ DOCA_LOG_REGISTER(SIMPLE_FWD);
 #define GET_FT_ENTRY(ctx) container_of(ctx, struct simple_fwd_ft_entry, user_ctx)
 
 #define PULL_TIME_OUT 10000 /* Maximum timeout for pulling */
-#define NB_ACTION_ARRAY (1) /* Used as the size of muti-actions array for DOCA Flow API */
-#define NB_ACTION_DESC (1)  /* Used as the size of muti-action descs array for DOCA Flow API */
+#define NB_ACTION_ARRAY (1) /* Used as the size of multi-actions array for DOCA Flow API */
+#define NB_ACTION_DESC (1)  /* Used as the size of multi-action descs array for DOCA Flow API */
 
 static struct simple_fwd_app *simple_fwd_ins; /* Instance holding all allocated resources needed for a proper run */
 

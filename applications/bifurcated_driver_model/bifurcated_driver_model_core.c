@@ -66,15 +66,8 @@ static struct doca_flow_pipe_entry *egress_entries[EGRESS_ENTRIES];
  */
 static void handle_rx_tx_pkts(void)
 {
-	int rc;
 	uint32_t secs = PROCESSING_TIMEOUT_SECS, nb_rx, i;
 	struct rte_mbuf *mbufs[MAX_PKTS];
-
-	rc = rte_flow_dynf_metadata_register();
-	if (unlikely(rc)) {
-		DOCA_LOG_ERR("Enable metadata failed");
-		return;
-	}
 
 	while (secs--) {
 		sleep(1);

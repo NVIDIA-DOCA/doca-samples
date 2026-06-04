@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -97,13 +97,23 @@ option('enable_stream_receive_perf', type: 'boolean', value: false,
 	description: 'Enable the Stream Receive Performance application.')
 option('enable_switch', type: 'boolean', value: false,
 	description: 'Enable Switch application.')
+option('enable_telemetry', type: 'boolean', value: false,
+	description: 'Enable Telemetry applications.')
+option('enable_telemetry_traceback', type: 'boolean', value: true,
+	description: 'Enable Telemetry Traceback application.')
+option('enable_telemetry_opentelemetry', type: 'boolean', value: true,
+	description: 'Enable Telemetry OpenTelemetry application.')
 option('enable_time_sync', type: 'boolean', value: false,
 	description: 'Enable Time Sync application.')
 option('enable_upf_accel', type: 'boolean', value: false,
 	description: 'Enable UPF Acceleration application.')
 option('enable_urom_rdmo', type: 'boolean', value: false,
 	description: 'Enable UROM RDMO application.')
+option('enable_vblk_pci_dev', type: 'boolean', value: false,
+	description: 'Enable VirtIO Block PCI Device application.')
 option('enable_virtiofs', type: 'boolean', value: false,
 	description: 'Enable Virtiofs application.')
+option('enable_vnet_pci_dev', type: 'boolean', value: false,
+	description: 'Enable VirtIO Net PCI Device application.')
 option('enable_yara_inspection', type: 'boolean', value: false,
 	description: 'Enable Yara Inspection application.')

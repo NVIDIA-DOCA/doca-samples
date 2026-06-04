@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -40,6 +40,8 @@ raw_samples = {
 	'pe_task_error': ['dma'],
 	'cache_invalidate': ['dma'],
 	'clock_cross_timestamp': ['argp'],
+	'log_limits_client': ['argp'],
+	'log_limits_server': ['argp'],
 }
 
 samples = []
@@ -84,4 +86,12 @@ sample_lib_srcs = files([
 sample_lib_hdrs = files([
 	'common_common.h',
 	'pe_common.h',
+])
+
+sample_lib_srcs += files([
+	'log_common.c',
+])
+
+sample_lib_hdrs += files([
+	'log_common.h',
 ])

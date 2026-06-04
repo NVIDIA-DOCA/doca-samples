@@ -472,7 +472,7 @@ exit_error:
 }
 
 /*
- * CPU proxy thread: wait in a continuou loop an update from the GPU.
+ * CPU proxy thread: wait in a continuous loop an update from the GPU.
  * Once the GPU requires to ring the doorbell, it notifies this thread via internal
  * shared memory. This CPU thread rings the Txq DB in place of the GPU.
  *

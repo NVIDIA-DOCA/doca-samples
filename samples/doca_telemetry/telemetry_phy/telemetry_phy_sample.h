@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,6 +23,9 @@
  *
  */
 
+#ifndef TELEMETRY_PHY_SAMPLE_H_
+#define TELEMETRY_PHY_SAMPLE_H_
+
 #include <stdlib.h>
 
 #include <doca_error.h>
@@ -30,11 +33,19 @@
 
 /* Configuration struct */
 struct telemetry_phy_sample_cfg {
-	uint8_t pci_set;			   /**< Whether the user provided a pci address */
-	char pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /**< PCI address to be used */
-	uint8_t get_operation_info;		   /**< Retrieve operation info */
-	uint8_t get_module_info;		   /**< Retrieve module info */
-	uint8_t get_counter_and_ber_info;	   /**< Retrieve counter and BER info */
+	uint8_t pci_set;			       /**< Whether the user provided a pci address */
+	char pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE];     /**< PCI address to be used */
+	uint8_t get_operation_info;		       /**< Retrieve operation info */
+	uint8_t get_supported_info;		       /**< Retrieve supported info */
+	uint8_t get_troubleshooting_info;	       /**< Retrieve troubleshooting info */
+	uint8_t get_module_info;		       /**< Retrieve module info */
+	uint8_t get_counter_and_ber_info;	       /**< Retrieve counter and BER info */
+	uint8_t get_fec_histogram_info;		       /**< Retrieve fec_histogram info */
+	uint8_t get_management_cable_single_page_info; /**< Retrieve management cable single page info */
+	uint8_t management_cable_page_id;	       /**< Page to retrieve with management cable single page info */
+	uint8_t get_management_cable_dump_info;	       /**< Retrieve management cable dump info */
+	uint8_t get_management_cable_ddm_info; /**< Retrieve management cable Digital Diagnostic Monitoring (DDM) info
+						*/
 };
 
 /*
@@ -44,3 +55,5 @@ struct telemetry_phy_sample_cfg {
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
  */
 doca_error_t telemetry_phy_sample_run(const struct telemetry_phy_sample_cfg *cfg);
+
+#endif /* TELEMETRY_PHY_SAMPLE_H_ */

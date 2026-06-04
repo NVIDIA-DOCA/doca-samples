@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -264,11 +264,13 @@ static inline void time_sync_subtract_timespecs(struct timespec *end_time,
  * Helper function to get the NIC time that a dpa event occurred
  *
  * @clock [in]: Initialised doca clock context
+ * @nic_clock_type [in]: NIC clock type used in the app
  * @dpa_event_time [in]: Time on the DPA clock that an event occurred
  * @nic_event_time [out]: Calculated NIC time that the DPA event occurred
  * @accuracy [out]: Margin of error in the conversion (nanosecs)
  */
 static inline doca_error_t time_sync_dpa_to_nic(struct doca_clock *clock,
+						uint64_t nic_clock_type,
 						union doca_clock_timespec_t dpa_event_time,
 						union doca_clock_timespec_t *nic_event_time,
 						uint64_t *accuracy)
@@ -279,7 +281,7 @@ static inline doca_error_t time_sync_dpa_to_nic(struct doca_clock *clock,
 
 	/* Get a current cross timestamp reading of NIC and DPA clocks */
 	result = doca_clock_get_crosstimestamp(clock,
-					       DOCA_CLOCK_NIC_REAL_TIME,
+					       nic_clock_type,
 					       DOCA_CLOCK_NIC_DPA_TIMER,
 					       &current_nic,
 					       &current_dpa,
@@ -350,7 +352,7 @@ doca_error_t time_sync_host_main_loop(struct time_sync_cfg *ts_cfg)
 	/* Take time before sending the first message, cross timestamping host and NIC clock */
 	result = doca_clock_get_crosstimestamp(ts_cfg->clock,
 					       DOCA_CLOCK_HOST_REAL_TIME,
-					       DOCA_CLOCK_NIC_REAL_TIME,
+					       ts_cfg->nic_clock,
 					       &start_host,
 					       &start_nic,
 					       &start_accuracy_nsec);
@@ -393,7 +395,7 @@ doca_error_t time_sync_host_main_loop(struct time_sync_cfg *ts_cfg)
 	/* Take time after response message has been processed, cross timestamping host and NIC clock */
 	result = doca_clock_get_crosstimestamp(ts_cfg->clock,
 					       DOCA_CLOCK_HOST_REAL_TIME,
-					       DOCA_CLOCK_NIC_REAL_TIME,
+					       ts_cfg->nic_clock,
 					       &end_host,
 					       &end_nic,
 					       &end_accuracy_nsec);
@@ -403,7 +405,11 @@ doca_error_t time_sync_host_main_loop(struct time_sync_cfg *ts_cfg)
 	}
 
 	/* DPU response contains local DPA event time only - sync it with NIC clock */
-	result = time_sync_dpa_to_nic(ts_cfg->clock, ts_cfg->dpu_resp.dpa_event_time, &dpa_nic_time, &dpa_accuracy);
+	result = time_sync_dpa_to_nic(ts_cfg->clock,
+				      ts_cfg->nic_clock,
+				      ts_cfg->dpu_resp.dpa_event_time,
+				      &dpa_nic_time,
+				      &dpa_accuracy);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to sync DPA and NIC timestamps: %s", doca_error_get_name(result));
 		return result;
@@ -417,7 +423,9 @@ doca_error_t time_sync_host_main_loop(struct time_sync_cfg *ts_cfg)
 	}
 
 	/* Add header to log file */
-	fprintf(log, "Sync Time - NIC Real Time (secs), Local Time (secs), Sync Margin of Error (nsec), Event\n");
+	fprintf(log,
+		"Sync Time - NIC %s (secs), Local Time (secs), Sync Margin of Error (nsec), Event\n",
+		ts_cfg->nic_clock == DOCA_CLOCK_NIC_REAL_TIME ? "Real Time" : "Free Running");
 
 	/* Print the App events in expected order along with time values (all events are sync'd to NIC time) */
 	time_sync_add_log_entry(log,

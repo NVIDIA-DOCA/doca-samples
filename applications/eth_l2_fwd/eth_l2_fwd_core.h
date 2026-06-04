@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -107,5 +107,8 @@ void eth_l2_fwd_force_stop(void);
  * @return: DOCA_SUCCESS on success and DOCA_ERROR_... otherwise
  */
 doca_error_t eth_l2_fwd_cleanup(struct eth_l2_fwd_resources *state);
+
+/* Max forwarded packet batches limit */
+extern uint32_t max_forwardings;
 
 #endif /* ETH_L2_FWD_CORE_H_ */

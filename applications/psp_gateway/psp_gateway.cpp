@@ -49,9 +49,9 @@
 // application
 #include <psp_gw_config.h>
 #include <psp_gw_flows.h>
-#include <psp_gw_svc_impl.h>
 #include <psp_gw_params.h>
 #include <psp_gw_pkt_rss.h>
+#include <psp_gw_svc_impl.h>
 #include <psp_gw_utils.h>
 
 DOCA_LOG_REGISTER(PSP_GATEWAY);
@@ -100,6 +100,7 @@ int main(int argc, char **argv)
 	app_config.ingress_sample_meta_indicator = 0x65656565; // arbitrary pkt_meta flag value
 	app_config.egress_sample_meta_indicator = 0x43434343;
 	app_config.return_to_vf_indicator = 0x78787878;
+	app_config.egress_reinject_meta_indicator = 0x12121212;
 	app_config.show_sampled_packets = true;
 	app_config.show_rss_rx_packets = false;
 	app_config.show_rss_durations = false;
@@ -221,23 +222,41 @@ int main(int argc, char **argv)
 
 	if (app_config.outer == DOCA_FLOW_L3_TYPE_IP4) {
 		pf_dev.src_pip.type = DOCA_FLOW_L3_TYPE_IP4;
-		result = doca_devinfo_get_ipv4_addr(doca_dev_as_devinfo(pf_dev.dev),
-						    (uint8_t *)&pf_dev.src_pip.ipv4_addr,
-						    DOCA_DEVINFO_IPV4_ADDR_SIZE);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to find IPv4 addr for PF: %s", doca_error_get_descr(result));
-			exit_status = EXIT_FAILURE;
-			goto dpdk_destroy;
+		if (!app_config.local_pip.empty()) {
+			if (parse_ip_addr(app_config.local_pip, DOCA_FLOW_L3_TYPE_IP4, &pf_dev.src_pip) !=
+			    DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Invalid local-pip (expected IPv4): %s", app_config.local_pip.c_str());
+				exit_status = EXIT_FAILURE;
+				goto dpdk_destroy;
+			}
+		} else {
+			result = doca_devinfo_get_ipv4_addr(doca_dev_as_devinfo(pf_dev.dev),
+							    (uint8_t *)&pf_dev.src_pip.ipv4_addr,
+							    DOCA_DEVINFO_IPV4_ADDR_SIZE);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to find IPv4 addr for PF: %s", doca_error_get_descr(result));
+				exit_status = EXIT_FAILURE;
+				goto dpdk_destroy;
+			}
 		}
 	} else {
 		pf_dev.src_pip.type = DOCA_FLOW_L3_TYPE_IP6;
-		result = doca_devinfo_get_ipv6_addr(doca_dev_as_devinfo(pf_dev.dev),
-						    (uint8_t *)pf_dev.src_pip.ipv6_addr,
-						    DOCA_DEVINFO_IPV6_ADDR_SIZE);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to find IPv6 addr for PF: %s", doca_error_get_descr(result));
-			exit_status = EXIT_FAILURE;
-			goto dpdk_destroy;
+		if (!app_config.local_pip.empty()) {
+			if (parse_ip_addr(app_config.local_pip, DOCA_FLOW_L3_TYPE_IP6, &pf_dev.src_pip) !=
+			    DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Invalid local-pip (expected IPv6): %s", app_config.local_pip.c_str());
+				exit_status = EXIT_FAILURE;
+				goto dpdk_destroy;
+			}
+		} else {
+			result = doca_devinfo_get_ipv6_addr(doca_dev_as_devinfo(pf_dev.dev),
+							    (uint8_t *)pf_dev.src_pip.ipv6_addr,
+							    DOCA_DEVINFO_IPV6_ADDR_SIZE);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to find IPv6 addr for PF: %s", doca_error_get_descr(result));
+				exit_status = EXIT_FAILURE;
+				goto dpdk_destroy;
+			}
 		}
 	}
 	pf_dev.src_pip_str = ip_to_string(pf_dev.src_pip);
@@ -287,13 +306,9 @@ int main(int argc, char **argv)
 			rte_eal_remote_launch(lcore_pkt_proc_func, &lcore_params, lcore_id);
 		}
 
-		std::string server_address = app_config.local_svc_addr;
-		if (server_address.empty()) {
-			server_address = "0.0.0.0";
-		}
-		if (server_address.find(":") == std::string::npos) {
-			server_address += ":" + std::to_string(PSP_GatewayImpl::DEFAULT_HTTP_PORT_NUM);
-		}
+		std::string server_address =
+			grpc_target_with_port(app_config.local_svc_addr.empty() ? "" : app_config.local_svc_addr,
+					      PSP_GatewayImpl::DEFAULT_HTTP_PORT_NUM);
 		grpc::ServerBuilder builder;
 		builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
 		builder.RegisterService(&psp_svc);

@@ -30,10 +30,10 @@ app_srcs = []
 vanilla_app_srcs = []
 
 if is_dpu
-        subdir('dpu')
+	subdir('dpu')
 else
-        subdir('common')
-        subdir('host')
+	subdir('common')
+	subdir('host')
 
 	executable(DOCA_PREFIX + APP_NAME + '_host',
 		app_srcs + vanilla_app_srcs,

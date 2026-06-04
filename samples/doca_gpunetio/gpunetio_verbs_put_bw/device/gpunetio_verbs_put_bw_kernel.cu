@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -35,6 +35,7 @@
 DOCA_LOG_REGISTER(GPU_VERBS_SAMPLE::CUDA_KERNEL);
 
 #define KERNEL_DEBUG_TIMES 0
+#define ENABLE_DEBUG 0
 
 template <enum doca_gpu_dev_verbs_exec_scope scope>
 __global__ void put_bw(struct doca_gpu_dev_verbs_qp *qp,
@@ -71,14 +72,20 @@ __global__ void put_bw(struct doca_gpu_dev_verbs_qp *qp,
 #endif
 
 		if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD) {
-			if (doca_gpu_dev_verbs_poll_cq_at<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(doca_gpu_dev_verbs_qp_get_cq_sq(qp), out_ticket) != 0)
-				printf("Error CQE!\n");
+			if (doca_gpu_dev_verbs_poll_cq_at<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(doca_gpu_dev_verbs_qp_get_cq_sq(qp), out_ticket) != 0) {
+				#if ENABLE_DEBUG == 1
+					printf("Error CQE!\n");
+				#endif
+			}
 		}
 
 		if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP) {
-			if (lane_idx == (DOCA_GPUNETIO_VERBS_WARP_SIZE - 1)) {
-				if (doca_gpu_dev_verbs_poll_cq_at(doca_gpu_dev_verbs_qp_get_cq_sq(qp), out_ticket) != 0)
-					printf("Error CQE!\n");
+			if (lane_idx == 0) {
+				if (doca_gpu_dev_verbs_poll_cq_at<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(doca_gpu_dev_verbs_qp_get_cq_sq(qp), out_ticket + DOCA_GPUNETIO_VERBS_WARP_SIZE - 1) != 0) {
+					#if ENABLE_DEBUG == 1
+						printf("Error CQE!\n");
+					#endif
+				}
 			}
 		}
 #if KERNEL_DEBUG_TIMES == 1

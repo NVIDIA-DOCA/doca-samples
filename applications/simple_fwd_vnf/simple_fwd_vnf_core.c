@@ -61,8 +61,8 @@
 
 DOCA_LOG_REGISTER(SIMPLE_FWD_VNF::CORE);
 
-#define VNF_PKT_L2(M) rte_pktmbuf_mtod(M, uint8_t *) /* A marco that points to the start of the data in the mbuf */
-#define VNF_PKT_LEN(M) rte_pktmbuf_pkt_len(M)	     /* A marco that returns the length of the packet */
+#define VNF_PKT_L2(M) rte_pktmbuf_mtod(M, uint8_t *) /* A macro that points to the start of the data in the mbuf */
+#define VNF_PKT_LEN(M) rte_pktmbuf_pkt_len(M)	     /* A macro that returns the length of the packet */
 #define VNF_RX_BURST_SIZE (32)			     /* Burst size of packets to read, RX burst read size */
 
 /* Flag for forcing lcores to stop processing packets, and gracefully terminate the application */

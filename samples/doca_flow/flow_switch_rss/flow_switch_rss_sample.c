@@ -990,7 +990,7 @@ doca_error_t flow_switch_rss(int nb_queues,
 		goto full_cleanup;
 	}
 
-	/* Create Newtowrk to host rss pipes */
+	/* Create Network to host rss pipes */
 	result = create_switch_rss_pipes(doca_flow_port_switch_get(ports[0]), SWITCH_RSS_PIPE_DOM_INGRESS);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create rx rss pipe: %s", doca_error_get_descr(result));

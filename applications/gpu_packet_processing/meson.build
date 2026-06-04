@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -29,13 +29,13 @@ app_srcs = files([
 ])
 
 config_srcs = files([
-	'config_queues/args.c',
-	'config_queues/device.c',
-	'config_queues/flow.c',
-	'config_queues/http_txbuf.c',
-	'config_queues/udp_queues.c',
-	'config_queues/tcp_queues.c',
-	'config_queues/icmp_queues.c',
+	'args.c',
+	'device.c',
+	'queues/flow.c',
+	'queues/http_txbuf.c',
+	'queues/udp_queues.c',
+	'queues/tcp_queues.c',
+	'queues/icmp_queues.c',
 ])
 
 dpdk_srcs = files([
@@ -50,7 +50,7 @@ kernels_srcs = files([
 	'gpu_kernels/http_server.cu',
 ])
 
-app_inc_dirs += include_directories('config_queues')
+app_inc_dirs += include_directories('queues')
 
 # Check if we should skip the compilation of the applications
 if flag_disable_applications_compilation

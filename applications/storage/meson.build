@@ -24,102 +24,101 @@
 
 # Check if we should skip the compilation of the applications
 if flag_disable_applications_compilation
-    subdir_done()
+	subdir_done()
 endif
 
 storage_common_src = [
-    'storage_common/binary_content.cpp',
-    'storage_common/buffer_utils.cpp',
-    'storage_common/control_channel.cpp',
-    'storage_common/control_message.cpp',
-    'storage_common/doca_utils.cpp',
-    'storage_common/file_utils.cpp',
-    'storage_common/io_message.cpp',
-    'storage_common/ip_address.cpp',
+	'storage_common/binary_content.cpp',
+	'storage_common/buffer_utils.cpp',
+	'storage_common/control_channel.cpp',
+	'storage_common/control_message.cpp',
+	'storage_common/doca_utils.cpp',
+	'storage_common/file_utils.cpp',
+	'storage_common/io_message.cpp',
+	'storage_common/ip_address.cpp',
 ]
 
 storage_include_dirs = app_inc_dirs + include_directories('.')
 storage_dependencies = app_dependencies
 
 if is_linux
-    storage_common_src += [
-        'storage_common/posix/os_utils.cpp',
-        'storage_common/posix/tcp_socket.cpp',
-    ]
+	storage_common_src += [
+		'storage_common/posix/os_utils.cpp',
+		'storage_common/posix/tcp_socket.cpp',
+	]
 elif is_windows
-    message('Storage application does not currently support windows')
-    subdir_done()
+	message('Storage application does not currently support windows')
+	subdir_done()
 else
-    message('Storage application does not currently support this unknown operating system')
-    subdir_done()
+	message('Storage application does not currently support this unknown operating system')
+	subdir_done()
 endif
 
 lz4_dev_dep = dependency('liblz4', required : false)
 if lz4_dev_dep.found()
-    apps_common_c_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=1']
-    apps_common_cpp_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=1']
-    storage_dependencies += [lz4_dev_dep]
-    storage_common_src += [
-        'storage_common/lz4_sw_context.cpp',
-    ]
+	apps_common_c_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=1']
+	apps_common_cpp_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=1']
+	storage_dependencies += [lz4_dev_dep]
+	storage_common_src += [
+		'storage_common/lz4_sw_context.cpp',
+	]
 
-    executable(DOCA_PREFIX + APP_NAME + '_gga_offload_sbc_generator',
-               [
-                   'gga_offload_sbc_generator.cpp',
-               ] + storage_common_src,
-               override_options : ['cpp_std=c++17'],
-               c_args : apps_common_cpp_args,
-               cpp_args : apps_common_cpp_args,
-               dependencies : storage_dependencies,
-               include_directories : storage_include_dirs,
-
-    )
+	executable(DOCA_PREFIX + APP_NAME + '_gga_offload_sbc_generator',
+		[
+			'gga_offload_sbc_generator.cpp',
+		] + storage_common_src,
+		override_options : ['cpp_std=c++17'],
+		c_args : apps_common_cpp_args,
+		cpp_args : apps_common_cpp_args,
+		dependencies : storage_dependencies,
+		include_directories : storage_include_dirs,
+	)
 else
-    message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_gga_offload_sbc_generator' + ' - Missing library liblz4')
-    apps_common_c_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=0']
-    apps_common_cpp_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=0']
+	message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_gga_offload_sbc_generator' + ' - Missing library liblz4')
+	apps_common_c_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=0']
+	apps_common_cpp_args += ['-DSTORAGE_APP_LZ4_SW_LIB_AVAILABLE=0']
 endif
 
 executable(DOCA_PREFIX + APP_NAME + '_initiator_comch',
-           [
-               'initiator_comch.cpp',
-           ] + storage_common_src,
-           override_options : ['cpp_std=c++17'],
-           c_args : apps_common_c_args,
-           cpp_args : apps_common_cpp_args,
-           dependencies : storage_dependencies,
-           include_directories : storage_include_dirs,
+	   [
+		'initiator_comch.cpp',
+	   ] + storage_common_src,
+	   override_options : ['cpp_std=c++17'],
+	   c_args : apps_common_c_args,
+	   cpp_args : apps_common_cpp_args,
+	   dependencies : storage_dependencies,
+	   include_directories : storage_include_dirs,
 )
 
 executable(DOCA_PREFIX + APP_NAME + '_comch_to_rdma_zero_copy',
-           [
-               'comch_to_rdma_zero_copy.cpp',
-           ] + storage_common_src,
-           override_options : ['cpp_std=c++17'],
-           c_args : apps_common_c_args,
-           cpp_args : apps_common_cpp_args,
-           dependencies : storage_dependencies,
-           include_directories : storage_include_dirs,
+	   [
+		'comch_to_rdma_zero_copy.cpp',
+	   ] + storage_common_src,
+	   override_options : ['cpp_std=c++17'],
+	   c_args : apps_common_c_args,
+	   cpp_args : apps_common_cpp_args,
+	   dependencies : storage_dependencies,
+	   include_directories : storage_include_dirs,
 )
 
 executable(DOCA_PREFIX + APP_NAME + '_comch_to_rdma_gga_offload',
-           [
-               'comch_to_rdma_gga_offload.cpp',
-           ] + storage_common_src,
-           override_options : ['cpp_std=c++17'],
-           c_args : apps_common_c_args,
-           cpp_args : apps_common_cpp_args,
-           dependencies : storage_dependencies,
-           include_directories : storage_include_dirs,
+	   [
+		'comch_to_rdma_gga_offload.cpp',
+	   ] + storage_common_src,
+	   override_options : ['cpp_std=c++17'],
+	   c_args : apps_common_c_args,
+	   cpp_args : apps_common_cpp_args,
+	   dependencies : storage_dependencies,
+	   include_directories : storage_include_dirs,
 )
 
 executable(DOCA_PREFIX + APP_NAME + '_target_rdma',
-           [
-               'target_rdma.cpp',
-           ] + storage_common_src,
-           override_options : ['cpp_std=c++17'],
-           c_args : apps_common_c_args,
-           cpp_args : apps_common_cpp_args,
-           dependencies : storage_dependencies,
-           include_directories : storage_include_dirs,
+	   [
+		'target_rdma.cpp',
+	   ] + storage_common_src,
+	   override_options : ['cpp_std=c++17'],
+	   c_args : apps_common_c_args,
+	   cpp_args : apps_common_cpp_args,
+	   dependencies : storage_dependencies,
+	   include_directories : storage_include_dirs,
 )

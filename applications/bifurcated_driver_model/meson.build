@@ -24,7 +24,7 @@
 
 app_srcs = files([
 	APP_NAME + '.c',
-        APP_NAME + '_core.c',
+	APP_NAME + '_core.c',
 	common_dir_path + '/dpdk_utils.c',
 	common_dir_path + '/utils.c',
 	common_dir_path + '/flow_parser.c',

@@ -50,6 +50,10 @@ static doca_error_t set_system_level_resources(struct doca_flow_cfg *cfg,
 	if (resource == NULL)
 		return DOCA_SUCCESS;
 
+	/* System level does not support CT counters; do not read nr_ct_counters to avoid
+	 * depending on possibly uninitialized field when resource is stack-allocated without = {0}.
+	 */
+
 	result = doca_flow_cfg_set_nr_counters(cfg, resource->nr_counters);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_counters: %s", doca_error_get_descr(result));
@@ -84,6 +88,14 @@ static doca_error_t set_port_level_resources(struct doca_flow_port_cfg *cfg, str
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set port level counter resource to %d: %s",
 			     resource->nr_counters,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(cfg, DOCA_FLOW_RESOURCE_COUNTER_CT, resource->nr_ct_counters);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level ct counter resource to %d: %s",
+			     resource->nr_ct_counters,
 			     doca_error_get_descr(result));
 		return result;
 	}
@@ -141,6 +153,13 @@ static doca_error_t set_port_level_resources(struct doca_flow_port_cfg *cfg, str
 
 /* Global statistics interval variable */
 static int g_flow_stats_interval = 0;
+
+static bool g_no_wire_to_wire_cfg = false;
+
+static bool get_no_wire_to_wire_cfg(void)
+{
+	return g_no_wire_to_wire_cfg;
+}
 
 /*
  * Entry processing callback
@@ -264,7 +283,7 @@ destroy_cfg:
 }
 
 /*
- * Create DOCA Flow port cfg and fill the fields common between master and rpresentors.
+ * Create DOCA Flow port cfg and fill the fields common between master and representors.
  *
  * @port_id [in]: port ID
  * @actions_mem_size [in]: action memory size
@@ -346,10 +365,18 @@ static doca_error_t create_doca_flow_port(int port_id,
 	}
 
 	/* Set thread window interval to match thread interval internally */
-	result = doca_flow_port_cfg_set_devargs(port_cfg, "th_win_us=0");
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg devargs: %s", doca_error_get_descr(result));
-		goto destroy_port_cfg;
+	if (get_no_wire_to_wire_cfg()) {
+		result = doca_flow_port_cfg_set_devargs(port_cfg, "no_wire_to_wire,th_win_us=0");
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_port_cfg devargs: %s", doca_error_get_descr(result));
+			goto destroy_port_cfg;
+		}
+	} else {
+		result = doca_flow_port_cfg_set_devargs(port_cfg, "th_win_us=0");
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_port_cfg devargs: %s", doca_error_get_descr(result));
+			goto destroy_port_cfg;
+		}
 	}
 
 	if (port_config_cb) {
@@ -382,7 +409,7 @@ destroy_port_cfg:
  *
  * @port_id [in]: port ID
  * @actions_mem_size [in]: action memory size
- * @dev_rep [in]: doca reprtesentor device to attach
+ * @dev_rep [in]: doca representor device to attach
  * @port [out]: port handler on success
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -401,6 +428,14 @@ static doca_error_t create_doca_flow_port_representor(int port_id,
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca_flow_port_cfg: %s", doca_error_get_descr(result));
 		return result;
+	}
+
+	if (get_no_wire_to_wire_cfg()) {
+		result = doca_flow_port_cfg_set_devargs(port_cfg, "no_wire_to_wire");
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_port_cfg devargs: %s", doca_error_get_descr(result));
+			goto destroy_port_cfg;
+		}
 	}
 
 	result = doca_flow_port_cfg_set_dev_rep(port_cfg, dev_rep);
@@ -622,6 +657,54 @@ doca_error_t flow_process_entries(struct doca_flow_port *port, struct entries_st
 	if (status->failure) {
 		DOCA_LOG_ERR("Failed to process %u entries, status is failure", nr_entries);
 		return DOCA_ERROR_BAD_STATE;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t port_no_wire_to_wire_callback(void *param, void *config)
+{
+	(void)config;
+	bool no_wire_to_wire = *(bool *)param;
+
+	g_no_wire_to_wire_cfg = no_wire_to_wire;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Register the no_wire_to_wire hint parameter.
+ *
+ * Without the hint:
+ *  - Ingress-to-egress forwarding must check the direction bit; if the traffic
+ *    is from Rx, an internal (pre-egress) table loops it back to Tx before
+ *    entering the egress domain.
+ *  - Forward-to-port must check the direction bit (pre-wire); if the traffic
+ *    is from Rx, the same hairpin path is used.
+ *
+ * With the hint:
+ *  - Ingress-to-egress forwarding goes directly to egress without pre-egress.
+ *  - Forward-to-port skips the pre-wire check.
+ */
+doca_error_t register_flow_device_no_wire_to_wire_params(void)
+{
+	doca_error_t result;
+	struct doca_argp_param *no_wire_to_wire_param;
+
+	result = doca_argp_param_create(&no_wire_to_wire_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(no_wire_to_wire_param, "nw");
+	doca_argp_param_set_long_name(no_wire_to_wire_param, "no-wire2wire");
+	doca_argp_param_set_description(no_wire_to_wire_param, "Flow without wire to wire forward");
+	doca_argp_param_set_callback(no_wire_to_wire_param, port_no_wire_to_wire_callback);
+	doca_argp_param_set_type(no_wire_to_wire_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(no_wire_to_wire_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register no wire_to_wire argument: %s", doca_error_get_descr(result));
+		doca_argp_param_destroy(no_wire_to_wire_param);
+		return result;
 	}
 
 	return DOCA_SUCCESS;

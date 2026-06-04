@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -25,6 +25,7 @@
 
 #include <errno.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -37,6 +38,11 @@
 #include "telemetry_pci_sample.h"
 
 DOCA_LOG_REGISTER(TELEMETRY_PCI::MAIN);
+
+#define DPN_STR_LEN 5
+#define MAX_4_BIT_VALUE 0xF
+#define MAX_8_BIT_VALUE 0xFF
+#define MAX_16_BIT_VALUE 0xFFFF
 
 /*
  * ARGP Callback - Handle PCI device address parameter
@@ -57,8 +63,8 @@ static doca_error_t pci_address_callback(void *param, void *config)
 			     DOCA_DEVINFO_PCI_ADDR_SIZE - 1);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
-	strncpy(telemetry_pci_sample_cfg->pci_addr, pci_address, len + 1);
-	telemetry_pci_sample_cfg->pci_set = true;
+	strncpy(telemetry_pci_sample_cfg->dev_pci_addr, pci_address, len + 1);
+	telemetry_pci_sample_cfg->dev_pci_addr_set = true;
 	return DOCA_SUCCESS;
 }
 
@@ -69,33 +75,76 @@ static doca_error_t pci_address_callback(void *param, void *config)
  * @config [in/out]: Program configuration context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t dpn_callback(void *param, void *config)
+static doca_error_t target_callback(void *param, void *config)
 {
 	struct telemetry_pci_sample_cfg *telemetry_pci_sample_cfg = (struct telemetry_pci_sample_cfg *)config;
-	char *dpn_str = (char *)param;
-	char *dpn_str_end = dpn_str + strlen(dpn_str);
+	size_t param_len;
+	size_t token_count;
+	uint32_t scanf_out_args[4];
 
-	telemetry_pci_sample_cfg->dpn.depth = strtoul(dpn_str, &dpn_str, 0);
-	if (*dpn_str != '.') {
-		DOCA_LOG_ERR("Invalid DPN value: %s", dpn_str);
-		return DOCA_ERROR_INVALID_VALUE;
+	param_len = strnlen(param, DOCA_DEVINFO_PCI_ADDR_SIZE);
+
+	if (param_len == DPN_STR_LEN) {
+		token_count = sscanf((char const *)param,
+				     "%u.%u.%u",
+				     &scanf_out_args[0],
+				     &scanf_out_args[1],
+				     &scanf_out_args[2]);
+		if (token_count == 3) {
+			if (scanf_out_args[0] > MAX_8_BIT_VALUE || scanf_out_args[1] > MAX_8_BIT_VALUE ||
+			    scanf_out_args[2] > MAX_8_BIT_VALUE) {
+				DOCA_LOG_ERR("Invalid DPN value: \"%s\"", (char const *)param);
+				return DOCA_ERROR_INVALID_VALUE;
+			}
+
+			telemetry_pci_sample_cfg->target_dpn.depth = (uint8_t)scanf_out_args[0];
+			telemetry_pci_sample_cfg->target_dpn.pci_index = (uint8_t)scanf_out_args[1];
+			telemetry_pci_sample_cfg->target_dpn.node = (uint8_t)scanf_out_args[2];
+			return DOCA_SUCCESS;
+		}
 	}
-	++dpn_str; /* skip past the dot */
+	if (param_len == DOCA_DEVINFO_PCI_ADDR_SIZE - 1) {
+		token_count = sscanf((char const *)param,
+				     "%x:%x:%x.%x",
+				     &scanf_out_args[0],
+				     &scanf_out_args[1],
+				     &scanf_out_args[2],
+				     &scanf_out_args[3]);
+		if (token_count == 4) {
+			if (scanf_out_args[0] > MAX_16_BIT_VALUE || scanf_out_args[1] > MAX_8_BIT_VALUE ||
+			    scanf_out_args[2] > MAX_8_BIT_VALUE || scanf_out_args[3] > MAX_4_BIT_VALUE) {
+				DOCA_LOG_ERR("Invalid PCI SBDF value: \"%s\"", (char const *)param);
+				return DOCA_ERROR_INVALID_VALUE;
+			}
 
-	telemetry_pci_sample_cfg->dpn.pci_index = strtoul(dpn_str, &dpn_str, 0);
-	if (*dpn_str != '.') {
-		DOCA_LOG_ERR("Invalid DPN value: %s", dpn_str);
-		return DOCA_ERROR_INVALID_VALUE;
+			strcpy(telemetry_pci_sample_cfg->target_pci_addr, (char const *)param);
+			telemetry_pci_sample_cfg->target_pci_addr_set = true;
+			return DOCA_SUCCESS;
+		}
 	}
-	++dpn_str; /* skip past the dot */
 
-	telemetry_pci_sample_cfg->dpn.node = strtoul(dpn_str, &dpn_str, 0);
-	if (dpn_str != dpn_str_end) {
-		DOCA_LOG_ERR("Invalid DPN value: %s", dpn_str);
-		return DOCA_ERROR_INVALID_VALUE;
+	if (param_len == DOCA_DEVINFO_PCI_BDF_SIZE - 1) {
+		token_count = sscanf((char const *)param,
+				     "%x:%x.%x",
+				     &scanf_out_args[0],
+				     &scanf_out_args[1],
+				     &scanf_out_args[2]);
+		if (token_count == 3) {
+			if (scanf_out_args[0] > MAX_8_BIT_VALUE || scanf_out_args[1] > MAX_8_BIT_VALUE ||
+			    scanf_out_args[2] > MAX_4_BIT_VALUE) {
+				DOCA_LOG_ERR("Invalid PCI BDF value: \"%s\"", (char const *)param);
+				return DOCA_ERROR_INVALID_VALUE;
+			}
+
+			strcpy(telemetry_pci_sample_cfg->target_pci_addr, (char const *)param);
+			telemetry_pci_sample_cfg->target_pci_addr_set = true;
+			return DOCA_SUCCESS;
+		}
 	}
 
-	return DOCA_SUCCESS;
+	DOCA_LOG_ERR("Invalid target value: \"%s\". Expected a DPN (x.x.x), a BDF (xx:xx.x), or a SBDF (xxxx:xx:xx.x)",
+		     (char const *)param);
+	return DOCA_ERROR_INVALID_VALUE;
 }
 
 /*
@@ -107,7 +156,7 @@ static doca_error_t register_telemetry_pci_params(void)
 {
 	doca_error_t result;
 	struct doca_argp_param *pci_param;
-	struct doca_argp_param *dpn_param;
+	struct doca_argp_param *target_param;
 
 	result = doca_argp_param_create(&pci_param);
 	if (result != DOCA_SUCCESS) {
@@ -125,17 +174,18 @@ static doca_error_t register_telemetry_pci_params(void)
 		return result;
 	}
 
-	result = doca_argp_param_create(&dpn_param);
+	result = doca_argp_param_create(&target_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
 		return result;
 	}
-	doca_argp_param_set_short_name(dpn_param, "d");
-	doca_argp_param_set_long_name(dpn_param, "dpn");
-	doca_argp_param_set_description(dpn_param, "Desired DPN (depth.pci_index.node) value");
-	doca_argp_param_set_callback(dpn_param, dpn_callback);
-	doca_argp_param_set_type(dpn_param, DOCA_ARGP_TYPE_STRING);
-	result = doca_argp_register_param(dpn_param);
+	doca_argp_param_set_short_name(target_param, "t");
+	doca_argp_param_set_long_name(target_param, "target");
+	doca_argp_param_set_description(target_param,
+					"Target DPN, BDF, or SBDF. This is the PCI element whose data will be queried");
+	doca_argp_param_set_callback(target_param, target_callback);
+	doca_argp_param_set_type(target_param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(target_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_name(result));
 		return result;
@@ -158,7 +208,7 @@ int main(int argc, char **argv)
 	struct telemetry_pci_sample_cfg sample_cfg = {};
 	struct doca_log_backend *sdk_log;
 
-	sample_cfg.pci_set = false;
+	sample_cfg.target_pci_addr_set = false;
 
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
@@ -193,7 +243,7 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
-	if (!sample_cfg.pci_set) {
+	if (!sample_cfg.dev_pci_addr_set) {
 		DOCA_LOG_ERR("PCI address must be provided");
 		goto argp_cleanup;
 	}

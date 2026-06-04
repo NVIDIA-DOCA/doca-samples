@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -69,6 +69,17 @@ doca_error_t find_supported_device(const char *dev_name,
 doca_error_t find_emulated_device(struct doca_devemu_pci_type *pci_type, const char *vuid, struct doca_dev_rep **rep);
 
 /*
+ * Check device capabilities support.
+ * Check if given number of MSI-X and DB can be configured for the device
+ *
+ * @dev [in]: The device to check
+ * @num_msix [in]: The number of MSI-X to configure
+ * @num_db [in]: The number of DB to configure
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t check_capabilities_support(struct doca_dev *dev, uint16_t num_msix, uint16_t num_db);
+
+/*
  * Sets the PCI configurations of the type and then starts it
  * Once device is hotplugged the configurations will be visible to the Host as part of the
  * PCI configuration space of that device
@@ -117,4 +128,4 @@ const char *hotplug_state_to_string(enum doca_devemu_pci_hotplug_state hotplug_s
 char *hex_dump(const void *data, size_t size);
 #endif // SPDK_APP_DEBUG
 
-#endif // DEVEMU_PCI_COMMON_H_
+#endif // NVME_PCI_COMMON_H_

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -94,6 +94,7 @@ int main(int argc, char **argv)
 		.port_config.nb_ports = SWITCH_TO_WIRE_PORTS,
 		.port_config.nb_queues = 1,
 		.port_config.switch_mode = 1,
+		.port_config.enable_mbuf_metadata = 1,
 	};
 	struct flow_switch_ctx ctx = {0};
 	uint16_t nr_ports;
@@ -119,6 +120,17 @@ int main(int argc, char **argv)
 	result = register_doca_flow_switch_params();
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register flow param: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+	/*
+	 * Enable --no-wire2wire when the test environment has no wire-to-wire
+	 * traffic path (e.g. only Wire-to-VF or VF-to-Wire). This skips
+	 * the pre-egress loopback and pre-wire direction checks, reducing
+	 * latency for ingress-to-egress and forward-to-port forwarding.
+	 */
+	result = register_flow_device_no_wire_to_wire_params();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register no wire_to_wire param: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 

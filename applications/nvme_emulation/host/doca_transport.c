@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -270,7 +270,7 @@ static struct nvmf_doca_pci_dev_poll_group *get_pci_dev_poll_group(struct nvmf_d
 /*
  * Destroys emulation manager
  *
- * @doca_emulation_manager [in]: The emulation anager context
+ * @doca_emulation_manager [in]: The emulation manager context
  * @return: DOCA_SUCCESS on success and other error code otherwise
  */
 static doca_error_t nvmf_doca_destroy_emulation_manager(struct nvmf_doca_emulation_manager *doca_emulation_manager)
@@ -363,9 +363,21 @@ static doca_error_t nvmf_doca_pci_type_create_and_start(struct nvmf_doca_emulati
 		goto destroy_pci_type;
 	}
 
+	ret = check_capabilities_support(doca_emulation_manager->emulation_manager, PCI_TYPE_NUM_MSIX, PCI_TYPE_NUM_DB);
+	if (ret != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed capabilities support check: %s", doca_error_get_name(ret));
+		goto destroy_pci_type;
+	}
+
 	ret = doca_devemu_pci_type_set_num_msix(doca_emulation_manager->pci_type, PCI_TYPE_NUM_MSIX);
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set the number of MSI-X for pci type: %s", doca_error_get_name(ret));
+		goto destroy_pci_type;
+	}
+
+	ret = doca_devemu_pci_type_set_num_db(doca_emulation_manager->pci_type, PCI_TYPE_NUM_DB);
+	if (ret != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set the number of DB for pci type: %s", doca_error_get_name(ret));
 		goto destroy_pci_type;
 	}
 
@@ -501,7 +513,7 @@ static doca_error_t nvmf_doca_create_emulation_manager(struct doca_devinfo *dev_
 	doca_emulation_manager =
 		(struct nvmf_doca_emulation_manager *)calloc(1, sizeof(struct nvmf_doca_emulation_manager));
 	if (doca_emulation_manager == NULL) {
-		DOCA_LOG_INFO("Failed to allocate memory for emultaion manager context");
+		DOCA_LOG_INFO("Failed to allocate memory for emulation manager context");
 		return DOCA_ERROR_NO_MEMORY;
 	}
 
@@ -2503,7 +2515,7 @@ static void nvme_cmd_map_prps(struct nvmf_doca_request *request)
 		}
 
 	} else if (length <= NVME_PAGE_SIZE) {
-		/* Data crosses exactly one memory page boundray, there are two PRP entries */
+		/* Data crosses exactly one memory page boundary, there are two PRP entries */
 		request->host_buffer[1] = nvmf_doca_sq_get_host_buffer(request->doca_sq, prp2);
 		request->dpu_buffer[1] = nvmf_doca_sq_get_dpu_buffer(request->doca_sq);
 		doca_buf_get_head(request->dpu_buffer[1], &data_out_address);
@@ -2684,7 +2696,7 @@ static void begin_nvme_cmd_data_dpu_to_host(struct nvmf_doca_request *request)
 }
 
 /*
- * Copy data back to host onve the buffers have been inilialized and ready
+ * Copy data back to host once the buffers have been initialized and ready
  *
  * @request [in]: The request of NVM read
  */
@@ -2748,7 +2760,7 @@ static void begin_nvme_cmd_data_host_to_dpu(struct nvmf_doca_request *request)
 }
 
 /*
- * Copy data to dpu once the buffers have been inilialized and ready
+ * Copy data to dpu once the buffers have been initialized and ready
  *
  * @request [in]: The request of NVM write
  */

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -127,6 +127,37 @@ doca_error_t find_emulated_device(struct doca_devemu_pci_type *pci_type, const c
 	return DOCA_ERROR_NOT_FOUND;
 }
 
+doca_error_t check_capabilities_support(struct doca_dev *dev, uint16_t num_msix, uint16_t num_db)
+{
+	doca_error_t res;
+	uint16_t max_num_msix;
+	uint16_t max_num_db;
+
+	res = doca_devemu_pci_cap_type_get_max_num_msix(doca_dev_as_devinfo(dev), &max_num_msix);
+	if (res != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get max number of MSI-X: %s", doca_error_get_descr(res));
+		return res;
+	}
+
+	if (num_msix > max_num_msix) {
+		DOCA_LOG_ERR("Number of MSI-X %d is greater than the maximum supported: %d", num_msix, max_num_msix);
+		return DOCA_ERROR_NOT_SUPPORTED;
+	}
+
+	res = doca_devemu_pci_cap_type_get_max_num_db(doca_dev_as_devinfo(dev), &max_num_db);
+	if (res != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get max number of DB: %s", doca_error_get_descr(res));
+		return res;
+	}
+
+	if (num_db > max_num_db) {
+		DOCA_LOG_ERR("Number of DB %d is greater than the maximum supported: %d", num_db, max_num_db);
+		return DOCA_ERROR_NOT_SUPPORTED;
+	}
+
+	return DOCA_SUCCESS;
+}
+
 /*
  * Sets the PCI configurations of the type
  * Once device is hotplugged the configurations will be visible to the Host as part of the
@@ -186,9 +217,21 @@ static doca_error_t set_pci_type_configurations(struct doca_devemu_pci_type *pci
 		return res;
 	}
 
+	res = check_capabilities_support(dev, PCI_TYPE_NUM_MSIX, PCI_TYPE_NUM_DB);
+	if (res != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("capabilities support check failed: %s", doca_error_get_descr(res));
+		return res;
+	}
+
 	res = doca_devemu_pci_type_set_num_msix(pci_type, PCI_TYPE_NUM_MSIX);
 	if (res != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Unable to set number of MSI-X for PCI type: %s", doca_error_get_descr(res));
+		return res;
+	}
+
+	res = doca_devemu_pci_type_set_num_db(pci_type, PCI_TYPE_NUM_DB);
+	if (res != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Unable to set number of DB for PCI type: %s", doca_error_get_descr(res));
 		return res;
 	}
 

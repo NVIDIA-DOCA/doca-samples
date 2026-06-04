@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -512,7 +512,7 @@ static doca_error_t init_hot_upgrade_ports(struct flow_devs_manager devs_manager
  * @nb_queues [in]: number of queues the sample will use.
  * @nb_ports [in]: number of ports the sample will use.
  * @devs_manager [in]: Array of DOCA devices for the switch ports
- * @nb_devs [in]: Amount of eswtich manager dev bundles in the switch_manager_devs array
+ * @nb_devs [in]: Amount of eswitch manager dev bundles in the switch_manager_devs array
  * @state [in]: the operation state of this instance.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */

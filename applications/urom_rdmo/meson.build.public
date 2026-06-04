@@ -31,7 +31,7 @@ app_common_includes = []
 subdir('common')
 
 if is_dpu
-        subdir('dpu')
+	subdir('dpu')
 else
-        subdir('host')
+	subdir('host')
 endif

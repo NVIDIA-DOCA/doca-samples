@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -57,7 +57,7 @@ struct comch_msg_dma_direction {
 	uint64_t file_size;	  /* File size in bytes */
 };
 
-struct comch_msg_dma_export_discriptor {
+struct comch_msg_dma_export_descriptor {
 	enum comch_msg_type type; /* COMCH_MSG_EXPORT_DESCRIPTOR */
 	uint64_t host_addr;	  /* Address of file on host side */
 	size_t export_desc_len;	  /* Length of the exported mmap */
@@ -73,7 +73,7 @@ struct comch_msg {
 	enum comch_msg_type type; /* Indicator of message type */
 	union {
 		struct comch_msg_dma_direction dir_msg;		/* COMCH_MSG_DIRECTION type*/
-		struct comch_msg_dma_export_discriptor exp_msg; /* COMCH_MSG_EXPORT_DESCRIPTOR type */
+		struct comch_msg_dma_export_descriptor exp_msg; /* COMCH_MSG_EXPORT_DESCRIPTOR type */
 		struct comch_msg_dma_status status_msg;		/* COMCH_MSG_STATUS type */
 	};
 };

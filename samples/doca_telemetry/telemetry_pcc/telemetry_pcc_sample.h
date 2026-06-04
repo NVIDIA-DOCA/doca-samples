@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,16 +23,22 @@
  *
  */
 
+#ifndef TELEMETRY_PCC_SAMPLE_H_
+#define TELEMETRY_PCC_SAMPLE_H_
+
 #include <stdbool.h>
 #include <stdlib.h>
 
+#include <doca_dev.h>
 #include <doca_error.h>
 #include <doca_telemetry_pcc.h>
 
 /* Configuration struct */
 struct telemetry_pcc_sample_cfg {
-	char pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /**< PCI address to be used */
-	bool pci_set;				   /**< Indicator of PCI being set */
+	char pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE];     /**< PCI address to be used */
+	char rep_addr[DOCA_DEVINFO_REP_PCI_ADDR_SIZE]; /**< PCI address of representor to be used */
+	bool pci_set;				       /**< Indicator of PCI being set */
+	bool rep_set;				       /**< Indicator of representor PCI being set */
 };
 
 /*
@@ -42,3 +48,5 @@ struct telemetry_pcc_sample_cfg {
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
  */
 doca_error_t telemetry_pcc_sample_run(const struct telemetry_pcc_sample_cfg *cfg);
+
+#endif /* TELEMETRY_PCC_SAMPLE_H_ */

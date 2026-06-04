@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -95,7 +95,7 @@ doca_error_t libs_get(const char *dma_device_name,
 		DOCA_LOG_INFO("\tLibrary %d  -  library path: %s, address: 0x%lx",
 			      i,
 			      doca_apsh_lib_info_get(libs_list[i], DOCA_APSH_LIB_LIBRARY_PATH),
-			      doca_apsh_lib_info_get(libs_list[i], DOCA_APSH_LIB_LOAD_ADRESS));
+			      doca_apsh_lib_info_get(libs_list[i], DOCA_APSH_LIB_LOAD_ADDRESS));
 	}
 
 	/* Cleanup */

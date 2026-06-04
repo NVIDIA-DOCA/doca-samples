@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -56,10 +56,6 @@ sample_srcs = [
 	SAMPLE_NAME + '_sample.c',
 	# Main function for the sample's executable
 	SAMPLE_NAME + '_main.c',
-	# Common code for all DOCA samples
-	'../../common.c',
-	# Common code for all DOCA applications
-	'../../../applications/common/utils.c',
 ]
 
 sample_inc_dirs  = []
@@ -67,8 +63,6 @@ sample_inc_dirs  = []
 sample_inc_dirs += include_directories('../..')
 # Common DOCA logic
 sample_inc_dirs += include_directories('../../..')
-# Common DOCA logic (applications)
-sample_inc_dirs += include_directories('../../../applications/common/')
 
 
 executable('doca_' + SAMPLE_NAME, sample_srcs,

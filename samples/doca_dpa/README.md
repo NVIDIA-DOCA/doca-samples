@@ -1,3 +1,13 @@
+#
+# This software product is a proprietary product of NVIDIA CORPORATION &
+# AFFILIATES (the "Company") and all right, title, and interest in and to the
+# software product, including all associated intellectual property rights, are
+# and shall remain exclusively with the Company.
+#
+# This software product is governed by the End User License Agreement
+# provided with the software product.
+#
+
 # Samples
 
 This section provides DPA sample implementation on top of the BlueField-3 networking platform.
@@ -199,13 +209,13 @@ This sample illustrates how to perform RDMA operations using DOCA Verbs API.
 	- Poll local buffer value to sync with target's Write operation
 	- Increase buffer’s value by 1
 	- Post Send work request
-	- Acknowledgement completion
+	- Acknowledgment completion
 	Target
 	- Wait for completion
 	- Post Receive work request
 	- Increase buffer’s value from what it received by 1
 	- Post Write work request
-	- Acknowledgement 2 completions
+	- Acknowledgment 2 completions
 - In the last operation, initiator verify that the end value in the buffer is as expected. Both initiator and target updating sync event to threshold value to sync host.
 - Printing sample data summary.
 - Destroying all resources.

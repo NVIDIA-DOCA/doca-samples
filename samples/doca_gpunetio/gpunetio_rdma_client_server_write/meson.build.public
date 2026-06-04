@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -88,7 +88,7 @@ sample_dependencies += gpu_dependencies
 
 gpunetio_device_path = doca_gpu_dep.get_variable(pkgconfig : 'libdir')
 dependency_gpunetio_device = declare_dependency(compile_args : '-Wl,--whole-archive',
-                                                link_args : ['-L' + gpunetio_device_path , '-ldoca_gpunetio_device'],)
+						link_args : ['-L' + gpunetio_device_path , '-ldoca_gpunetio_device'],)
 sample_dependencies += dependency_gpunetio_device
 
 sample_srcs = [

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -510,7 +510,7 @@ public:
 	doca_error_t execute_control_command(worker_control_command &cmd);
 
 	/*
-	 * Query if thr worker thread is still running
+	 * Query if the worker thread is still running
 	 *
 	 * @return: true the worker is still running
 	 */
@@ -542,7 +542,7 @@ public:
 
 private:
 	/* Hot data - Data which is used on the hot path. This data is positioned first and aligned to cache lines to
-	 * maximise performance
+	 * maximize performance
 	 */
 	hot_data *m_hot_data = nullptr;
 	/**************************************************************************************************************

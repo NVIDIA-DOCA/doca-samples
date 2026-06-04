@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -86,11 +86,14 @@ app_list = [
 	'storage',
 	'stream_receive_perf',
 	'switch',
+	'telemetry',
 	'time_sync',
 	'upf_accel',
 	'urom_rdmo',
 	'urom_ucc',
+	'vblk_pci_dev',
 	'virtiofs',
+	'vnet_pci_dev',
 	'yara_inspection',
 ]
 
@@ -98,6 +101,8 @@ enabled_apps = []
 skipped_apps  = []
 
 foreach APP_NAME : app_list
+	message('Processing the application ' + APP_NAME)
+
 	# Apps could be missing if publicly exported a subset of our code
 	if not fs.is_dir(APP_NAME)
 		continue
@@ -106,6 +111,7 @@ foreach APP_NAME : app_list
 	# Clear the list between each application
 	app_install_excludes = ['OWNERS']
 	app_install_excludes += []
+	app_install_exclude_directories = []
 	app_has_sources = true
 	is_internal_app = false
 
@@ -143,6 +149,14 @@ foreach APP_NAME : app_list
 	if is_internal_app and flag_official_doca_build
 		warning('Skipping processing of internal DOCA Application - @0@.'.format(APP_NAME))
 		set_variable('app_' + APP_NAME + '_disable_reason', 'Internal application')
+		continue
+	endif
+
+	# DevEmu PCI reference apps ship in official DPU samples only (not host SKUs)
+	if flag_official_doca_build and is_host and (APP_NAME == 'vblk_pci_dev' or APP_NAME == 'vnet_pci_dev')
+		warning('Skipping processing of DPU-only DOCA Application on host - @0@.'.format(APP_NAME))
+		set_variable('app_' + APP_NAME + '_disable_reason', 'DPU-only application on host official build')
+		skipped_apps += APP_NAME
 		continue
 	endif
 
@@ -213,7 +227,7 @@ foreach APP_NAME : app_list
 	endif
 
 	# Install the entire application directory (with some excluded files)
-	install_subdir(APP_NAME, install_dir : doca_applications_dir, exclude_files : app_install_excludes)
+	install_subdir(APP_NAME, install_dir : doca_applications_dir, exclude_files : app_install_excludes, exclude_directories : app_install_exclude_directories)
 
 	# Stop if there is nothing more to do
 	if not app_has_sources

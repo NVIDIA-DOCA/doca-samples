@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -24,10 +24,16 @@
  */
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __linux__
 #include <unistd.h>
+#else /* __linux__ */
+#include <io.h>
+#endif /* __linux__ */
 #include <json-c/json.h>
 
 #include <doca_argp.h>
@@ -38,6 +44,13 @@
 #include "telemetry_diag_sample.h"
 
 DOCA_LOG_REGISTER(TELEMETRY_DIAG::MAIN);
+
+#ifndef __linux__
+#ifndef F_OK
+#define F_OK 0
+#endif
+#define access _access
+#endif /* __linux__ */
 
 #define MAX_DESCRIPTION_LEN 256
 #define DATA_ID_STRING_MAX_LEN 20
@@ -83,7 +96,7 @@ static doca_error_t pci_address_callback(void *param, void *config)
 {
 	struct telemetry_diag_sample_cfg *telemetry_diag_sample_cfg = (struct telemetry_diag_sample_cfg *)config;
 	char *pci_address = (char *)param;
-	int len;
+	size_t len;
 
 	len = strnlen(pci_address, DOCA_DEVINFO_PCI_ADDR_SIZE);
 	if (len >= DOCA_DEVINFO_PCI_ADDR_SIZE) {
@@ -107,7 +120,7 @@ static doca_error_t data_ids_callback(void *param, void *config)
 {
 	struct telemetry_diag_sample_cfg *telemetry_diag_sample_cfg = (struct telemetry_diag_sample_cfg *)config;
 	char *json_path = (char *)param;
-	int len;
+	size_t len;
 
 	len = strnlen(json_path, TELEMETRY_DIAG_SAMPLE_MAX_FILE_NAME);
 	if (len == TELEMETRY_DIAG_SAMPLE_MAX_FILE_NAME) {
@@ -135,7 +148,7 @@ static doca_error_t output_callback(void *param, void *config)
 {
 	struct telemetry_diag_sample_cfg *telemetry_diag_sample_cfg = (struct telemetry_diag_sample_cfg *)config;
 	char *file = (char *)param;
-	int len;
+	size_t len;
 
 	len = strnlen(file, TELEMETRY_DIAG_SAMPLE_MAX_FILE_NAME);
 	if (len == TELEMETRY_DIAG_SAMPLE_MAX_FILE_NAME) {
@@ -191,7 +204,7 @@ static doca_error_t log_max_num_samples_callback(void *param, void *config)
 	struct telemetry_diag_sample_cfg *telemetry_diag_sample_cfg = (struct telemetry_diag_sample_cfg *)config;
 	uint32_t *log_max_num_samples = (uint32_t *)param;
 
-	if (*log_max_num_samples > __UINT8_MAX__) {
+	if (*log_max_num_samples > UINT8_MAX) {
 		DOCA_LOG_ERR("Parameter log_max_num_samples larger than uint8. log_max_num_samples=%d",
 			     *log_max_num_samples);
 		return DOCA_ERROR_INVALID_VALUE;
@@ -212,7 +225,7 @@ static doca_error_t max_num_samples_per_read_callback(void *param, void *config)
 	struct telemetry_diag_sample_cfg *telemetry_diag_sample_cfg = (struct telemetry_diag_sample_cfg *)config;
 	uint32_t *max_num_samples_per_read = (uint32_t *)param;
 
-	if (*max_num_samples_per_read > __UINT8_MAX__) {
+	if (*max_num_samples_per_read > UINT8_MAX) {
 		DOCA_LOG_ERR("Parameter max_num_samples_per_read larger than uint8. max_num_samples_per_read=%d",
 			     *max_num_samples_per_read);
 		return DOCA_ERROR_INVALID_VALUE;
@@ -315,7 +328,7 @@ static doca_error_t example_json_file_callback(void *param, void *config)
 {
 	struct telemetry_diag_sample_cfg *telemetry_diag_sample_cfg = (struct telemetry_diag_sample_cfg *)config;
 	char *file = (char *)param;
-	int len;
+	size_t len;
 
 	len = strnlen(file, TELEMETRY_DIAG_SAMPLE_MAX_FILE_NAME);
 	if (len == TELEMETRY_DIAG_SAMPLE_MAX_FILE_NAME) {
@@ -603,31 +616,31 @@ All other flags are ignored");
  */
 static doca_error_t parse_json_data_ids(struct telemetry_diag_sample_cfg *cfg,
 					struct json_object *json_data_ids,
-					int array_len)
+					size_t array_len)
 {
 	struct json_object *json_entry, *json_data_id, *json_name;
 	const char *data_id_str;
 
 	// Loop through each element in the "data-ids" array
-	for (int i = 0; i < array_len; i++) {
+	for (size_t i = 0; i < array_len; i++) {
 		json_entry = json_object_array_get_idx(json_data_ids, i); // Get JSON object for the
 									  // current entry.
 
 		// Extract "data_id" field, handle error if it's missing or invalid
 		if (!json_object_object_get_ex(json_entry, JSON_DATA_ID_KEY, &json_data_id)) {
-			DOCA_LOG_ERR("Missing or invalid \"%s\" field in data_ids JSON entry %d", JSON_DATA_ID_KEY, i);
+			DOCA_LOG_ERR("Missing or invalid \"%s\" field in data_ids JSON entry %zu", JSON_DATA_ID_KEY, i);
 			return DOCA_ERROR_INVALID_VALUE;
 		}
 
 		// Extract "name" field, handle error if it's missing or invalid
 		if (!json_object_object_get_ex(json_entry, JSON_NAME_KEY, &json_name)) {
-			DOCA_LOG_ERR("Missing or invalid \"%s\" field in data_ids JSON entry %d", JSON_NAME_KEY, i);
+			DOCA_LOG_ERR("Missing or invalid \"%s\" field in data_ids JSON entry %zu", JSON_NAME_KEY, i);
 			return DOCA_ERROR_INVALID_VALUE;
 		}
 
 		// Parse the "data_id" field as a hexadecimal string and convert it to uint64_t
 		data_id_str = json_object_get_string(json_data_id);
-		if (sscanf(data_id_str, "%lx", &cfg->data_ids_struct[i].data_id) != 1) {
+		if (data_id_str == NULL || sscanf(data_id_str, "%" SCNx64, &cfg->data_ids_struct[i].data_id) != 1) {
 			DOCA_LOG_ERR("Failed to parse data_id (expected hexadecimal number): '%s'", data_id_str);
 			return DOCA_ERROR_INVALID_VALUE;
 		}
@@ -637,7 +650,7 @@ static doca_error_t parse_json_data_ids(struct telemetry_diag_sample_cfg *cfg,
 	}
 
 	// Store the total number of parsed data-ids
-	cfg->num_data_ids = array_len;
+	cfg->num_data_ids = (uint32_t)array_len;
 
 	return DOCA_SUCCESS;
 }
@@ -708,7 +721,7 @@ static doca_error_t parse_and_read_data_ids_json_file(struct telemetry_diag_samp
 	size_t file_length;
 	char *json_data = NULL;
 	struct json_object *parsed_json, *json_data_ids;
-	int array_len = 0;
+	size_t array_len = 0;
 	doca_error_t result;
 
 	json_fp = fopen(cfg->data_ids_input_path, "r");
@@ -855,7 +868,8 @@ static doca_error_t create_default_json(struct telemetry_diag_sample_cfg *cfg, s
 	}
 
 	for (uint32_t i = 0; i < cfg->num_data_ids; i++) {
-		if (snprintf(data_id_string, sizeof(data_id_string), "0x%lx", cfg->data_ids_struct[i].data_id) < 0) {
+		if (snprintf(data_id_string, sizeof(data_id_string), "0x%" PRIx64, cfg->data_ids_struct[i].data_id) <
+		    0) {
 			DOCA_LOG_ERR("Failed to create data_id_string");
 			goto put_data_id_array;
 		}
@@ -977,7 +991,7 @@ int main(int argc, char **argv)
 {
 	doca_error_t result;
 	int exit_status = EXIT_FAILURE;
-	struct telemetry_diag_sample_cfg sample_cfg = {};
+	struct telemetry_diag_sample_cfg sample_cfg = {0};
 	struct doca_log_backend *sdk_log;
 
 	/* Register a logger backend */

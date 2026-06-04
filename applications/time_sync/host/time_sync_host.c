@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -51,13 +51,6 @@ static doca_error_t time_sync_dpu_cap_check(struct doca_devinfo *devinfo)
 	result = doca_comch_cap_client_is_supported(devinfo);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Comch client is not supported on device: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	/* Host requires associated NIC to have real time clock enabled */
-	result = doca_clock_cap_nic_real_time_is_supported(devinfo);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Real time clock is not supported on device: %s", doca_error_get_descr(result));
 		return result;
 	}
 

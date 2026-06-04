@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -23,10 +23,15 @@
 #
 
 samples = [
-	'telemetry_adp_retx',
 	'telemetry_diag',
-	'telemetry_pcc',
-	'telemetry_dpa',
-	'telemetry_pci',
-	'telemetry_phy',
 ]
+
+if not is_compiler_msvc
+	samples += [
+		'telemetry_adp_retx',
+		'telemetry_pcc',
+		'telemetry_dpa',
+		'telemetry_pci',
+		'telemetry_phy',
+	]
+endif

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -27,6 +27,7 @@
 #define _PSP_GW_FLOWS_H_
 
 #include <netinet/in.h>
+#include <set>
 #include <string>
 #include <unordered_map>
 
@@ -38,6 +39,14 @@
 #include "psp_gw_config.h"
 
 static const int NUM_OF_PSP_SYNDROMES = 2; // ICV Fail, Bad Trailer
+
+/**
+ * doca_flow meta.u32[] indices for IPv6 VIP lookup IDs.
+ * Ingress: [2]=src_vip_id, [3]=dst_vip_id (inner packet after decap).
+ * Egress:  [2]=dst_vip_id, [3]=src_vip_id (inner packet before encap).
+ */
+#define META_IDX_VIP_ID_0 2
+#define META_IDX_VIP_ID_1 3
 
 struct psp_gw_app_config;
 
@@ -77,7 +86,7 @@ struct psp_session_t {
 	uint64_t vc;		/* Virtualization cookie, if enabled */
 
 	doca_flow_pipe_entry *encap_encrypt_entry; /* DOCA Flow encap & encrypt entry */
-	doca_flow_pipe_entry *acl_entry;	   /* DOC AFlow ACL entry */
+	doca_flow_pipe_entry *acl_entry;	   /* DOCA Flow ACL entry */
 	uint64_t pkt_count_egress;		   /* Count of encap_encrypt_entry */
 	uint64_t pkt_count_ingress;		   /* Count of acl_entry */
 };
@@ -85,6 +94,10 @@ struct psp_session_t {
 /**
  * @brief The entity which owns all the doca flow shared
  *        resources and flow pipes (but not sessions).
+ *
+ * Thread safety: the mutating methods (add_encrypt_entry,
+ * add_ingress_acl_entry) are not internally synchronized.
+ * The caller must serialize all calls that add flow entries.
  */
 class PSP_GatewayFlows {
 public:
@@ -127,6 +140,8 @@ public:
 	 * The caller is responsible for negotiating the SPI and key, and
 	 * assigning a unique crypto_id.
 	 *
+	 * @note Not thread-safe; the caller must hold a lock.
+	 *
 	 * @session [in]: the session for which an encryption flow should be created
 	 * @encrypt_key [in]: the encryption key to use for the session
 	 * @queue_id [in]: the queue ID for to add the entry to
@@ -138,19 +153,13 @@ public:
 	 * @brief Adds an ingress ACL entry for the given session to accept
 	 *        the combination of src_vip and SPI.
 	 *
+	 * @note Not thread-safe; the caller must hold a lock.
+	 *
 	 * @session [in]: the session for which an ingress ACL flow should be created
 	 * @queue_id [in]: the queue ID for to add the entry to
 	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
 	 */
 	doca_error_t add_ingress_acl_entry(psp_session_t *session, uint16_t queue_id);
-
-	/**
-	 * @brief Removes the indicated flow entry.
-	 *
-	 * @session [in]: The session whose associated flows should be removed
-	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
-	 */
-	doca_error_t remove_encrypt_entry(psp_session_t *session);
 
 	/**
 	 * @brief Shows flow counters for pipes which have a fixed number of entries,
@@ -315,7 +324,6 @@ private:
 	 * @action_descs [in]: packet modify action descriptions
 	 * @monitor [in]: packet monitoring actions
 	 * @fwd [in]: packet forwarding actions
-	 * @usr_ctx [in]: user context
 	 * @entry [out]: the newly created flow entry
 	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
 	 */
@@ -330,7 +338,6 @@ private:
 					      const struct doca_flow_action_descs *action_descs,
 					      const struct doca_flow_monitor *monitor,
 					      const struct doca_flow_fwd *fwd,
-					      void *usr_ctx,
 					      struct doca_flow_pipe_entry **entry);
 
 	/**
@@ -452,12 +459,28 @@ private:
 	doca_error_t egress_dst_ip6_pipe_create(void);
 
 	/**
+	 * Creates the HASH pipe matching ipv6 source address in egress domain.
+	 * Sets meta.u32[META_IDX_VIP_ID_1] to src_vip_id, forwards to match_egress_acl_ipv6_pipe.
+	 *
+	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+	 */
+	doca_error_t egress_src_ip6_pipe_create(void);
+
+	/**
 	 * Creates the pipe that match ipv6 source address in ingress domain
 	 * Write on meta data the hash of the destination address
 	 *
 	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
 	 */
 	doca_error_t ingress_src_ip6_pipe_create(void);
+
+	/**
+	 * Creates the HASH pipe matching ipv6 destination address in ingress domain.
+	 * Sets meta.u32[META_IDX_VIP_ID_1] to dst_vip_id, forwards to match_ingress_acl_ipv6_pipe.
+	 *
+	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+	 */
+	doca_error_t ingress_dst_ip6_pipe_create(void);
 
 	/**
 	 * Add entry to ipv6 destination address pipe
@@ -469,6 +492,16 @@ private:
 	doca_error_t add_egress_dst_ip6_entry(psp_session_t *session, int dst_vip_id);
 
 	/**
+	 * Add entry to ipv6 source address pipe (egress).
+	 * Sets meta.u32[META_IDX_VIP_ID_1] to src_vip_id.
+	 *
+	 * @session [in]: the session whose src_vip is used
+	 * @src_vip_id [in]: the integer ID to store in meta.u32[META_IDX_VIP_ID_1]
+	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+	 */
+	doca_error_t add_egress_src_ip6_entry(psp_session_t *session, int src_vip_id);
+
+	/**
 	 * Add entry to ipv6 source address pipe
 	 *
 	 * @session [in]: the session for which an decryption flow should be created
@@ -476,6 +509,16 @@ private:
 	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
 	 */
 	doca_error_t add_ingress_src_ip6_entry(psp_session_t *session, int dst_vip_id);
+
+	/**
+	 * Add entry to ipv6 destination address pipe (ingress).
+	 * Sets meta.u32[META_IDX_VIP_ID_1] to dst_vip_id.
+	 *
+	 * @session [in]: the session whose src_vip (local) is used as packet dst
+	 * @dst_vip_id [in]: the integer ID to store in meta.u32[META_IDX_VIP_ID_1]
+	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+	 */
+	doca_error_t add_ingress_dst_ip6_entry(psp_session_t *session, int dst_vip_id);
 
 	/**
 	 * Creates the pipe to mark and randomly sample outgoing packets
@@ -522,9 +565,17 @@ private:
 	doca_error_t fwd_to_rss_pipe_create(void);
 
 	/**
-	 * @brief Creates a pipe whose only purpose is to relay
-	 * flows from the egress domain to the secure-egress domain,
-	 * and to relay injected ARP responses back to the VF.
+	 * @brief Creates a control pipe to handle egress miss traffic:
+	 * PF-originated packets to wire, injected ARP/NS replies to VF.
+	 *
+	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+	 */
+	doca_error_t egress_miss_pipe_create(void);
+
+	/**
+	 * @brief Creates the egress root pipe (BASIC) for the hot path:
+	 * VF IPv4/IPv6 traffic to PSP encrypt pipeline.
+	 * Miss goes to egress_miss_pipe.
 	 *
 	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
 	 */
@@ -587,9 +638,19 @@ private:
 	doca_flow_pipe *egress_sampling_pipe{};
 	doca_flow_pipe *syndrome_stats_pipe{};
 	doca_flow_pipe *egress_root_pipe{};
+	doca_flow_pipe *egress_miss_pipe{};
 	doca_flow_pipe *fwd_to_rss_pipe{};
 	doca_flow_pipe *egress_dst_ip6_pipe{};
+	doca_flow_pipe *egress_src_ip6_pipe{};
 	doca_flow_pipe *ingress_src_ip6_pipe{};
+	doca_flow_pipe *ingress_dst_ip6_pipe{};
+
+	// VIP IDs that already have an entry in the corresponding ip6 pipe.
+	// Multiple sessions may share the same VIP; the set prevents duplicate pipe entries.
+	std::set<int> egress_dst_ip6_vip_ids;
+	std::set<int> egress_src_ip6_vip_ids;
+	std::set<int> ingress_src_ip6_vip_ids;
+	std::set<int> ingress_dst_ip6_vip_ids;
 
 	// static pipe entries
 	doca_flow_pipe_entry *ipv4_rss_entry{};
@@ -608,20 +669,27 @@ private:
 	doca_flow_pipe_entry *default_egr_acl_ipv6_entry{};
 	doca_flow_pipe_entry *default_egr_acl_ipv4_match_entry{};
 	doca_flow_pipe_entry *default_egr_acl_ipv6_match_entry{};
-	doca_flow_pipe_entry *ingress_ipv4_clasify_entry{};
-	doca_flow_pipe_entry *ingress_ipv6_clasify_entry{};
+	doca_flow_pipe_entry *ingress_ipv4_classify_entry{};
+	doca_flow_pipe_entry *ingress_ipv6_classify_entry{};
 	doca_flow_pipe_entry *miss_to_egress_ipv6_icmp_entry{};
 	doca_flow_pipe_entry *vf_arp_to_rss{};
 	doca_flow_pipe_entry *vf_ns_to_rss{};
 	doca_flow_pipe_entry *vf_arp_to_wire{};
-	doca_flow_pipe_entry *uplink_arp_to_vf{};
+	doca_flow_pipe_entry *uplink_arp_entry{};
 	doca_flow_pipe_entry *vf_ns_to_wire{};
-	doca_flow_pipe_entry *uplink_ns_to_vf{};
+	doca_flow_pipe_entry *uplink_ns_entry{};
+	doca_flow_pipe_entry *uplink_na_entry{};
+	doca_flow_pipe_entry *uplink_lldp_to_kernel{};
 	doca_flow_pipe_entry *syndrome_stats_entries[NUM_OF_PSP_SYNDROMES]{};
+	doca_flow_pipe_entry *egress_pf_to_wire{};
 	doca_flow_pipe_entry *egress_root_arp_entry{};
 	doca_flow_pipe_entry *egress_root_ns_entry{};
+	doca_flow_pipe_entry *uplink_icmp_to_kernel{};
+	doca_flow_pipe_entry *egress_default_drop{};
 	doca_flow_pipe_entry *egress_root_ipv4_entry{};
 	doca_flow_pipe_entry *egress_root_ipv6_entry{};
+	doca_flow_pipe_entry *egress_reinject_ipv4_entry{};
+	doca_flow_pipe_entry *egress_reinject_ipv6_entry{};
 	doca_flow_pipe_entry *root_default_drop{};
 	doca_flow_pipe_entry *fwd_ipv4_rss_entry{};
 	doca_flow_pipe_entry *fwd_ipv6_rss_entry{};

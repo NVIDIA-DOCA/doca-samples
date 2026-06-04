@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -29,6 +29,8 @@ samples = [
 	'devemu_pci_device_stateful_region',
 	'devemu_pci_device_msix',
 	'devemu_pci_device_dma',
+	'devemu_pci_device_tlp_handler',
+	'devemu_pci_device_tlp_bridge_handler',
 	'devemu_vfs_device_hotplug_unplug',
 	'devemu_vfs_list_devices',
 ]

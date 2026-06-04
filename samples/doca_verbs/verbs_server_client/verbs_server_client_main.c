@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -405,7 +405,7 @@ int main(int argc, char **argv)
 	cfg.buf_size = DEFAULT_BUFFER_SIZE;
 	cfg.rdma_oper_type = VERBS_SAMPLE_OPERATION_SEND_RECEIVE;
 	cfg.qp_type = DOCA_VERBS_QP_TYPE_RC;
-	cfg.iter_num = DEFAULT_NUM_OF_INTERATIONS;
+	cfg.iter_num = DEFAULT_NUM_OF_ITERATIONS;
 	cfg.send_burst = false;
 
 	/* Register a logger backend */

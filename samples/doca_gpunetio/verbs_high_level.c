@@ -99,6 +99,7 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 			      struct doca_dev *dev,
 			      struct doca_verbs_context *verbs_ctx,
 			      uint32_t ncqes,
+			      uint8_t cq_collapsed,
 			      void **gpu_umem_dev_ptr,
 			      struct doca_umem **gpu_umem,
 			      struct doca_uar *external_uar,
@@ -156,7 +157,7 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 
 	status_cuda = cudaMemcpy((*gpu_umem_dev_ptr), (void *)(cq_ring_haddr), external_umem_size, cudaMemcpyDefault);
 	if (status_cuda != cudaSuccess) {
-		DOCA_LOG_ERR("Failed to cudaMempy gpu cq cq ring buffer ret %d", status_cuda);
+		DOCA_LOG_ERR("Failed to cudaMempy gpu cq ring buffer ret %d", status_cuda);
 		goto destroy_resources;
 	}
 
@@ -189,8 +190,16 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 
 	status = doca_verbs_cq_attr_set_cq_overrun(verbs_cq_attr, 1);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca verbs cq size");
+		DOCA_LOG_ERR("Failed to set doca verbs cq overrun");
 		goto destroy_resources;
+	}
+
+	if (cq_collapsed == 1) {
+		status = doca_verbs_cq_attr_set_cq_collapsed(verbs_cq_attr, 1);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca verbs cq collapsed");
+			goto destroy_resources;
+		}
 	}
 
 	if (external_uar != NULL) {
@@ -278,7 +287,6 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 			      enum doca_gpu_dev_verbs_nic_handler nic_handler,
 			      bool set_core_direct,
 			      uint8_t recv_inline,
-			      uint8_t send_dbr_mode_ext,
 			      struct doca_verbs_qp **verbs_qp)
 {
 	doca_error_t status = DOCA_SUCCESS, tmp_status = DOCA_SUCCESS;
@@ -286,7 +294,6 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 	struct doca_verbs_qp *new_qp = NULL;
 	uint32_t external_umem_size = 0;
 	size_t dbr_umem_align_sz = ROUND_UP(VERBS_TEST_DBR_SIZE, get_page_size());
-	uint8_t send_dbr_mode_ext_ = send_dbr_mode_ext;
 	struct doca_verbs_device_attr *verbs_device_attr;
 
 	status = doca_verbs_query_device(verbs_ctx, &verbs_device_attr);
@@ -303,13 +310,15 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 		}
 	}
 
-	if (send_dbr_mode_ext_ == 1) {
+	if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_NO_DBR ||
+	    nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
 		status = doca_verbs_device_attr_get_is_send_dbr_mode_supported(verbs_device_attr,
 									       DOCA_VERBS_QP_SEND_DBR_MODE_NO_DBR_EXT);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Send DBR mode ext not supported by this device: %s",
-				     doca_error_get_descr(status));
-			send_dbr_mode_ext_ = 0;
+			DOCA_LOG_ERR(
+				"Send DBR mode ext not supported by this device: %s. NO_DBR mode can't be used here.",
+				doca_error_get_descr(status));
+			return status;
 		}
 	}
 
@@ -471,7 +480,8 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 	if (set_core_direct)
 		doca_verbs_qp_init_attr_set_core_direct_master(verbs_qp_init_attr, 1);
 
-	if (send_dbr_mode_ext_ == 1) {
+	if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_NO_DBR ||
+	    nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
 		status = doca_verbs_qp_init_attr_set_send_dbr_mode(verbs_qp_init_attr,
 								   DOCA_VERBS_QP_SEND_DBR_MODE_NO_DBR_EXT);
 		if (status != DOCA_SUCCESS) {
@@ -561,6 +571,7 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->sq_nwqe,
+				   qp_init_attr->cq_collapsed,
 				   &qp_->cq_sq_umem_gpu_ptr,
 				   &qp_->cq_sq_umem,
 				   NULL,
@@ -577,6 +588,7 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->rq_nwqe,
+				   qp_init_attr->cq_collapsed,
 				   &qp_->cq_rq_umem_gpu_ptr,
 				   &qp_->cq_rq_umem,
 				   NULL,
@@ -611,7 +623,6 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 			   qp_->nic_handler,
 			   false,
 			   qp_init_attr->recv_inline,
-			   qp_init_attr->send_dbr_mode_ext,
 			   &qp_->qp);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca verbs qp");
@@ -783,6 +794,7 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->sq_nwqe,
+				   qp_init_attr->cq_collapsed,
 				   &qpg_->qp_main.cq_sq_umem_gpu_ptr,
 				   &qpg_->qp_main.cq_sq_umem,
 				   qpg_->qp_main.external_uar,
@@ -799,6 +811,7 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->rq_nwqe,
+				   qp_init_attr->cq_collapsed,
 				   &qpg_->qp_main.cq_rq_umem_gpu_ptr,
 				   &qpg_->qp_main.cq_rq_umem,
 				   qpg_->qp_main.external_uar,
@@ -827,7 +840,6 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 			   qpg_->qp_main.nic_handler,
 			   false,
 			   0, // recv_inline does not apply here
-			   qp_init_attr->send_dbr_mode_ext,
 			   &qpg_->qp_main.qp);
 
 	if (status != DOCA_SUCCESS) {
@@ -860,6 +872,7 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->sq_nwqe,
+				   qp_init_attr->cq_collapsed,
 				   &qpg_->qp_companion.cq_sq_umem_gpu_ptr,
 				   &qpg_->qp_companion.cq_sq_umem,
 				   qpg_->qp_companion.external_uar,
@@ -876,6 +889,7 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->rq_nwqe,
+				   qp_init_attr->cq_collapsed,
 				   &qpg_->qp_companion.cq_rq_umem_gpu_ptr,
 				   &qpg_->qp_companion.cq_rq_umem,
 				   qpg_->qp_companion.external_uar,
@@ -904,7 +918,6 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 			   qpg_->qp_companion.nic_handler,
 			   true,
 			   0, // recv_inline does not apply
-			   qp_init_attr->send_dbr_mode_ext,
 			   &qpg_->qp_companion.qp);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca verbs qp");

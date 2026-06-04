@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -165,6 +165,7 @@ struct psp_gw_app_config {
 	uint32_t ingress_sample_meta_indicator; /* Value to assign pkt_meta when sampling incoming packets */
 	uint32_t egress_sample_meta_indicator;	/* Value to assign pkt_meta when sampling outgoing packets */
 	uint32_t return_to_vf_indicator; /* Value to assign pkt_meta when receiving outgoing ARP and NS packets */
+	uint32_t egress_reinject_meta_indicator; /* Value to assign pkt_meta when reinjecting outgoing packets */
 
 	bool create_tunnels_at_startup;	    /* Create PSP tunnels at startup vs. on demand */
 	bool show_sampled_packets;	    /* Display to the console any packets marked for sampling */
@@ -176,6 +177,8 @@ struct psp_gw_app_config {
 	uint16_t print_perf_flags;	    /* Print performance information to the console */
 	enum doca_flow_l3_type outer;	    /* Indicate outer tunnel IP type */
 	enum doca_flow_l3_type inner;	    /* Indicate inner tunnel IP type */
+	std::string local_pip;		    /* Optional local physical IP; when set, overrides device-detected address
+					       (e.g. to avoid link-local for IPv6) */
 	struct rte_hash *ip6_table;	    /* Hash table with ipv6 addresses */
 	enum psp_gw_mode mode;		    /* Indicate PSP mode */
 	std::vector<entries_status> status; /* Status variable for entries process per queue */

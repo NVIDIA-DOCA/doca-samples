@@ -1,0 +1,87 @@
+#
+# Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+number_of_ports: 3
+min_supported_nic:
+  - ConnectX-8
+mode_args:
+  - switch
+fw_config:
+  FLEX_PARSER_PROFILE:
+    - 4
+  PROG_PARSE_GRAPH:
+    - 1
+ports_description:
+  port_0: doca_dev
+  port_1: doca_rep_dev
+  port_2: doca_rep_dev
+description: "This sample demonstrates SRv6 SRH push (first segment) and decrement (on intermediate segment),
+              control pipe classification, and IPv6 DIP copy from the active segment.
+              Topology: PF0 plus two representors (VF0, VF1). All test packets ingress on PF0.
+              Plain IPv6 is forwarded to VF0 after PUSH; SRH with segments_left > 0 is decremented and
+              forwarded to VF1; SRH with segments_left == 0 is delivered to RSS for software POP.
+              SRH layers use nh=6 so the next protocol after the routing header is TCP (required for valid Scapy builds).
+              Sample Command Line: ./build/doca_flow_srv6 -- -l 60 -r pci/08:00.0,pf0sf[0-1]"
+use_cases:
+  - name: "Flow SRv6 PUSH - plain IPv6 (no SRH)"
+    args: ""
+    stages:
+      - name: "Plain IPv6 on PF0 -> PUSH SRH + copy SID to DIP -> VF0"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IPv6(dst="fc00::1", nh=6)/TCP(dport=80)/Raw(load=b'Plain IPv6 - should get SRH pushed')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether()/IPv6(dst="2001:db8:1::1", nh=43)/IPv6ExtHdrRouting(type=4, nh=6, segleft=1, addresses=["2001:db8:1::1","2001:db8:2::2"])/TCP(dport=80)/Raw(load=b'Plain IPv6 - should get SRH pushed')
+  - name: "Flow SRv6 DECREMENT - SRH with segments_left > 0"
+    args: ""
+    stages:
+      - name: "IPv6 with SRH segments_left=1 on PF0 -> decrement + copy SID to DIP -> VF1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IPv6(dst="2001:db8:a::7", nh=43)/IPv6ExtHdrRouting(type=4, nh=6, segleft=1, addresses=["2001:db8:a::1","2001:db8:b::2"])/TCP(dport=80)/Raw(load=b'SRH seg_left=1 - decrement and copy')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 2
+                packets:
+                  - Ether()/IPv6(dst="2001:db8:a::1", nh=43)/IPv6ExtHdrRouting(type=4, nh=6, segleft=0, addresses=["2001:db8:a::1","2001:db8:b::2"])/TCP(dport=80)/Raw(load=b'SRH seg_left=1 - decrement and copy')
+  - name: "Flow SRv6 POP - SRH with segments_left == 0 (RSS)"
+    args: ""
+    stages:
+      - name: "IPv6 with SRH segments_left=0 on PF0 -> RSS to SW for POP"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IPv6(dst="2001:db8:c::3", nh=43)/IPv6ExtHdrRouting(type=4, nh=6, segleft=0, addresses=["2001:db8:c::3"])/TCP(dport=80)/Raw(load=b'SRH seg_left=0 - pop SRH')
+        # POP is performed in software after RSS delivery to the application.
+        # No packet emerges on a representor port, so expected_packets is empty.
+        validation:
+          - type: packet
+            expected_packets: []

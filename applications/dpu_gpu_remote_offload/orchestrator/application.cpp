@@ -263,7 +263,7 @@ remote_offload::control::message_id application::process_control_message(std::ve
 									   m_cfg.max_message_length,
 									   m_control_channel->get_connection());
 		} catch (remote_offload::runtime_error const &ex) {
-			DOCA_LOG_ERR("Failed to to prepare comch consumer and producer: %s : %s",
+			DOCA_LOG_ERR("Failed to prepare comch consumer and producer: %s : %s",
 				     doca_error_get_name(ex.get_doca_error()),
 				     ex.what());
 			return recv_message_id;

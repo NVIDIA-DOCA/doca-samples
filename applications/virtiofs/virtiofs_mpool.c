@@ -23,11 +23,13 @@
  *
  */
 
+#include <dirent.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <stdio.h>
 
 #include <doca_mmap.h>
 #include <doca_log.h>
@@ -36,6 +38,10 @@
 #include <virtiofs_mpool.h>
 #include <virtiofs_core.h>
 #include <virtiofs_utils.h>
+
+#ifndef MAP_HUGE_SHIFT
+#define MAP_HUGE_SHIFT 26
+#endif
 
 DOCA_LOG_REGISTER(VIRTIOFS_MPOOL);
 
@@ -50,38 +56,50 @@ struct virtiofs_mpool {
 };
 
 #define HUGE_PAGE_SIZE_2MB (2UL * 1024 * 1024)
+#define KB_TO_BYTES 1024UL
+#define HUGEPAGES_SYSFS_DIR "/sys/kernel/mm/hugepages"
 
-/* Get the huge page size from the system */
-static size_t virtiofs_mpool_get_hugepage_size(void)
+static inline int virtiofs_mpool_is_power_of_two(size_t x)
 {
-	FILE *fp;
-	char line[256];
-	size_t hugepage_size = HUGE_PAGE_SIZE_2MB; /* Default to 2MB */
-
-	fp = fopen("/proc/meminfo", "r");
-	if (fp == NULL) {
-		DOCA_LOG_WARN("Failed to open /proc/meminfo, using default 2MB hugepage");
-		return hugepage_size;
-	}
-
-	while (fgets(line, sizeof(line), fp)) {
-		if (strncmp(line, "Hugepagesize:", 13) == 0) {
-			unsigned long size_kb;
-			if (sscanf(line, "Hugepagesize: %lu kB", &size_kb) == 1) {
-				if (size_kb > 0)
-					hugepage_size = size_kb * 1024;
-				break;
-			}
-		}
-	}
-
-	fclose(fp);
-	return hugepage_size;
+	if (x == 0)
+		return 0;
+	return (x & (x - 1)) == 0;
 }
 
-static size_t virtiofs_mpool_hp_align(size_t size)
+static size_t virtiofs_mpool_get_hugepage_size(void)
 {
-	size_t hugepage_size = virtiofs_mpool_get_hugepage_size();
+	DIR *dir;
+	struct dirent *entry;
+	size_t smallest_hugepage_size = 0;
+	unsigned long size_kb;
+	if (access(HUGEPAGES_SYSFS_DIR "/hugepages-2048kB", F_OK) == 0)
+		return HUGE_PAGE_SIZE_2MB;
+
+	dir = opendir(HUGEPAGES_SYSFS_DIR);
+	if (dir == NULL) {
+		DOCA_LOG_WARN("Failed to open %s, using default 2MB hugepage", HUGEPAGES_SYSFS_DIR);
+		return HUGE_PAGE_SIZE_2MB;
+	}
+
+	while ((entry = readdir(dir)) != NULL) {
+		if (sscanf(entry->d_name, "hugepages-%lukB", &size_kb) == 1) {
+			if (size_kb > SIZE_MAX / KB_TO_BYTES)
+				continue;
+			size_t size = size_kb * KB_TO_BYTES;
+			if (!virtiofs_mpool_is_power_of_two(size))
+				continue;
+			if (smallest_hugepage_size == 0 || size < smallest_hugepage_size)
+				smallest_hugepage_size = size;
+		}
+	}
+	if (closedir(dir) != 0)
+		DOCA_LOG_DBG("Failed to close %s directory", HUGEPAGES_SYSFS_DIR);
+
+	return smallest_hugepage_size > 0 ? smallest_hugepage_size : HUGE_PAGE_SIZE_2MB;
+}
+
+static size_t virtiofs_mpool_hp_align(size_t size, size_t hugepage_size)
+{
 	size_t mask;
 
 	/* Check for potential overflow in (size + hugepage_size) */
@@ -96,15 +114,24 @@ static size_t virtiofs_mpool_hp_align(size_t size)
 
 static void *virtiofs_mpool_hp_malloc(size_t size, size_t *aligned_size)
 {
-	*aligned_size = virtiofs_mpool_hp_align(size);
+	size_t hugepage_size = virtiofs_mpool_get_hugepage_size();
+	unsigned int flags;
+
+	*aligned_size = virtiofs_mpool_hp_align(size, hugepage_size);
 	if (*aligned_size == 0) {
 		DOCA_LOG_ERR("Failed to align size for hugepage allocation");
 		return NULL;
 	}
 
-	void *ptr = mmap(NULL, *aligned_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+	/* Encode hugepage order (log2) into mmap flags per MAP_HUGE_* convention */
+	flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB |
+		((unsigned int)__builtin_ctzl(hugepage_size) << MAP_HUGE_SHIFT);
+
+	void *ptr = mmap(NULL, *aligned_size, PROT_READ | PROT_WRITE, flags, -1, 0);
 	if (ptr == MAP_FAILED) {
-		DOCA_LOG_ERR("Failed to allocate huge page memory, err: %s", strerror(errno));
+		DOCA_LOG_ERR("Failed to allocate huge page memory with hugepage_size=%zu, err: %s",
+			     hugepage_size,
+			     strerror(errno));
 		return NULL;
 	}
 
@@ -202,7 +229,7 @@ dev_rm:
 mmap_destroy:
 	doca_mmap_destroy(mpool->mmap);
 memory_free:
-	virtiofs_mpool_hp_free(mpool->memory, mpool->attr.num_bufs * mpool->attr.buf_size);
+	virtiofs_mpool_hp_free(mpool->memory, mpool->aligned_size);
 mpool_free:
 	free(mpool);
 out:
@@ -262,7 +289,7 @@ struct virtiofs_mpool_set *virtiofs_mpool_set_create(struct virtiofs_mpool_set_a
 	qsort(attr->mpools, attr->num_pools, sizeof(struct virtiofs_mpool_attr), virtiofs_mpool_attr_compare);
 
 	for (i = 0; i < set->num_pools; i++) {
-		if (attr->mpools[i].buf_size & (attr->mpools[i].buf_size - 1)) {
+		if (!virtiofs_mpool_is_power_of_two(attr->mpools[i].buf_size)) {
 			DOCA_LOG_ERR("Invalid buffer size %lu: must be power of 2", attr->mpools[i].buf_size);
 			goto mpools_destroy;
 		}

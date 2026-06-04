@@ -41,46 +41,71 @@ if not available_libs.contains('argp') and not flag_disable_samples_compilation
 	subdir_done()
 endif
 
+if is_windows
+	windows = import('windows')
+endif
+
 base_sample_includes = [doca_root_dir_include] + doca_base_include
 
 # Common definitions before we enter the main loop
 public_file_suffix = '.public'
+public_windows_file_suffix = '.public.windows'
 regular_meson_file_name = 'meson.build'
+regular_meson_options_file_name = 'meson_options.txt'
 public_meson_file_name = regular_meson_file_name + public_file_suffix
+public_windows_meson_file_name = regular_meson_file_name + public_windows_file_suffix
+public_windows_meson_options_file_name = regular_meson_options_file_name + public_windows_file_suffix
 
 samples_dir_include = include_directories('.')
 base_sample_includes += [samples_dir_include]
 samples_common_srcs = files(['common.c'])
+
+# CTSD compat version override via meson option -Dctsd_compat_version=<n>.
+# The define is scoped to sample targets only (via ctsd_compat_args).
+ctsd_compat_args = []
+_ctsd_ver = get_option('ctsd_compat_version')
+if _ctsd_ver != ''
+	ctsd_compat_args += '-DDOCA_CTSD_COMPAT_VERSION=DOCA_CTSD_COMPAT_VERSION_' + _ctsd_ver
+endif
 samples_common_install = files(['common.c', 'common.h', 'common_utils.h'])
 install_data(sources : samples_common_install, install_dir : '/'.join([doca_samples_dir]))
 
+# will be used to determine whether a sample should be built on current OS or not
+linux_only = true
+any_os = false
+
 # Place here the list of subdirs per DOCA library - Alphabetical order
-sample_libs = [
-	'aes_gcm',
-	'apsh',
-	'comch',
-	'compress',
-	'common',
-	'devemu',
-	'dma',
-	'dpa',
-	'erasure_coding',
-	'eth',
-	'flow',
-	'gpunetio',
-	'mgmt',
-	'rdma',
-	'verbs',
-	'rmax',
-	'sha',
-	'telemetry',
-	'telemetry_exporter',
-	'urom',
-]
+sample_libs = {
+	'aes_gcm': linux_only,
+	'apsh': linux_only,
+	'comch': linux_only,
+	'compress': linux_only,
+	'common': linux_only,
+	'devemu': linux_only,
+	'dma': linux_only,
+	'dpa': linux_only,
+	'erasure_coding': linux_only,
+	'eth': linux_only,
+	'flow': linux_only,
+	'gpunetio': linux_only,
+	'mgmt': linux_only,
+	'rdma': linux_only,
+	'verbs': linux_only,
+	'rmax': linux_only,
+	'sha': linux_only,
+	'telemetry': any_os,
+	'telemetry_exporter': linux_only,
+	'urom': linux_only,
+}
 
 # Build the unified list of libraries (allows for developer-friendly printing)
 sample_libraries = []
-foreach LIB_BASE_NAME : sample_libs
+foreach LIB_BASE_NAME, LINUX_ONLY : sample_libs
+	if LINUX_ONLY and not is_linux
+		warning('Skipping compilation of DOCA Samples on non-linux machine for library - @0@.'.format(DOCA_PREFIX + LIB_BASE_NAME))
+		continue
+	endif
+
 	if not sample_continue_even_if_missing and not available_libs.contains(LIB_BASE_NAME)
 		warning('Skipping compilation of DOCA Samples for library - @0@.'.format(DOCA_PREFIX + LIB_BASE_NAME))
 		continue
@@ -94,12 +119,12 @@ if sample_libraries.length() == 0
 	subdir_done()
 endif
 
-# This is added temporarily to build doca_data_direct sample and will be removed after July 2025 release
-sample_libraries += ['data_direct']
-
 # Go over all the modules and their samples
 foreach LIB_BASE_NAME : sample_libraries
 	LIB_NAME = DOCA_PREFIX + LIB_BASE_NAME
+
+	message('Processing the samples of ' + LIB_NAME)
+
 	skip_all_samples_compilation = false
 	# Dependency management (common to all samples for this lib)
 	sample_lib_depends = []
@@ -115,10 +140,18 @@ foreach LIB_BASE_NAME : sample_libraries
 	sample_lib_includes = base_sample_includes
 	sample_lib_link_with = []
 	# sample's main declare locally the sample function declaration
-	sample_lib_cargs = [
-		'-Wno-missing-declarations',
-		'-Wno-missing-prototypes',
-	]
+	sample_lib_cargs = []
+	if is_compiler_gcc or is_compiler_clang
+		sample_lib_cargs += [
+			'-Wno-missing-declarations',
+			'-Wno-missing-prototypes',
+		]
+	elif is_compiler_msvc
+		sample_lib_cargs += [
+			# ignore use of deprecated functions
+			'/wd4996',
+		]
+	endif
 	sample_lib_override_options = []
 	sample_commons = samples_common_srcs
 	# Additional files to be installed on top of the plain common sources
@@ -171,11 +204,8 @@ foreach LIB_BASE_NAME : sample_libraries
 
 	# Was it disabled? (By itself or due to dependencies)
 	if not sample_continue_even_if_missing and is_variable('sample_lib_' + LIB_NAME + '_disable_reason')
-		# This is added temporarily to build doca_data_direct sample and will be removed after July 2025 release
-		if (LIB_NAME != 'doca_data_direct')
-			warning('Skipping compilation of DOCA Samples for library - @0@ - @1@.'.format(LIB_NAME, get_variable('sample_lib_' + LIB_NAME + '_disable_reason')))
-			continue
-		endif
+		warning('Skipping compilation of DOCA Samples for library - @0@ - @1@.'.format(LIB_NAME, get_variable('sample_lib_' + LIB_NAME + '_disable_reason')))
+		continue
 	endif
 
 	# Pass on the new information
@@ -206,8 +236,13 @@ foreach LIB_BASE_NAME : sample_libraries
 	endif
 
 	foreach SAMPLE_NAME : samples
+		# Not all samples depend on common.c, so reinitialize the sample_commons for every sample
+		sample_commons = samples_common_srcs
 		sample_dir = LIB_NAME + '/' + SAMPLE_NAME
 		sample_subsystems = []
+
+		# add link to all libraries that the tool compiles with
+		sample_dll_files_to_copy = []
 
 		# # Should we have a sub-systems?
 		if fs.is_dir('/'.join(sample_dir, 'subsystems'))
@@ -222,6 +257,7 @@ foreach LIB_BASE_NAME : sample_libraries
 			sample_subsystem_dir = '/'.join(sample_dir, SUBSYSTEM_NAME)
 			# Sources used by the sample directly
 			sample_srcs = []
+			sample_windows_srcs = []
 			sample_excludes = [] # Could be files used for internal DPA compilation for instance
 			sample_dir_excludes = [UNIT_TEST_DIR] # All testing files should be under the unit test directory
 			# Vars used to compile the sample's main
@@ -229,7 +265,7 @@ foreach LIB_BASE_NAME : sample_libraries
 			sample_main_includes = []
 			sample_depends = sample_lib_depends
 			sample_link_with = sample_lib_link_with
-			sample_cargs = base_c_args + sample_lib_cargs
+			sample_cargs = base_c_args + sample_lib_cargs + ctsd_compat_args
 			sample_cppargs = base_cpp_args
 			if flag_enable_fault_injection
 				sample_cargs += ['-include', 'priv_extern_doca_malloc.h']
@@ -251,6 +287,8 @@ foreach LIB_BASE_NAME : sample_libraries
 
 			sample_excludes += regular_meson_file_name
 			sample_excludes += public_meson_file_name
+			sample_excludes += public_windows_meson_file_name
+			sample_excludes += public_windows_meson_options_file_name
 			sample_excludes += 'OWNERS'
 
 			# Descend into the sample itself
@@ -263,7 +301,11 @@ foreach LIB_BASE_NAME : sample_libraries
 				exclude_files : sample_excludes,
 				exclude_directories : sample_dir_excludes)
 			# Install public meson
-			public_meson_path = '/'.join([sample_subsystem_dir, public_meson_file_name])
+			if is_linux
+				public_meson_path = '/'.join([sample_subsystem_dir, public_meson_file_name])
+			else
+				public_meson_path = '/'.join([sample_subsystem_dir, public_windows_meson_file_name])
+			endif
 			install_data(sources : public_meson_path, rename : [regular_meson_file_name], install_dir : src_install_dir)
 
 			# Check if we should skip the compilation of the sample
@@ -271,8 +313,39 @@ foreach LIB_BASE_NAME : sample_libraries
 				continue
 			endif
 
+			if is_compiler_msvc
+				dll_files_to_depend_on = []
+
+				# add link to all libraries that the tool compiles with
+				foreach sample_dep : sample_lib_doca_depends
+					# Disclaimer: Won't work for granular source build
+					if available_libs.contains(sample_dep)
+						dll_files_to_depend_on += [get_variable('doca_' + sample_dep + '_runtime_lib')]
+						sample_dll_files_to_copy += [libs_build_dir + 'libdoca_' + sample_dep + '.dll']
+					endif
+				endforeach
+
+				# Windows linking require that the dlls shall be copied to the executables directory.
+				copy_dlls_target = custom_target(SAMPLE_NAME + '_sample_copy_dlls',
+					depends: [dll_files_to_depend_on],
+					input: [dll_files_to_depend_on],
+					output: 'fake_sample_helper',
+					command: [python_exe, windows_copy_dlls, meson.current_build_dir()] + [sample_dll_files_to_copy],
+					build_by_default : true)
+
+				copy_dlls_dependency = declare_dependency(sources: copy_dlls_target)
+				sample_depends += copy_dlls_dependency
+
+				# add resource file
+				if is_backend_ninja
+					sample_windows_srcs += [windows.compile_resources(files(['../configs/profiles/windows/resources.rc']))]
+				endif
+
+				unset_variable('dll_files_to_depend_on')
+			endif
+
 			# Compile the sample
-			executable(executable_name, sample_main_srcs + sample_srcs + sample_lib_srcs + sample_commons,
+			executable(executable_name, sample_main_srcs + sample_srcs + sample_lib_srcs + sample_commons + sample_windows_srcs,
 					c_args : sample_cargs,
 					cuda_args : gpu_compile_flags,
 					dependencies : sample_depends,
@@ -300,6 +373,8 @@ if not is_variable('sample_srcs')
 	warning('Could NOT find any samples for any of the libraries...')
 	subdir_done()
 endif
+unset_variable('sample_dll_files_to_copy')
+unset_variable('sample_windows_srcs')
 unset_variable('sample_srcs')
 unset_variable('sample_excludes')
 unset_variable('sample_main_srcs')
@@ -310,3 +385,6 @@ unset_variable('sample_cargs')
 unset_variable('sample_cppargs')
 unset_variable('src_install_dir')
 unset_variable('sample_dir')
+
+unset_variable('linux_only')
+unset_variable('any_os')

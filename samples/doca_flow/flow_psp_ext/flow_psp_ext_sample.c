@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,6 +23,7 @@
  *
  */
 
+#include <assert.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -306,7 +307,7 @@ static doca_error_t create_pipe(struct doca_flow_port *port, struct entries_stat
 
 	/*
 	 * Set DW6-8 new values - changeable per entry.
-	 * The `actions.base.tun.type = DOCA_FLOW_TUN_PSP` selectore isn't needed for PSP extension fields.
+	 * The `actions.base.tun.type = DOCA_FLOW_TUN_PSP` selector isn't needed for PSP extension fields.
 	 */
 	actions.psp_ext.dw6 = 0xffffffff;
 	actions.psp_ext.dw7 = 0xffffffff;

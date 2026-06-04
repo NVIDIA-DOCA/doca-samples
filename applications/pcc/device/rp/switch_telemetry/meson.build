@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -29,7 +29,7 @@ app_dev_name = 'pcc_rp_switch_telemetry_app'
 
 app_device_sources = files([
 	'rp_switch_telemetry_dev_main.c',
-        'algo/telem_template.c',
+	'algo/telem_template.c',
 ])
 
 app_rp_switch_telemetry_device_include_flags = app_common_device_include_flags + app_rp_device_include_flags

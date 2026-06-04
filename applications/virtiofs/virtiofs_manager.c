@@ -245,7 +245,7 @@ doca_error_t virtiofs_managers_create(struct virtiofs_resources *ctx)
 	}
 
 	for (idx = 0; idx < num_devices; idx++) {
-		result = doca_devemu_vfs_is_default_vfs_type_supported(devinfo_list[idx], &is_supported);
+		result = doca_devemu_vfs_cap_is_default_vfs_type_supported(devinfo_list[idx], &is_supported);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query Virtio FS support for doca_devinfo, err: %s",
 				     doca_error_get_name(result));

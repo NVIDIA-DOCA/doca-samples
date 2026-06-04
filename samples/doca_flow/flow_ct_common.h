@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -39,6 +39,7 @@ extern "C" {
 
 #define DUP_FILTER_CONN_NUM 512
 #define CT_DEFAULT_QUEUE_DEPTH 512
+#define CT_DEFAULT_MAX_ZONE_SESSIONS (8192 * 1024)
 
 /*
  * Register the command line parameters for the DOCA Flow CT samples
@@ -53,12 +54,8 @@ doca_error_t flow_ct_register_params(void);
  * @flags [in]: Flow CT flags
  * @nb_arm_queues [in]: Number of threads the sample will use
  * @nb_ctrl_queues [in]: Number of control queues
- * @nb_user_actions [in]: Number of CT user actions
+ * @actions_mem_size [in]: Size of the actions memory
  * @entry_finalize_cb [in]: Entry finalize callback
- * @nb_ipv4_sessions [in]: Number of IPv4 sessions
- * @nb_ipv6_sessions [in]: Number of IPv6 sessions
- * @nb_asym_counter [in]: Number of asymmetric counters
- * @dup_filter_sz [in]: Number of connections to cache in duplication filter
  * @o_match_inner [in]: Origin match inner
  * @o_zone_mask [in]: Origin zone mask
  * @o_modify_mask [in]: Origin modify mask
@@ -70,12 +67,8 @@ doca_error_t flow_ct_register_params(void);
 doca_error_t init_doca_flow_ct(uint32_t flags,
 			       uint32_t nb_arm_queues,
 			       uint32_t nb_ctrl_queues,
-			       uint32_t nb_user_actions,
+			       uint32_t actions_mem_size,
 			       doca_flow_ct_entry_finalize_cb entry_finalize_cb,
-			       uint32_t nb_ipv4_sessions,
-			       uint32_t nb_ipv6_sessions,
-			       uint32_t nb_asym_counter,
-			       uint32_t dup_filter_sz,
 			       bool o_match_inner,
 			       struct doca_flow_meta *o_zone_mask,
 			       struct doca_flow_ct_meta *o_modify_mask,
@@ -153,8 +146,8 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
  * @hash_reply [in]: Reply hash
  * @actions_origin [in]: Origin actions
  * @actions_reply [in]: Reply actions
- * @fwd_handle_origin [in]: Origin fwd handle
- * @fwd_handle_reply [in]: Reply fwd handle
+ * @fwd_origin [in]: Origin fwd (NULL for no changeable fwd)
+ * @fwd_reply [in]: Reply fwd (NULL for no changeable fwd)
  * @timeout_s [in]: Timeout
  * @ct_status [in]: CT status
  * @entry [in]: CT entry
@@ -171,8 +164,8 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 				  uint32_t hash_reply,
 				  const struct doca_flow_ct_actions *actions_origin,
 				  const struct doca_flow_ct_actions *actions_reply,
-				  uint32_t fwd_handle_origin,
-				  uint32_t fwd_handle_reply,
+				  const struct doca_flow_fwd *fwd_origin,
+				  const struct doca_flow_fwd *fwd_reply,
 				  uint32_t timeout_s,
 				  struct entries_status *ct_status,
 				  struct doca_flow_pipe_entry **entry);

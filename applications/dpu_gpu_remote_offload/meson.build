@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -24,79 +24,79 @@
 
 # Check if we should skip the compilation of the applications
 if flag_disable_applications_compilation
-    subdir_done()
+	subdir_done()
 endif
 
 remote_offload_common_src = [
-    'remote_offload_common/control_message.cpp',
-    'remote_offload_common/doca_utils.cpp',
+	'remote_offload_common/control_message.cpp',
+	'remote_offload_common/doca_utils.cpp',
 ]
 
 dpu_gpu_remote_offload_include_dirs = app_inc_dirs + include_directories('.')
 dpu_gpu_remote_offload_dependencies = app_dependencies
 
 if is_linux
-    remote_offload_common_src += [
-        'remote_offload_common/posix/os_utils.cpp',
-        'remote_offload_common/posix/tcp_socket.cpp',
-    ]
+	remote_offload_common_src += [
+		'remote_offload_common/posix/os_utils.cpp',
+		'remote_offload_common/posix/tcp_socket.cpp',
+	]
 elif is_windows
-    message('DPU GPU remote_offload does not currently support windows')
-    subdir_done()
+	message('DPU GPU remote_offload does not currently support windows')
+	subdir_done()
 else
-    message('DPU GPU remote_offload does not currently support this unknown operating system')
-    subdir_done()
+	message('DPU GPU remote_offload does not currently support this unknown operating system')
+	subdir_done()
 endif
 
 # GPUNetIO-based samples & apps are only supported in amalgamation build
 if not flag_amalgamation_build
-    set_variable('app_' + APP_NAME + '_disable_reason', 'Internal compilation isn\'t supported for this App outside of amalgamation mode')
-    subdir_done()
+	set_variable('app_' + APP_NAME + '_disable_reason', 'Internal compilation isn\'t supported for this App outside of amalgamation mode')
+	subdir_done()
 endif
 
 executable(DOCA_PREFIX + APP_NAME + '_client',
-           [
-               'client/main.cpp',
-               'client/application.cpp',
-               'client/thread.cpp',
-           ] + remote_offload_common_src,
-           override_options : ['cpp_std=c++17'],
-           c_args : apps_common_c_args,
-           cpp_args : apps_common_cpp_args,
-           dependencies : dpu_gpu_remote_offload_dependencies,
-           include_directories : dpu_gpu_remote_offload_include_dirs,
+	   [
+	       'client/main.cpp',
+	       'client/application.cpp',
+	       'client/thread.cpp',
+	   ] + remote_offload_common_src,
+	   override_options : ['cpp_std=c++17'],
+	   c_args : apps_common_c_args,
+	   cpp_args : apps_common_cpp_args,
+	   dependencies : dpu_gpu_remote_offload_dependencies,
+	   include_directories : dpu_gpu_remote_offload_include_dirs,
 )
 gpunetio_dev_dep = dependency('doca-gpunetio', required : false)
 if gpunetio_dev_dep.found()
 
-    executable(DOCA_PREFIX + APP_NAME + '_orchestrator',
-               [
-                   'orchestrator/application.cpp',
-                   'orchestrator/comch_control_channel.cpp',
-                   'orchestrator/comch_datapath.cpp',
-                   'orchestrator/main.cpp',
-                   'orchestrator/gpu_processing.cu'
-               ] + remote_offload_common_src,
-               override_options : ['cpp_std=c++17'],
-               c_args : apps_common_c_args,
-               cpp_args : apps_common_cpp_args,
-               dependencies : [gpunetio_device_dep, dpu_gpu_remote_offload_dependencies],
-               include_directories : dpu_gpu_remote_offload_include_dirs,
-    )
+	executable(DOCA_PREFIX + APP_NAME + '_orchestrator',
+	       [
+		   'orchestrator/application.cpp',
+		   'orchestrator/comch_control_channel.cpp',
+		   'orchestrator/comch_datapath.cpp',
+		   'orchestrator/main.cpp',
+		   'orchestrator/gpu_processing.cu'
+	       ] + remote_offload_common_src,
+	       override_options : ['cpp_std=c++17'],
+	       c_args : apps_common_c_args,
+	       cpp_args : apps_common_cpp_args,
+	       dependencies : [gpunetio_device_dep, dpu_gpu_remote_offload_dependencies],
+	       include_directories : dpu_gpu_remote_offload_include_dirs,
+	)
 else
-    message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_orchestrator' + ' - Missing library doca-gpunetio')
+	message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_orchestrator' + ' - Missing library doca-gpunetio')
 endif
 
 executable(DOCA_PREFIX + APP_NAME + '_server',
-           [
-               'server/application.cpp',
-               'server/comch_control_channel.cpp',
-               'server/main.cpp',
-               'server/thread.cpp',
-           ] + remote_offload_common_src,
-           override_options : ['cpp_std=c++17'],
-           c_args : apps_common_c_args,
-           cpp_args : apps_common_cpp_args,
-           dependencies : dpu_gpu_remote_offload_dependencies,
-           include_directories : dpu_gpu_remote_offload_include_dirs,
+	   [
+	       'server/application.cpp',
+	       'server/comch_control_channel.cpp',
+	       'server/main.cpp',
+	       'server/thread.cpp',
+	   ] + remote_offload_common_src,
+	   override_options : ['cpp_std=c++17'],
+	   c_args : apps_common_c_args,
+	   cpp_args : apps_common_cpp_args,
+	   dependencies : dpu_gpu_remote_offload_dependencies,
+	   include_directories : dpu_gpu_remote_offload_include_dirs,
 )

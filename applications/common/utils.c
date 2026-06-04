@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,12 +23,21 @@
  *
  */
 
-#include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif /* _WIN32 */
+
+// if C11/C++11 and above
+#if __STDC_VERSION__ >= 201112L || __cplusplus >= 201103L
 #include <stdnoreturn.h>
+
+#define __NO_RETURN noreturn
+#else
+#define __NO_RETURN
+#endif
 
 #include <doca_version.h>
 #include <doca_log.h>
@@ -38,7 +47,7 @@
 
 DOCA_LOG_REGISTER(UTILS);
 
-noreturn doca_error_t sdk_version_callback(void *param, void *doca_config)
+__NO_RETURN doca_error_t sdk_version_callback(void *param, void *doca_config)
 {
 	(void)(param);
 	(void)(doca_config);

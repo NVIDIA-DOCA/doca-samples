@@ -24,7 +24,7 @@
 
 sample_srcs = files([
 	SAMPLE_NAME + '_sample.c',
-        apps_common_path + '/dpdk_utils.c',
+	apps_common_path + '/dpdk_utils.c',
 ])
 
 sample_main_srcs = files([

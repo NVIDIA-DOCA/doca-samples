@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -169,6 +169,8 @@ void doca_pcc_dev_user_algo(doca_pcc_dev_algo_ctxt_t *algo_ctxt,
 		break;
 	}
 	default: {
+		/* @note The default internal algo is only supported for algo slot DOCA_PCC_DEV_ALGO_SLOT_INTERNAL and
+		 * is initiated on DOCA_PCC_DEV_ALGO_INDEX_INTERNAL. */
 		doca_pcc_dev_default_internal_algo(algo_ctxt, event, attr, results);
 		break;
 	}

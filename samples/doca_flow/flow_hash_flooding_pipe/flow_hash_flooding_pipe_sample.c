@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -513,8 +513,9 @@ static doca_error_t add_egress_root_pipe_entries(struct doca_flow_pipe *pipe, st
 	for (entry_index = 0; entry_index < NB_EGRESS_ROOT; entry_index++) {
 		match.outer.ip4.src_ip = BE_IPV4_ADDR(1, 2, 3, 4 + entry_index);
 
-		fwd.type = DOCA_FLOW_FWD_PIPE;
-		fwd.next_pipe = egress_hash_pipes[entry_index];
+		fwd.type = DOCA_FLOW_FWD_HASH_PIPE;
+		fwd.hash_pipe.pipe = egress_hash_pipes[entry_index];
+		fwd.hash_pipe.algorithm = DOCA_FLOW_PIPE_HASH_MAP_ALGORITHM_FLOODING;
 
 		result = doca_flow_pipe_basic_add_entry(0,
 							pipe,

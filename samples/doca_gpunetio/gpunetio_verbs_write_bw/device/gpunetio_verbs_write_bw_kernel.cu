@@ -35,6 +35,8 @@
 
 DOCA_LOG_REGISTER(GPU_VERBS_SAMPLE::CUDA_KERNEL);
 
+#define ENABLE_DEBUG 0
+
 __global__ void write_bw(struct doca_gpu_dev_verbs_qp *qp,
 			 uint32_t num_iters,
 			 uint32_t size,
@@ -46,10 +48,10 @@ __global__ void write_bw(struct doca_gpu_dev_verbs_qp *qp,
 	uint64_t wqe_idx = 0;
 	struct doca_gpu_dev_verbs_wqe *wqe_ptr;
 
+	wqe_idx = (doca_gpu_dev_verbs_atomic_read<uint64_t, DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(&qp->sq_wqe_pi) + threadIdx.x);
+
 	for (uint32_t idx = threadIdx.x; idx < num_iters; idx += blockDim.x) {
-		wqe_idx = doca_gpu_dev_verbs_atomic_read<uint64_t, DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(&qp->sq_wqe_pi);
-		wqe_idx += threadIdx.x;
-		wqe_ptr = doca_gpu_dev_verbs_get_wqe_ptr(qp, (wqe_idx & qp->sq_wqe_mask));
+		wqe_ptr = doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
 
 		doca_gpu_dev_verbs_wqe_prepare_write(qp,
 							  wqe_ptr,
@@ -66,15 +68,21 @@ __global__ void write_bw(struct doca_gpu_dev_verbs_qp *qp,
 		__syncthreads();
 
 		if (threadIdx.x == (blockDim.x - 1))
-			doca_gpu_dev_verbs_submit<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, (wqe_idx + 1));
+			doca_gpu_dev_verbs_submit<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(qp, (wqe_idx + 1));
+
 		__syncthreads();
+
+		wqe_idx += blockDim.x;
 	}
 
 	// Assumption: QP is long enough to hold all the WQEs posted in the loop.
 	// Application needs to poll only the last CQE corresponding to the last posted WQE.
 	if (threadIdx.x == (blockDim.x - 1)) {
-		if (doca_gpu_dev_verbs_poll_cq_at(doca_gpu_dev_verbs_qp_get_cq_sq(qp), wqe_idx) != 0)
-			printf("Error CQE!\n");
+		if (doca_gpu_dev_verbs_poll_cq_at(doca_gpu_dev_verbs_qp_get_cq_sq(qp), (wqe_idx - blockDim.x)) != 0) {
+			#if ENABLE_DEBUG == 1
+				printf("Error CQE!\n");
+			#endif
+		}
 	}
 	__syncthreads();
 }
@@ -98,6 +106,11 @@ doca_error_t gpunetio_verbs_write_bw(cudaStream_t stream,
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
 		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		return DOCA_ERROR_BAD_STATE;
+	}
+
+	if (cuda_blocks > 1) {
+		DOCA_LOG_ERR("The kernel supports only 1 CUDA Block\n");
 		return DOCA_ERROR_BAD_STATE;
 	}
 

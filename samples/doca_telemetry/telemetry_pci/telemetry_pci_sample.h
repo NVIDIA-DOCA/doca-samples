@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,6 +23,9 @@
  *
  */
 
+#ifndef TELEMETRY_PCI_SAMPLE_H_
+#define TELEMETRY_PCI_SAMPLE_H_
+
 #include <stdbool.h>
 #include <stdlib.h>
 
@@ -31,9 +34,11 @@
 
 /* Configuration struct */
 struct telemetry_pci_sample_cfg {
-	char pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /**< PCI address to be used */
-	struct doca_telemetry_pci_dpn dpn;	   /**< PCI DPN to be used */
-	bool pci_set;				   /**< Indicator of PCI address being set */
+	char dev_pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE];	  /**< PCI address to be used to open the telemetry context */
+	char target_pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /**< PCI addr of the target to monitor */
+	struct doca_telemetry_pci_dpn target_dpn;	  /**< PCI DPN of the target to monitor */
+	bool dev_pci_addr_set;				  /**< Indicator of dev_pci_addr being set */
+	bool target_pci_addr_set;			  /**< Indicator of target_pci_addr being set */
 };
 
 /*
@@ -43,3 +48,5 @@ struct telemetry_pci_sample_cfg {
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
  */
 doca_error_t telemetry_pci_sample_run(const struct telemetry_pci_sample_cfg *cfg);
+
+#endif /* TELEMETRY_PCI_SAMPLE_H_ */

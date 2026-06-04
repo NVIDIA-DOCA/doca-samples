@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -324,7 +324,7 @@ static doca_error_t add_resizable_pipe_entries(struct doca_flow_pipe *pipe,
 					 * invoked on excluded queues, but
 					 * there is no prevention from calling
 					 * entries_process on excluded queues
-					 * in favour of other pipes (where
+					 * in favor of other pipes (where
 					 * those queues are not excluded). */
 					if (queue_id == 1)
 						continue;

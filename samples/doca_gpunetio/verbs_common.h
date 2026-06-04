@@ -66,7 +66,7 @@
 #define CUDA_THREADS_BW 512 // post list
 #define CUDA_THREADS_LAT 1  // post list
 #define NUM_ITERS 2048
-#define NUM_MSG_SIZE 10
+#define NUM_MSG_SIZE 14
 
 #define VERBS_TEST_QUEUE_SIZE (2048)
 // Should be sizeof(doca gpu verbs structs)
@@ -98,6 +98,9 @@
 	(DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_SQ_PSN | DOCA_VERBS_QP_ATTR_ACK_TIMEOUT | \
 	 DOCA_VERBS_QP_ATTR_RETRY_CNT | DOCA_VERBS_QP_ATTR_RNR_RETRY | DOCA_VERBS_QP_ATTR_MAX_QP_RD_ATOMIC)
 
+/* Gbps BW calculation */
+#define BW_FORMAT_FACTOR 1000000000
+
 /* High-level API */
 struct doca_gpu_verbs_qp_init_attr_hl {
 	struct doca_gpu *gpu_dev;
@@ -107,8 +110,8 @@ struct doca_gpu_verbs_qp_init_attr_hl {
 	uint16_t sq_nwqe;
 	uint16_t rq_nwqe;
 	enum doca_gpu_dev_verbs_nic_handler nic_handler;
-	uint8_t send_dbr_mode_ext;
 	uint8_t recv_inline;
+	uint8_t cq_collapsed;
 };
 
 struct doca_gpu_verbs_qp_hl {
@@ -156,7 +159,6 @@ struct verbs_config {
 	enum doca_gpu_dev_verbs_nic_handler nic_handler;    /* GPU_DB or CPU proxy nic handler */
 	uint8_t exec_scope;				    /* set execution scope of high-level functions */
 	uint8_t recv_inline;				    /* enable/disable receive inline */
-	uint8_t send_dbr_mode_ext;			    /* enable/disable send DBR mode external */
 };
 
 struct verbs_resources {
@@ -199,8 +201,8 @@ struct verbs_resources {
 	struct doca_gpu_verbs_qp_group_hl *qpg;
 	enum doca_gpu_dev_verbs_nic_handler nic_handler;
 	enum doca_gpu_dev_verbs_exec_scope scope;
-	uint8_t recv_inline;	/* enable/disable receive inline */
-	bool send_dbr_mode_ext; /* enable/disable send dbr mode external */
+	uint8_t recv_inline;  /* enable/disable receive inline */
+	uint8_t cq_collapsed; /* enable/disable cq collapsed */
 	/* _lat test */
 	struct ibv_mr *local_poll_mr[NUM_MSG_SIZE]; /* local memory region */
 	struct ibv_mr *local_post_mr[NUM_MSG_SIZE]; /* local memory region */
@@ -215,7 +217,6 @@ struct cpu_proxy_args {
 	uint64_t *exit_flag;
 };
 
-doca_error_t send_dbr_mode_ext_callback(void *param, void *config);
 doca_error_t nic_handler_callback(void *param, void *config);
 doca_error_t nic_device_name_callback(void *param, void *config);
 doca_error_t gpu_pcie_addr_callback(void *param, void *config);
@@ -423,6 +424,7 @@ doca_error_t gpunetio_verbs_write_bw(cudaStream_t stream,
  * @local_post_mkey [in]: Flag mkey to post notification to remote peer
  * @dst_buf [in]: Destination GPU data buffer address
  * @dst_buf_mkey [in]: Destination GPU data buffer memory key
+ * @nic_handler [in]: Type of NIC handler
  * @is_client [in]: This kernel should act like the client (true) or server (false)
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -438,6 +440,7 @@ doca_error_t gpunetio_verbs_write_lat(cudaStream_t stream,
 				      uint32_t local_post_mkey,
 				      uint8_t *dst_buf,
 				      uint32_t dst_buf_mkey,
+				      enum doca_gpu_dev_verbs_nic_handler nic_handler,
 				      bool is_client);
 
 /*

@@ -238,7 +238,7 @@ static void nfs_fsdev_getattr_cb(struct rpc_context *rpc, int status, void *data
 		DOCA_LOG_ERR("NFS getattr failed with error: %s", (char *)data);
 		exit(1);
 	} else if (status == RPC_STATUS_CANCEL) {
-		DOCA_LOG_ERR("NFS getattr operation was cancelled");
+		DOCA_LOG_ERR("NFS getattr operation was canceled");
 		exit(1);
 	}
 
@@ -304,11 +304,16 @@ static void nfs_fsdev_setattr_cb(struct rpc_context *rpc, int status, void *data
 		DOCA_LOG_ERR("NFS setattr failed with error: %s", (char *)data);
 		exit(1);
 	} else if (status == RPC_STATUS_CANCEL) {
-		DOCA_LOG_ERR("NFS setattr operation was cancelled");
+		DOCA_LOG_ERR("NFS setattr operation was canceled");
 		exit(1);
 	}
 
 	struct SETATTR3res *result = data;
+	if (result->status != NFS3_OK) {
+		DOCA_LOG_ERR("NFS setattr failed with NFS status [%d]", result->status);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
+	}
 	fattr3 *res = &result->SETATTR3res_u.resok.obj_wcc.after.post_op_attr_u.attributes;
 
 	memset(outarg, 0, sizeof(*outarg));
@@ -451,7 +456,7 @@ static void nfs_fsdev_lookup_cb(struct rpc_context *rpc, int status, void *data,
 		DOCA_LOG_ERR("LOOKUP RPC failed with error [%s]", (char *)data);
 		exit(1);
 	} else if (status == RPC_STATUS_CANCEL) {
-		DOCA_LOG_ERR("LOOKUP failed: operation was cancelled");
+		DOCA_LOG_ERR("LOOKUP failed: operation was canceled");
 		exit(1);
 	}
 
@@ -590,7 +595,7 @@ static void nfs_fsdev_readdir_cb_common(struct rpc_context *rpc, int status, voi
 		DOCA_LOG_ERR("NFS readdir failed with error: %s", (char *)data);
 		exit(1);
 	} else if (status == RPC_STATUS_CANCEL) {
-		DOCA_LOG_ERR("NFS readdir operation was cancelled");
+		DOCA_LOG_ERR("NFS readdir operation was canceled");
 		exit(1);
 	}
 
@@ -1245,7 +1250,8 @@ static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status
 	nfsstat3 ret = result->status;
 	if (ret != NFS3_OK) {
 		if (ret == NFS3ERR_NOENT) {
-			DOCA_LOG_WARN("lookup result is NFS3ERR_NOENT - we assume this is an UNLIK replay and succeed");
+			DOCA_LOG_WARN(
+				"lookup result is NFS3ERR_NOENT - we assume this is an UNLINK replay and succeed");
 			nfs_fsdev_complete(cb_data->context, 0, 0);
 			free(cb_data);
 			return;

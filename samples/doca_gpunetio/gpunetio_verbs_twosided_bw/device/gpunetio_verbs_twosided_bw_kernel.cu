@@ -35,6 +35,8 @@
 
 DOCA_LOG_REGISTER(GPU_VERBS_SAMPLE::CUDA_KERNEL);
 
+#define ENABLE_DEBUG 0
+
 template <enum doca_gpu_dev_verbs_exec_scope scope>
 __global__ void client(struct doca_gpu_dev_verbs_qp *qp,
 			   uint32_t start_iters,
@@ -165,16 +167,23 @@ __global__ void server(struct doca_gpu_dev_verbs_qp *qp,
 			 * CQE inline validation. This sample is not for performance measurements.
 			 * It's a showcase of all possible two-sided combinations.
 			 */
-			if (doca_gpu_dev_verbs_cqe_is_inline(cqe64) == 0)
-				printf("Error: CQE %ld has not inline data as expected\n", out_ticket);
-			else {
-				if (doca_gpu_dev_verbs_cqe_get_bytes(cqe64) != data_size)
+			if (doca_gpu_dev_verbs_cqe_is_inline(cqe64) == 0) {
+				#if ENABLE_DEBUG == 1
+					printf("Error: CQE %ld has not inline data as expected\n", out_ticket);
+				#endif
+			} else {
+				#if ENABLE_DEBUG == 1
+				if (doca_gpu_dev_verbs_cqe_get_bytes(cqe64) != data_size) {
 					printf("Error: CQE %ld expected bytes %d received inline bytes %d\n",
 						out_ticket, data_size, doca_gpu_dev_verbs_cqe_get_bytes(cqe64));
+				}
+				#endif
 
 				inl_data = doca_gpu_dev_verbs_cqe_get_inl_data(cqe64);
+				#if ENABLE_DEBUG == 1
 				if (inl_data[0] != recv_inline)
 					printf("Error: CQE %ld expected value %d got %d\n", out_ticket, recv_inline, inl_data[0]);
+				#endif
 			}
 		}
 

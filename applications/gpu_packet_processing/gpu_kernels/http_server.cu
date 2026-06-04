@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -34,7 +34,7 @@
 #include "packets.h"
 #include "filters.cuh"
 
-DOCA_LOG_REGISTER(GPU_SANITY::KernelHttpServer);
+DOCA_LOG_REGISTER(GPU_SANITY::KERNEL_HTTP_SERVER);
 
 static __device__ void http_set_mac_addr(struct eth_ip_tcp_hdr *hdr,
 					 const uint16_t *src_bytes,
@@ -103,10 +103,12 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 			ret = doca_gpu_dev_semaphore_get_status(sem_http, sem_http_idx, &status);
 			if (ret != DOCA_SUCCESS) {
 				if (lane_id == 0) {
+					#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 					printf("HTTP server semaphore wait error %d Block %d error %d\n",
 					       ret,
 					       warp_id,
 					       ret);
+					#endif
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 				}
 				break;
@@ -117,10 +119,12 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 										  sem_http_idx,
 										  (void **)&http_global);
 				if (ret != DOCA_SUCCESS) {
+					#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 					printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n",
 					       ret,
 					       warp_id,
 					       lane_id);
+					#endif
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 					break;
 				}
@@ -167,10 +171,12 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 									sem_http_idx,
 									DOCA_GPU_SEMAPHORE_STATUS_DONE);
 				if (ret != DOCA_SUCCESS) {
+					#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 					printf("Error %d doca_gpu_dev_eth_txq_send_enqueue_strong block %d thread %d\n",
 					       ret,
 					       warp_id,
 					       lane_id);
+					#endif
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 					break;
 				}

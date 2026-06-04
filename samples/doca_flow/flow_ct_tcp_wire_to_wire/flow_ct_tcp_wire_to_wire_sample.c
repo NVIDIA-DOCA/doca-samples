@@ -194,12 +194,16 @@ destroy_pipe_cfg:
  * @port [in]: Pipe port
  * @fwd_pipe [in]: Forward pipe pointer
  * @fwd_miss_pipe [in]: Forward miss pipe pointer
+ * @nb_ipv4_sessions [in]: Number of IPv4 sessions
+ * @nb_ipv6_sessions [in]: Number of IPv6 sessions
  * @pipe [out]: Created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t create_ct_pipe(struct doca_flow_port *port,
 				   struct doca_flow_pipe *fwd_pipe,
 				   struct doca_flow_pipe *fwd_miss_pipe,
+				   uint32_t nb_ipv4_sessions,
+				   uint32_t nb_ipv6_sessions,
 				   struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
@@ -227,6 +231,16 @@ static doca_error_t create_ct_pipe(struct doca_flow_port *port,
 	result = set_flow_pipe_cfg(cfg, "CT_PIPE", DOCA_FLOW_PIPE_CT, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_ct_connections(cfg, nb_ipv4_sessions, nb_ipv6_sessions, 0);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set CT connections: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_ct_max_connections_per_zone(cfg, CT_DEFAULT_MAX_ZONE_SESSIONS);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set CT max connections per zone: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 	result = doca_flow_pipe_cfg_set_actions(cfg, actions_arr, NULL, NULL, 1);
@@ -314,19 +328,14 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 			       DOCA_FLOW_CT_ENTRY_FLAGS_DIR_REPLY;
 	uint8_t tcp_state;
 	doca_error_t result;
-	int rc, i, nb_packets, total_valid_packets = 0;
+	int i, nb_packets, total_valid_packets = 0;
 	uint64_t timeout_s = 5; /* Timeout in seconds */
 	time_t end_time, max_end_time;
+	uint32_t mark = 0;
 
 	memset(&match_o, 0, sizeof(match_o));
 	memset(&match_r, 0, sizeof(match_r));
 	memset(&actions, 0, sizeof(actions));
-
-	rc = rte_flow_dynf_metadata_register();
-	if (unlikely(rc)) {
-		DOCA_LOG_ERR("Enable metadata failed");
-		return DOCA_ERROR_BAD_STATE;
-	}
 
 	max_end_time = time(NULL) + timeout_s; /* Absolute maximum timeout */
 	end_time = max_end_time;	       /* Current timeout */
@@ -363,8 +372,8 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 							      0,
 							      &actions,
 							      NULL,
-							      0,
-							      0,
+							      NULL,
+							      NULL,
 							      0,
 							      ct_status,
 							      entries);
@@ -406,11 +415,13 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 					continue;
 				}
 				/* extract mark from packet */
-				DOCA_LOG_INFO("Mark value: 0x%x",
-					      DOCA_FLOW_CT_MARK_FROM_DPDK(packets[i]->hash.fdir.hi));
+				if (packets[i]->ol_flags & RTE_MBUF_F_RX_FDIR_ID) {
+					mark = DOCA_FLOW_CT_MARK_FROM_DPDK(packets[i]->hash.fdir.hi);
+					DOCA_LOG_INFO("Mark value: 0x%x", mark);
+				} else {
+					DOCA_LOG_INFO("No mark value found in packet");
+				}
 			}
-			rte_flow_dynf_metadata_set(packets[i], 1);
-			packets[i]->ol_flags |= RTE_MBUF_DYNFLAG_TX_METADATA;
 			rte_eth_tx_burst(0, 0, &packets[i], 1);
 		}
 	} while (time(NULL) < end_time);
@@ -448,7 +459,7 @@ doca_error_t flow_ct_tcp_wire_to_wire(uint16_t nb_queues, struct flow_switch_ctx
 	struct doca_flow_ct_meta mark_mask = {.mark = MARK_MASK};
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ctrl_status, ct_status;
-	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 2048, nb_ipv4_sessions = 1024,
+	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, ct_actions_mem_size = 131072, nb_ipv4_sessions = 1024,
 			   nb_ipv6_sessions = 0; /* On BF2 should always be 0 */
 	uint16_t ct_queue = nb_queues;
 	doca_error_t result;
@@ -457,7 +468,10 @@ doca_error_t flow_ct_tcp_wire_to_wire(uint16_t nb_queues, struct flow_switch_ctx
 	memset(&ct_status, 0, sizeof(ct_status));
 	memset(&resource, 0, sizeof(resource));
 
+	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 1;
+	resource.nr_ct_counters = nb_ipv4_sessions + nb_ipv6_sessions;
+	resource.nr_rss = 1;
 
 	result = init_doca_flow(nb_queues, "switch,hws,expert", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
@@ -473,12 +487,8 @@ doca_error_t flow_ct_tcp_wire_to_wire(uint16_t nb_queues, struct flow_switch_ctx
 	result = init_doca_flow_ct(ct_flags,
 				   nb_arm_queues,
 				   nb_ctrl_queues,
-				   nb_user_actions,
+				   ct_actions_mem_size,
 				   NULL,
-				   nb_ipv4_sessions,
-				   nb_ipv6_sessions,
-				   0,
-				   0,
 				   false,
 				   &o_zone_mask,
 				   &mark_mask,
@@ -512,7 +522,7 @@ doca_error_t flow_ct_tcp_wire_to_wire(uint16_t nb_queues, struct flow_switch_ctx
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
-	result = create_ct_pipe(ports[0], rss_pipe, rss_pipe, &ct_pipe);
+	result = create_ct_pipe(ports[0], rss_pipe, rss_pipe, nb_ipv4_sessions, nb_ipv6_sessions, &ct_pipe);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 

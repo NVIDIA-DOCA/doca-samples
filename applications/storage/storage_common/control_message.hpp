@@ -128,7 +128,7 @@ struct storage_details_payload : public storage::control::message::payload {
 };
 
 /*
- * Storage initialisation
+ * Storage initialization
  */
 struct init_storage_payload : public storage::control::message::payload {
 	uint32_t transaction_count;	       /* Number of transactions to use */

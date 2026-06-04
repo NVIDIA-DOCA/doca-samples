@@ -46,7 +46,6 @@ static doca_error_t register_verbs_params(void)
 	struct doca_argp_param *gid_index_param;
 	struct doca_argp_param *gpu_device_param;
 	struct doca_argp_param *iters_param;
-	struct doca_argp_param *send_dbr_mode_ext_param;
 
 	status = doca_argp_param_create(&client_param);
 	if (status != DOCA_SUCCESS) {
@@ -70,9 +69,12 @@ static doca_error_t register_verbs_params(void)
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(status));
 		return status;
 	}
+
 	doca_argp_param_set_short_name(nic_handler_param, "n");
 	doca_argp_param_set_long_name(nic_handler_param, "nic handler");
-	doca_argp_param_set_arguments(nic_handler_param, "<NIC handler type (0: AUTO, 1: CPU Proxy 2: GPU DB)>");
+	doca_argp_param_set_arguments(
+		nic_handler_param,
+		"<NIC handler type (0: AUTO, 1: CPU Proxy 2: GPU DB 3: BlueFlame 4: GPU DB no DBR 5: CPU Proxy no DBR)>");
 	doca_argp_param_set_description(nic_handler_param, "NIC handler type");
 	doca_argp_param_set_callback(nic_handler_param, nic_handler_callback);
 	doca_argp_param_set_type(nic_handler_param, DOCA_ARGP_TYPE_INT);
@@ -145,22 +147,6 @@ static doca_error_t register_verbs_params(void)
 	doca_argp_param_set_callback(iters_param, iters_callback);
 	doca_argp_param_set_type(iters_param, DOCA_ARGP_TYPE_INT);
 	status = doca_argp_register_param(iters_param);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(status));
-		return status;
-	}
-
-	status = doca_argp_param_create(&send_dbr_mode_ext_param);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(status));
-		return status;
-	}
-	doca_argp_param_set_short_name(send_dbr_mode_ext_param, "r");
-	doca_argp_param_set_long_name(send_dbr_mode_ext_param, "send-dbr");
-	doca_argp_param_set_description(send_dbr_mode_ext_param, "Send DBR mode (regular or external)");
-	doca_argp_param_set_callback(send_dbr_mode_ext_param, send_dbr_mode_ext_callback);
-	doca_argp_param_set_type(send_dbr_mode_ext_param, DOCA_ARGP_TYPE_INT);
-	status = doca_argp_register_param(send_dbr_mode_ext_param);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(status));
 		return status;

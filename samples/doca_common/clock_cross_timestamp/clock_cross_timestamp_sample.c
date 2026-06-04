@@ -92,7 +92,7 @@ static doca_error_t get_single_timestamp(const struct doca_clock *clock, uint64_
 }
 
 /*
- * Get cross-timesetmp of 2 clocks and log result
+ * Get cross-timestamp of 2 clocks and log result
  *
  * @clock [in]: doca_clock context
  * @prim_clock [in]: Primary clock to use for cross-timestamp

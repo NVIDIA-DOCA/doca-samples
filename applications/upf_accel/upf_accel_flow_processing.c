@@ -2099,7 +2099,7 @@ static void upf_accel_ext_entry_cb_add(struct upf_accel_entry_ctx *entry_ctx, en
 
 /*
  * Extension entry delete op
- * Deletes the extension entry context and deletes the subsequent entry accelerted entry.
+ * Deletes the extension entry context and deletes the subsequent entry accelerated entry.
  *
  * @entry_ctx [in]: entry context
  * @status [in]: DOCA Flow entry status

@@ -1,6 +1,16 @@
+#
+# This software product is a proprietary product of NVIDIA CORPORATION &
+# AFFILIATES (the "Company") and all right, title, and interest in and to the
+# software product, including all associated intellectual property rights, are
+# and shall remain exclusively with the Company.
+#
+# This software product is governed by the End User License Agreement
+# provided with the software product.
+#
+
 # DOCA Telemetry Exporter Samples
 
-These samples demonstrate the usage of the DOCA Telemetry Exporter API, including custom telemetry schema and NetFlow functionalities.
+These samples demonstrate the usage of the DOCA Telemetry Exporter API, including custom telemetry schema, NetFlow, OTLP logs, and metrics.
 
 ## Telemetry Export
 
@@ -37,9 +47,29 @@ This sample demonstrates how to use the NetFlow functionality of the telemetry e
 ### References:
 - `telemetry_export_netflow/telemetry_export_netflow_sample.c`
 - `telemetry_export_netflow/telemetry_export_netflow_main.c`
-- `telemetry_export_netflowt/meson.build`
+- `telemetry_export_netflow/meson.build`
 
----
+
+## Telemetry Export OTLP Logs
+
+This sample demonstrates exporting application logs in OpenTelemetry Protocol (OTLP) format. It supports two modes: **direct OTLP HTTP** to an OpenTelemetry Collector, or **IPC to DOCA Telemetry Service (DTS)**, which then forwards to the collector.
+
+### Sample Logic:
+1. Initializing the telemetry schema with opaque events enabled (required for OTLP logs).
+2. Configuring exporters via environment variables (`ENABLE_IPC`, `ENABLE_FILE_WRITE`).
+3. Creating a telemetry exporter source and registering OTLP resource/scope.
+4. Creating and reporting example log records with attributes and severity.
+5. Tearing down the source and schema.
+
+### Modes
+- **Direct OTLP HTTP** – Application sends OTLP logs via HTTP to OpenTelemetry Collector. Run with `./run_sample.sh`.
+- **IPC to DTS** – Application sends to DTS via IPC; DTS forwards to the collector. Run with `ENABLE_IPC=1 ./run_sample.sh`.
+
+### References:
+- `telemetry_export_otlp_logs/telemetry_export_otlp_logs_sample.c`
+- `telemetry_export_otlp_logs/telemetry_export_otlp_logs_main.c`
+- `telemetry_export_otlp_logs/meson.build`
+
 
 ## Telemetry Export Metrics
 

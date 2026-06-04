@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -221,9 +221,9 @@ static doca_error_t rdma_multi_conn_receive_export_and_connect(struct rdma_resou
 		free(resources->remote_rdma_conn_descriptor);
 		resources->remote_rdma_conn_descriptor = NULL;
 
-		DOCA_LOG_INFO("RDMA connection [%d] is establshed", i);
+		DOCA_LOG_INFO("RDMA connection [%d] is established", i);
 	}
-	DOCA_LOG_INFO("All [%d] RDMA connections have been establshed", resources->cfg->num_connections);
+	DOCA_LOG_INFO("All [%d] RDMA connections have been established", resources->cfg->num_connections);
 
 	return result;
 }

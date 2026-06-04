@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -73,7 +73,7 @@ DOCA_LOG_REGISTER(COMPRESS::COMMON);
  * LZ4 frame format defines
  */
 #define LZ4_MAGIC_NUMBER 0x184D2204 /* Magic number for LZ4 files */
-#define LZ4_VERSION_NUMER 0x01	    /* The LZ4 frame format version */
+#define LZ4_VERSION_NUMBER 0x01	    /* The LZ4 frame format version */
 
 #define LZ4_FLAGS_DICT_ID_MASK 0x1	      /* Mask for dictionary ID bits in the FLG byte */
 #define LZ4_FLAGS_CONTENT_CHECKSUM_SHIFT 2    /* Shift for content checksum flag bit in the FLG byte */
@@ -537,10 +537,10 @@ doca_error_t parse_lz4_frame(struct doca_buf *src_buf,
 	frame_header_length += sizeof(uint8_t);
 
 	version_number = (flags & LZ4_FLAGS_VERSION_NUMBER_MASK) >> LZ4_FLAGS_VERSION_NUMBER_SHIFT;
-	if (version_number != LZ4_VERSION_NUMER) {
+	if (version_number != LZ4_VERSION_NUMBER) {
 		DOCA_LOG_ERR("Invalid header: version=%x doesn't match the expected LZ4 version=%x",
 			     version_number,
-			     LZ4_VERSION_NUMER);
+			     LZ4_VERSION_NUMBER);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 

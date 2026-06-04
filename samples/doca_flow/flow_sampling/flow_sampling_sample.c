@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -277,7 +277,7 @@ static doca_error_t random_sampling_results(struct doca_flow_pipe_entry *root_en
 {
 	struct doca_flow_resource_query root_query_stats;
 	struct doca_flow_resource_query random_query_stats;
-	double actuall_percentage;
+	double actual_percentage;
 	uint32_t total_packets;
 	uint32_t nb_sampled_packets;
 	doca_error_t result;
@@ -299,12 +299,12 @@ static doca_error_t random_sampling_results(struct doca_flow_pipe_entry *root_en
 	}
 
 	nb_sampled_packets = random_query_stats.counter.total_pkts;
-	actuall_percentage = GET_PERCENTAGE(nb_sampled_packets, total_packets);
+	actual_percentage = GET_PERCENTAGE(nb_sampled_packets, total_packets);
 
 	DOCA_LOG_INFO("Sampling result information (%g%% is requested):", requested_percentage);
 	DOCA_LOG_INFO("This pipeline samples %u packets which is %g%% of the traffic (%u/%u)",
 		      nb_sampled_packets,
-		      actuall_percentage,
+		      actual_percentage,
 		      nb_sampled_packets,
 		      total_packets);
 

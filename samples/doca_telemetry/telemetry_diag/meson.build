@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -22,21 +22,34 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+# telemetry_diag does not depends on the common.c
+sample_commons = []
+
 sample_srcs = files([
 	SAMPLE_NAME + '_sample.c',
 ])
 
-
-# Needed because we use some application utilities in the main
-apps_common_path = '/'.join([meson.project_source_root(), apps_common_base])
-
 sample_main_srcs = files([
 	SAMPLE_NAME + '_main.c',
-	apps_common_path + '/utils.c',
 ])
 
 if skip_sample_compilation
 	subdir_done()
 endif
 
-sample_depends += dependency('json-c', version : '> 0.13') # earlier versions have different function signatures
+if is_compiler_msvc
+	json_c_installation_path = get_option('json_c_path')
+
+	# Meson requires that linkage will use relative path,
+	# so there is a need to copy it to local directory.
+	run_command(python_exe, windows_copy_dlls, meson.current_build_dir(), json_c_installation_path / 'lib' / 'json-c.lib', check: true)
+
+	# we are using version 0.18, which is higher than 0.13, that changed function signatures
+	sample_depends += c_compiler.find_library('json-c', dirs: [meson.current_build_dir()])
+
+	sample_dll_files_to_copy += [json_c_installation_path / 'bin' / 'json-c.dll']
+
+	sample_main_includes += include_directories(json_c_installation_path / 'include')
+else
+	sample_depends += dependency('json-c', version : '> 0.13') # earlier versions have different function signatures
+endif

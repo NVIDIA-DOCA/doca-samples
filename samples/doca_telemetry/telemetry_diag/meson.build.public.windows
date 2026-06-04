@@ -1,0 +1,95 @@
+#
+# Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+project('DOCA_SAMPLE', 'C',
+	license: 'BSD-3',
+	default_options: ['buildtype=debug'],
+	meson_version: '>= 0.61.2'
+)
+
+SAMPLE_NAME = 'telemetry_diag'
+
+# Comment this line to restore warnings of experimental DOCA features
+add_project_arguments('-D DOCA_ALLOW_EXPERIMENTAL_API', language: ['c'])
+
+winof2_root = get_option('winof2_root')
+json_c_root = get_option('json_c_root')
+
+if json_c_root == ''
+	error('JSON-C root path is empty - please set it using: -Djson_c_root=<path>')
+endif
+
+doca_sdk_root = winof2_root / 'DOCA_Sdk'
+
+sample_c_args = [
+	# ignore zero-sized array in struct/union
+	'/wd4200'
+]
+sample_dependencies = []
+
+# Add json-c library as requirement
+sample_dependencies += declare_dependency(
+	include_directories: include_directories(join_paths(json_c_root, 'include')),
+	link_args: ['-L' + join_paths(json_c_root, 'lib'), '-ljson-c']
+)
+
+cc = meson.get_compiler('c')
+
+# Required for all DOCA programs
+sample_dependencies += cc.find_library(
+	'libdoca_common',
+	dirs: [doca_sdk_root / 'lib'],
+	required: true,
+)
+
+# The DOCA library of the sample itself
+sample_dependencies += cc.find_library(
+	'libdoca_telemetry',
+	dirs: [doca_sdk_root / 'lib'],
+	required: true,
+)
+
+# Utility DOCA library for executables
+sample_dependencies += cc.find_library(
+	'libdoca_argp',
+	dirs: [doca_sdk_root / 'lib'],
+	required: true,
+)
+
+sample_srcs = [
+	# The sample itself
+	SAMPLE_NAME + '_sample.c',
+	# Main function for the sample's executable
+	SAMPLE_NAME + '_main.c',
+]
+
+sample_inc_dirs  = []
+sample_inc_dirs += include_directories(join_paths(doca_sdk_root, 'inc'))
+
+executable('doca_' + SAMPLE_NAME, sample_srcs,
+	c_args : sample_c_args,
+	dependencies : sample_dependencies,
+	include_directories: sample_inc_dirs,
+	install: false,
+)

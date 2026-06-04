@@ -111,12 +111,16 @@ destroy_pipe_cfg:
  * @port [in]: Pipe port
  * @fwd_match_pipe [in]: Forward match pipe pointer
  * @fwd_miss_pipe [in]: Forward miss pipe pointer
+ * @nb_ipv4_sessions [in]: Number of IPv4 sessions
+ * @nb_ipv6_sessions [in]: Number of IPv6 sessions
  * @pipe [out]: Created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t create_ct_pipe(struct doca_flow_port *port,
 				   struct doca_flow_pipe *fwd_match_pipe,
 				   struct doca_flow_pipe *fwd_miss_pipe,
+				   uint32_t nb_ipv4_sessions,
+				   uint32_t nb_ipv6_sessions,
 				   struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
@@ -138,6 +142,21 @@ static doca_error_t create_ct_pipe(struct doca_flow_port *port,
 	result = set_flow_pipe_cfg(cfg, "CT_PIPE", DOCA_FLOW_PIPE_CT, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_ct_connections(cfg, nb_ipv4_sessions, nb_ipv6_sessions, 0);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set CT connections: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_ct_max_connections_per_zone(cfg, CT_DEFAULT_MAX_ZONE_SESSIONS);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set CT max connections per zone: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_ct_dup_filter_size(cfg, DUP_FILTER_CONN_NUM);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set CT dup filter size: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 	result = doca_flow_pipe_cfg_set_match(cfg, &match, NULL);
@@ -336,8 +355,8 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 						      packets[i]->hash.rss,
 						      NULL,
 						      NULL,
-						      0,
-						      0,
+						      NULL,
+						      NULL,
 						      0,
 						      ct_status,
 						      entry);
@@ -475,7 +494,7 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 	struct doca_flow_meta o_zone_mask, r_zone_mask;
 	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
 	struct entries_status ctrl_status, ct_status;
-	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 0, nb_ipv4_sessions = 1024,
+	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, ct_actions_mem_size = 0, nb_ipv4_sessions = 1024,
 			   nb_ipv6_sessions = 0; /* On BF2 should always be 0 */
 	uint16_t ct_queue = nb_queues;
 	struct doca_flow_pipe_entry *counter_miss_entries[nb_ports];
@@ -516,6 +535,7 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 2; /* Need 2 counters: 1 for CT pipe (matches) and 1 for counter_miss_pipe */
+	resource.nr_ct_counters = nb_ipv4_sessions + nb_ipv6_sessions;
 	resource.nr_rss = 1;
 
 	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
@@ -534,12 +554,8 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 	result = init_doca_flow_ct(ct_flags,
 				   nb_arm_queues,
 				   nb_ctrl_queues,
-				   nb_user_actions,
+				   ct_actions_mem_size,
 				   NULL,
-				   nb_ipv4_sessions,
-				   nb_ipv6_sessions,
-				   0, /* Number of asymmetric counters - using all shared counters */
-				   DUP_FILTER_CONN_NUM,
 				   false,
 				   &o_zone_mask,
 				   &o_modify_mask,
@@ -598,7 +614,12 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 			goto cleanup;
 
 		/* Create CT pipe with built-in counter: match->port_forward (direct) and miss->counter_miss */
-		result = create_ct_pipe(ports[i], port_forward_pipes[i], counter_miss_pipes[i], &ct_pipes[i]);
+		result = create_ct_pipe(ports[i],
+					port_forward_pipes[i],
+					counter_miss_pipes[i],
+					nb_ipv4_sessions,
+					nb_ipv6_sessions,
+					&ct_pipes[i]);
 		if (result != DOCA_SUCCESS)
 			goto cleanup;
 

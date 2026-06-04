@@ -1041,7 +1041,7 @@ doca_error_t send_chained_messages(struct wait_cq_wr_cfg *cfg)
 		DOCA_LOG_INFO("Completion for WR ID %ld", wc.wr_id);
 	}
 
-	/* Verify the data was sent and received correctly, including the data in buffer3, which should be idenctical to
+	/* Verify the data was sent and received correctly, including the data in buffer3, which should be identical to
 	 * the data in buffer1 if the chaining worked */
 	if (memcmp((void *)buffers[0].addr, (void *)buffers[2].addr, MESSAGE_SIZE) != 0) {
 		DOCA_LOG_ERR("Data in buffer3 is not identical to the data in buffer1");

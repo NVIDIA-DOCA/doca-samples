@@ -77,6 +77,10 @@ using psp_json_field_handlers = std::vector<psp_json_field_handler>;
 /*
  * Create Hash table for IPv6 addresses
  *
+ * Each IPv6 session stores two VIPs (src_vip, dst_vip) as metadata IDs. Ingress and
+ * egress both resolve these via the same table. Worst case: max_tunnels sessions
+ * with all unique addresses => 2 * max_tunnels entries.
+ *
  * @app_config [in/out]: application configuration struct
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -85,7 +89,7 @@ static doca_error_t create_ip6_table(psp_gw_app_config *app_config)
 	struct rte_hash_parameters table_params = {0};
 
 	table_params.name = "IPv6 table";
-	table_params.entries = app_config->max_tunnels;
+	table_params.entries = 2 * app_config->max_tunnels;
 	table_params.key_len = sizeof(uint32_t) * 4;
 	table_params.hash_func = rte_hash_crc;
 	table_params.hash_func_init_val = 0;
@@ -574,6 +578,21 @@ static doca_error_t handle_outer_param(void *param, void *config)
 }
 
 /**
+ * @brief Handle optional local physical IP param (overrides device-detected PF address for outer tunnel).
+ *
+ * @param [in]: A pointer to a string flag
+ * @config [in/out]: A void pointer to the application config struct
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t handle_local_pip_param(void *param, void *config)
+{
+	auto *app_config = (struct psp_gw_app_config *)config;
+	app_config->local_pip = (const char *)param;
+	DOCA_LOG_INFO("Local PIP override: %s", app_config->local_pip.c_str());
+	return DOCA_SUCCESS;
+}
+
+/**
  * @brief Handle inner IP type param.
  *
  * @param [in]: A pointer to a string flag
@@ -760,30 +779,45 @@ static doca_error_t parse_local_grpc_address(json_object *json_obj_local_addr,
 		DOCA_LOG_ERR("Invalid local-grpc-address, expected string");
 		return result;
 	}
-	std::string server = app_config->local_svc_addr;
-
-	/* verify legal format: address:port or address*/
-	size_t sep = app_config->local_svc_addr.find(':');
-	if (sep != 0 && sep != std::string::npos) {
-		std::string port = server.substr(sep + 1);
-		server = server.substr(0, sep);
-		if (port.empty()) {
-			DOCA_LOG_ERR("Invalid port in local-grpc-address: %s", server.c_str());
-			return DOCA_ERROR_INVALID_VALUE;
-		}
-		if (port.find_first_not_of("0123456789") != std::string::npos) {
-			DOCA_LOG_ERR("Invalid port in local-grpc-address: %s", port.c_str());
-			return DOCA_ERROR_INVALID_VALUE;
-		}
-		int port_num = std::stoi(port);
-		if (port_num < 0 || 65535 < port_num) {
-			DOCA_LOG_ERR("Invalid port in local-grpc-address: %s", port.c_str());
-			return DOCA_ERROR_INVALID_VALUE;
-		}
+	result = validate_grpc_address(app_config->local_svc_addr);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Invalid local-grpc-address format (use host:port or [ipv6]:port): %s",
+			     app_config->local_svc_addr.c_str());
+		return result;
 	}
 
 	DOCA_LOG_DBG("Local gRPC address: %s", app_config->local_svc_addr.c_str());
 
+	return DOCA_SUCCESS;
+}
+
+/**
+ * @brief Parse optional local physical IP from config (overrides device-detected PF address when set).
+ *
+ * @json_obj [in]: JSON object
+ * @app_config [in/out]: Application config
+ * @params [in/out]: Custom data to pass to the handler
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t parse_local_pip(json_object *json_obj, psp_gw_app_config *app_config, std::vector<void *> &params)
+{
+	(void)params;
+	doca_error_t result = json_object_ver_get_string(json_obj, app_config->local_pip);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Invalid local-pip, expected string");
+		return result;
+	}
+
+	struct doca_flow_ip_addr tmp;
+	if (parse_ip_addr(app_config->local_pip, app_config->outer, &tmp) != DOCA_SUCCESS) {
+		const char *expected = (app_config->outer == DOCA_FLOW_L3_TYPE_IP4) ? "IPv4" : "IPv6";
+		DOCA_LOG_ERR("local-pip '%s' does not match outer-ip-type (%s)",
+			     app_config->local_pip.c_str(),
+			     expected);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	DOCA_LOG_DBG("Local PIP override: %s", app_config->local_pip.c_str());
 	return DOCA_SUCCESS;
 }
 
@@ -802,6 +836,7 @@ static doca_error_t parse_json_config(json_object *json_obj_config,
 	(void)params;
 	psp_json_field_handlers handlers = {
 		{"local-grpc-address", parse_local_grpc_address, false},
+		{"local-pip", parse_local_pip, false},
 	};
 	doca_error_t result = handle_json_level_fields(handlers, json_obj_config, app_config);
 	if (result != DOCA_SUCCESS) {
@@ -830,6 +865,16 @@ static doca_error_t parse_remote_grpc_address(json_object *json_obj_remote_addr,
 	doca_error_t result = json_object_ver_get_string(json_obj_remote_addr, peer->svc_addr);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Invalid remote-grpc-address, expected string");
+		return result;
+	}
+	if (peer->svc_addr.empty()) {
+		DOCA_LOG_ERR("Remote gRPC address must not be empty");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	result = validate_grpc_address(peer->svc_addr);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Invalid remote-grpc-address format (use host:port or [ipv6]:port): %s",
+			     peer->svc_addr.c_str());
 		return result;
 	}
 
@@ -1369,6 +1414,17 @@ static doca_error_t psp_gw_register_params(void)
 	if (result != DOCA_SUCCESS)
 		return result;
 
+	result = psp_gw_register_single_param(
+		nullptr,
+		"local-pip",
+		"optional local physical IP (IPv4 or IPv6); overrides device-detected address for the outer tunnel",
+		handle_local_pip_param,
+		DOCA_ARGP_TYPE_STRING,
+		false,
+		false);
+	if (result != DOCA_SUCCESS)
+		return result;
+
 	result = psp_gw_register_single_param(nullptr,
 					      "inner-ip-type",
 					      "inner IP type",
@@ -1400,11 +1456,28 @@ static doca_error_t psp_gw_register_params(void)
 	return result;
 }
 
+static doca_error_t psp_gw_validation_callback(void *config)
+{
+	auto *app_config = (struct psp_gw_app_config *)config;
+
+	if (!app_config->local_pip.empty()) {
+		struct doca_flow_ip_addr tmp;
+		if (parse_ip_addr(app_config->local_pip, app_config->outer, &tmp) != DOCA_SUCCESS) {
+			const char *expected = (app_config->outer == DOCA_FLOW_L3_TYPE_IP4) ? "IPv4" : "IPv6";
+			DOCA_LOG_ERR("local-pip '%s' does not match outer-ip-type (%s)",
+				     app_config->local_pip.c_str(),
+				     expected);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+	}
+
+	return DOCA_SUCCESS;
+}
+
 doca_error_t psp_gw_argp_exec(int &argc, char *argv[], psp_gw_app_config *app_config)
 {
 	doca_error_t result;
 
-	// Init ARGP interface and start parsing cmdline/json arguments
 	result = doca_argp_init(NULL, app_config);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
@@ -1414,6 +1487,12 @@ doca_error_t psp_gw_argp_exec(int &argc, char *argv[], psp_gw_app_config *app_co
 	result = psp_gw_register_params();
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register ARGP parameters: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_register_validation_callback(psp_gw_validation_callback);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register validation callback: %s", doca_error_get_descr(result));
 		return result;
 	}
 

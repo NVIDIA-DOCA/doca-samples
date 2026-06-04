@@ -264,6 +264,8 @@ static doca_error_t dpdk_ports_init(struct application_dpdk_config *app_config)
 	if (app_config->port_config.enable_mbuf_metadata) {
 		ret = rte_flow_dynf_metadata_register();
 		if (ret < 0) {
+			rte_mempool_free(app_config->mbuf_pool);
+			app_config->mbuf_pool = NULL;
 			DOCA_LOG_ERR("Metadata register failed, ret=%d", ret);
 			return DOCA_ERROR_DRIVER;
 		}

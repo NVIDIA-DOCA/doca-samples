@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -28,7 +28,7 @@ mode_args:
 ports_description:
   port_0: doca_dev
   port_1: doca_dev
-description: "The sample illustrates how to use random matching for traffic sampling and distributing.
+description: "The sample illustrates how to use random matching and copy action for traffic sampling and distributing.
               Sample Command Line: ./build/doca_flow_random -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60"
 use_cases:
   - name: "Random case: sampling"
@@ -70,3 +70,22 @@ use_cases:
             expected_text:
               - "The distribution pipe received 8 packets which is 100% of the traffic (8/8)"
               - "Traffic is distributed on multiple queues"
+  - name: "Random case: port-based sampling (copy random to dst_port)"
+    args: ""
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, port sampling pipe')
+              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, port sampling pipe')
+              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, port sampling pipe')
+              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, port sampling pipe')
+              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, port sampling pipe')
+              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, port sampling pipe')
+              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, port sampling pipe')
+              - Ether()/IP(src='3.3.3.3', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, port sampling pipe')
+        validation:
+          - type: pattern
+            expected_pattern:
+              - This pipeline samples [1-4] packets which is \d+\.?\d*% of the traffic \([1-4]/8\)

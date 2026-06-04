@@ -32,7 +32,21 @@
 
 DOCA_LOG_REGISTER(MGMT_DATA_DIRECT::SAMPLE);
 
-doca_error_t mgmt_data_direct_get(struct doca_dev *dev, struct doca_dev_rep *dev_rep)
+/**
+ * Get the data direct attribute for a device representor.
+ * If @have_dev_rep is true, @dev_rep will be used to create the DOCA management device representor context. Otherwise,
+ * @vf_pci_addr will be used to create the DOCA management device representor context by PCI address.
+ *
+ * @param [in] dev: The DOCA device
+ * @param [in] dev_rep: The DOCA device representor. Must be valid if @have_dev_rep is true.
+ * @param [in] have_dev_rep: Flag to indicate if @dev_rep is valid
+ * @param [in] vf_pci_addr: The PCI address of the VF. Must be valid if @have_dev_rep is false.
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t mgmt_data_direct_get(struct doca_dev *dev,
+				  struct doca_dev_rep *dev_rep,
+				  bool have_dev_rep,
+				  const char *vf_pci_addr)
 {
 	struct doca_mgmt_dev_ctx *ctx;
 	struct doca_mgmt_dev_rep_ctx *rep_ctx;
@@ -47,12 +61,24 @@ doca_error_t mgmt_data_direct_get(struct doca_dev *dev, struct doca_dev_rep *dev
 		return result;
 	}
 
-	/* Create the DOCA management device representor context */
-	result = doca_mgmt_dev_rep_ctx_create(ctx, dev_rep, &rep_ctx);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create DOCA management device representor context: %s",
-			     doca_error_get_descr(result));
-		goto out;
+	if (have_dev_rep) {
+		/* Create the DOCA management device representor context */
+		result = doca_mgmt_dev_rep_ctx_create(ctx, dev_rep, &rep_ctx);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create DOCA management device representor context: %s",
+				     doca_error_get_descr(result));
+			goto out;
+		}
+	} else {
+		/* Create the DOCA management device representor context by PCI address */
+		result = doca_mgmt_dev_rep_ctx_create_by_pci_addr(ctx, vf_pci_addr, &rep_ctx);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR(
+				"Failed to create DOCA management device representor context by PCI address %s: %s",
+				vf_pci_addr,
+				doca_error_get_descr(result));
+			goto out;
+		}
 	}
 
 	/* Create the device caps general handle */
@@ -93,7 +119,23 @@ out:
 	return result;
 }
 
-doca_error_t mgmt_data_direct_set(struct doca_dev *dev, struct doca_dev_rep *dev_rep, bool enabled)
+/**
+ * Set the data direct attribute for a device representor.
+ * If @have_dev_rep is true, @dev_rep will be used to create the DOCA management device representor context. Otherwise,
+ * @vf_pci_addr will be used to create the DOCA management device representor context by PCI address.
+ *
+ * @param [in] dev: The DOCA device
+ * @param [in] dev_rep: The DOCA device representor. Must be valid if @have_dev_rep is true.
+ * @param [in] have_dev_rep: Flag to indicate if @dev_rep is valid
+ * @param [in] vf_pci_addr: The PCI address of the VF. Must be valid if @have_dev_rep is false.
+ * @param [in] enabled: Flag to indicate if data direct should be enabled or disabled
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t mgmt_data_direct_set(struct doca_dev *dev,
+				  struct doca_dev_rep *dev_rep,
+				  bool have_dev_rep,
+				  const char *vf_pci_addr,
+				  bool enabled)
 {
 	struct doca_mgmt_dev_ctx *ctx;
 	struct doca_mgmt_dev_rep_ctx *rep_ctx;
@@ -107,12 +149,24 @@ doca_error_t mgmt_data_direct_set(struct doca_dev *dev, struct doca_dev_rep *dev
 		return result;
 	}
 
-	/* Create the DOCA management device representor context */
-	result = doca_mgmt_dev_rep_ctx_create(ctx, dev_rep, &rep_ctx);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create DOCA management device representor context: %s",
-			     doca_error_get_descr(result));
-		goto out;
+	if (have_dev_rep) {
+		/* Create the DOCA management device representor context */
+		result = doca_mgmt_dev_rep_ctx_create(ctx, dev_rep, &rep_ctx);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create DOCA management device representor context: %s",
+				     doca_error_get_descr(result));
+			goto out;
+		}
+	} else {
+		/* Create the DOCA management device representor context by PCI address */
+		result = doca_mgmt_dev_rep_ctx_create_by_pci_addr(ctx, vf_pci_addr, &rep_ctx);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR(
+				"Failed to create DOCA management device representor context by PCI address %s: %s",
+				vf_pci_addr,
+				doca_error_get_descr(result));
+			goto out;
+		}
 	}
 
 	/* Create the device caps general handle */

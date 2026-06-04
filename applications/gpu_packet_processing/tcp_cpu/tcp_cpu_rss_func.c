@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -118,6 +118,7 @@ static doca_error_t create_tcp_session(const uint16_t queue_id,
 {
 	int ret;
 	struct tcp_session_entry *session_entry;
+	doca_error_t result;
 
 	session_entry = (struct tcp_session_entry *)calloc(1, sizeof(struct tcp_session_entry));
 	if (!session_entry) {
@@ -125,7 +126,12 @@ static doca_error_t create_tcp_session(const uint16_t queue_id,
 		return DOCA_ERROR_NO_MEMORY;
 	}
 	session_entry->key = extract_session_key(pkt);
-	enable_tcp_gpu_offload(port, queue_id, gpu_rss_pipe, session_entry);
+
+	result = enable_tcp_gpu_offload(port, queue_id, gpu_rss_pipe, session_entry);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("enable_tcp_gpu_offload failed with: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	ret = rte_hash_add_key_data(tcp_session_table, &session_entry->key, session_entry);
 	if (ret != 0) {

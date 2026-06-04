@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -308,10 +308,24 @@ doca_error_t time_sync_common_create_clock(struct time_sync_cfg *ts_cfg)
 	doca_error_t result;
 
 	result = doca_clock_create(ts_cfg->doca_dev, &ts_cfg->clock);
-	if (result != DOCA_SUCCESS)
+	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create DOCA clock: %s", doca_error_get_descr(result));
+		return result;
+	}
 
-	return result;
+	result = doca_clock_cap_nic_real_time_is_supported(doca_dev_as_devinfo(ts_cfg->doca_dev));
+	if (result == DOCA_SUCCESS) {
+		ts_cfg->nic_clock = DOCA_CLOCK_NIC_REAL_TIME;
+	} else if (result == DOCA_ERROR_NOT_SUPPORTED) {
+		/* If NIC is not in real time clock mode it must be free running */
+		ts_cfg->nic_clock = DOCA_CLOCK_NIC_FREE_RUNNING;
+	} else {
+		DOCA_LOG_ERR("Failed to check real-time support on device: %s", doca_error_get_descr(result));
+		(void)doca_clock_destroy(ts_cfg->clock);
+		return result;
+	}
+
+	return DOCA_SUCCESS;
 }
 
 doca_error_t time_sync_common_destroy_clock(struct time_sync_cfg *ts_cfg)
@@ -322,6 +336,7 @@ doca_error_t time_sync_common_destroy_clock(struct time_sync_cfg *ts_cfg)
 	if (result != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to destroy DOCA clock: %s", doca_error_get_descr(result));
 
+	ts_cfg->nic_clock = 0;
 	ts_cfg->clock = NULL;
 
 	return result;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -262,7 +262,7 @@ static doca_error_t telemetry_dpa_sample_cleanup(struct telemetry_dpa_sample_obj
 							    sample_objects->process_id,
 							    counter_type);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_WARN("Failed to restart telemetry_dpa counter counter with error=%s",
+			DOCA_LOG_WARN("Failed to restart telemetry_dpa counter with error=%s",
 				      doca_error_get_name(result));
 			return result;
 		}
@@ -552,8 +552,7 @@ doca_error_t telemetry_dpa_sample_run(const struct telemetry_dpa_sample_cfg *cfg
 						    sample_objects.process_id,
 						    cfg->counter_type);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_WARN("Failed to restart telemetry_dpa counter counter with error=%s",
-			      doca_error_get_name(result));
+		DOCA_LOG_WARN("Failed to restart telemetry_dpa counter with error=%s", doca_error_get_name(result));
 		return result;
 	}
 

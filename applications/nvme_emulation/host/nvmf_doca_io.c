@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -1677,7 +1677,6 @@ doca_error_t nvmf_doca_io_create(const struct nvmf_doca_io_create_attr *attr, st
 							       msix_table_configs[0].bar_id,
 							       msix_table_configs[0].start_address,
 							       attr->msix_idx,
-							       /*user_data=*/attr->msix_idx,
 							       &io->msix);
 		if (result != DOCA_SUCCESS) {
 			nvmf_doca_io_destroy(io);
@@ -2269,7 +2268,7 @@ static doca_error_t nvmf_doca_request_pool_create(struct nvmf_doca_sq *sq, size_
  * Destroys NVMF doca requests pool.
  *
  * @sq [in]: The SQ that holds the requests pool
- * @return: DOCA_SUCCESS on success and DOCCA_ERROR otherwise
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t nvmf_doca_request_pool_destroy(struct nvmf_doca_sq *sq)
 {

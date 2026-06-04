@@ -36,7 +36,7 @@
 
 #define UDP_WARP_MODE 0
 
-DOCA_LOG_REGISTER(GPU_SANITY::KernelReceiveUdp);
+DOCA_LOG_REGISTER(GPU_SANITY::KERNEL_RECEIVE_UDP);
 
 __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 					struct doca_gpu_eth_rxq *rxq0,
@@ -111,16 +111,13 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 		/* If any thread returns receive error, the whole execution stops */
 		if (ret != DOCA_SUCCESS) {
 			if (threadIdx.x == 0) {
-				/*
-				 * printf in CUDA kernel may be a good idea only to report critical errors or debugging.
-				 * If application prints this message on the console, something bad happened and
-				 * applications needs to exit
-				 */
+				#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 				printf("Receive UDP kernel error %d Block %d rxpkts %d error %d\n",
 				       ret,
 				       blockIdx.x,
 				       out_pkt_num,
 				       ret);
+				#endif
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 			}
 			break;
@@ -174,10 +171,12 @@ __global__ void cuda_kernel_receive_udp(uint32_t *exit_cond,
 		if (threadIdx.x == 0 && out_pkt_num > 0) {
 			ret = doca_gpu_dev_semaphore_get_custom_info_addr(sem, sem_idx, (void **)&stats_global);
 			if (ret != DOCA_SUCCESS) {
+				#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 				printf("UDP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n",
 				       ret,
 				       blockIdx.x,
 				       threadIdx.x);
+				#endif
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 				break;
 			}

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -47,7 +47,7 @@ DOCA_LOG_REGISTER(FLOW_IPV6_FLOW_LABEL);
 #define NB_EGRESS_PIPE_ENTRIES (NB_MODIFY_PIPE_ENTRIES + NB_ENCAP_PIPE_ENTRIES)
 #define TOTAL_ENTRIES (NB_INGRESS_PIPE_ENTRIES + NB_EGRESS_PIPE_ENTRIES)
 
-struct doca_flow_pipe *egress_pipe[2];
+static struct doca_flow_pipe *egress_pipe[2];
 
 /*
  * Create DOCA Flow ingress pipe with transport layer match and set pkt meta value.

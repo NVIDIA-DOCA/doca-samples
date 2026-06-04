@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -128,7 +128,7 @@ static doca_error_t print_icm_quota_config(struct doca_mgmt_icm_quota *icm_quota
 /*
  * Get the ICM quota configuration for a device or device representor.
  * If a device representor is provided, ICM quota configuration for the device representor will be retrieved.
- * Otherwise, ICM quota onfiguration for the device will be retrieved.
+ * Otherwise, ICM quota configuration for the device will be retrieved.
  *
  * @dev [in]: The device to get its ICM quota configuration
  * @dev_rep [in]: The device representor to get its ICM quota configuration. This parameter is optional and can be NULL.

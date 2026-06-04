@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -90,7 +90,7 @@ static doca_error_t create_root_pipe(struct doca_flow_port *port, struct doca_fl
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, 2);
+	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, 3);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg nr_entries: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -155,16 +155,20 @@ static doca_error_t add_root_pipe_entry(struct doca_flow_pipe *pipe,
  * @status [in]: user context for adding entry
  * @distribution_pipe [in]: distribution random pipe to forward the matched traffic.
  * @sampling_pipe [in]: sampling random pipe to forward the matched traffic.
+ * @copy_to_port_pipe [in]: pipe that copies random to dst_port for port-based sampling.
  * @distribution_entry [out]: created distribution entry pointer.
  * @sampling_entry [out]: created sampling entry pointer.
+ * @copy_to_port_entry [out]: created copy-to-port entry pointer.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t add_root_pipe_entries(struct doca_flow_pipe *pipe,
 					  struct entries_status *status,
 					  struct doca_flow_pipe *distribution_pipe,
 					  struct doca_flow_pipe *sampling_pipe,
+					  struct doca_flow_pipe *copy_to_port_pipe,
 					  struct doca_flow_pipe_entry **distribution_entry,
-					  struct doca_flow_pipe_entry **sampling_entry)
+					  struct doca_flow_pipe_entry **sampling_entry,
+					  struct doca_flow_pipe_entry **copy_to_port_entry)
 {
 	doca_be32_t src_ip_addr;
 	doca_error_t result;
@@ -180,6 +184,13 @@ static doca_error_t add_root_pipe_entries(struct doca_flow_pipe *pipe,
 	result = add_root_pipe_entry(pipe, distribution_pipe, src_ip_addr, status, distribution_entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry - go to distribution pipe: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	src_ip_addr = BE_IPV4_ADDR(3, 3, 3, 3);
+	result = add_root_pipe_entry(pipe, copy_to_port_pipe, src_ip_addr, status, copy_to_port_entry);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add entry - go to copy-to-port pipe: %s", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -221,39 +232,34 @@ static uint16_t get_random_mask(double percentage)
 }
 
 /*
- * Add DOCA Flow pipe for sampling according to random value
+ * Create a sampling pipe that matches on a field with a percentage-based mask.
+ * Used for both random sampling (parser_meta.random) and port-based sampling (dst_port).
+ * The caller fills in the match and match_mask with the desired field before calling.
  *
  * @port [in]: port of the pipe
  * @port_id [in]: port ID of the pipe
- * @percentage [in]: the certain percentage user wish to get in sampling
+ * @pipe_name [in]: name for the pipe
+ * @match [in]: pre-filled match structure (sampling field set to 0)
+ * @match_mask [in]: pre-filled match mask (sampling field set to percentage mask)
  * @pipe [out]: created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t create_random_sampling_pipe(struct doca_flow_port *port,
-						int port_id,
-						double percentage,
-						struct doca_flow_pipe **pipe)
+static doca_error_t create_sampling_pipe(struct doca_flow_port *port,
+					 int port_id,
+					 const char *pipe_name,
+					 struct doca_flow_match *match,
+					 struct doca_flow_match *match_mask,
+					 struct doca_flow_pipe **pipe)
 {
-	struct doca_flow_match match;
-	struct doca_flow_match match_mask;
 	struct doca_flow_monitor monitor;
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	doca_error_t result;
 
-	memset(&match, 0, sizeof(match));
-	memset(&match_mask, 0, sizeof(match_mask));
 	memset(&monitor, 0, sizeof(monitor));
 	memset(&fwd, 0, sizeof(fwd));
 
-	/* Calculate the mask according to requested percentage */
-	match_mask.parser_meta.random = DOCA_HTOBE16(get_random_mask(percentage));
-	/*
-	 * Specific value 0, 0 is valid value for any supported percentage.
-	 */
-	match.parser_meta.random = 0;
-
-	/* Add counter to see how many packet are sampled */
+	/* Add counter to track how many packets are sampled */
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
@@ -262,7 +268,7 @@ static doca_error_t create_random_sampling_pipe(struct doca_flow_port *port,
 		return result;
 	}
 
-	result = set_flow_pipe_cfg(pipe_cfg, "SAMPLING_PIPE", DOCA_FLOW_PIPE_BASIC, false);
+	result = set_flow_pipe_cfg(pipe_cfg, pipe_name, DOCA_FLOW_PIPE_BASIC, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -272,7 +278,7 @@ static doca_error_t create_random_sampling_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg nr_entries: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, &match_mask);
+	result = doca_flow_pipe_cfg_set_match(pipe_cfg, match, match_mask);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -293,27 +299,102 @@ destroy_pipe_cfg:
 }
 
 /*
- * Add DOCA Flow pipe entry to the random sampling pipe.
+ * Add a single pipe entry with empty match.
+ * Used for pipes where all match/fwd values are fixed at pipe creation time.
  *
- * @pipe [in]: pipe of the entries
+ * @pipe [in]: pipe to add the entry to
  * @status [in]: user context for adding entry
- * @entry [out]: created entry pointer.
+ * @entry [out]: created entry pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t add_random_sampling_pipe_entry(struct doca_flow_pipe *pipe,
-						   struct entries_status *status,
-						   struct doca_flow_pipe_entry **entry)
+static doca_error_t add_single_entry(struct doca_flow_pipe *pipe,
+				     struct entries_status *status,
+				     struct doca_flow_pipe_entry **entry)
 {
 	struct doca_flow_match match;
 
 	memset(&match, 0, sizeof(match));
 
-	/*
-	 * The values for both fwd and match structures was provided as specific in pipe creation,
-	 * no need to provide fresh information here again.
-	 */
-
 	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
+}
+
+/*
+ * Create DOCA Flow pipe that copies parser_meta.random.value into the TCP destination port.
+ * This overwrites the original dst_port with the hardware random value, then forwards to
+ * a downstream pipe for port-based sampling.
+ *
+ * @port [in]: port of the pipe
+ * @next_pipe [in]: downstream pipe to forward to (port sampling pipe)
+ * @pipe [out]: created pipe pointer
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t create_copy_random_to_port_pipe(struct doca_flow_port *port,
+						    struct doca_flow_pipe *next_pipe,
+						    struct doca_flow_pipe **pipe)
+{
+	struct doca_flow_match match;
+	struct doca_flow_actions actions;
+	struct doca_flow_actions *actions_arr[1];
+	struct doca_flow_fwd fwd;
+	struct doca_flow_pipe_cfg *pipe_cfg;
+	struct doca_flow_action_descs descs;
+	struct doca_flow_action_descs *descs_arr[1];
+	struct doca_flow_action_desc desc_array[1] = {0};
+	doca_error_t result;
+
+	memset(&match, 0, sizeof(match));
+	memset(&actions, 0, sizeof(actions));
+	memset(&fwd, 0, sizeof(fwd));
+	memset(&descs, 0, sizeof(descs));
+
+	/* Copy parser_meta.random.value (16 bits) to outer.tcp.dst_port (16 bits) */
+	desc_array[0].type = DOCA_FLOW_ACTION_COPY;
+	desc_array[0].field_op.src.field_string = "parser_meta.random.value";
+	desc_array[0].field_op.src.bit_offset = 0;
+	desc_array[0].field_op.dst.field_string = "outer.tcp.dst_port";
+	desc_array[0].field_op.dst.bit_offset = 0;
+	desc_array[0].field_op.width = RANDOM_WIDTH;
+
+	actions_arr[0] = &actions;
+	descs_arr[0] = &descs;
+	descs.nb_action_desc = 1;
+	descs.desc_array = desc_array;
+
+	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = set_flow_pipe_cfg(pipe_cfg, "COPY_RANDOM_TO_PORT_PIPE", DOCA_FLOW_PIPE_BASIC, false);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, 1);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg nr_entries: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, descs_arr, 1);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	/* Forward to the port sampling pipe after copying random to dst_port */
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = next_pipe;
+
+	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
+destroy_pipe_cfg:
+	doca_flow_pipe_cfg_destroy(pipe_cfg);
+	return result;
 }
 
 /*
@@ -427,11 +508,12 @@ static doca_error_t add_random_distribution_pipe_entries(struct doca_flow_pipe *
 static doca_error_t random_sampling_results(uint16_t port_id,
 					    struct doca_flow_pipe_entry *root_entry,
 					    struct doca_flow_pipe_entry *random_entry,
-					    double requested_percentage)
+					    double requested_percentage,
+					    const char *label)
 {
 	struct doca_flow_resource_query root_query_stats;
 	struct doca_flow_resource_query random_query_stats;
-	double actuall_percentage;
+	double actual_percentage;
 	uint32_t total_packets;
 	uint32_t nb_packets;
 	doca_error_t result;
@@ -453,12 +535,12 @@ static doca_error_t random_sampling_results(uint16_t port_id,
 	}
 
 	nb_packets = random_query_stats.counter.total_pkts;
-	actuall_percentage = GET_PERCENTAGE(nb_packets, total_packets);
+	actual_percentage = GET_PERCENTAGE(nb_packets, total_packets);
 
-	DOCA_LOG_INFO("Port %d sampling information (%g%% is requested):", port_id, requested_percentage);
+	DOCA_LOG_INFO("Port %d %s (%g%% is requested):", port_id, label, requested_percentage);
 	DOCA_LOG_INFO("This pipeline samples %u packets which is %g%% of the traffic (%u/%u)",
 		      nb_packets,
-		      actuall_percentage,
+		      actual_percentage,
 		      nb_packets,
 		      total_packets);
 
@@ -479,7 +561,7 @@ static doca_error_t random_distribution_results(uint16_t port_id,
 {
 	struct rte_mbuf *packets[PACKET_BURST];
 	struct doca_flow_resource_query root_query_stats;
-	double actuall_percentage, total_percentage = 0;
+	double actual_percentage, total_percentage = 0;
 	uint32_t total_packets, total_dist_packets = 0;
 	uint16_t nb_packets, nb_hit_queues = 0;
 	doca_error_t result;
@@ -499,15 +581,15 @@ static doca_error_t random_distribution_results(uint16_t port_id,
 
 	for (i = 0; i < nb_queues; i++) {
 		nb_packets = rte_eth_rx_burst(port_id, i, packets, PACKET_BURST);
-		actuall_percentage = GET_PERCENTAGE(nb_packets, total_packets);
+		actual_percentage = GET_PERCENTAGE(nb_packets, total_packets);
 		total_dist_packets += nb_packets;
-		total_percentage += actuall_percentage;
+		total_percentage += actual_percentage;
 		nb_hit_queues += nb_packets ? 1 : 0;
 
 		DOCA_LOG_INFO("Queue %u received %u packets which is %g%% of the traffic (%u/%u)",
 			      i,
 			      nb_packets,
-			      actuall_percentage,
+			      actual_percentage,
 			      nb_packets,
 			      total_packets);
 	}
@@ -533,51 +615,59 @@ static doca_error_t random_distribution_results(uint16_t port_id,
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 
+/* Describes one sampling path: a root entry (total counter) paired with a sampling entry */
+struct sampling_path {
+	struct doca_flow_pipe_entry *root_entry;
+	struct doca_flow_pipe_entry *sampling_entry;
+	const char *label;
+};
+
+#define NUM_SAMPLING_PATHS 2
+#define SAMPLING_PATH_RANDOM 0
+#define SAMPLING_PATH_PORT 1
+
 /* Context structure for statistics printing */
 struct random_stats_context {
 	int nb_ports;
 	int nb_rss_queues;
-	uint8_t requested_percentage;
-	struct doca_flow_pipe_entry **root2sampling_entry;
-	struct doca_flow_pipe_entry **random_entry;
-	struct doca_flow_pipe_entry **root2distribution_entry;
+	double requested_percentage;
+	struct sampling_path sampling[2][NUM_SAMPLING_PATHS]; /* [port][path] */
+	struct doca_flow_pipe_entry *root2distribution_entry[2];
 };
 
 /*
- * Print random statistics
+ * Print statistics for all sampling and distribution paths.
  *
- * @nb_ports [in]: number of ports
- * @nb_rss_queues [in]: number of RSS queues
- * @requested_percentage [in]: requested sampling percentage
- * @root2sampling_entry [in]: array of root to sampling entries
- * @random_entry [in]: array of random entries
- * @root2distribution_entry [in]: array of root to distribution entries
+ * @context [in]: random_stats_context passed as void* for flow_wait_for_packets
  */
-static void print_random_stats(int nb_ports,
-			       int nb_rss_queues,
-			       uint8_t requested_percentage,
-			       struct doca_flow_pipe_entry *root2sampling_entry[],
-			       struct doca_flow_pipe_entry *random_entry[],
-			       struct doca_flow_pipe_entry *root2distribution_entry[])
+static void print_random_stats(void *context)
 {
+	struct random_stats_context *ctx = (struct random_stats_context *)context;
 	doca_error_t result;
-	int port_id;
+	int port_id, i;
 
-	for (port_id = 0; port_id < nb_ports; port_id++) {
-		/* Show the results for sampling */
-		result = random_sampling_results(port_id,
-						 root2sampling_entry[port_id],
-						 random_entry[port_id],
-						 requested_percentage);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to show sampling results in port %u: %s",
-				     port_id,
-				     doca_error_get_descr(result));
-			return;
+	for (port_id = 0; port_id < ctx->nb_ports; port_id++) {
+		/* Show results for each sampling path */
+		for (i = 0; i < NUM_SAMPLING_PATHS; i++) {
+			struct sampling_path *sp = &ctx->sampling[port_id][i];
+
+			result = random_sampling_results(port_id,
+							 sp->root_entry,
+							 sp->sampling_entry,
+							 ctx->requested_percentage,
+							 sp->label);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to show %s results in port %u: %s",
+					     sp->label,
+					     port_id,
+					     doca_error_get_descr(result));
+				return;
+			}
 		}
 
 		/* Show the results for distribution */
-		result = random_distribution_results(port_id, nb_rss_queues, root2distribution_entry[port_id]);
+		result =
+			random_distribution_results(port_id, ctx->nb_rss_queues, ctx->root2distribution_entry[port_id]);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to show distribution results in port %u: %s",
 				     port_id,
@@ -585,22 +675,6 @@ static void print_random_stats(int nb_ports,
 			return;
 		}
 	}
-}
-
-/*
- * Wrapper function for statistics printing compatible with flow_wait_for_packets
- *
- * @context [in]: random_stats_context structure
- */
-static void print_random_stats_wrapper(void *context)
-{
-	struct random_stats_context *ctx = (struct random_stats_context *)context;
-	print_random_stats(ctx->nb_ports,
-			   ctx->nb_rss_queues,
-			   ctx->requested_percentage,
-			   ctx->root2sampling_entry,
-			   ctx->random_entry,
-			   ctx->root2distribution_entry);
 }
 
 doca_error_t flow_random(int nb_steering_queues, int nb_rss_queues)
@@ -613,12 +687,14 @@ doca_error_t flow_random(int nb_steering_queues, int nb_rss_queues)
 	struct doca_flow_pipe *root_pipe;
 	struct doca_flow_pipe *sampling_pipe;
 	struct doca_flow_pipe *distribution_pipe;
-	struct doca_flow_pipe_entry *root2sampling_entry[nb_ports];
-	struct doca_flow_pipe_entry *root2distribution_entry[nb_ports];
-	struct doca_flow_pipe_entry *random_entry[nb_ports];
+	struct doca_flow_pipe *port_sampling_pipe;
+	struct doca_flow_pipe *copy_to_port_pipe;
+	struct doca_flow_match match, match_mask;
+	struct doca_flow_pipe_entry *unused_entry;
+	struct random_stats_context stats_ctx = {0};
 	struct entries_status status;
 	double requested_percentage = 12.5;
-	uint32_t num_of_entries = 3 + nb_rss_queues;
+	uint32_t num_of_entries = 6 + nb_rss_queues;
 	doca_error_t result;
 	int port_id;
 
@@ -643,82 +719,119 @@ doca_error_t flow_random(int nb_steering_queues, int nb_rss_queues)
 	}
 
 	for (port_id = 0; port_id < nb_ports; port_id++) {
+		struct sampling_path *sp_random = &stats_ctx.sampling[port_id][SAMPLING_PATH_RANDOM];
+		struct sampling_path *sp_port = &stats_ctx.sampling[port_id][SAMPLING_PATH_PORT];
+
 		memset(&status, 0, sizeof(status));
 
+		/* === Distribution pipe (hash on parser_meta.random) === */
 		result = create_random_distribution_pipe(ports[port_id], nb_rss_queues, &distribution_pipe);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create random distribution pipe: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			DOCA_LOG_ERR("Failed to create distribution pipe: %s", doca_error_get_descr(result));
+			goto cleanup;
 		}
-
 		result = add_random_distribution_pipe_entries(distribution_pipe, nb_rss_queues, &status);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to add random distribution pipe entries: %s",
-				     doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			DOCA_LOG_ERR("Failed to add distribution pipe entries: %s", doca_error_get_descr(result));
+			goto cleanup;
 		}
 
-		result = create_random_sampling_pipe(ports[port_id], port_id, requested_percentage, &sampling_pipe);
+		/* === Random sampling pipe (match parser_meta.random & mask == 0) === */
+		memset(&match, 0, sizeof(match));
+		memset(&match_mask, 0, sizeof(match_mask));
+		match_mask.parser_meta.random = DOCA_HTOBE16(get_random_mask(requested_percentage));
+		match.parser_meta.random = 0;
+
+		result = create_sampling_pipe(ports[port_id],
+					      port_id,
+					      "RANDOM_SAMPLING_PIPE",
+					      &match,
+					      &match_mask,
+					      &sampling_pipe);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create random sampling pipe: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto cleanup;
 		}
-
-		result = add_random_sampling_pipe_entry(sampling_pipe, &status, &random_entry[port_id]);
+		result = add_single_entry(sampling_pipe, &status, &sp_random->sampling_entry);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to add random sampling pipe entry: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			DOCA_LOG_ERR("Failed to add random sampling entry: %s", doca_error_get_descr(result));
+			goto cleanup;
+		}
+		sp_random->label = "random sampling";
+
+		/* === Port-based sampling (copy random to dst_port, then match dst_port & mask == 0) === */
+		memset(&match, 0, sizeof(match));
+		memset(&match_mask, 0, sizeof(match_mask));
+		match_mask.outer.tcp.l4_port.dst_port = DOCA_HTOBE16(get_random_mask(requested_percentage));
+		match.outer.tcp.l4_port.dst_port = 0;
+
+		result = create_sampling_pipe(ports[port_id],
+					      port_id,
+					      "PORT_SAMPLING_PIPE",
+					      &match,
+					      &match_mask,
+					      &port_sampling_pipe);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create port sampling pipe: %s", doca_error_get_descr(result));
+			goto cleanup;
+		}
+		result = add_single_entry(port_sampling_pipe, &status, &sp_port->sampling_entry);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to add port sampling entry: %s", doca_error_get_descr(result));
+			goto cleanup;
+		}
+		sp_port->label = "port-based sampling";
+
+		/* Copy pipe: copies parser_meta.random.value → outer.tcp.dst_port */
+		result = create_copy_random_to_port_pipe(ports[port_id], port_sampling_pipe, &copy_to_port_pipe);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create copy-random-to-port pipe: %s", doca_error_get_descr(result));
+			goto cleanup;
+		}
+		result = add_single_entry(copy_to_port_pipe, &status, &unused_entry);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to add copy-random-to-port entry: %s", doca_error_get_descr(result));
+			goto cleanup;
 		}
 
+		/* === Root pipe (5-tuple steering to the above pipes) === */
 		result = create_root_pipe(ports[port_id], &root_pipe);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create root pipe: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto cleanup;
 		}
-
 		result = add_root_pipe_entries(root_pipe,
 					       &status,
 					       distribution_pipe,
 					       sampling_pipe,
-					       &root2distribution_entry[port_id],
-					       &root2sampling_entry[port_id]);
+					       copy_to_port_pipe,
+					       &stats_ctx.root2distribution_entry[port_id],
+					       &sp_random->root_entry,
+					       &sp_port->root_entry);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add root pipe entries: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto cleanup;
 		}
 
 		result = flow_process_entries(ports[port_id], &status, num_of_entries);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
-			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
-			return result;
+			goto cleanup;
 		}
 	}
 
-	/* Setup statistics context and wait for packets */
-	struct random_stats_context stats_ctx = {.nb_ports = nb_ports,
-						 .nb_rss_queues = nb_rss_queues,
-						 .requested_percentage = requested_percentage,
-						 .root2sampling_entry = root2sampling_entry,
-						 .random_entry = random_entry,
-						 .root2distribution_entry = root2distribution_entry};
+	stats_ctx.nb_ports = nb_ports;
+	stats_ctx.nb_rss_queues = nb_rss_queues;
+	stats_ctx.requested_percentage = requested_percentage;
 
-	flow_wait_for_packets(15, print_random_stats_wrapper, &stats_ctx);
+	flow_wait_for_packets(15, print_random_stats, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
+	doca_flow_destroy();
+	return result;
+
+cleanup:
+	stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();
 	return result;
 }

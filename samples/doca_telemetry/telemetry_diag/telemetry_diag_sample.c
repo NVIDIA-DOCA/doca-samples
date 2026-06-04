@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -28,11 +28,17 @@
 #include <doca_dev.h>
 #include <doca_telemetry_diag.h>
 #include <errno.h>
-#include <time.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#ifdef __linux__
 #include <unistd.h>
+#else /* __linux__ */
+#include <windows.h>
+#endif /* __linux__ */
 
-#include "common.h"
 #include "telemetry_diag_sample.h"
 
 DOCA_LOG_REGISTER(TELEMETRY_DIAG::SAMPLE);
@@ -47,6 +53,93 @@ struct telemetry_diag_sample_objects {
 	void *buf;					/* Buf for the sampling output*/
 	FILE *output_file;				/* Output file*/
 };
+
+#ifndef __linux__
+#ifndef CLOCK_REALTIME
+#define CLOCK_REALTIME 0
+#endif
+/**
+ * Windows does not have clock_gettime; provide a replacement using GetSystemTimePreciseAsFileTime.
+ *
+ * @clk_id [in]: clock id
+ * @tp [out]: timespec struct to store the time
+ * @return: 0 on success, -1 on error
+ */
+static int clock_gettime(int clk_id, struct timespec *tp)
+{
+	FILETIME ft;
+	ULARGE_INTEGER uli;
+	(void)clk_id;
+	GetSystemTimePreciseAsFileTime(&ft);
+	uli.LowPart = ft.dwLowDateTime;
+	uli.HighPart = ft.dwHighDateTime;
+	/* FILETIME is 100-nanosecond intervals since 1601-01-01 UTC. Convert to Unix epoch (1970-01-01). */
+	uli.QuadPart -= 11644473600ULL * 10000000ULL;
+	tp->tv_sec = (time_t)(uli.QuadPart / 10000000ULL);
+	tp->tv_nsec = (long)((uli.QuadPart % 10000000ULL) * 100);
+	return 0;
+}
+
+/**
+ * Windows does not have usleep; use Sleep() which takes milliseconds.
+ *
+ * @usec [in]: microseconds to sleep
+ */
+static inline void usleep(unsigned int usec)
+{
+	if (usec > 1000) {
+		Sleep(usec / 1000);
+	} else {
+		Sleep(1);
+	}
+}
+#endif /* __linux__ */
+
+/*
+ * Open a DOCA device according to a given PCI address
+ *
+ * @pci_addr [in]: PCI address
+ * @retval [out]: pointer to doca_dev struct, NULL if not found
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t open_doca_device_with_pci(const char *pci_addr, struct doca_dev **retval)
+{
+	struct doca_devinfo **dev_list;
+	uint32_t nb_devs;
+	uint8_t is_addr_equal = 0;
+	doca_error_t result;
+	size_t i;
+
+	/* Set default return value */
+	*retval = NULL;
+
+	result = doca_devinfo_create_list(&dev_list, &nb_devs);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to load doca devices list: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* Search */
+	for (i = 0; i < nb_devs; i++) {
+		result = doca_devinfo_is_equal_pci_addr(dev_list[i], pci_addr, &is_addr_equal);
+		if (result == DOCA_SUCCESS && is_addr_equal) {
+			/* if device can be opened */
+			result = doca_dev_open(dev_list[i], retval);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Matching device found but failed to open with error=%s",
+					     doca_error_get_name(result));
+			}
+			doca_devinfo_destroy_list(dev_list);
+			return result;
+		}
+	}
+
+	DOCA_LOG_WARN("Matching device not found");
+	result = DOCA_ERROR_NOT_FOUND;
+
+	doca_devinfo_destroy_list(dev_list);
+	return result;
+}
 
 /*
  * Verify params
@@ -294,7 +387,7 @@ static doca_error_t telemetry_diag_sample_set_properties(struct doca_telemetry_d
  */
 static inline uint64_t telemetry_diag_sample_time_diff_nsec(struct timespec start, struct timespec end)
 {
-	return ((end.tv_nsec + (end.tv_sec - start.tv_sec) * SECS_TO_NSECS_CONVERSION) - start.tv_nsec);
+	return (uint64_t)((end.tv_nsec + (end.tv_sec - start.tv_sec) * SECS_TO_NSECS_CONVERSION) - start.tv_nsec);
 }
 
 /*
@@ -328,8 +421,18 @@ static doca_error_t telemetry_diag_sample_context_init(struct telemetry_diag_sam
 
 	doca_error_t result, teardown_result;
 	uint64_t counter_id_failure = 0;
+	uint64_t *data_ids = NULL;
 
-	uint64_t data_ids[(size_t)num_data_ids];
+	/* Allocate data_ids array (avoids VLA and zero-size array for MSVC) */
+	if (num_data_ids == 0) {
+		DOCA_LOG_ERR("No data IDs provided");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	data_ids = (uint64_t *)malloc((size_t)num_data_ids * sizeof(uint64_t));
+	if (data_ids == NULL) {
+		DOCA_LOG_ERR("Failed to allocate memory for data_ids");
+		return DOCA_ERROR_NO_MEMORY;
+	}
 
 	/* Check support for input arguments */
 	result = telemetry_diag_sample_check_capabilities(sample_objects->dev,
@@ -341,14 +444,14 @@ static doca_error_t telemetry_diag_sample_context_init(struct telemetry_diag_sam
 							  timestamp_source);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed capability checks with error=%s", doca_error_get_name(result));
-		return result;
+		goto free_data_ids;
 	}
 
 	/* Create context and set properties */
 	result = doca_telemetry_diag_create(sample_objects->dev, force_ownership, &sample_objects->telemetry_diag_obj);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create telemetry diag object with error=%s", doca_error_get_name(result));
-		goto teardown_init;
+		goto free_data_ids;
 	}
 
 	result = telemetry_diag_sample_set_properties(sample_objects->telemetry_diag_obj,
@@ -388,8 +491,11 @@ static doca_error_t telemetry_diag_sample_context_init(struct telemetry_diag_sam
 		goto teardown_init;
 	}
 
+	free(data_ids);
 	return DOCA_SUCCESS;
 
+free_data_ids:
+	free(data_ids);
 teardown_init:
 	teardown_result = telemetry_diag_sample_cleanup(sample_objects);
 	if (teardown_result != DOCA_SUCCESS) {
@@ -406,12 +512,12 @@ static inline int write_timestamp_to_file(FILE *file,
 	if (timestamp_source == DOCA_TELEMETRY_DIAG_TIMESTAMP_SOURCE_RTC) {
 		/* Write rtc timestamp to csv file. The below timestamp print is only valid for RTC timestamp format
 		 * The timestamp_h is seconds, the timestamp_l is sub-second time, given in nanoseconds, thus,
-		 * (timestamp_h * NSEC_IN_SEC + timestamp_l) is the timestamp in nanseconds.
+		 * (timestamp_h * NSEC_IN_SEC + timestamp_l) is the timestamp in nanoseconds.
 		 */
 		return fprintf(file, ", %u.%09u", timestamp_h, timestamp_l);
 	} else {
 		/* Write frc timestamp to csv file. */
-		return fprintf(file, ", %lu", ((uint64_t)timestamp_h << 32) | timestamp_l);
+		return fprintf(file, ", %llu", (unsigned long long)(((uint64_t)timestamp_h << 32) | timestamp_l));
 	}
 }
 
@@ -442,8 +548,9 @@ static inline doca_error_t telemetry_diag_sample_write_sample_format_0(
 		}
 
 		for (uint32_t j = 0; j < sample_objects->num_data_ids; j++) {
-			write_result =
-				fprintf(sample_objects->output_file, ", 0x%016lx", current_sample->value[j].data_id);
+			write_result = fprintf(sample_objects->output_file,
+					       ", 0x%016llx",
+					       (unsigned long long)current_sample->value[j].data_id);
 			if (write_result < 0) {
 				DOCA_LOG_ERR("Failed to write data_id to output file with errno=%s (%d)",
 					     strerror(errno),
@@ -460,8 +567,9 @@ static inline doca_error_t telemetry_diag_sample_write_sample_format_0(
 					     errno);
 				return DOCA_ERROR_IO_FAILED;
 			}
-			write_result =
-				fprintf(sample_objects->output_file, ", %lu", current_sample->value[j].data_value);
+			write_result = fprintf(sample_objects->output_file,
+					       ", %llu",
+					       (unsigned long long)current_sample->value[j].data_value);
 			if (write_result < 0) {
 				DOCA_LOG_ERR("Failed to write counter value to output file with errno=%s (%d)",
 					     strerror(errno),
@@ -549,7 +657,9 @@ static inline doca_error_t telemetry_diag_sample_write_sample_format_1(
 		}
 
 		for (uint32_t j = 0; j < sample_objects->num_data_ids; j++) {
-			write_result = fprintf(sample_objects->output_file, ", %lu", current_sample->data_value[j]);
+			write_result = fprintf(sample_objects->output_file,
+					       ", %llu",
+					       (unsigned long long)current_sample->data_value[j]);
 			if (write_result < 0) {
 				DOCA_LOG_ERR("Failed to write to output file with errno=%s (%d)",
 					     strerror(errno),
@@ -719,7 +829,8 @@ static doca_error_t telemetry_diag_sample_run_query_counters_repetitive(
 		/* If we got the max num of samples when querying, it is possible there are more samples to be polled,
 		 * so sleep only if we got less samples from max. */
 		if ((num_actual_samples < max_num_samples_per_read) && poll_interval > process_period_nsec)
-			usleep((poll_interval - process_period_nsec) / 1000); /* Convert nseconds to useconds*/
+			usleep((unsigned int)((poll_interval - process_period_nsec) / 1000)); /* Convert nseconds to
+												 useconds*/
 	}
 	return DOCA_SUCCESS;
 }
@@ -822,9 +933,10 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 
 	uint64_t actual_sample_period;
 	uint64_t poll_interval;
-	uint64_t total_run_time_nsec = (uint64_t)cfg->run_time * SECS_TO_NSECS_CONVERSION; /* convert total poll
-											    * time to nsec
-											    */
+	uint64_t total_run_time_nsec = (uint64_t)((uint64_t)cfg->run_time * SECS_TO_NSECS_CONVERSION); /* convert total
+													* poll time to
+													* nsec
+													*/
 
 	DOCA_LOG_DBG("Started doca_telemetry_diag sample with the following parameters: ");
 	DOCA_LOG_DBG("	pci_addr='%s'", cfg->pci_addr);
@@ -864,7 +976,7 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 	}
 
 	/* Open DOCA device based on the given PCI address */
-	result = open_doca_device_with_pci(cfg->pci_addr, NULL, &sample_objects.dev);
+	result = open_doca_device_with_pci(cfg->pci_addr, &sample_objects.dev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to open device with error=%s", doca_error_get_name(result));
 	}
@@ -884,7 +996,7 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 		goto teardown;
 	}
 
-	sample_objects.output_file = fopen(cfg->output_path, "wr");
+	sample_objects.output_file = fopen(cfg->output_path, "w+");
 	if (sample_objects.output_file == NULL) {
 		DOCA_LOG_ERR("Failed to open output file \"%s\" with errno=%s (%d)",
 			     cfg->output_path,
@@ -938,16 +1050,17 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 	switch ((cfg->sample_mode)) {
 	case DOCA_TELEMETRY_DIAG_SAMPLE_MODE_SINGLE:
 		/* Sleep for the time it takes to fill the whole buffer, then query the results */
-		usleep((actual_sample_period * (1U << cfg->log_max_num_samples)) / 1000); /* Convert nseconds to
-											     useconds*/
+		usleep((unsigned int)((actual_sample_period * (1ULL << cfg->log_max_num_samples)) / 1000)); /* Convert
+											     nseconds to useconds*/
 	/* Fallthrough */
 	case DOCA_TELEMETRY_DIAG_SAMPLE_MODE_ON_DEMAND:
-		result = telemetry_diag_sample_run_query_counters_by_max_samples(&sample_objects,
-										 (1U << cfg->log_max_num_samples),
-										 cfg->max_num_samples_per_read,
-										 size_of_sample,
-										 cfg->output_format,
-										 cfg->timestamp_source);
+		result = telemetry_diag_sample_run_query_counters_by_max_samples(
+			&sample_objects,
+			(uint32_t)(1ULL << cfg->log_max_num_samples),
+			cfg->max_num_samples_per_read,
+			size_of_sample,
+			cfg->output_format,
+			cfg->timestamp_source);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to run query counters with error=%s", doca_error_get_name(result));
 			goto teardown;

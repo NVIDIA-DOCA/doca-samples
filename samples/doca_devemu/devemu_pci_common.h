@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -118,6 +118,15 @@ doca_error_t find_supported_device(const char *pci_address,
 				   const struct doca_devemu_pci_type *pci_type,
 				   emulation_supported_cb_t has_support,
 				   struct doca_dev **dev);
+
+/*
+ * Open a DOCA device according to a given PCI address, that can be used as an emulation manager for generic PCI type
+ *
+ * @pci_address [in]: PCI address
+ * @dev [out]: pointer to doca_dev struct, NULL if not found
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t find_generic_emulation_manager_device(const char *pci_address, struct doca_dev **dev);
 
 /*
  * Open an emulated PCI device representor according to type and given VUID

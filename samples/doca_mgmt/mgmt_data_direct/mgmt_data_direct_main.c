@@ -24,6 +24,7 @@
  */
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -64,8 +65,15 @@ struct mgmt_data_direct_config {
 };
 
 /* Sample's Logic */
-doca_error_t mgmt_data_direct_get(struct doca_dev *dev, struct doca_dev_rep *dev_rep);
-doca_error_t mgmt_data_direct_set(struct doca_dev *dev, struct doca_dev_rep *dev_rep, bool enabled);
+doca_error_t mgmt_data_direct_get(struct doca_dev *dev,
+				  struct doca_dev_rep *dev_rep,
+				  bool have_dev_rep,
+				  const char *vf_pci_addr);
+doca_error_t mgmt_data_direct_set(struct doca_dev *dev,
+				  struct doca_dev_rep *dev_rep,
+				  bool have_dev_rep,
+				  const char *vf_pci_addr,
+				  bool enabled);
 
 /*
  * ARGP Callback - Handle rep parameter
@@ -423,6 +431,94 @@ static doca_error_t validate_params(struct mgmt_data_direct_config *conf)
 	return DOCA_SUCCESS;
 }
 
+/**
+ * Check if the PF's IB device link layer is InfiniBand
+ *
+ * @param [in] pf_pci_addr: The PCI address of the PF
+ * @param [out] is_ib_link_layer: Flag to indicate if the PF's IB device link layer is InfiniBand
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t pf_is_ib_link_layer(const char *pf_pci_addr, bool *is_ib_link_layer)
+{
+	char infiniband_path[PATH_MAX];
+	char link_layer_path[PATH_MAX];
+	char link_layer_value[64];
+	DIR *dir;
+	struct dirent *entry;
+	FILE *fp = NULL;
+	size_t len;
+	doca_error_t result;
+	int ret;
+
+	ret = snprintf(infiniband_path, PATH_MAX, "/sys/bus/pci/devices/%s/infiniband", pf_pci_addr);
+	if (ret < 0 || ret >= PATH_MAX) {
+		DOCA_LOG_ERR("Failed to check PF IB link layer: failed to create infiniband path");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	dir = opendir(infiniband_path);
+	if (dir == NULL) {
+		DOCA_LOG_ERR("Failed to check PF IB link layer: failed to open %s directory. errno: %s (%d)",
+			     infiniband_path,
+			     strerror(errno),
+			     errno);
+		return DOCA_ERROR_OPERATING_SYSTEM;
+	}
+
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_name[0] == '.')
+			continue;
+
+		ret = snprintf(link_layer_path, PATH_MAX, "%s/%s/ports/1/link_layer", infiniband_path, entry->d_name);
+		if (ret < 0 || ret >= PATH_MAX) {
+			DOCA_LOG_ERR(
+				"Failed to check PF IB link layer: failed to create link_layer path for IB device %s",
+				entry->d_name);
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto out;
+		}
+
+		fp = fopen(link_layer_path, "r");
+		if (fp == NULL) {
+			DOCA_LOG_ERR("Failed to check PF IB link layer: failed to open file %s. errno: %s (%d)",
+				     link_layer_path,
+				     strerror(errno),
+				     errno);
+			result = DOCA_ERROR_OPERATING_SYSTEM;
+			goto out;
+		}
+
+		if (fgets(link_layer_value, sizeof(link_layer_value), fp) == NULL) {
+			DOCA_LOG_ERR("Failed to check PF IB link layer: failed to read %s file. errno: %s (%d)",
+				     link_layer_path,
+				     strerror(errno),
+				     errno);
+			result = DOCA_ERROR_OPERATING_SYSTEM;
+			goto out_close_fp;
+		}
+
+		/* Remove trailing newline if present */
+		len = strlen(link_layer_value);
+		if (len > 0 && link_layer_value[len - 1] == '\n')
+			link_layer_value[len - 1] = '\0';
+
+		*is_ib_link_layer = strcmp(link_layer_value, "InfiniBand") == 0;
+		result = DOCA_SUCCESS;
+		goto out_close_fp;
+	}
+
+	DOCA_LOG_ERR("Failed to check PF IB link layer: failed to find IB device");
+	result = DOCA_ERROR_INVALID_VALUE;
+
+out_close_fp:
+	if (fp != NULL)
+		(void)fclose(fp);
+
+out:
+	(void)closedir(dir);
+	return result;
+}
+
 /*
  * Sample main function
  *
@@ -435,6 +531,7 @@ int main(int argc, char **argv)
 	struct doca_log_backend *sdk_log;
 	struct mgmt_data_direct_config conf = {};
 	char pf_pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE];
+	bool have_dev_rep = true;
 	int exit_status = EXIT_FAILURE;
 	doca_error_t result;
 
@@ -480,8 +577,10 @@ int main(int argc, char **argv)
 	if (result != DOCA_SUCCESS)
 		goto argp_cleanup;
 
-	/* If VF PCI address parameter is set, open DOCA device and representor of VF */
+	/* If VF PCI address parameter is set, open DOCA device and representor of VF if it has one */
 	if (conf.vf_pci_addr_set) {
+		bool is_ib;
+
 		result = get_pf_pci_addr(conf.vf_pci_addr, pf_pci_addr);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to get PF PCI address: %s", doca_error_get_descr(result));
@@ -496,26 +595,46 @@ int main(int argc, char **argv)
 			goto argp_cleanup;
 		}
 
-		result = open_doca_device_rep_with_pci(conf.dev,
-						       DOCA_DEVINFO_REP_FILTER_NET,
-						       conf.vf_pci_addr,
-						       &conf.dev_rep);
+		result = pf_is_ib_link_layer(pf_pci_addr, &is_ib);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to open DOCA device representor of VF %s: %s",
-				     conf.vf_pci_addr,
+			DOCA_LOG_ERR("Failed to check IB link layer of PF %s: %s",
+				     pf_pci_addr,
 				     doca_error_get_descr(result));
 			goto argp_cleanup;
+		}
+
+		/*
+		 * If the PF's IB device link layer is Infiniband, the VF doesn't have a representor and we will use
+		 * doca_mgmt_dev_rep_ctx_create_by_pci_addr() to create a struct doca_mgmt_dev_rep_ctx for the VF.
+		 * Otherwise, the VF is expected to have a representor, so open it.
+		 */
+		have_dev_rep = !is_ib;
+		if (have_dev_rep) {
+			result = open_doca_device_rep_with_pci(conf.dev,
+							       DOCA_DEVINFO_REP_FILTER_NET,
+							       conf.vf_pci_addr,
+							       &conf.dev_rep);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to open DOCA device representor of VF %s: %s",
+					     conf.vf_pci_addr,
+					     doca_error_get_descr(result));
+				goto argp_cleanup;
+			}
 		}
 	}
 
 	if (conf.cmd == DOCA_MGMT_DATA_DIRECT_CMD_SET) {
-		result = mgmt_data_direct_set(conf.dev, conf.dev_rep, conf.set_params.enabled);
+		result = mgmt_data_direct_set(conf.dev,
+					      conf.dev_rep,
+					      have_dev_rep,
+					      conf.vf_pci_addr,
+					      conf.set_params.enabled);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set data direct: %s", doca_error_get_descr(result));
 			goto argp_cleanup;
 		}
 	} else {
-		result = mgmt_data_direct_get(conf.dev, conf.dev_rep);
+		result = mgmt_data_direct_get(conf.dev, conf.dev_rep, have_dev_rep, conf.vf_pci_addr);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to get data direct: %s", doca_error_get_descr(result));
 			goto argp_cleanup;

@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -51,7 +51,7 @@ sample_dependencies += dependency('doca-argp')
 
 debug_mode = 'none'
 if get_option('buildtype') == 'debug' or get_option('buildtype') == 'debugoptimized'
-        debug_mode = 'true'
+	debug_mode = 'true'
 endif
 
 address_sanitizer = get_option('b_sanitize')
@@ -62,6 +62,6 @@ sample_builds = find_program(build_script)
 command = [ sample_builds, meson.project_build_root(), address_sanitizer, doca_lib_dir, debug_mode]
 
 custom_target(DOCA_PREFIX + SAMPLE_NAME,
-                command: command,
-                output : DOCA_PREFIX + SAMPLE_NAME,
-                build_by_default: true)
+		command: command,
+		output : DOCA_PREFIX + SAMPLE_NAME,
+		build_by_default: true)

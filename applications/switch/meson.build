@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -24,7 +24,7 @@
 
 app_srcs = files([
 	APP_NAME + '.c',
-        APP_NAME + '_core.c',
+	APP_NAME + '_core.c',
 	common_dir_path + '/dpdk_utils.c',
 	common_dir_path + '/utils.c',
 	common_dir_path + '/flow_parser.c',

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -47,7 +47,7 @@ enum ingress_entries {
 	INGRESS_ENT_MAX,
 };
 
-enum hash_enteries {
+enum hash_entries {
 	HASH_CLONE_0,
 	HASH_CLONE_1,
 	HASH_CLONE_2,
@@ -87,7 +87,7 @@ struct flooding_case {
  * perform the needed action and fwd.
  *
  */
-struct flooding_case flooding_table[] = {
+static struct flooding_case flooding_table[] = {
 	{
 		.case_id = FLOODING_CASE_TYPE_A,
 		.classifier_addr = BE_IPV4_ADDR(1, 2, 3, 4),

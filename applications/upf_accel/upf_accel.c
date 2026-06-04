@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -948,7 +948,7 @@ static void upf_accel_fp_accel_counters_print(struct upf_accel_fp_data *fp_data_
 			ran_counters = &fp_data->accel_failed_counters[PARSER_PKT_TYPE_TUNNELED];
 			wan_counters = &fp_data->accel_failed_counters[PARSER_PKT_TYPE_PLAIN];
 		} else {
-			DOCA_LOG_ERR("Unknowon counters name");
+			DOCA_LOG_ERR("Unknown counters name");
 			return;
 		}
 
@@ -1543,7 +1543,7 @@ static doca_error_t pkts_before_accel_callback(void *param, void *config)
 	const uint32_t n = *(const uint32_t *)param;
 
 	if (n < 1) {
-		DOCA_LOG_ERR("Bad param: num-pkts-pefore-accel must be greater or equal to 1");
+		DOCA_LOG_ERR("Bad param: num-pkts-before-accel must be greater or equal to 1");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 

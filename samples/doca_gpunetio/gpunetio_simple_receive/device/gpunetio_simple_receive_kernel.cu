@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -27,7 +27,7 @@
 #include <doca_log.h>
 #include "gpunetio_common.h"
 
-#define DOCA_GPUNETIO_SIMPLE_RECEIVE_DEBUG 0
+#define ENABLE_DEBUG 0
 
 DOCA_LOG_REGISTER(GPUNETIO_SIMPLE_RECEIVE::KERNEL);
 
@@ -61,7 +61,9 @@ __global__ void receive_packets(struct doca_gpu_eth_rxq *rxq, uint32_t *exit_con
 					* If application prints this message on the console, something bad happened and
 					* applications needs to exit
 					*/
-					printf("Receive UDP kernel error %d rxpkts %d error %d\n", ret, out_pkt_num, ret);
+					#if ENABLE_DEBUG == 1
+						printf("Receive UDP kernel error %d rxpkts %d error %d\n", ret, out_pkt_num, ret);
+					#endif
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 					*tot_pkts = 0;
 				}
@@ -86,7 +88,9 @@ __global__ void receive_packets(struct doca_gpu_eth_rxq *rxq, uint32_t *exit_con
 					* If application prints this message on the console, something bad happened and
 					* applications needs to exit
 					*/
-					printf("Receive UDP kernel error %d rxpkts %d error %d\n", ret, out_pkt_num, ret);
+					#if ENABLE_DEBUG == 1
+						printf("Receive UDP kernel error %d rxpkts %d error %d\n", ret, out_pkt_num, ret);
+					#endif
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 					*tot_pkts = 0;
 				}
@@ -100,7 +104,7 @@ __global__ void receive_packets(struct doca_gpu_eth_rxq *rxq, uint32_t *exit_con
 		buf_idx = threadIdx.x;
 		while (buf_idx < out_pkt_num) {
 
-#if DOCA_GPUNETIO_SIMPLE_RECEIVE_DEBUG == 1
+#if ENABLE_DEBUG == 1
 			uint64_t addr = doca_gpu_dev_eth_rxq_get_pkt_addr(rxq, out_first_pkt_idx + buf_idx);
 			printf("Thread %d received first id %ld addr %lx tot %d UDP packet with Eth src %02x:%02x:%02x:%02x:%02x:%02x - Eth dst %02x:%02x:%02x:%02x:%02x:%02x - Bytes %d - TS %lx\n",
 			       threadIdx.x, out_first_pkt_idx, addr, out_pkt_num,

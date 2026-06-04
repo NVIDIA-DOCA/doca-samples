@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -463,7 +463,7 @@ private:
 	storage::control::message process_init_storage(storage::control::message const &client_request);
 	storage::control::message process_start_storage(storage::control::message const &client_request);
 	storage::control::message process_stop_storage(storage::control::message const &client_request);
-	storage::control::message process_shutdown(storage::control::message const &client_requeste);
+	storage::control::message process_shutdown(storage::control::message const &client_request);
 
 	void prepare_thread_contexts(storage::control::correlation_id cid);
 

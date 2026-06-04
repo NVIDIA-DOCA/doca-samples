@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -57,6 +57,7 @@ int main(int argc, char **argv)
 		.port_config.nb_ports = 1,
 		.port_config.nb_queues = 2,
 		.port_config.switch_mode = 1,
+		.port_config.enable_mbuf_metadata = 1,
 		.reserve_main_thread = false,
 	};
 

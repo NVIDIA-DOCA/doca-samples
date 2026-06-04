@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -471,7 +471,7 @@ static doca_error_t miss_counters_query(struct doca_flow_pipe *root_pipe,
 }
 
 /*
- * Update the the pipe target of FWD miss action.
+ * Update the pipe target of FWD miss action.
  *
  * @pipe [in]: pipe to update its miss action.
  * @next_pipe [in]: a new pipe to forward the traffic that didn't hit the pipe rule.

@@ -80,6 +80,38 @@ static doca_error_t operation_info_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - Handle supported info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t supported_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_supported_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_supported_info = !!get_supported_info;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle troubleshooting info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t troubleshooting_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_troubleshooting_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_troubleshooting_info = !!get_troubleshooting_info;
+	return DOCA_SUCCESS;
+}
+
+/*
  * ARGP Callback - Handle module info parameter
  *
  * @param [in]: Input parameter
@@ -112,6 +144,71 @@ static doca_error_t counter_and_ber_info_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - Handle FEC Histogram info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t fec_histogram_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_fec_histogram_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_fec_histogram_info = !!get_fec_histogram_info;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle management cable single page info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t management_cable_single_page_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	uint8_t *management_cable_page_id = (uint8_t *)param;
+
+	telemetry_phy_sample_cfg->get_management_cable_single_page_info = true;
+	telemetry_phy_sample_cfg->management_cable_page_id = *management_cable_page_id;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle management cable dump info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t management_cable_dump_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_management_cable_dump_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_management_cable_dump_info = !!get_management_cable_dump_info;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle management cable DDM info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t management_cable_ddm_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_management_cable_ddm_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_management_cable_ddm_info = !!get_management_cable_ddm_info;
+	return DOCA_SUCCESS;
+}
+
+/*
  * Register the command line parameters for the sample.
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -119,7 +216,10 @@ static doca_error_t counter_and_ber_info_callback(void *param, void *config)
 static doca_error_t register_telemetry_phy_params(void)
 {
 	doca_error_t result;
-	struct doca_argp_param *pci_param, *operation_info_param, *module_info_param, *counter_and_ber_info_param;
+	struct doca_argp_param *pci_param, *operation_info_param, *supported_info_param, *troubleshooting_info_param,
+		*module_info_param, *counter_and_ber_info_param, *fec_histogram_info_param,
+		*management_cable_single_page_info_param, *management_cable_dump_info_param,
+		*management_cable_ddm_info_param;
 
 	result = doca_argp_param_create(&pci_param);
 	if (result != DOCA_SUCCESS) {
@@ -148,6 +248,38 @@ static doca_error_t register_telemetry_phy_params(void)
 	doca_argp_param_set_callback(operation_info_param, operation_info_callback);
 	doca_argp_param_set_type(operation_info_param, DOCA_ARGP_TYPE_BOOLEAN);
 	result = doca_argp_register_param(operation_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&supported_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(supported_info_param, "si");
+	doca_argp_param_set_long_name(supported_info_param, "get-supported-info");
+	doca_argp_param_set_description(supported_info_param, "Retrieve supported info");
+	doca_argp_param_set_callback(supported_info_param, supported_info_callback);
+	doca_argp_param_set_type(supported_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(supported_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&troubleshooting_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(troubleshooting_info_param, "ti");
+	doca_argp_param_set_long_name(troubleshooting_info_param, "get-troubleshooting-info");
+	doca_argp_param_set_description(troubleshooting_info_param, "Retrieve troubleshooting info");
+	doca_argp_param_set_callback(troubleshooting_info_param, troubleshooting_info_callback);
+	doca_argp_param_set_type(troubleshooting_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(troubleshooting_info_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
 		return result;
@@ -185,6 +317,72 @@ static doca_error_t register_telemetry_phy_params(void)
 		return result;
 	}
 
+	result = doca_argp_param_create(&fec_histogram_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(fec_histogram_info_param, "fi");
+	doca_argp_param_set_long_name(fec_histogram_info_param, "get-fec-histogram-info");
+	doca_argp_param_set_description(fec_histogram_info_param, "Retrieve FEC Histogram info");
+	doca_argp_param_set_callback(fec_histogram_info_param, fec_histogram_info_callback);
+	doca_argp_param_set_type(fec_histogram_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(fec_histogram_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&management_cable_single_page_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(management_cable_single_page_info_param, "mcspi");
+	doca_argp_param_set_long_name(management_cable_single_page_info_param, "get-management-cable-single-page-info");
+	doca_argp_param_set_description(management_cable_single_page_info_param,
+					"Page to retrieve raw management cable info");
+	doca_argp_param_set_callback(management_cable_single_page_info_param,
+				     management_cable_single_page_info_callback);
+	doca_argp_param_set_type(management_cable_single_page_info_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(management_cable_single_page_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&management_cable_dump_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(management_cable_dump_info_param, "mcdi");
+	doca_argp_param_set_long_name(management_cable_dump_info_param, "get-management-cable-dump-info");
+	doca_argp_param_set_description(management_cable_dump_info_param, "Retrieve management cable dump info");
+	doca_argp_param_set_callback(management_cable_dump_info_param, management_cable_dump_info_callback);
+	doca_argp_param_set_type(management_cable_dump_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(management_cable_dump_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&management_cable_ddm_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(management_cable_ddm_info_param, "mcddmi");
+	doca_argp_param_set_long_name(management_cable_ddm_info_param, "get-management-cable-ddm-info");
+	doca_argp_param_set_description(management_cable_ddm_info_param, "Retrieve management cable DDM info");
+	doca_argp_param_set_callback(management_cable_ddm_info_param, management_cable_ddm_info_callback);
+	doca_argp_param_set_type(management_cable_ddm_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(management_cable_ddm_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
 	return DOCA_SUCCESS;
 }
 
@@ -196,8 +394,16 @@ static doca_error_t register_telemetry_phy_params(void)
 static void set_default_params(struct telemetry_phy_sample_cfg *cfg)
 {
 	cfg->get_operation_info = false;
+	cfg->get_supported_info = false;
+	cfg->get_troubleshooting_info = false;
 	cfg->get_module_info = false;
-};
+	cfg->get_counter_and_ber_info = false;
+	cfg->get_fec_histogram_info = false;
+	cfg->get_management_cable_single_page_info = false;
+	cfg->management_cable_page_id = 0;
+	cfg->get_management_cable_dump_info = false;
+	cfg->get_management_cable_ddm_info = false;
+}
 
 /*
  * Sample main function

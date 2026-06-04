@@ -104,8 +104,8 @@ doca_error_t open_doca_device_with_ibdev_name(const uint8_t *value,
 {
 	struct doca_devinfo **dev_list;
 	uint32_t nb_devs;
-	char buf[DOCA_DEVINFO_IBDEV_NAME_SIZE] = {};
-	char val_copy[DOCA_DEVINFO_IBDEV_NAME_SIZE] = {};
+	char buf[DOCA_DEVINFO_IBDEV_NAME_SIZE] = {0};
+	char val_copy[DOCA_DEVINFO_IBDEV_NAME_SIZE] = {0};
 	doca_error_t res;
 	size_t i;
 
@@ -156,8 +156,8 @@ doca_error_t open_doca_device_with_iface_name(const uint8_t *value,
 {
 	struct doca_devinfo **dev_list;
 	uint32_t nb_devs;
-	char buf[DOCA_DEVINFO_IFACE_NAME_SIZE] = {};
-	char val_copy[DOCA_DEVINFO_IFACE_NAME_SIZE] = {};
+	char buf[DOCA_DEVINFO_IFACE_NAME_SIZE] = {0};
+	char val_copy[DOCA_DEVINFO_IFACE_NAME_SIZE] = {0};
 	doca_error_t res;
 	size_t i;
 
@@ -294,8 +294,8 @@ doca_error_t open_doca_device_rep_with_vuid(struct doca_dev *local,
 {
 	uint32_t nb_rdevs = 0;
 	struct doca_devinfo_rep **rep_dev_list = NULL;
-	char val_copy[DOCA_DEVINFO_REP_VUID_SIZE] = {};
-	char buf[DOCA_DEVINFO_REP_VUID_SIZE] = {};
+	char val_copy[DOCA_DEVINFO_REP_VUID_SIZE] = {0};
+	char buf[DOCA_DEVINFO_REP_VUID_SIZE] = {0};
 	doca_error_t result;
 	size_t i;
 
@@ -535,7 +535,7 @@ char *hex_dump(const void *data, size_t size)
 
 	for (i = 0; i < num_lines; i++) {
 		/* Offset */
-		snprintf(write_head, buffer_size, "%08lX: ", i * 16);
+		snprintf(write_head, buffer_size, "%08zX: ", i * 16);
 		write_head += 8 + 2;
 		buffer_size -= 8 + 2;
 		/* Hex print - 2 chunks of 8 bytes */
@@ -625,7 +625,7 @@ doca_error_t allocate_doca_buf_list(struct doca_buf_inventory *buf_inv,
 
 	for (i = 0; i < num_buf; i++) {
 		if (i > 0) {
-			seg_addr += seg_len;
+			seg_addr = (uint8_t *)seg_addr + seg_len;
 			seg_len = other_seg_len;
 			if (seg_len == 0) {
 				break;

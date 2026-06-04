@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -63,6 +63,30 @@ static doca_error_t pci_address_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - Handle rep PCI device address parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t rep_address_callback(void *param, void *config)
+{
+	struct telemetry_pcc_sample_cfg *telemetry_pcc_sample_cfg = (struct telemetry_pcc_sample_cfg *)config;
+	char *rep_address = (char *)param;
+	int len;
+
+	len = strnlen(rep_address, DOCA_DEVINFO_REP_PCI_ADDR_SIZE);
+	if (len >= DOCA_DEVINFO_REP_PCI_ADDR_SIZE) {
+		DOCA_LOG_ERR("Entered DOCA device representor PCI address exceeding the maximum size of %d",
+			     DOCA_DEVINFO_REP_PCI_ADDR_SIZE - 1);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	strncpy(telemetry_pcc_sample_cfg->rep_addr, rep_address, len + 1);
+	telemetry_pcc_sample_cfg->rep_set = true;
+	return DOCA_SUCCESS;
+}
+
+/*
  * Register the command line parameters for the sample.
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -70,7 +94,7 @@ static doca_error_t pci_address_callback(void *param, void *config)
 static doca_error_t register_telemetry_pcc_params(void)
 {
 	doca_error_t result;
-	struct doca_argp_param *pci_param;
+	struct doca_argp_param *pci_param, *rep_param;
 
 	result = doca_argp_param_create(&pci_param);
 	if (result != DOCA_SUCCESS) {
@@ -83,6 +107,22 @@ static doca_error_t register_telemetry_pcc_params(void)
 	doca_argp_param_set_callback(pci_param, pci_address_callback);
 	doca_argp_param_set_type(pci_param, DOCA_ARGP_TYPE_STRING);
 	result = doca_argp_register_param(pci_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_name(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&rep_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(rep_param, "r");
+	doca_argp_param_set_long_name(rep_param, "rep-addr");
+	doca_argp_param_set_description(rep_param, "DOCA device representor PCI device address");
+	doca_argp_param_set_callback(rep_param, rep_address_callback);
+	doca_argp_param_set_type(rep_param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(rep_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_name(result));
 		return result;

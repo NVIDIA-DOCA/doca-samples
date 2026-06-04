@@ -23,6 +23,9 @@
  *
  */
 
+#ifndef APPLICATIONS_DPU_GPU_REMOTE_OFFLOAD_SERVER_THREAD_HPP_
+#define APPLICATIONS_DPU_GPU_REMOTE_OFFLOAD_SERVER_THREAD_HPP_
+
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -39,9 +42,6 @@
 #include <remote_offload_common/thread_control.hpp>
 
 #include <server/comch_control_channel.hpp>
-
-#ifndef APPLICATIONS_DPU_GPU_REMOTE_OFFLOAD_SERVER_THREAD_HPP_
-#define APPLICATIONS_DPU_GPU_REMOTE_OFFLOAD_SERVER_THREAD_HPP_
 
 namespace remote_offload {
 namespace server {

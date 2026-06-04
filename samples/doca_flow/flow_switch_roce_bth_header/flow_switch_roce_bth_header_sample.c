@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -35,17 +35,39 @@
 
 DOCA_LOG_REGISTER(FLOW_SWITCH);
 
-#define NB_ENTRIES 2
+#define NB_ENTRIES 5
 #define BTH_OPCODE_CNP 0x81
 #define BTH_OPCODE_EXTENDED 0x1a
 #define BTH_OPCODE_UD_SEND 0x64
 #define ROCE_V2_DEFAULT_SRC_PORT 4789
+#define BTH_FLAGS1_ACKREQ 0x80
+#define BTH_FLAGS1_RESERVED_MASK 0x7f
 
 static struct doca_flow_pipe_entry *entries[NB_ENTRIES]; /* array for storing created entries */
 
+/* BTH opcode values for each entry */
+static uint8_t opcodes[NB_ENTRIES] = {BTH_OPCODE_UD_SEND,
+				      BTH_OPCODE_EXTENDED,
+				      BTH_OPCODE_UD_SEND,
+				      BTH_OPCODE_UD_SEND,
+				      BTH_OPCODE_UD_SEND};
+
+/* Different flags1 values demonstrating full 8-bit field matching (ACK_REQ + reserved bits) */
+static uint8_t flags1_values[NB_ENTRIES] = {BTH_FLAGS1_ACKREQ, BTH_FLAGS1_ACKREQ, 0x55, 0xAA, BTH_FLAGS1_RESERVED_MASK};
+
+/* PSN values for each entry */
+static uint8_t psn_values[NB_ENTRIES][DOCA_FLOW_IB_BTH_PSN_LEN] = {
+	{0x10, 0x20, 0x30},
+	{0x10, 0x20, 0x30},
+	{0xAA, 0xBB, 0xCC},
+	{0x00, 0x00, 0x01},
+	{0xFF, 0xFF, 0xFF},
+};
+
 /*
  * Create DOCA Flow pipe with RoCE v2 BTH header match on the switch port.
- * Pipe matches on: UDP source port, BTH opcode, destination QP and flags1 (ACK request).
+ * Pipe matches on: UDP source port, BTH opcode, destination QP, flags1, and PSN.
+ * flags1 field covers the full 8 bits (ACK request bit + 7 reserved bits).
  * Matched traffic will be forwarded to port 1.
  * Unmatched traffic will be dropped.
  *
@@ -63,6 +85,7 @@ static doca_error_t create_roce_pipe(struct doca_flow_port *sw_port, struct doca
 	doca_error_t result;
 
 	uint8_t dest_qp_changeable[DOCA_FLOW_IB_BTH_DST_QP_LEN] = {0xff, 0xff, 0xff};
+	uint8_t psn_changeable[DOCA_FLOW_IB_BTH_PSN_LEN] = {0xff, 0xff, 0xff};
 
 	memset(&match, 0, sizeof(match));
 	memset(&monitor, 0, sizeof(monitor));
@@ -77,6 +100,9 @@ static doca_error_t create_roce_pipe(struct doca_flow_port *sw_port, struct doca
 	match.outer.roce_v2.bth.dest_qp[1] = dest_qp_changeable[1];
 	match.outer.roce_v2.bth.dest_qp[2] = dest_qp_changeable[2];
 	match.outer.roce_v2.bth.flags1 = 0xff;
+	match.outer.roce_v2.bth.psn[0] = psn_changeable[0];
+	match.outer.roce_v2.bth.psn[1] = psn_changeable[1];
+	match.outer.roce_v2.bth.psn[2] = psn_changeable[2];
 
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = 1;
@@ -120,8 +146,9 @@ destroy_pipe_cfg:
 
 /*
  * Add DOCA Flow pipe entries to the RoCE pipe with specific BTH header matches.
- * Creates 2 entries matching different BTH opcodes (UD_SEND and EXTENDED)
- * with specific destination QP (0x102030) and ACK request flag set.
+ * Creates 5 entries matching different BTH opcodes (UD_SEND and EXTENDED)
+ * with specific destination QP (0x102030), different flags1 values, and PSN values.
+ * flags1 field matching covers the full 8-bit field (ACK request bit + 7 reserved bits).
  *
  * @pipe [in]: pipe of the entry
  * @status [in]: user context for adding entry
@@ -134,8 +161,6 @@ static doca_error_t add_roce_pipe_entries(struct doca_flow_pipe *pipe, struct en
 	doca_error_t result;
 	int entry_index = 0;
 	uint8_t dest_qp_spec[DOCA_FLOW_IB_BTH_DST_QP_LEN] = {0x10, 0x20, 0x30};
-	uint8_t flags1_ackreq_set = 0x80;
-	uint8_t opcodes[NB_ENTRIES] = {BTH_OPCODE_UD_SEND, BTH_OPCODE_EXTENDED};
 
 	memset(&match, 0, sizeof(match));
 
@@ -145,10 +170,13 @@ static doca_error_t add_roce_pipe_entries(struct doca_flow_pipe *pipe, struct en
 	match.outer.roce_v2.bth.dest_qp[0] = dest_qp_spec[0];
 	match.outer.roce_v2.bth.dest_qp[1] = dest_qp_spec[1];
 	match.outer.roce_v2.bth.dest_qp[2] = dest_qp_spec[2];
-	match.outer.roce_v2.bth.flags1 = flags1_ackreq_set;
 
 	for (entry_index = 0; entry_index < NB_ENTRIES; entry_index++) {
 		match.outer.roce_v2.bth.opcode = opcodes[entry_index];
+		match.outer.roce_v2.bth.flags1 = flags1_values[entry_index];
+		match.outer.roce_v2.bth.psn[0] = psn_values[entry_index][0];
+		match.outer.roce_v2.bth.psn[1] = psn_values[entry_index][1];
+		match.outer.roce_v2.bth.psn[2] = psn_values[entry_index][2];
 
 		/* last entry should be inserted with DOCA_FLOW_ENTRY_FLAGS_NO_WAIT flag */
 		if (entry_index == NB_ENTRIES - 1)
@@ -198,7 +226,13 @@ static void print_switch_stats(struct doca_flow_pipe_entry *entries[])
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
 			return;
 		}
-		DOCA_LOG_INFO("Entry in index: %d", entry_idx);
+		DOCA_LOG_INFO("Entry in index: %d (opcode=0x%02x, flags1=0x%02x, psn=0x%02x%02x%02x)",
+			      entry_idx,
+			      opcodes[entry_idx],
+			      flags1_values[entry_idx],
+			      psn_values[entry_idx][0],
+			      psn_values[entry_idx][1],
+			      psn_values[entry_idx][2]);
 		DOCA_LOG_INFO("Total bytes: %ld", query_stats.counter.total_bytes);
 		DOCA_LOG_INFO("Total packets: %ld", query_stats.counter.total_pkts);
 	}
@@ -221,7 +255,7 @@ static void print_switch_stats_wrapper(void *context)
  * @nb_queues [in]: number of queues the sample will use
  * @nb_ports [in]: number of ports the sample will use
  * @devs_manager [in]: Array of DOCA devices for the switch ports
- * @nb_devs [in]: Amount of eswtich manager dev bundles in the switch_manager_devs array
+ * @nb_devs [in]: Amount of eswitch manager dev bundles in the switch_manager_devs array
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t flow_roce_bth_header(int nb_queues, int nb_ports, struct flow_devs_manager devs_manager[], uint16_t nb_devs)

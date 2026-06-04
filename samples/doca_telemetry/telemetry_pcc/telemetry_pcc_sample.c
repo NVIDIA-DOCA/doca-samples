@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -51,7 +51,7 @@ static doca_error_t get_algo_information(struct doca_telemetry_pcc *pcc,
 	char *algo_info;
 	doca_error_t result;
 
-	result = doca_telemetry_pcc_cap_get_max_algo_slots(doca_dev_as_devinfo(dev), &max_slots);
+	result = doca_telemetry_pcc_get_max_algo_slots(pcc, &max_slots);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get number of slots: error=%s", doca_error_get_name(result));
 		return result;
@@ -132,7 +132,7 @@ static doca_error_t get_counter_information(struct doca_telemetry_pcc *pcc, stru
 
 	printf("-------------------------------------\n");
 
-	result = doca_telemetry_pcc_cap_get_max_num_counters(doca_dev_as_devinfo(dev), &max_counters);
+	result = doca_telemetry_pcc_get_max_num_counters(pcc, &max_counters);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get max num counters: Error=%s", doca_error_get_name(result));
 		return result;
@@ -189,6 +189,7 @@ doca_error_t telemetry_pcc_sample_run(const struct telemetry_pcc_sample_cfg *cfg
 	uint32_t slots_populated, slot, i;
 	struct doca_telemetry_pcc *pcc;
 	uint8_t algo_en, counters_en;
+	struct doca_dev_rep *rep;
 	struct doca_dev *dev;
 	doca_error_t result;
 
@@ -206,11 +207,32 @@ doca_error_t telemetry_pcc_sample_run(const struct telemetry_pcc_sample_cfg *cfg
 		goto close_dev;
 	}
 
-	/* Create telemetry context */
-	result = doca_telemetry_pcc_create(dev, &pcc);
+	/* Open representor device if one has been input */
+	if (cfg->rep_set) {
+		result = open_doca_device_rep_with_pci(dev, DOCA_DEVINFO_REP_FILTER_NET, cfg->rep_addr, &rep);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to open rep device with error=%s", doca_error_get_name(result));
+			goto close_dev;
+		}
+
+		/* Check for telemetry support on the representor */
+		result = doca_telemetry_pcc_cap_rep_is_supported(doca_dev_rep_as_devinfo(rep));
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Representor device does not have PCC telemetry support. Error=%s",
+				     doca_error_get_name(result));
+			goto close_rep;
+		}
+	}
+
+	/* Create telemetry context on either doca_dev or rep device */
+	if (cfg->rep_set) {
+		result = doca_telemetry_pcc_rep_create(rep, &pcc);
+	} else {
+		result = doca_telemetry_pcc_create(dev, &pcc);
+	}
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create telemetry pcc context. Error=%s", doca_error_get_name(result));
-		goto close_dev;
+		goto close_rep;
 	}
 
 	/* Parse all the slots on the card for PCC algos */
@@ -255,7 +277,7 @@ doca_error_t telemetry_pcc_sample_run(const struct telemetry_pcc_sample_cfg *cfg
 
 		result = get_counter_information(pcc, dev, (uint8_t)slot);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed get get counters on slot %u: Error=%s", slot, doca_error_get_name(result));
+			DOCA_LOG_ERR("Failed to get counters on slot %u: Error=%s", slot, doca_error_get_name(result));
 			goto stop_pcc;
 		}
 	}
@@ -265,6 +287,9 @@ stop_pcc:
 	(void)doca_telemetry_pcc_stop(pcc);
 destroy_pcc:
 	(void)doca_telemetry_pcc_destroy(pcc);
+close_rep:
+	if (cfg->rep_set)
+		doca_dev_rep_close(rep);
 close_dev:
 	doca_dev_close(dev);
 

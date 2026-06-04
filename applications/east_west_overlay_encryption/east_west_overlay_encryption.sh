@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright (c) 2021-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -62,7 +62,7 @@ function usage() {
         cat << HEREDOC
         usage: `readlink -f "$script_path"` [COMMAND] [PARAMS...]
         Configures IPsec connection between two BlueFields with HW packet offload.
-        PARAMS can be be either configured in JSON parameters file or passed on the command line.
+        PARAMS can be either configured in JSON parameters file or passed on the command line.
         Example using $params_file_path:
                 On one of the BlueFields: $script_path --side=r --json=east_west_overlay_encryption_params.json
                 On the second BlueField (after the first one finishes): $script_path --side=i \

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -35,7 +35,7 @@
 
 #include <dpdk_utils.h>
 
-DOCA_LOG_REGISTER(FLOW_CT_UDP_SINGL_MATCH::MAIN);
+DOCA_LOG_REGISTER(FLOW_CT_UDP_SINGLE_MATCH::MAIN);
 
 /* Sample's Logic */
 doca_error_t flow_ct_udp_single_match(uint16_t nb_queues, struct flow_switch_ctx *ctx);

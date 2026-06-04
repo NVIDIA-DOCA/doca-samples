@@ -24,6 +24,7 @@
  */
 
 #include <stdbool.h>
+#include <stdlib.h>
 
 #include <doca_argp.h>
 #include <doca_log.h>

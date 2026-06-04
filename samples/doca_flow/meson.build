@@ -64,6 +64,7 @@ samples = [
 	'flow_sampling',
 	'flow_shared_counter',
 	'flow_shared_meter',
+	'flow_srv6',
 	'flow_switch',
 	'flow_switch_control_pipe',
 	'flow_switch_roce_bth_header',
@@ -73,8 +74,8 @@ samples = [
 	'flow_vxlan_encap',
 	'flow_switch_to_wire',
 	'flow_vxlan_shared_encap',
-        'flow_tcp_seq',
-        'flow_twamp_header',
+	'flow_tcp_seq',
+	'flow_twamp_header',
 
 	# Flow CT Samples
 	'flow_ct_2_ports',
@@ -109,7 +110,7 @@ sample_lib_includes += [include_directories('.')]
 # Needed for dpdk_utils.c and friends
 sample_lib_includes += apps_common_base_include
 
-# Code coverage: use same coverage options as doca_flow unit tests
-if is_variable('doca_flow_override_options')
-	sample_lib_override_options = doca_flow_override_options
+# Code coverage: link with gcov so samples can produce library coverage when run manually
+if is_variable('dependency_gcov')
+	sample_lib_depends += dependency_gcov
 endif

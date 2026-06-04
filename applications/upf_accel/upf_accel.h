@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -248,7 +248,7 @@ struct upf_accel_pdrs {
 
 struct upf_accel_far {
 	uint32_t id;			   /* FAR ID */
-	struct upf_accel_ip_addr fp_oh_ip; /* Forwardind policy outer header creation IP */
+	struct upf_accel_ip_addr fp_oh_ip; /* Forwarding policy outer header creation IP */
 	uint32_t fp_oh_teid;		   /* Forwarding policy outer header creation teid */
 };
 
@@ -541,7 +541,7 @@ doca_error_t upf_accel_smf_parse(struct upf_accel_config *cfg);
 /*
  * VXLAN Config parsing & initialization
  *
- * @cfg [in]: UPF Acceleration onfiguration.
+ * @cfg [in]: UPF Acceleration configuration.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t upf_accel_vxlan_parse(struct upf_accel_config *cfg);

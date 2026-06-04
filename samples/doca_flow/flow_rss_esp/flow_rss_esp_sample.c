@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -192,7 +192,7 @@ static doca_error_t rss_distribution_results(uint16_t port_id, uint16_t nb_queue
 {
 	struct rte_mbuf *packets[PACKET_BURST];
 	struct doca_flow_resource_query stats;
-	double actuall_percentage;
+	double actual_percentage;
 	uint32_t total_packets;
 	uint16_t nb_packets;
 	uint16_t queue_index;
@@ -216,12 +216,12 @@ static doca_error_t rss_distribution_results(uint16_t port_id, uint16_t nb_queue
 	for (i = 0; i < nb_queues; i++) {
 		queue_index = i;
 		nb_packets = rte_eth_rx_burst(port_id, queue_index, packets, PACKET_BURST);
-		actuall_percentage = GET_PERCENTAGE(nb_packets, total_packets);
+		actual_percentage = GET_PERCENTAGE(nb_packets, total_packets);
 
 		DOCA_LOG_INFO("Queue %u received %u packets which is %g%% of the traffic (%u/%u)",
 			      queue_index,
 			      nb_packets,
-			      actuall_percentage,
+			      actual_percentage,
 			      nb_packets,
 			      total_packets);
 

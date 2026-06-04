@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -53,6 +53,57 @@ static void signal_handler(int signum)
 		DOCA_LOG_INFO("Signal %d received, preparing to exit", signum);
 		force_quit = true;
 	}
+}
+
+/*
+ * PCI FLR event handler callback
+ *
+ * @pci_dev [in]: The PCI device affected by the FLR
+ * @user_data [in]: The same user_data that was provided on registration
+ */
+static void flr_event_handler_cb(struct doca_devemu_pci_dev *pci_dev, union doca_data user_data)
+{
+	struct devemu_resources *resources = (struct devemu_resources *)user_data.ptr;
+
+	DOCA_LOG_INFO("FLR has occurred destroying PCI device and recreating it");
+
+	doca_error_t result = doca_ctx_stop(doca_devemu_pci_dev_as_ctx(pci_dev));
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to stop PCI device during FLR event");
+		goto abort;
+	}
+
+	result = doca_ctx_start(doca_devemu_pci_dev_as_ctx(pci_dev));
+	if (result != DOCA_SUCCESS && result != DOCA_ERROR_IN_PROGRESS) {
+		DOCA_LOG_ERR("Failed to start PCI device during FLR event");
+		goto abort;
+	}
+
+	return;
+abort:
+	resources->error = result;
+	force_quit = true;
+}
+
+/*
+ * Register to PCI Function Level Reset events
+ *
+ * @resources [in]: The sample resources
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t register_to_flr_events(struct devemu_resources *resources)
+{
+	union doca_data user_data;
+	doca_error_t res;
+
+	user_data.ptr = (void *)resources;
+	res = doca_devemu_pci_dev_event_flr_register(resources->pci_dev, flr_event_handler_cb, user_data);
+	if (res != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Unable to register to FLR event: %s", doca_error_get_descr(res));
+		return res;
+	}
+
+	return DOCA_SUCCESS;
 }
 
 /*
@@ -236,6 +287,12 @@ doca_error_t devemu_pci_device_stateful_region_dpu(const char *pci_address, cons
 
 	/* Register callback to be triggered once host writes to stateful regions */
 	result = register_to_stateful_region_write_events(resources.pci_dev, &resources);
+	if (result != DOCA_SUCCESS) {
+		devemu_resources_cleanup(&resources, destroy_rep);
+		return result;
+	}
+
+	result = register_to_flr_events(&resources);
 	if (result != DOCA_SUCCESS) {
 		devemu_resources_cleanup(&resources, destroy_rep);
 		return result;

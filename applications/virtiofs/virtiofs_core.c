@@ -123,7 +123,7 @@ static doca_error_t virtiofs_get_possible_doca_devs(void)
 	}
 
 	for (i = 0; i < nb_devs; i++) {
-		err = doca_devemu_vfs_is_default_vfs_type_supported(dev_list[i], &is_supported);
+		err = doca_devemu_vfs_cap_is_default_vfs_type_supported(dev_list[i], &is_supported);
 		if (err != DOCA_SUCCESS || is_supported == false)
 			continue;
 

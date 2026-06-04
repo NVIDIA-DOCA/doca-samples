@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -33,9 +33,9 @@ plugin_common_includes = []
 subdir('common')
 
 if is_dpu
-        subdir('dpu')
+	subdir('dpu')
 else
-        subdir('host')
+	subdir('host')
 endif
 
 plugins_install_dir = '/'.join([sample_lib_install_dir, 'plugins'])

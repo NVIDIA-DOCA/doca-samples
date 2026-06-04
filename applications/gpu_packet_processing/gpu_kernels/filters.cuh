@@ -23,8 +23,8 @@
  *
  */
 
-#ifndef DOCA_GPUNETIO_FILTERS_H
-#define DOCA_GPUNETIO_FILTERS_H
+#ifndef DOCA_GPU_PACKET_PROCESSING_FILTERS_H
+#define DOCA_GPU_PACKET_PROCESSING_FILTERS_H
 
 #include "common.h"
 #include "packets.h"
@@ -140,4 +140,4 @@ __device__ __inline__ unsigned long long _gputimestamp()
 	return globaltimer;
 }
 
-#endif /* DOCA_GPUNETIO_FILTERS_H */
+#endif /* DOCA_GPU_PACKET_PROCESSING_FILTERS_H */

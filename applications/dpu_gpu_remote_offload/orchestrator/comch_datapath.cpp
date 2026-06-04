@@ -180,7 +180,7 @@ gpu_thread_data *comch_datapath::get_gpu_thread_data()
 		result = doca_comch_producer_get_gpu_handle(m_thread_data[i]->m_producer,
 							    &m_thread_data[i]->m_gpu_producer);
 		if (result != DOCA_SUCCESS) {
-			throw remote_offload::runtime_error{result, "Failed to get prodicer GPU handle"};
+			throw remote_offload::runtime_error{result, "Failed to get producer GPU handle"};
 		}
 
 		thread_data_cpu[i].consumer = m_thread_data[i]->m_gpu_consumer;

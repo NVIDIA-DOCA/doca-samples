@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -722,7 +722,7 @@ static inline uint8_t upf_accel_ip_version_print_string_get(enum doca_flow_l3_ty
 /*
  * Parse list of CreatePDR nodes from json
  *
- * @pdr_arr [in]: list of CreaePDR json nodes
+ * @pdr_arr [in]: list of CreatePDR json nodes
  * @cfg [out]: the result is stored inside cfg
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -874,7 +874,7 @@ static doca_error_t upf_accel_fp_parse(struct json_object *fp, struct upf_accel_
 /*
  * Parse list of CreateFAR nodes from json
  *
- * @far_arr [in]: list of CreaeFAR json nodes
+ * @far_arr [in]: list of CreateFAR json nodes
  * @cfg [out]: the result is stored inside cfg
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -951,7 +951,7 @@ static doca_error_t upf_accel_volume_quota_parse(struct json_object *volume_quot
 /*
  * Parse list of CreateURR nodes from json
  *
- * @urr_arr [in]: list of CreaeURR json nodes
+ * @urr_arr [in]: list of CreateURR json nodes
  * @cfg [out]: the result is stored inside cfg
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -1029,7 +1029,7 @@ static doca_error_t upf_accel_mbr_parse(struct json_object *mbr, struct upf_acce
 /*
  * Parse list of CreateQER nodes from json
  *
- * @qer_arr [in]: list of CreaeQER json nodes
+ * @qer_arr [in]: list of CreateQER json nodes
  * @cfg [out]: the result is stored inside cfg
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -1196,7 +1196,7 @@ void upf_accel_smf_cleanup(struct upf_accel_config *cfg)
 /*
  * Parse list of CreateVXLAN nodes from json
  *
- * @vxlan_arr [in]: list of CreaeVXLAN json nodes
+ * @vxlan_arr [in]: list of CreateVXLAN json nodes
  * @cfg [out]: the result is stored inside cfg
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */

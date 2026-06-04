@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,6 +23,8 @@
  *
  */
 
+#include <assert.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <doca_log.h>
 #include <doca_flow.h>
@@ -43,24 +45,24 @@ DOCA_LOG_REGISTER(FLOW_PARSER_META);
  * Priority ordering (lower number = higher priority):
  * 1. Valid flows (forward) - Normal packet processing - Highest priority
  * 2. Fragmented flows (RSS) - Need special handling - Medium priority
- * 3. Invalid checksum flows (drop) - Discard packets with incorrect checksum in basic pipe
- * 4. Invalid length flows (drop) - Discard packets with invalid length in another basic pipe
+ * 3. Invalid checksum flows (drop) - Discard packets with incorrect checksum
+ * 4. Invalid length flows (drop) - Discard packets with invalid length
  */
 enum integrity_flow_priority {
 	FLOW_PRIORITY_VALID = 0,
 	FLOW_PRIORITY_FRAGMENTED = 1,
-	FLOW_PRIORITY_MISS = 2,
+	FLOW_PRIORITY_INVALID_CSUM = 2,
+	FLOW_PRIORITY_NOT_OK = 3,
 };
 
 /*
  * Create DOCA Flow control pipe with parser_meta checks
  *
  * @port [in]: port of the pipe
- * @port_id [in]: port ID of the pipe
  * @pipe [out]: created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-static doca_error_t create_parser_meta_root_pipe(struct doca_flow_port *port, struct doca_flow_pipe **pipe)
+static doca_error_t create_parser_meta_pipe(struct doca_flow_port *port, struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	doca_error_t result;
@@ -77,139 +79,13 @@ static doca_error_t create_parser_meta_root_pipe(struct doca_flow_port *port, st
 		goto destroy_pipe_cfg;
 	}
 
+	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, MAX_ENTRIES);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set nr_entries: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
 	result = doca_flow_pipe_create(pipe_cfg, NULL, NULL, pipe);
-destroy_pipe_cfg:
-	doca_flow_pipe_cfg_destroy(pipe_cfg);
-	return result;
-}
-
-/*
- * Create DOCA Flow miss pipe with parser_meta checksum checks
- *
- * @port [in]: port of the pipe
- * @port_id [in]: port ID of the pipe
- * @miss_pipe [in]: miss pipe to forward the matched traffic
- * @pipe [out]: created pipe pointer
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
- */
-static doca_error_t create_parser_invalid_csum_pipe(struct doca_flow_port *port,
-						    struct doca_flow_pipe *miss_pipe,
-						    struct doca_flow_pipe **pipe)
-{
-	struct doca_flow_pipe_cfg *pipe_cfg;
-	struct doca_flow_fwd fwd = {.type = DOCA_FLOW_FWD_DROP};
-	struct doca_flow_fwd fwd_miss = {.type = DOCA_FLOW_FWD_PIPE, .next_pipe = miss_pipe};
-	struct doca_flow_monitor monitor = {.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED};
-	struct doca_flow_match match = {};
-	struct doca_flow_match match_mask = {.parser_meta = {
-						     .outer_l3_type = UINT32_MAX,
-						     .outer_l4_type = UINT32_MAX,
-						     .outer_ip_fragmented = UINT8_MAX,
-						     .outer_l3_ok = UINT8_MAX,
-						     .outer_ip4_checksum_ok = UINT8_MAX,
-						     .outer_l4_ok = UINT8_MAX,
-						     .outer_l4_checksum_ok = UINT8_MAX,
-						     .inner_l3_type = UINT32_MAX,
-						     .inner_l4_type = UINT32_MAX,
-						     .inner_ip_fragmented = UINT8_MAX,
-						     .inner_l3_ok = UINT8_MAX,
-						     .inner_ip4_checksum_ok = UINT8_MAX,
-						     .inner_l4_ok = UINT8_MAX,
-						     .inner_l4_checksum_ok = UINT8_MAX,
-					     }};
-	doca_error_t result;
-
-	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	result = set_flow_pipe_cfg(pipe_cfg, "PARSER_INVALID_CSUM_PIPE", DOCA_FLOW_PIPE_BASIC, false);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-
-	memset(&match.parser_meta, 0xff, sizeof(match.parser_meta));
-	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, &match_mask);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-
-	result = doca_flow_pipe_cfg_set_miss_counter(pipe_cfg, true);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-
-	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-
-	result = doca_flow_pipe_create(pipe_cfg, &fwd, &fwd_miss, pipe);
-destroy_pipe_cfg:
-	doca_flow_pipe_cfg_destroy(pipe_cfg);
-	return result;
-}
-
-/*
- * Create DOCA Flow miss pipe with parser_meta length checks
- *
- * @port [in]: port of the pipe
- * @port_id [in]: port ID of the pipe
- * @pipe [out]: created pipe pointer
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
- */
-static doca_error_t create_parser_not_ok_pipe(struct doca_flow_port *port, struct doca_flow_pipe **pipe)
-{
-	struct doca_flow_pipe_cfg *pipe_cfg;
-	struct doca_flow_fwd fwd = {.type = DOCA_FLOW_FWD_DROP};
-	struct doca_flow_monitor monitor = {.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED};
-	struct doca_flow_match match = {};
-	struct doca_flow_match match_mask = {.parser_meta = {
-						     .outer_l3_type = UINT32_MAX,
-						     .outer_l4_type = UINT32_MAX,
-						     .outer_ip_fragmented = UINT8_MAX,
-						     .outer_l3_ok = UINT8_MAX,
-						     .outer_l4_ok = UINT8_MAX,
-						     .inner_l3_type = UINT32_MAX,
-						     .inner_l4_type = UINT32_MAX,
-						     .inner_ip_fragmented = UINT8_MAX,
-						     .inner_l3_ok = UINT8_MAX,
-						     .inner_l4_ok = UINT8_MAX,
-					     }};
-	doca_error_t result;
-
-	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	result = set_flow_pipe_cfg(pipe_cfg, "PARSER_NOT_OK_PIPE", DOCA_FLOW_PIPE_BASIC, false);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-
-	memset(&match.parser_meta, 0xff, sizeof(match.parser_meta));
-	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, &match_mask);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-
-	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-
-	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
 destroy_pipe_cfg:
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 	return result;
@@ -241,8 +117,6 @@ struct flow_database {
 	struct flow_entry *flows;
 	size_t count;
 	size_t capacity;
-	struct doca_flow_pipe_entry *entry_root_miss;
-	struct doca_flow_pipe *pipe_invalid_csum;
 };
 
 /* Global flow database array - one per port */
@@ -474,7 +348,7 @@ static doca_error_t add_valid_flows_table_entries(struct doca_flow_pipe *pipe,
 	doca_error_t result;
 	int entry_idx = g_flow_db[port_id].count;
 
-	/* Initialize match mask for all fields we want to check */
+	/* Initialize match and match mask for all fields we want to check */
 	memset(&match, 0, sizeof(match));
 	memset(&match_mask, 0, sizeof(match_mask));
 	match_mask.parser_meta = (struct doca_flow_parser_meta){
@@ -769,47 +643,10 @@ static doca_error_t add_fragmented_flows_table_entries(struct doca_flow_pipe *pi
 }
 
 /*
- * New function: add root pipe miss entry
- *
- * @pipe [in]: pipe of the entry
- * @port_id [in]: port ID of the pipe
- * @next_pipe [in]: next pipe
- * @status [in]: user context for adding entry
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
- */
-static doca_error_t add_root_pipe_miss_entry(struct doca_flow_pipe *pipe,
-					     int port_id,
-					     struct doca_flow_pipe *next_pipe,
-					     struct entries_status *status)
-{
-	struct doca_flow_fwd fwd = {.type = DOCA_FLOW_FWD_PIPE, .next_pipe = next_pipe};
-	struct doca_flow_monitor monitor = {.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED};
-	doca_error_t result;
-
-	result = doca_flow_pipe_control_add_entry(0,
-						  pipe,
-						  NULL,
-						  NULL,
-						  NULL,
-						  NULL,
-						  NULL,
-						  NULL,
-						  &monitor,
-						  FLOW_PRIORITY_MISS,
-						  &fwd,
-						  status,
-						  &g_flow_db[port_id].entry_root_miss);
-	if (result != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to add root miss entry: %s", doca_error_get_descr(result));
-
-	return result;
-}
-
-/*
  * New function: add_invalid_csum_flows_table_entries
  * Adds DOCA Flow pipe entries for invalid flows due to checksum errors
  * using the existing packet_attrs and flow_entry structures.
- * Fwd action is DROP.
+ * Priority is 2 and fwd action is DROP.
  */
 static doca_error_t add_invalid_csum_flows_table_entries(struct doca_flow_pipe *pipe,
 							 int port_id,
@@ -817,8 +654,10 @@ static doca_error_t add_invalid_csum_flows_table_entries(struct doca_flow_pipe *
 							 struct doca_flow_pipe_entry *(*entries)[MAX_ENTRIES])
 {
 	struct doca_flow_match match;
+	struct doca_flow_match match_mask;
 	struct doca_flow_fwd fwd;
 	struct doca_flow_monitor monitor;
+	uint8_t priority = FLOW_PRIORITY_INVALID_CSUM;
 	doca_error_t result;
 
 	/* Define an array of invalid flow entries using packet_attrs and flow_entry.
@@ -2811,10 +2650,29 @@ static doca_error_t add_invalid_csum_flows_table_entries(struct doca_flow_pipe *
 	int num_entries = sizeof(invalid_entries) / sizeof(invalid_entries[0]);
 
 	for (int i = 0; i < num_entries; i++) {
+		memset(&match, 0, sizeof(match));
+
 		/* Get current entry */
 		const struct flow_entry *entry = &invalid_entries[i];
 
-		memset(&match, 0, sizeof(match));
+		memset(&match_mask, 0, sizeof(match_mask));
+
+		match_mask.parser_meta = (struct doca_flow_parser_meta){
+			.outer_l3_type = UINT32_MAX,
+			.outer_l4_type = UINT32_MAX,
+			.outer_ip_fragmented = UINT8_MAX,
+			.outer_l3_ok = UINT8_MAX,
+			.outer_ip4_checksum_ok = UINT8_MAX,
+			.outer_l4_ok = UINT8_MAX,
+			.outer_l4_checksum_ok = UINT8_MAX,
+			.inner_l3_type = UINT32_MAX,
+			.inner_l4_type = UINT32_MAX,
+			.inner_ip_fragmented = UINT8_MAX,
+			.inner_l3_ok = UINT8_MAX,
+			.inner_ip4_checksum_ok = UINT8_MAX,
+			.inner_l4_ok = UINT8_MAX,
+			.inner_l4_checksum_ok = UINT8_MAX,
+		};
 
 		/* Set outer match fields */
 		match.parser_meta = (struct doca_flow_parser_meta){
@@ -2839,16 +2697,19 @@ static doca_error_t add_invalid_csum_flows_table_entries(struct doca_flow_pipe *
 		memset(&monitor, 0, sizeof(monitor));
 		monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
-		result = doca_flow_pipe_basic_add_entry(0,
-							pipe,
-							&match,
-							0,
-							NULL,
-							&monitor,
-							&fwd,
-							0,
-							status,
-							&((*entries)[g_flow_db[port_id].count]));
+		result = doca_flow_pipe_control_add_entry(0,
+							  pipe,
+							  &match,
+							  &match_mask,
+							  NULL,
+							  NULL,
+							  NULL,
+							  NULL,
+							  &monitor,
+							  priority,
+							  &fwd,
+							  status,
+							  &((*entries)[g_flow_db[port_id].count]));
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add invalid entry for %s: %s",
 				     invalid_entries[i].description,
@@ -2871,7 +2732,7 @@ static doca_error_t add_invalid_csum_flows_table_entries(struct doca_flow_pipe *
  * such as invalid length (mainly due to length check errors) or other reasons that cause
  * the parser to stop processing the input packet.
  * Uses the existing packet_attrs and flow_entry structures.
- * Fwd action is DROP.
+ * Priority is 3 and fwd action is DROP.
  */
 static doca_error_t add_not_ok_flows_table_entries(struct doca_flow_pipe *pipe,
 						   int port_id,
@@ -2879,8 +2740,10 @@ static doca_error_t add_not_ok_flows_table_entries(struct doca_flow_pipe *pipe,
 						   struct doca_flow_pipe_entry *(*entries)[MAX_ENTRIES])
 {
 	struct doca_flow_match match;
+	struct doca_flow_match match_mask;
 	struct doca_flow_fwd fwd;
 	struct doca_flow_monitor monitor;
+	uint8_t priority = FLOW_PRIORITY_NOT_OK;
 	doca_error_t result;
 
 	/* Define an array of invalid flow entries for length errors */
@@ -3248,10 +3111,25 @@ static doca_error_t add_not_ok_flows_table_entries(struct doca_flow_pipe *pipe,
 	int num_entries = sizeof(not_ok_entries) / sizeof(not_ok_entries[0]);
 
 	for (int i = 0; i < num_entries; i++) {
+		memset(&match, 0, sizeof(match));
+
 		/* Get current entry */
 		const struct flow_entry *entry = &not_ok_entries[i];
 
-		memset(&match, 0, sizeof(match));
+		memset(&match_mask, 0, sizeof(match_mask));
+
+		match_mask.parser_meta = (struct doca_flow_parser_meta){
+			.outer_l3_type = UINT32_MAX,
+			.outer_l4_type = UINT32_MAX,
+			.outer_ip_fragmented = UINT8_MAX,
+			.outer_l3_ok = UINT8_MAX,
+			.outer_l4_ok = UINT8_MAX,
+			.inner_l3_type = UINT32_MAX,
+			.inner_l4_type = UINT32_MAX,
+			.inner_ip_fragmented = UINT8_MAX,
+			.inner_l3_ok = UINT8_MAX,
+			.inner_l4_ok = UINT8_MAX,
+		};
 
 		/* Set match fields */
 		match.parser_meta = (struct doca_flow_parser_meta){
@@ -3272,16 +3150,19 @@ static doca_error_t add_not_ok_flows_table_entries(struct doca_flow_pipe *pipe,
 		memset(&monitor, 0, sizeof(monitor));
 		monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
-		result = doca_flow_pipe_basic_add_entry(0,
-							pipe,
-							&match,
-							0,
-							NULL,
-							&monitor,
-							&fwd,
-							0,
-							status,
-							&((*entries)[g_flow_db[port_id].count]));
+		result = doca_flow_pipe_control_add_entry(0,
+							  pipe,
+							  &match,
+							  &match_mask,
+							  NULL,
+							  NULL,
+							  NULL,
+							  NULL,
+							  &monitor,
+							  priority,
+							  &fwd,
+							  status,
+							  &((*entries)[g_flow_db[port_id].count]));
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add invalid length entry for %s: %s",
 				     not_ok_entries[i].description,
@@ -3310,7 +3191,6 @@ static void print_port_stats(int nb_ports, struct doca_flow_pipe_entry *entries[
 		struct doca_flow_resource_query query_stats;
 		DOCA_LOG_INFO("Port %d Statistics:", port_id);
 		DOCA_LOG_INFO("===================================================");
-
 		for (size_t i = 0; i < g_flow_db[port_id].count; i++) {
 			struct flow_entry *flow = flow_database_get_by_index(&g_flow_db[port_id], i);
 			if (flow == NULL)
@@ -3323,18 +3203,6 @@ static void print_port_stats(int nb_ports, struct doca_flow_pipe_entry *entries[
 				      flow->description,
 				      query_stats.counter.total_pkts);
 		}
-
-		if (doca_flow_resource_query_entry(g_flow_db[port_id].entry_root_miss, &query_stats) != DOCA_SUCCESS)
-			DOCA_LOG_ERR("failed to query root pipe");
-		else
-			DOCA_LOG_INFO("Port %d root miss packets: %ld", port_id, query_stats.counter.total_pkts);
-
-		if (doca_flow_resource_query_pipe_miss(g_flow_db[port_id].pipe_invalid_csum, &query_stats) !=
-		    DOCA_SUCCESS)
-			DOCA_LOG_ERR("failed to query invalid csum pipe");
-		else
-			DOCA_LOG_INFO("Port %d invalid miss packets: %ld", port_id, query_stats.counter.total_pkts);
-
 		DOCA_LOG_INFO("===================================================");
 	}
 }
@@ -3357,8 +3225,6 @@ doca_error_t flow_parser_meta(int nb_queues, int stats_interval)
 	struct doca_flow_port *ports[NUMBER_OF_PORTS];
 	uint32_t actions_mem_size[NUMBER_OF_PORTS];
 	struct doca_flow_pipe *parser_meta_pipe;
-	struct doca_flow_pipe *parser_meta_invalid_csum_pipe;
-	struct doca_flow_pipe *parser_meta_not_ok_pipe;
 	struct doca_flow_pipe_entry *entries[NUMBER_OF_PORTS][MAX_ENTRIES];
 	struct entries_status status;
 	struct stats_context ctx = {.nb_ports = NUMBER_OF_PORTS, .entries = entries};
@@ -3392,22 +3258,7 @@ doca_error_t flow_parser_meta(int nb_queues, int stats_interval)
 	for (port_id = 0; port_id < NUMBER_OF_PORTS; port_id++) {
 		memset(&status, 0, sizeof(status));
 
-		result = create_parser_not_ok_pipe(ports[port_id], &parser_meta_not_ok_pipe);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create parser_meta miss pipe: %s", doca_error_get_descr(result));
-			goto cleanup_all;
-		}
-
-		result = create_parser_invalid_csum_pipe(ports[port_id],
-							 parser_meta_not_ok_pipe,
-							 &parser_meta_invalid_csum_pipe);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create parser_meta miss pipe: %s", doca_error_get_descr(result));
-			goto cleanup_all;
-		}
-		g_flow_db[port_id].pipe_invalid_csum = parser_meta_invalid_csum_pipe;
-
-		result = create_parser_meta_root_pipe(ports[port_id], &parser_meta_pipe);
+		result = create_parser_meta_pipe(ports[port_id], &parser_meta_pipe);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create parser_meta pipe: %s", doca_error_get_descr(result));
 			goto cleanup_all;
@@ -3425,22 +3276,13 @@ doca_error_t flow_parser_meta(int nb_queues, int stats_interval)
 			goto cleanup_all;
 		}
 
-		result = add_root_pipe_miss_entry(parser_meta_pipe, port_id, parser_meta_invalid_csum_pipe, &status);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to add root pipe miss entry: %s", doca_error_get_descr(result));
-			goto cleanup_all;
-		}
-
-		result = add_invalid_csum_flows_table_entries(parser_meta_invalid_csum_pipe,
-							      port_id,
-							      &status,
-							      &(entries[port_id]));
+		result = add_invalid_csum_flows_table_entries(parser_meta_pipe, port_id, &status, &(entries[port_id]));
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add invalid entries: %s", doca_error_get_descr(result));
 			goto cleanup_all;
 		}
 
-		result = add_not_ok_flows_table_entries(parser_meta_not_ok_pipe, port_id, &status, &(entries[port_id]));
+		result = add_not_ok_flows_table_entries(parser_meta_pipe, port_id, &status, &(entries[port_id]));
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add invalid length entries: %s", doca_error_get_descr(result));
 			goto cleanup_all;

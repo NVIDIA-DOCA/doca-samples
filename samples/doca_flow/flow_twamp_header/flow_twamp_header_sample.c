@@ -77,7 +77,7 @@ struct application_graph_config {
 	struct application_header_config app_header[HEADER_MAX];
 };
 
-struct application_graph_config app_graph_config = {0};
+static struct application_graph_config app_graph_config = {0};
 
 struct twamp_hdr {
 	uint32_t seq_number;	 /* Sequence Number */
@@ -980,7 +980,7 @@ doca_error_t flow_twamp_header(int nb_queues)
 
 	result = init_defs(&defs);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create DOCA Flow definitionss: %s", doca_error_get_name(result));
+		DOCA_LOG_ERR("Failed to create DOCA Flow definitions: %s", doca_error_get_name(result));
 		return result;
 	}
 

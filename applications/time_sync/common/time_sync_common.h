@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -55,7 +55,8 @@ struct time_sync_response {
 struct time_sync_cfg {
 	char pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE];	/* Input pci address */
 	char repr_addr[DOCA_DEVINFO_REP_PCI_ADDR_SIZE]; /* Input pci repr addr - DPU side only */
-	struct doca_dev *doca_dev;			/* DOCA device opened for use in DOCA context */
+	uint64_t nic_clock;		    /* NIC clock to use for cross timestamp based on device support */
+	struct doca_dev *doca_dev;	    /* DOCA device opened for use in DOCA context */
 	struct doca_dev_rep *repr_dev;	    /* DOCA device representor opened for use in DOCA comch server context */
 	struct doca_clock *clock;	    /* DOCA clock context */
 	struct doca_dpa *dpa_ctx;	    /* DOCA dpa context for handling time_sync dpa app */
