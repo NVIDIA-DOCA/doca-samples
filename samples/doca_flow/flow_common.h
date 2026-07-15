@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -26,13 +26,14 @@
 #ifndef FLOW_COMMON_H_
 #define FLOW_COMMON_H_
 
+#include <rte_common.h>
+
 #include <doca_argp.h>
 #include <doca_flow.h>
 #include <doca_dev.h>
 #include <doca_bitfield.h>
 
 #include <common.h>
-#include <common_utils.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -77,10 +78,9 @@ extern "C" {
 #define SHARED_RESOURCE_NUM_VALUES (7) /* Number of doca_flow_shared_resource_type values */
 #endif
 
-#define FLOW_COMMON_DEV_MAX (8)	      /* Max number of devices */
-#define FLOW_COMMON_REPS_MAX (16)     /* Max number of reps per device */
-#define FLOW_COMMON_PORTS_MAX (16)    /* Max number of ports overall */
-#define FLOW_COMMON_PIPE_RULES (8192) /* Max number of rules per pipe */
+#define FLOW_COMMON_DEV_MAX (8)	   /* Max number of devices */
+#define FLOW_COMMON_REPS_MAX (16)  /* Max number of reps per device */
+#define FLOW_COMMON_PORTS_MAX (16) /* Max number of ports overall */
 
 #ifndef MAX
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
@@ -92,12 +92,7 @@ extern "C" {
 
 #ifndef ACTIONS_MEM_SIZE
 #define ACTIONS_MEM_SIZE(entries) \
-	((uint32_t)common_utils_next_power_of_two((uint64_t)(entries)*DOCA_FLOW_MAX_ENTRY_ACTIONS_MEM_SIZE + \
-						  GLOBAL_ACTIONS_MEM_SIZE))
-#endif
-#ifndef SRV6_ACTIONS_MEM_SIZE
-#define SRV6_ACTIONS_MEM_SIZE(nb_srh) \
-	((uint32_t)common_utils_next_power_of_two((uint64_t)(nb_srh)*DOCA_FLOW_SRV6_ACTION_MEM_SIZE))
+	rte_align32pow2((uint32_t)(entries * DOCA_FLOW_MAX_ENTRY_ACTIONS_MEM_SIZE + GLOBAL_ACTIONS_MEM_SIZE));
 #endif
 
 #ifndef ARRAY_DIM
@@ -136,7 +131,6 @@ struct entries_status {
 struct flow_resources {
 	enum doca_flow_resource_mode mode; /* resource mode */
 	uint32_t nr_counters;		   /* number of counters to configure */
-	uint32_t nr_ct_counters;	   /* number of CT counters to configure */
 	uint32_t nr_meters;		   /* number of traffic meters to configure */
 	uint32_t nr_rss;		   /* number of RSS to configure */
 	uint32_t nr_encap;		   /* number of encap to configure */
@@ -280,7 +274,7 @@ typedef doca_error_t (*port_config_cb)(struct doca_flow_port_cfg *port_cfg, int 
  * @ports [in]: array of ports to create
  * @is_port_fwd [in]: if set to true, this function will call doca_flow_port_pair() as required
  * @dev_arr [in]: doca device array for each port
- * @dev_rep_arr [in]: doca representor array for each port
+ * @dev_rep_arr [in]: doca reprtesentor array for each port
  * @port_cb [in]: port configuration callback
  * @port_rep_cb [in]: port representor configuration callback
  * @config_cb_ctx [in]: users configuration context
@@ -362,13 +356,6 @@ doca_error_t flow_init_dpdk(int argc, char **dpdk_argv);
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t register_flow_device_params(flow_dev_ctx_from_user_ctx_t converter);
-
-/*
- * Register DOCA Flow no_wire_to_wire parameter
- *
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
- */
-doca_error_t register_flow_device_no_wire_to_wire_params(void);
 
 /*
  * Register DOCA Flow switch device parameters

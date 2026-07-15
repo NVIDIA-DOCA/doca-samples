@@ -37,7 +37,7 @@ extern "C" {
 
 #define MAX_SOCKET_PATH_NAME (108)	    /* Maximum socket file name length */
 #define MAX_FILE_NAME (255)		    /* Maximum file name length */
-#define MAX_NB_RULES (1048576)		    /* Maximal number of rules == 2^20 */
+#define MAX_NB_RULES (65536)		    /* Maximal number of rules == 2^16 */
 #define DYN_RESERVED_RULES (1024)	    /* Reserved rules for dynamic rules */
 #define MAX_KEY_LEN (32)		    /* Maximal GCM key size is 256bit==32B */
 #define NUM_OF_SYNDROMES (4)		    /* Number of bad syndromes */

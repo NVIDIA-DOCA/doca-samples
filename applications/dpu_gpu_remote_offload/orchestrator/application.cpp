@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -39,7 +39,7 @@
 #include <remote_offload_common/doca_utils.hpp>
 #include <remote_offload_common/runtime_error.hpp>
 
-DOCA_LOG_REGISTER(ORCHESTRATOR::APPLICATION);
+DOCA_LOG_REGISTER(orchestrator::application);
 
 namespace {
 
@@ -263,7 +263,7 @@ remote_offload::control::message_id application::process_control_message(std::ve
 									   m_cfg.max_message_length,
 									   m_control_channel->get_connection());
 		} catch (remote_offload::runtime_error const &ex) {
-			DOCA_LOG_ERR("Failed to prepare comch consumer and producer: %s : %s",
+			DOCA_LOG_ERR("Failed to to prepare comch consumer and producer: %s : %s",
 				     doca_error_get_name(ex.get_doca_error()),
 				     ex.what());
 			return recv_message_id;

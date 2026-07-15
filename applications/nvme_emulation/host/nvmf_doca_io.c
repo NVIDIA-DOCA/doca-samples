@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,7 +29,6 @@
 
 #include <spdk/util.h>
 
-#include <doca_devemu_pci_ep.h>
 #include <doca_log.h>
 
 DOCA_LOG_REGISTER(NVME_PCI_COMMON);
@@ -1305,13 +1304,13 @@ static doca_error_t nvmf_doca_cq_create(const struct nvmf_doca_cq_create_attr *a
 	}
 
 	uint32_t cq_db_id = 2 * attr->cq_id + 1;
-	result = doca_devemu_pci_ep_create_db_on_dpa(doca_devemu_pci_dev_as_ep(attr->nvme_dev),
-						     attr->db_comp,
-						     db_configs[0].region.bar_id,
-						     db_configs[0].region.start_address,
-						     cq_db_id,
-						     /*user_data=*/0,
-						     &cq->db);
+	result = doca_devemu_pci_db_create_on_dpa(attr->nvme_dev,
+						  attr->db_comp,
+						  db_configs[0].region.bar_id,
+						  db_configs[0].region.start_address,
+						  cq_db_id,
+						  /*user_data=*/0,
+						  &cq->db);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create NVMf DOCA CQ: Failed to create DB - %s", doca_error_get_name(result));
 		return result;
@@ -1673,11 +1672,12 @@ doca_error_t nvmf_doca_io_create(const struct nvmf_doca_io_create_attr *attr, st
 	}
 
 	if (attr->enable_msix) {
-		result = doca_devemu_pci_ep_create_msix_on_dpa(doca_devemu_pci_dev_as_ep(attr->nvme_dev),
-							       msix_table_configs[0].bar_id,
-							       msix_table_configs[0].start_address,
-							       attr->msix_idx,
-							       &io->msix);
+		result = doca_devemu_pci_msix_create_on_dpa(attr->nvme_dev,
+							    msix_table_configs[0].bar_id,
+							    msix_table_configs[0].start_address,
+							    attr->msix_idx,
+							    /*user_data=*/attr->msix_idx,
+							    &io->msix);
 		if (result != DOCA_SUCCESS) {
 			nvmf_doca_io_destroy(io);
 			return result;
@@ -2268,7 +2268,7 @@ static doca_error_t nvmf_doca_request_pool_create(struct nvmf_doca_sq *sq, size_
  * Destroys NVMF doca requests pool.
  *
  * @sq [in]: The SQ that holds the requests pool
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ * @return: DOCA_SUCCESS on success and DOCCA_ERROR otherwise
  */
 static doca_error_t nvmf_doca_request_pool_destroy(struct nvmf_doca_sq *sq)
 {
@@ -2469,13 +2469,13 @@ static doca_error_t nvmf_doca_sq_create(const struct nvmf_doca_sq_create_attr *a
 	}
 
 	const uint32_t sq_db_id = 2 * attr->sq_id;
-	result = doca_devemu_pci_ep_create_db_on_dpa(doca_devemu_pci_dev_as_ep(attr->nvme_dev),
-						     attr->db_comp,
-						     db_configs[0].region.bar_id,
-						     db_configs[0].region.start_address,
-						     sq_db_id,
-						     /*user_data=*/(uint64_t)sq,
-						     &sq->db);
+	result = doca_devemu_pci_db_create_on_dpa(attr->nvme_dev,
+						  attr->db_comp,
+						  db_configs[0].region.bar_id,
+						  db_configs[0].region.start_address,
+						  sq_db_id,
+						  /*user_data=*/(uint64_t)sq,
+						  &sq->db);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create NVMf DOCA SQ: Failed to create DB - %s", doca_error_get_name(result));
 		nvmf_doca_sq_destroy(sq);

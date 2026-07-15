@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,8 +32,7 @@ DOCA_LOG_REGISTER(VERBS_PUT_COUNTER);
 #define REPORT_FMT_LAT " %-7lu 		%-7d          %-7.2f       		%-7.2f    	 	%-7.2f"
 
 cudaStream_t cstream;
-int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144};
-
+int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384};
 volatile bool server_force_quit = false;
 
 static doca_error_t destroy_local_memory_objects(struct verbs_resources *resources)
@@ -113,14 +112,14 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 		/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method. */
 		status = doca_gpu_dmabuf_fd(resources->gpu_dev, resources->data_buf[idx], size_data, &dmabuf_fd);
 		if (status == DOCA_SUCCESS) {
-			resources->data_mr[idx] = ibv_reg_dmabuf_mr(
-				resources->pd,
-				0,
-				size_data,
-				(uint64_t)resources->data_buf[idx],
-				dmabuf_fd,
-				IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING |
-					IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+			resources->data_mr[idx] =
+				ibv_reg_dmabuf_mr(resources->pd,
+						  0,
+						  size_data,
+						  (uint64_t)resources->data_buf[idx],
+						  dmabuf_fd,
+						  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 		}
 
 		if (resources->data_mr[idx] == NULL) {
@@ -128,7 +127,6 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 							     resources->data_buf[idx],
 							     size_data,
 							     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-								     IBV_ACCESS_RELAXED_ORDERING |
 								     IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 			if (resources->data_mr[idx] == NULL) {
 				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
@@ -157,14 +155,14 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 		/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method. */
 		status = doca_gpu_dmabuf_fd(resources->gpu_dev, resources->flag_buf[idx], size_flag, &dmabuf_fd);
 		if (status == DOCA_SUCCESS) {
-			resources->flag_mr[idx] = ibv_reg_dmabuf_mr(
-				resources->pd,
-				0,
-				size_flag,
-				(uint64_t)resources->flag_buf[idx],
-				dmabuf_fd,
-				IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING |
-					IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+			resources->flag_mr[idx] =
+				ibv_reg_dmabuf_mr(resources->pd,
+						  0,
+						  size_flag,
+						  (uint64_t)resources->flag_buf[idx],
+						  dmabuf_fd,
+						  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 		}
 
 		if (resources->flag_mr[idx] == NULL) {
@@ -172,7 +170,6 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 							     resources->flag_buf[idx],
 							     size_flag,
 							     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-								     IBV_ACCESS_RELAXED_ORDERING |
 								     IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 		}
 
@@ -201,14 +198,14 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 		/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method. */
 		status = doca_gpu_dmabuf_fd(resources->gpu_dev, resources->prev_flag_buf[idx], size_flag, &dmabuf_fd);
 		if (status == DOCA_SUCCESS) {
-			resources->prev_flag_mr[idx] = ibv_reg_dmabuf_mr(
-				resources->pd,
-				0,
-				size_flag,
-				(uint64_t)resources->prev_flag_buf[idx],
-				dmabuf_fd,
-				IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING |
-					IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+			resources->prev_flag_mr[idx] =
+				ibv_reg_dmabuf_mr(resources->pd,
+						  0,
+						  size_flag,
+						  (uint64_t)resources->prev_flag_buf[idx],
+						  dmabuf_fd,
+						  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 		}
 
 		if (resources->prev_flag_mr[idx] == NULL) {
@@ -217,7 +214,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 					   resources->prev_flag_buf[idx],
 					   size_flag,
 					   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
-						   IBV_ACCESS_RELAXED_ORDERING | IBV_ACCESS_REMOTE_ATOMIC);
+						   IBV_ACCESS_REMOTE_ATOMIC);
 		}
 
 		if (resources->prev_flag_mr[idx] == NULL) {
@@ -448,15 +445,14 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	}
 
 	DOCA_LOG_INFO(
-		"Launching gpunetio_verbs_put_counter_lat server kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread, %s nic handler mode",
+		"Launching gpunetio_verbs_put_counter_lat server kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread",
 		NUM_QP,
 		resources.cuda_threads,
 		resources.num_iters,
-		resources.num_iters / resources.cuda_threads,
-		doca_gpu_nic_handler_to_string(resources.nic_handler));
+		resources.num_iters / resources.cuda_threads // check this is ok
+	);
 
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
-	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		args.qp_cpu_main = resources.qpg->qp_main.qp_gverbs;
 		args.qp_cpu_companion = resources.qpg->qp_companion.qp_gverbs;
 		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
@@ -579,8 +575,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	}
 
 stop_thread:
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
-	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		WRITE_ONCE_64b(*args.exit_flag, 1);
 		pthread_join(thread_id, NULL);
 	}
@@ -681,15 +676,14 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	}
 
 	DOCA_LOG_INFO(
-		"Launching gpunetio_verbs_put_counter_lat client kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread, %s nic handler mode",
+		"Launching gpunetio_verbs_put_counter_lat client kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread",
 		NUM_QP,
 		resources.cuda_threads,
 		resources.num_iters,
-		resources.num_iters / resources.cuda_threads,
-		doca_gpu_nic_handler_to_string(resources.nic_handler));
+		resources.num_iters / resources.cuda_threads // check this is ok
+	);
 
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
-	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		args.qp_cpu_main = resources.qpg->qp_main.qp_gverbs;
 		args.qp_cpu_companion = resources.qpg->qp_companion.qp_gverbs;
 		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
@@ -811,8 +805,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	}
 
 stop_thread:
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
-	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		WRITE_ONCE_64b(*args.exit_flag, 1);
 		pthread_join(thread_id, NULL);
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -32,7 +32,7 @@ DOCA_LOG_REGISTER(VERBS_WRITE_LAT);
 #define REPORT_FMT_LAT " %-7lu 		%-7d          %-7.2f       		%-7.2f    	 	%-7.2f"
 
 cudaStream_t cstream;
-int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144};
+int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384};
 volatile bool server_force_quit = false;
 
 static doca_error_t destroy_local_memory_objects(struct verbs_resources *resources)
@@ -98,21 +98,23 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 		/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method. */
 		status = doca_gpu_dmabuf_fd(resources->gpu_dev, resources->local_poll_buf[idx], size_data, &dmabuf_fd);
 		if (status == DOCA_SUCCESS) {
-			resources->local_poll_mr[idx] = ibv_reg_dmabuf_mr(
-				resources->pd,
-				0,
-				size_data,
-				(uint64_t)resources->local_poll_buf[idx],
-				dmabuf_fd,
-				IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING);
+			resources->local_poll_mr[idx] =
+				ibv_reg_dmabuf_mr(resources->pd,
+						  0,
+						  size_data,
+						  (uint64_t)resources->local_poll_buf[idx],
+						  dmabuf_fd,
+						  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 		}
 
 		if (resources->local_poll_mr[idx] == NULL) {
-			resources->local_poll_mr[idx] = ibv_reg_mr(resources->pd,
-								   resources->local_poll_buf[idx],
-								   size_data,
-								   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-									   IBV_ACCESS_RELAXED_ORDERING);
+			resources->local_poll_mr[idx] =
+				ibv_reg_mr(resources->pd,
+					   resources->local_poll_buf[idx],
+					   size_data,
+					   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
+						   IBV_ACCESS_REMOTE_ATOMIC);
 			if (resources->local_poll_mr[idx] == NULL) {
 				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
 				goto exit_error;
@@ -145,7 +147,8 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 						  size_data,
 						  (uint64_t)resources->local_post_buf[idx],
 						  dmabuf_fd,
-						  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_RELAXED_ORDERING);
+						  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 		}
 
 		if (resources->local_post_mr[idx] == NULL) {
@@ -153,7 +156,8 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 				ibv_reg_mr(resources->pd,
 					   resources->local_post_buf[idx],
 					   size_data,
-					   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_RELAXED_ORDERING);
+					   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
+						   IBV_ACCESS_REMOTE_ATOMIC);
 			if (resources->local_post_mr[idx] == NULL) {
 				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
 				goto exit_error;
@@ -278,8 +282,6 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	resources.cuda_threads = cfg->cuda_threads;
 	resources.nic_handler = cfg->nic_handler;
 	resources.qp_group = false;
-	// Not mandatory, just for testing purpose
-	resources.cq_collapsed = 1;
 
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
@@ -334,15 +336,14 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	}
 
 	DOCA_LOG_INFO(
-		"Launching gpunetio_verbs_write_lat server kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread, %s nic handler mode",
+		"Launching gpunetio_verbs_write_lat server kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread, %d cpu proxy",
 		NUM_QP,
 		resources.cuda_threads,
 		resources.num_iters,
-		resources.num_iters / resources.cuda_threads,
-		doca_gpu_nic_handler_to_string(resources.nic_handler));
+		resources.num_iters / resources.cuda_threads, // check this is ok
+		resources.nic_handler);
 
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
-	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		args.qp_cpu_main = resources.qp->qp_gverbs;
 		args.qp_cpu_companion = NULL;
 		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
@@ -380,7 +381,6 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						  htobe32(resources.local_post_mr[idx]->lkey),
 						  (uint8_t *)(resources.remote_data_buf[idx]),
 						  htobe32(resources.remote_data_mkey[idx]),
-						  resources.nic_handler,
 						  false);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
@@ -406,7 +406,6 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						  htobe32(resources.local_post_mr[idx]->lkey),
 						  (uint8_t *)(resources.remote_data_buf[idx]),
 						  htobe32(resources.remote_data_mkey[idx]),
-						  resources.nic_handler,
 						  false);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
@@ -448,8 +447,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	}
 
 stop_thread:
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
-	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		WRITE_ONCE_64b(*args.exit_flag, 1);
 		pthread_join(thread_id, NULL);
 	}
@@ -494,8 +492,6 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	resources.cuda_threads = cfg->cuda_threads;
 	resources.nic_handler = cfg->nic_handler;
 	resources.qp_group = false;
-	// Not mandatory, just for testing purpose
-	resources.cq_collapsed = 1;
 
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
@@ -550,15 +546,14 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	}
 
 	DOCA_LOG_INFO(
-		"Launching gpunetio_verbs_write_lat client kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread, %s nic handler",
+		"Launching gpunetio_verbs_write_lat client kernel with %d CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread, %d cpu proxy",
 		NUM_QP,
 		resources.cuda_threads,
 		resources.num_iters,
-		resources.num_iters / resources.cuda_threads,
-		doca_gpu_nic_handler_to_string(resources.nic_handler));
+		resources.num_iters / resources.cuda_threads, // check this is ok
+		resources.nic_handler);
 
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
-	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		args.qp_cpu_main = resources.qp->qp_gverbs;
 		args.qp_cpu_companion = NULL;
 		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
@@ -596,7 +591,6 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						  htobe32(resources.local_post_mr[idx]->lkey),
 						  (uint8_t *)(resources.remote_data_buf[idx]),
 						  htobe32(resources.remote_data_mkey[idx]),
-						  resources.nic_handler,
 						  true);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
@@ -622,7 +616,6 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						  htobe32(resources.local_post_mr[idx]->lkey),
 						  (uint8_t *)(resources.remote_data_buf[idx]),
 						  htobe32(resources.remote_data_mkey[idx]),
-						  resources.nic_handler,
 						  true);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
@@ -664,8 +657,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	}
 
 stop_thread:
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
-	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		WRITE_ONCE_64b(*args.exit_flag, 1);
 		pthread_join(thread_id, NULL);
 	}

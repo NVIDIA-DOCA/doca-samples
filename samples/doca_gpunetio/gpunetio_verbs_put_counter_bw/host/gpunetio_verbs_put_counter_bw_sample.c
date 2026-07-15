@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,12 +29,11 @@
 DOCA_LOG_REGISTER(VERBS_PUT_SIGNAL);
 
 #define RESULT_LINE "------------------------------------------------------------------------------------\n"
-#define RESULT_FMT_G " #bytes     #iterations    BW average[Gbps]   MsgRate[Mpps]    CUDA Kernel[ms]"
+#define RESULT_FMT_G " #bytes     #iterations    BW average[MB/sec]   MsgRate[Mpps]    CUDA Kernel[ms]"
 #define REPORT_FMT_EXT " %-7u    	%-7u           %-7.6lf            %-7.6lf            %-7.6f"
 
 cudaStream_t cstream = NULL;
-int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144};
-
+int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384};
 volatile bool server_force_quit = false;
 
 /*
@@ -57,7 +56,7 @@ static void server_validate_test(struct verbs_resources *resources)
 		}
 	}
 
-	printf("Data validation successful! Data received correctly from client\n");
+	printf("Data validation successfull! Data received correctly from client\n");
 
 	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 		tot_flag = 0;
@@ -138,7 +137,6 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 	size_t host_page_size = get_page_size();
 	size_t size_data, size_flag;
 	int dmabuf_fd;
-	cudaError_t cuda_ret;
 
 	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 		resources->data_mr[idx] = NULL;
@@ -155,12 +153,11 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 				goto exit_error;
 			}
 
-			resources->data_mr[idx] = ibv_reg_mr(
-				resources->pd,
-				resources->data_buf[idx],
-				size_data,
-				IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING |
-					IBV_ACCESS_REMOTE_READ | IBV_ACCESS_RELAXED_ORDERING);
+			resources->data_mr[idx] =
+				ibv_reg_mr(resources->pd,
+					   resources->data_buf[idx],
+					   size_data,
+					   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
 			if (resources->data_mr[idx] == NULL) {
 				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
 				goto exit_error;
@@ -174,13 +171,11 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 
 			*resources->flag_buf[idx] = 0;
 
-			resources->flag_mr[idx] =
-				ibv_reg_mr(resources->pd,
-					   resources->flag_buf[idx],
-					   size_flag,
-					   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-						   IBV_ACCESS_RELAXED_ORDERING | IBV_ACCESS_REMOTE_READ |
-						   IBV_ACCESS_RELAXED_ORDERING | IBV_ACCESS_REMOTE_ATOMIC);
+			resources->flag_mr[idx] = ibv_reg_mr(resources->pd,
+							     resources->flag_buf[idx],
+							     size_flag,
+							     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+								     IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 			if (resources->flag_mr[idx] == NULL) {
 				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
 				goto exit_error;
@@ -202,35 +197,30 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 				goto exit_error;
 			}
 
-			cuda_ret = cudaMemset(resources->data_buf[idx], idx + 1, size_data);
-			if (cuda_ret != cudaSuccess) {
-				DOCA_LOG_ERR("Function cudaMemset error %d idx %d", cuda_ret, idx);
-				status = DOCA_ERROR_DRIVER;
-				goto exit_error;
-			}
+			cudaMemset(resources->data_buf[idx], idx + 1, size_data);
 
 			/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method.
 			 */
 			status =
 				doca_gpu_dmabuf_fd(resources->gpu_dev, resources->data_buf[idx], size_data, &dmabuf_fd);
 			if (status == DOCA_SUCCESS) {
-				resources->data_mr[idx] = ibv_reg_dmabuf_mr(
-					resources->pd,
-					0,
-					size_data,
-					(uint64_t)resources->data_buf[idx],
-					dmabuf_fd,
-					IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING |
-						IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+				resources->data_mr[idx] =
+					ibv_reg_dmabuf_mr(resources->pd,
+							  0,
+							  size_data,
+							  (uint64_t)resources->data_buf[idx],
+							  dmabuf_fd,
+							  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+								  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 			}
 
 			if (resources->data_mr[idx] == NULL) {
-				resources->data_mr[idx] = ibv_reg_mr(
-					resources->pd,
-					resources->data_buf[idx],
-					size_data,
-					IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING |
-						IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+				resources->data_mr[idx] =
+					ibv_reg_mr(resources->pd,
+						   resources->data_buf[idx],
+						   size_data,
+						   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							   IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 				if (resources->data_mr[idx] == NULL) {
 					DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
 					goto exit_error;
@@ -252,35 +242,30 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 				goto exit_error;
 			}
 
-			cuda_ret = cudaMemset(resources->flag_buf[idx], 0, size_flag);
-			if (cuda_ret != cudaSuccess) {
-				DOCA_LOG_ERR("Function cudaMemset error %d idx %d", cuda_ret, idx);
-				status = DOCA_ERROR_DRIVER;
-				goto exit_error;
-			}
+			cudaMemset(resources->flag_buf[idx], 0, size_flag);
 
 			/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method.
 			 */
 			status =
 				doca_gpu_dmabuf_fd(resources->gpu_dev, resources->flag_buf[idx], size_flag, &dmabuf_fd);
 			if (status == DOCA_SUCCESS) {
-				resources->flag_mr[idx] = ibv_reg_dmabuf_mr(
-					resources->pd,
-					0,
-					size_flag,
-					(uint64_t)resources->flag_buf[idx],
-					dmabuf_fd,
-					IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING |
-						IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+				resources->flag_mr[idx] =
+					ibv_reg_dmabuf_mr(resources->pd,
+							  0,
+							  size_flag,
+							  (uint64_t)resources->flag_buf[idx],
+							  dmabuf_fd,
+							  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+								  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 			}
 
 			if (resources->flag_mr[idx] == NULL) {
-				resources->flag_mr[idx] = ibv_reg_mr(
-					resources->pd,
-					resources->flag_buf[idx],
-					size_flag,
-					IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING |
-						IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+				resources->flag_mr[idx] =
+					ibv_reg_mr(resources->pd,
+						   resources->flag_buf[idx],
+						   size_flag,
+						   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							   IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 			}
 
 			if (resources->flag_mr[idx] == NULL) {
@@ -304,14 +289,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 				goto exit_error;
 			}
 
-			cuda_ret = cudaMemset(resources->prev_flag_buf[idx],
-					      0,
-					      (size_t)(resources->cuda_threads * sizeof(uint64_t)));
-			if (cuda_ret != cudaSuccess) {
-				DOCA_LOG_ERR("Function cudaMemset error %d idx %d", cuda_ret, idx);
-				status = DOCA_ERROR_DRIVER;
-				goto exit_error;
-			}
+			cudaMemset(resources->prev_flag_buf[idx], 0, size_flag);
 
 			/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method.
 			 */
@@ -320,23 +298,23 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 						    size_flag,
 						    &dmabuf_fd);
 			if (status == DOCA_SUCCESS) {
-				resources->prev_flag_mr[idx] = ibv_reg_dmabuf_mr(
-					resources->pd,
-					0,
-					size_flag,
-					(uint64_t)resources->prev_flag_buf[idx],
-					dmabuf_fd,
-					IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING |
-						IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+				resources->prev_flag_mr[idx] =
+					ibv_reg_dmabuf_mr(resources->pd,
+							  0,
+							  size_flag,
+							  (uint64_t)resources->prev_flag_buf[idx],
+							  dmabuf_fd,
+							  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+								  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 			}
 
 			if (resources->prev_flag_mr[idx] == NULL) {
-				resources->prev_flag_mr[idx] = ibv_reg_mr(
-					resources->pd,
-					resources->prev_flag_buf[idx],
-					size_flag,
-					IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING |
-						IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+				resources->prev_flag_mr[idx] =
+					ibv_reg_mr(resources->pd,
+						   resources->prev_flag_buf[idx],
+						   size_flag,
+						   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							   IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 			}
 
 			if (resources->prev_flag_mr[idx] == NULL) {
@@ -574,7 +552,8 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	CUresult cu_result;
 	CUevent e_start = NULL, e_end = NULL;
 	float et_ms = 0.0f;
-
+	const unsigned long format_factor = 0x100000; // -> MBS
+	// 125000000;
 	const unsigned long num_messages = cfg->num_iters * NUM_QP;
 	pthread_t thread_id;
 	struct cpu_proxy_args args;
@@ -587,10 +566,6 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	resources.nic_handler = cfg->nic_handler;
 	resources.scope = (enum doca_gpu_dev_verbs_exec_scope)cfg->exec_scope;
 	resources.qp_group = true;
-
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF)
-		DOCA_LOG_WARN(
-			"BlueFlame mode selected. In this bandwidth test, the UAR will be created as BlueFlame but the DB will be rung as GPU_SM_DB mode");
 
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
@@ -645,16 +620,15 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	}
 
 	DOCA_LOG_INFO(
-		"Launching gpunetio_verbs_put_bw kernel with %d CUDA blocks, %d CUDA threads each, %d total number of iterations, %d iterations per cuda thread %s nic handler, %s scope",
+		"Launching gpunetio_verbs_put_bw kernel with %d CUDA blocks, %d CUDA threads each, %d total number of iterations, %d iterations per cuda thread %d cpu proxy, %d shared mode",
 		VERBS_CUDA_BLOCK,
 		resources.cuda_threads / VERBS_CUDA_BLOCK,
 		resources.num_iters,
-		resources.num_iters / resources.cuda_threads,
-		doca_gpu_nic_handler_to_string(resources.nic_handler),
-		(resources.scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD) ? "THREAD" : "WARP");
+		resources.num_iters / resources.cuda_threads, // check this is ok
+		resources.nic_handler,
+		resources.scope);
 
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
-	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		args.qp_cpu_main = resources.qpg->qp_main.qp_gverbs;
 		args.qp_cpu_companion = resources.qpg->qp_companion.qp_gverbs;
 		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
@@ -756,8 +730,8 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 			goto stop_thread;
 		}
 
-		double bw = (double)((double)((message_size[idx] * num_messages) / et_ms * 1000.0f) * ((double)8.0) /
-				     BW_FORMAT_FACTOR);
+		// Check calculation is the same as in case of perftest
+		double bw = (double)((message_size[idx] * num_messages) / et_ms * 1000.0f / format_factor);
 		double msgrate = (double)(num_messages / et_ms * 1000.0f / 1000000.0f);
 
 		printf(REPORT_FMT_EXT, message_size[idx], resources.num_iters, bw, msgrate, (double)et_ms);
@@ -766,8 +740,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	}
 
 stop_thread:
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY ||
-	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
+	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
 		WRITE_ONCE_64b(*args.exit_flag, 1);
 		pthread_join(thread_id, NULL);
 	}

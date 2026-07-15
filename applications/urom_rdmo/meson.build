@@ -1,5 +1,5 @@
-#
-# Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+
+# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -31,15 +31,7 @@ app_common_includes = []
 subdir('common')
 
 if is_dpu
-	subdir('dpu')
+        subdir('dpu')
 else
-	subdir('host')
+        subdir('host')
 endif
-
-# Handle the meson vs meson.build.public of the internal dirs
-foreach internal_dir : ['dpu', 'host']
-	public_meson_path = '/'.join([absolute_path, internal_dir, public_meson_file_name])
-	install_data(sources : public_meson_path, rename : [regular_meson_file_name], install_dir : '/'.join(app_install_dir, internal_dir))
-	app_install_excludes += '/'.join([internal_dir, public_meson_file_name])
-	app_install_excludes += '/'.join([internal_dir, regular_meson_file_name])
-endforeach

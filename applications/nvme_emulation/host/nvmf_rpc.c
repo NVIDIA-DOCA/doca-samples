@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -145,9 +145,7 @@ static void rpc_nvmf_doca_create_function(struct spdk_jsonrpc_request *request, 
 
 	ret = doca_devinfo_rep_get_vuid(doca_dev_rep_as_devinfo(dev_rep), buf, DOCA_DEVINFO_REP_VUID_SIZE);
 	if (ret != DOCA_SUCCESS) {
-		spdk_jsonrpc_send_error_response(request,
-						 SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
-						 "Couldn't get device VUID");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR, "Couldnt get device VUID");
 		goto destroy_dev_rep;
 	}
 
@@ -155,7 +153,7 @@ static void rpc_nvmf_doca_create_function(struct spdk_jsonrpc_request *request, 
 	if (ret != DOCA_SUCCESS) {
 		spdk_jsonrpc_send_error_response(request,
 						 SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
-						 "Unable to close the device");
+						 "Unable to cloes the device");
 		goto destroy_dev_rep;
 	}
 
@@ -350,7 +348,7 @@ static void rpc_nvmf_doca_list_functions(struct spdk_jsonrpc_request *request, c
 		if (ret != DOCA_SUCCESS) {
 			spdk_jsonrpc_send_error_response(request,
 							 SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
-							 "Couldn't get device VUID");
+							 "Couldnt get device VUID");
 			doca_devinfo_rep_destroy_list(devinfo_rep_list);
 			cleanup_pci_resources(pci_type, dev);
 			goto cleanup;
@@ -359,7 +357,7 @@ static void rpc_nvmf_doca_list_functions(struct spdk_jsonrpc_request *request, c
 		if (ret != DOCA_SUCCESS) {
 			spdk_jsonrpc_send_error_response(request,
 							 SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
-							 "Couldn't get PCI address");
+							 "Couldnt get PCI address");
 			doca_devinfo_rep_destroy_list(devinfo_rep_list);
 			cleanup_pci_resources(pci_type, dev);
 			goto cleanup;

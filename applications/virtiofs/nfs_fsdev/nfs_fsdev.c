@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -46,7 +46,7 @@
 #include <errno.h>
 #include <doca_error.h>
 
-DOCA_LOG_REGISTER(NFS_FSDEV);
+DOCA_LOG_REGISTER(NFS_FSDEV)
 
 /* File type bits (octal, as per POSIX/SUS) */
 #define BITS_MASK 0170000    /* Mask for file type bits */
@@ -238,7 +238,7 @@ static void nfs_fsdev_getattr_cb(struct rpc_context *rpc, int status, void *data
 		DOCA_LOG_ERR("NFS getattr failed with error: %s", (char *)data);
 		exit(1);
 	} else if (status == RPC_STATUS_CANCEL) {
-		DOCA_LOG_ERR("NFS getattr operation was canceled");
+		DOCA_LOG_ERR("NFS getattr operation was cancelled");
 		exit(1);
 	}
 
@@ -304,16 +304,11 @@ static void nfs_fsdev_setattr_cb(struct rpc_context *rpc, int status, void *data
 		DOCA_LOG_ERR("NFS setattr failed with error: %s", (char *)data);
 		exit(1);
 	} else if (status == RPC_STATUS_CANCEL) {
-		DOCA_LOG_ERR("NFS setattr operation was canceled");
+		DOCA_LOG_ERR("NFS setattr operation was cancelled");
 		exit(1);
 	}
 
 	struct SETATTR3res *result = data;
-	if (result->status != NFS3_OK) {
-		DOCA_LOG_ERR("NFS setattr failed with NFS status [%d]", result->status);
-		nfs_fsdev_complete(ctx, 0, -EIO);
-		return;
-	}
 	fattr3 *res = &result->SETATTR3res_u.resok.obj_wcc.after.post_op_attr_u.attributes;
 
 	memset(outarg, 0, sizeof(*outarg));
@@ -456,7 +451,7 @@ static void nfs_fsdev_lookup_cb(struct rpc_context *rpc, int status, void *data,
 		DOCA_LOG_ERR("LOOKUP RPC failed with error [%s]", (char *)data);
 		exit(1);
 	} else if (status == RPC_STATUS_CANCEL) {
-		DOCA_LOG_ERR("LOOKUP failed: operation was canceled");
+		DOCA_LOG_ERR("LOOKUP failed: operation was cancelled");
 		exit(1);
 	}
 
@@ -595,7 +590,7 @@ static void nfs_fsdev_readdir_cb_common(struct rpc_context *rpc, int status, voi
 		DOCA_LOG_ERR("NFS readdir failed with error: %s", (char *)data);
 		exit(1);
 	} else if (status == RPC_STATUS_CANCEL) {
-		DOCA_LOG_ERR("NFS readdir operation was canceled");
+		DOCA_LOG_ERR("NFS readdir operation was cancelled");
 		exit(1);
 	}
 
@@ -1104,7 +1099,7 @@ static void nfs_fsdev_write(struct async_context *context)
 				 nfs_fsdev_write_cb,
 				 &args,
 				 context)) {
-		DOCA_LOG_ERR("Error: in write operation");
+		DOCA_LOG_ERR("Error: in write opertion");
 		exit(1);
 	}
 }
@@ -1178,7 +1173,7 @@ static void nfs_fsdev_read(struct async_context *context)
 	struct READ3args args = nfs_fsdev_read_args(context, &temp);
 	pthread_mutex_unlock(&context->fsdev_global->lock);
 	if (rpc_nfs3_read_async(nfs_get_rpc_context(context->fsdev_perthread->nfs), nfs_fsdev_read_cb, &args, context)) {
-		DOCA_LOG_ERR("Failed to start read request ");
+		DOCA_LOG_ERR("Falied to start read request ");
 		exit(1);
 	}
 }
@@ -1250,8 +1245,7 @@ static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status
 	nfsstat3 ret = result->status;
 	if (ret != NFS3_OK) {
 		if (ret == NFS3ERR_NOENT) {
-			DOCA_LOG_WARN(
-				"lookup result is NFS3ERR_NOENT - we assume this is an UNLINK replay and succeed");
+			DOCA_LOG_WARN("lookup result is NFS3ERR_NOENT - we assume this is an UNLIK replay and succeed");
 			nfs_fsdev_complete(cb_data->context, 0, 0);
 			free(cb_data);
 			return;
@@ -1304,7 +1298,7 @@ static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status
 	}
 
 	if (ref_count != 0) {
-		DOCA_LOG_WARN("Attempt to UNLINK a file that has positive reference count");
+		DOCA_LOG_WARN("Attempt to UNLINK a file that has positive refrence count");
 
 		strcpy(entry.replay_unlink_params.name, filename);
 
@@ -1649,7 +1643,7 @@ void nfs_fsdev_destroy(struct nfs_fsdev_context *nfs_fsdev_context)
 	destroy_nfs_fsdev_context(nfs_fsdev_context);
 }
 
-int priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global)
+void priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global)
 {
 	struct async_context *ios;
 
@@ -1671,32 +1665,30 @@ int priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global
 		DOCA_LOG_ERR("Failed to initialize NFS context");
 		free(fsdev->ios_pool);
 		pthread_mutex_unlock(&(global->lock));
-		return -EINVAL;
+		exit(10);
 	}
 
 	nfs_set_debug(fsdev->nfs, NFS_FSDEV_DEBUG_NONE);
 
 	int ret = nfs_mount(fsdev->nfs, global->server, global->mount_point);
 	if (ret != 0) {
-		DOCA_LOG_ERR("Failed to mount NFS server '%s' export '%s' ret:%d",
-			     global->server,
-			     global->mount_point,
-			     ret);
+		DOCA_LOG_ERR("Failed to mount NFS server '%s' export '%s'", global->server, global->mount_point);
 		nfs_destroy_context(fsdev->nfs);
 		free(fsdev->ios_pool);
 		pthread_mutex_unlock(&(global->lock));
-		return ret;
+		exit(10);
 	}
 
 	struct nfsfh *root_fh = NULL;
 	ret = nfs_open(fsdev->nfs, "/", O_RDONLY, &root_fh);
+
 	if (ret != 0) {
-		DOCA_LOG_ERR("Failed to open root file handle on NFS server, ret: %d", ret);
+		DOCA_LOG_ERR("Failed to open root file handle on NFS server");
 		nfs_umount(fsdev->nfs);
 		nfs_destroy_context(fsdev->nfs);
 		free(fsdev->ios_pool);
 		pthread_mutex_unlock(&(global->lock));
-		return ret;
+		exit(10);
 	}
 
 	if (!check_if_exist_by_left(global->db, 1)) {
@@ -1707,7 +1699,7 @@ int priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global
 			nfs_destroy_context(fsdev->nfs);
 			free(fsdev->ios_pool);
 			pthread_mutex_unlock(&(global->lock));
-			return -EINVAL;
+			exit(-1);
 		}
 	} else {
 		DOCA_LOG_WARN("Root file handle already exists in DB, restoring database");
@@ -1715,8 +1707,6 @@ int priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global
 
 	(void)nfs_close(fsdev->nfs, root_fh);
 	pthread_mutex_unlock(&(global->lock));
-
-	return 0;
 }
 
 void priv_nfs_fsdev_deinit(struct nfs_fsdev *fsdev)

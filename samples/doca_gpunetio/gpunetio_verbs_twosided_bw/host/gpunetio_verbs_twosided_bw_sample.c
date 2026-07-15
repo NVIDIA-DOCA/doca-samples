@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -28,14 +28,12 @@
 DOCA_LOG_REGISTER(VERBS_TWO_SIDED);
 
 #define RESULT_LINE "------------------------------------------------------------------------------------\n"
-#define RESULT_FMT_G " #bytes     #iterations    BW average[Gbps]   MsgRate[Mpps]    CUDA Kernel[ms]"
+#define RESULT_FMT_G " #bytes     #iterations    BW average[MB/sec]   MsgRate[Mpps]    CUDA Kernel[ms]"
 #define REPORT_FMT_EXT " %-7u    	%-7u           %-7.6lf            %-7.6lf            %-7.6f"
 
-#define NUM_MSG_SIZE_INLINE 10
-
 cudaStream_t cstream = NULL;
-int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144};
-int message_size_inl32[NUM_MSG_SIZE_INLINE] = {1, 4, 8, 12, 16, 20, 24, 28, 30, 32};
+int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384};
+int message_size_inl32[NUM_MSG_SIZE] = {1, 4, 8, 12, 16, 20, 24, 28, 30, 32};
 volatile bool server_force_quit = false;
 
 /*
@@ -46,12 +44,8 @@ static void server_validate_test(struct verbs_resources *resources)
 	uint8_t *buffer;
 	cudaError_t res_cuda;
 	int msg_size;
-	int tot_msg = NUM_MSG_SIZE;
 
-	if (resources->recv_inline)
-		tot_msg = NUM_MSG_SIZE_INLINE;
-
-	for (int idx = 0; idx < tot_msg; idx++) {
+	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 		if (resources->recv_inline)
 			msg_size = message_size_inl32[idx];
 		else
@@ -103,18 +97,14 @@ static void server_validate_test(struct verbs_resources *resources)
 		free(buffer);
 	}
 
-	DOCA_LOG_WARN("Data validation successful! Data received correctly from client\n");
+	DOCA_LOG_WARN("Data validation successfull! Data received correctly from client\n");
 }
 
 static doca_error_t destroy_local_memory_objects(struct verbs_resources *resources)
 {
 	int ret = 0;
-	int tot_msg = NUM_MSG_SIZE;
 
-	if (resources->recv_inline)
-		tot_msg = NUM_MSG_SIZE_INLINE;
-
-	for (int idx = 0; idx < tot_msg; idx++) {
+	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 		if (resources->data_mr[idx]) {
 			ret = ibv_dereg_mr(resources->data_mr[idx]);
 			if (ret != 0) {
@@ -159,12 +149,8 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 	size_t size_data, size_flag, size_dump;
 	int dmabuf_fd;
 	int msg_size;
-	int tot_msg = NUM_MSG_SIZE;
 
-	if (resources->recv_inline)
-		tot_msg = NUM_MSG_SIZE_INLINE;
-
-	for (int idx = 0; idx < tot_msg; idx++) {
+	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 		if (resources->recv_inline)
 			msg_size = message_size_inl32[idx];
 		else
@@ -199,13 +185,14 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 		/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method. */
 		status = doca_gpu_dmabuf_fd(resources->gpu_dev, resources->data_buf[idx], size_data, &dmabuf_fd);
 		if (status == DOCA_SUCCESS) {
-			resources->data_mr[idx] = ibv_reg_dmabuf_mr(resources->pd,
-								    0,
-								    size_data,
-								    (uint64_t)resources->data_buf[idx],
-								    dmabuf_fd,
-								    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-									    IBV_ACCESS_RELAXED_ORDERING);
+			resources->data_mr[idx] =
+				ibv_reg_dmabuf_mr(resources->pd,
+						  0,
+						  size_data,
+						  (uint64_t)resources->data_buf[idx],
+						  dmabuf_fd,
+						  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 		}
 
 		if (resources->data_mr[idx] == NULL) {
@@ -213,7 +200,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 							     resources->data_buf[idx],
 							     size_data,
 							     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-								     IBV_ACCESS_RELAXED_ORDERING);
+								     IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 			if (resources->data_mr[idx] == NULL) {
 				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
 				goto exit_error;
@@ -240,13 +227,14 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 		/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method. */
 		status = doca_gpu_dmabuf_fd(resources->gpu_dev, resources->flag_buf[idx], size_flag, &dmabuf_fd);
 		if (status == DOCA_SUCCESS) {
-			resources->flag_mr[idx] = ibv_reg_dmabuf_mr(resources->pd,
-								    0,
-								    size_flag,
-								    (uint64_t)resources->flag_buf[idx],
-								    dmabuf_fd,
-								    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-									    IBV_ACCESS_RELAXED_ORDERING);
+			resources->flag_mr[idx] =
+				ibv_reg_dmabuf_mr(resources->pd,
+						  0,
+						  size_flag,
+						  (uint64_t)resources->flag_buf[idx],
+						  dmabuf_fd,
+						  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 		}
 
 		if (resources->flag_mr[idx] == NULL) {
@@ -254,7 +242,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 							     resources->flag_buf[idx],
 							     size_flag,
 							     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-								     IBV_ACCESS_RELAXED_ORDERING);
+								     IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 		}
 
 		if (resources->flag_mr[idx] == NULL) {
@@ -286,15 +274,15 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 							    (uint64_t)resources->dump_flag_buf,
 							    dmabuf_fd,
 							    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-								    IBV_ACCESS_RELAXED_ORDERING);
+								    IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 	}
 
 	if (resources->dump_flag_mr == NULL) {
-		resources->dump_flag_mr =
-			ibv_reg_mr(resources->pd,
-				   resources->dump_flag_buf,
-				   size_dump,
-				   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING);
+		resources->dump_flag_mr = ibv_reg_mr(resources->pd,
+						     resources->dump_flag_buf,
+						     size_dump,
+						     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+							     IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
 	}
 
 	if (resources->dump_flag_mr == NULL) {
@@ -311,14 +299,9 @@ exit_error:
 
 static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *resources)
 {
-	int tot_msg = NUM_MSG_SIZE;
-
-	if (resources->recv_inline)
-		tot_msg = NUM_MSG_SIZE_INLINE;
-
 	if (resources->cfg->is_server) {
 		// Server sends local info
-		for (int idx = 0; idx < tot_msg; idx++) {
+		for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 			uint64_t local_addr = (uint64_t)resources->flag_buf[idx];
 			if (send(resources->conn_socket, &local_addr, sizeof(uint64_t), 0) < 0) {
 				DOCA_LOG_ERR("Failed to send local buffer address");
@@ -331,7 +314,7 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 			}
 		}
 
-		for (int idx = 0; idx < tot_msg; idx++) {
+		for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 			if (recv(resources->conn_socket, &resources->remote_flag_buf[idx], sizeof(uint64_t), 0) < 0) {
 				DOCA_LOG_ERR("Failed to receive remote buffer address ");
 				return DOCA_ERROR_CONNECTION_ABORTED;
@@ -345,7 +328,7 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 
 	} else {
 		// Client waits for server info
-		for (int idx = 0; idx < tot_msg; idx++) {
+		for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 			if (recv(resources->conn_socket, &resources->remote_flag_buf[idx], sizeof(uint64_t), 0) < 0) {
 				DOCA_LOG_ERR("Failed to receive remote buffer address ");
 				return DOCA_ERROR_CONNECTION_ABORTED;
@@ -357,7 +340,7 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 			}
 		}
 
-		for (int idx = 0; idx < tot_msg; idx++) {
+		for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 			uint64_t local_addr = (uint64_t)resources->flag_buf[idx];
 			if (send(resources->conn_socket, &local_addr, sizeof(uint64_t), 0) < 0) {
 				DOCA_LOG_ERR("Failed to send local buffer address");
@@ -413,11 +396,12 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	CUresult cu_result;
 	CUevent e_start = NULL, e_end = NULL;
 	float et_ms = 0.0f;
+	const unsigned long format_factor = 0x100000; // -> MBS
+	// 125000000;
 	const unsigned long num_messages = cfg->num_iters * NUM_QP;
 	struct doca_gpu_dev_verbs_qp *qp_gpu;
 	int msg_size;
 	uint8_t data_val;
-	int tot_msg = NUM_MSG_SIZE;
 
 	resources.conn_socket = -1;
 	resources.num_iters = cfg->num_iters;
@@ -426,12 +410,6 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	resources.scope = (enum doca_gpu_dev_verbs_exec_scope)cfg->exec_scope;
 	resources.qp_group = false;
 	resources.recv_inline = cfg->recv_inline;
-	if (resources.recv_inline)
-		tot_msg = NUM_MSG_SIZE_INLINE;
-
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF)
-		DOCA_LOG_WARN(
-			"BlueFlame mode selected. In this bandwidth test, the UAR will be created as BlueFlame but the DB will be rung as GPU_SM_DB mode");
 
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
@@ -486,12 +464,12 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	}
 
 	DOCA_LOG_INFO(
-		"Launching gpunetio_verbs_twosided_bw kernel with 1 CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread %s nic handler, %s scope, %s CQE inline 32B",
+		"Launching gpunetio_verbs_twosided_bw kernel with 1 CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread %d cpu proxy, %d shared mode, %s CQE inline 32B",
 		resources.cuda_threads,
 		resources.num_iters,
-		resources.num_iters / resources.cuda_threads,
-		doca_gpu_nic_handler_to_string(resources.nic_handler),
-		((resources.scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD) ? "THREAD" : "WARP"),
+		resources.num_iters / resources.cuda_threads, // check this is ok
+		resources.nic_handler,
+		resources.scope,
 		(resources.recv_inline == 1 ? "Yes" : "No"));
 
 	printf(RESULT_LINE);
@@ -505,7 +483,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 		goto destroy_events;
 	}
 
-	for (int idx = 0; idx < tot_msg; idx++) {
+	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 		if (resources.recv_inline == 1) {
 			msg_size = message_size_inl32[idx];
 			data_val = idx + 1;
@@ -591,8 +569,8 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 			goto destroy_events;
 		}
 
-		double bw = (double)((double)((msg_size * num_messages) / et_ms * 1000.0f) * ((double)8.0) /
-				     BW_FORMAT_FACTOR);
+		// Check calculation is the same as in case of perftest
+		double bw = (double)((msg_size * num_messages) / et_ms * 1000.0f / format_factor);
 		double msgrate = (double)(num_messages / et_ms * 1000.0f / 1000000.0f);
 
 		printf(REPORT_FMT_EXT, msg_size, resources.num_iters, bw, msgrate, (double)et_ms);
@@ -639,10 +617,11 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	CUresult cu_result;
 	CUevent e_start = NULL, e_end = NULL;
 	float et_ms = 0.0f;
+	const unsigned long format_factor = 0x100000; // -> MBS
+	// 125000000;
 	const unsigned long num_messages = cfg->num_iters * NUM_QP;
 	struct doca_gpu_dev_verbs_qp *qp_gpu;
 	int msg_size;
-	int tot_msg = NUM_MSG_SIZE;
 
 	resources.conn_socket = -1;
 	resources.num_iters = cfg->num_iters;
@@ -651,12 +630,6 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	resources.scope = (enum doca_gpu_dev_verbs_exec_scope)cfg->exec_scope;
 	resources.qp_group = false;
 	resources.recv_inline = cfg->recv_inline;
-	if (resources.recv_inline)
-		tot_msg = NUM_MSG_SIZE_INLINE;
-
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF)
-		DOCA_LOG_WARN(
-			"BlueFlame mode selected. In this bandwidth test, the UAR will be created as BlueFlame but the DB will be rung as GPU_SM_DB mode");
 
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
@@ -711,13 +684,12 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	}
 
 	DOCA_LOG_INFO(
-		"Launching gpunetio_verbs_twosided_bw kernel with 1 CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread %s nic handler, %s scope, %s CQE inline 32B",
+		"Launching gpunetio_verbs_twosided_bw kernel with 1 CUDA Blocks, %d CUDA threads, %d total number of iterations, %d iterations per cuda thread %d cpu proxy, %d shared mode",
 		resources.cuda_threads,
 		resources.num_iters,
-		resources.num_iters / resources.cuda_threads,
-		doca_gpu_nic_handler_to_string(resources.nic_handler),
-		((resources.scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD) ? "THREAD" : "WARP"),
-		(resources.recv_inline == 1 ? "Yes" : "No"));
+		resources.num_iters / resources.cuda_threads, // check this is ok
+		resources.nic_handler,
+		resources.scope);
 
 	printf(RESULT_LINE);
 	printf(RESULT_FMT_G);
@@ -730,7 +702,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 		goto destroy_events;
 	}
 
-	for (int idx = 0; idx < tot_msg; idx++) {
+	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 		if (resources.recv_inline == 1)
 			msg_size = message_size_inl32[idx];
 		else
@@ -812,8 +784,8 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 			goto destroy_events;
 		}
 
-		double bw = (double)((double)((msg_size * num_messages) / et_ms * 1000.0f) * ((double)8.0) /
-				     BW_FORMAT_FACTOR);
+		// Check calculation is the same as in case of perftest
+		double bw = (double)((msg_size * num_messages) / et_ms * 1000.0f / format_factor);
 		double msgrate = (double)(num_messages / et_ms * 1000.0f / 1000000.0f);
 
 		printf(REPORT_FMT_EXT, msg_size, resources.num_iters, bw, msgrate, (double)et_ms);

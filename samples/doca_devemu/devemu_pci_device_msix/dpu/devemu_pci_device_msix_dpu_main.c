@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,7 +23,6 @@
  *
  */
 
-#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -37,17 +36,13 @@
 DOCA_LOG_REGISTER(DEVEMU_PCI_DEVICE_MSIX_DPU::MAIN);
 
 /* Sample's Logic */
-doca_error_t devemu_pci_device_msix_dpu(const char *pci_address,
-					const char *emulated_dev_vuid,
-					uint16_t msix_idx,
-					bool msix_on_dpu);
+doca_error_t devemu_pci_device_msix_dpu(const char *pci_address, const char *emulated_dev_vuid, uint16_t msix_idx);
 
 /* Configuration struct */
 struct devemu_pci_cfg {
 	char pci_address[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* device PCI address */
 	char vuid[DOCA_DEVINFO_REP_VUID_SIZE];	      /* VUID of emulated device with MSI-X regions */
 	uint16_t msix_idx;			      /* Index of MSI-X to raise */
-	bool msix_on_dpu;			      /* Raise MSI-X from DPU (true) or DPA (false) */
 };
 
 #ifdef DOCA_ARCH_DPU
@@ -107,51 +102,6 @@ static doca_error_t msix_index_callback(void *param, void *config)
 }
 
 /*
- * ARGP Callback - Handle MSI-X datapath flag parameter
- *
- * @param [in]: Input parameter
- * @config [in/out]: Program configuration context
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t msix_on_dpu_callback(void *param, void *config)
-{
-	struct devemu_pci_cfg *conf = (struct devemu_pci_cfg *)config;
-
-	conf->msix_on_dpu = *(bool *)param;
-
-	return DOCA_SUCCESS;
-}
-
-/*
- * Register MSI-X datapath flag command line parameter
- *
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t register_msix_on_dpu_param(void)
-{
-	struct doca_argp_param *param;
-	doca_error_t result;
-
-	result = doca_argp_param_create(&param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
-		return result;
-	}
-	doca_argp_param_set_long_name(param, "msix-on-dpu");
-	doca_argp_param_set_description(param,
-					"Raise MSI-X from the DPU. If not set, MSI-X is raised from the DPA (default)");
-	doca_argp_param_set_callback(param, msix_on_dpu_callback);
-	doca_argp_param_set_type(param, DOCA_ARGP_TYPE_BOOLEAN);
-	result = doca_argp_register_param(param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	return DOCA_SUCCESS;
-}
-
-/*
  * Register MSI-X index command line parameter
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -206,7 +156,7 @@ static doca_error_t register_devemu_pci_params(void)
 	if (result != DOCA_SUCCESS)
 		return result;
 
-	return register_msix_on_dpu_param();
+	return DOCA_SUCCESS;
 }
 
 #endif // DOCA_ARCH_DPU
@@ -228,8 +178,6 @@ int main(int argc, char **argv)
 	/* Set the default configuration values (Example values) */
 	strcpy(devemu_pci_cfg.pci_address, "0000:03:00.0");
 	strcpy(devemu_pci_cfg.vuid, "");
-	devemu_pci_cfg.msix_idx = 0;
-	devemu_pci_cfg.msix_on_dpu = false;
 
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
@@ -268,10 +216,7 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
-	result = devemu_pci_device_msix_dpu(devemu_pci_cfg.pci_address,
-					    devemu_pci_cfg.vuid,
-					    devemu_pci_cfg.msix_idx,
-					    devemu_pci_cfg.msix_on_dpu);
+	result = devemu_pci_device_msix_dpu(devemu_pci_cfg.pci_address, devemu_pci_cfg.vuid, devemu_pci_cfg.msix_idx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("devemu_pci_device_msix_dpu() encountered an error: %s", doca_error_get_descr(result));
 		goto argp_cleanup;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -192,11 +192,11 @@ enum upf_accel_rule_type {
 
 enum upf_accel_entry_state {
 	UPF_ACCEL_ENTRY_STATE_NONE,		      /* Entry isn't active (not established yet or deleted) */
-	UPF_ACCEL_ENTRY_STATE_PENDING,		      /* Entry is in the process of being created */
+	UPF_ACCEL_ENTRY_STATE_PENDING,		      /* Entry is in the proccess of being created */
 	UPF_ACCEL_ENTRY_STATE_UNACCELERATED,	      /* Entry not accelerated yet */
-	UPF_ACCEL_ENTRY_STATE_PENDING_ACCELERATION,   /* Entry is in the process of HW acceleration */
+	UPF_ACCEL_ENTRY_STATE_PENDING_ACCELERATION,   /* Entry is in the proccess of HW acceleration */
 	UPF_ACCEL_ENTRY_STATE_ACCELERATED,	      /* Entry is accelerated (by HW) */
-	UPF_ACCEL_ENTRY_STATE_PENDING_DEACCELERATION, /* Flow is in the process of removal from acceleration */
+	UPF_ACCEL_ENTRY_STATE_PENDING_DEACCELERATION, /* Flow is in the proccess of removal from acceleration */
 };
 
 struct app_shared_counter_ids {
@@ -248,7 +248,7 @@ struct upf_accel_pdrs {
 
 struct upf_accel_far {
 	uint32_t id;			   /* FAR ID */
-	struct upf_accel_ip_addr fp_oh_ip; /* Forwarding policy outer header creation IP */
+	struct upf_accel_ip_addr fp_oh_ip; /* Forwardind policy outer header creation IP */
 	uint32_t fp_oh_teid;		   /* Forwarding policy outer header creation teid */
 };
 
@@ -541,7 +541,7 @@ doca_error_t upf_accel_smf_parse(struct upf_accel_config *cfg);
 /*
  * VXLAN Config parsing & initialization
  *
- * @cfg [in]: UPF Acceleration configuration.
+ * @cfg [in]: UPF Acceleration onfiguration.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t upf_accel_vxlan_parse(struct upf_accel_config *cfg);

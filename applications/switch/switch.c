@@ -80,7 +80,7 @@ int main(int argc, char **argv)
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse application input: %s", doca_error_get_descr(result));
-		goto device_cleanup;
+		goto argp_cleanup;
 	}
 
 	result = init_doca_flow_devs(&ctx.devs_ctx);
@@ -128,7 +128,6 @@ dpdk_cleanup:
 dpdk_destroy:
 	/* DPDK cleanup + device closure */
 	dpdk_fini();
-device_cleanup:
 	destroy_doca_flow_devs(&ctx.devs_ctx);
 argp_cleanup:
 	doca_argp_destroy();

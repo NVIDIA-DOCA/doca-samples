@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -218,7 +218,7 @@ static void remove_resizable_pipe_entries(void)
 	int rc;
 
 	for (i = 0; i < MAX_ENTRIES; i++) {
-		rc = doca_flow_pipe_remove_entry(0, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT, entry[i]);
+		rc = doca_flow_pipe_remove_entry(0, DOCA_FLOW_NO_WAIT, entry[i]);
 		if (rc)
 			DOCA_LOG_WARN("Failed removing entry %d %p", i, entry[i]);
 	}
@@ -278,18 +278,19 @@ static doca_error_t add_resizable_pipe_entries(struct doca_flow_pipe *pipe,
 		match.outer.ip4.dst_ip++;
 
 		if (is_basic_pipe)
-			result = doca_flow_pipe_basic_add_entry(0,
-								pipe,
-								&match,
-								0,
-								&actions,
-								NULL /* monitor */,
-								NULL /* fwd */,
-								0,
-								&entry_ctx[i],
-								&entry[i]);
+			result = doca_flow_pipe_add_entry(0,
+							  pipe,
+							  &match,
+							  0,
+							  &actions,
+							  NULL /* monitor */,
+							  NULL /* fwd */,
+							  0,
+							  &entry_ctx[i],
+							  &entry[i]);
 		else
 			result = doca_flow_pipe_control_add_entry(0 /* pipe_queue */,
+								  1 /*priority */,
 								  pipe,
 								  &match,
 								  NULL /* match_mask */,
@@ -298,7 +299,6 @@ static doca_error_t add_resizable_pipe_entries(struct doca_flow_pipe *pipe,
 								  NULL /* actions_mask */,
 								  NULL /* action_descs */,
 								  NULL /* monitor */,
-								  1 /*priority */,
 								  &fwd,
 								  &entry_ctx[i],
 								  &entry[i]);
@@ -324,7 +324,7 @@ static doca_error_t add_resizable_pipe_entries(struct doca_flow_pipe *pipe,
 					 * invoked on excluded queues, but
 					 * there is no prevention from calling
 					 * entries_process on excluded queues
-					 * in favor of other pipes (where
+					 * in favour of other pipes (where
 					 * those queues are not excluded). */
 					if (queue_id == 1)
 						continue;

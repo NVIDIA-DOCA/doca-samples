@@ -1,13 +1,3 @@
-#
-# This software product is a proprietary product of NVIDIA CORPORATION &
-# AFFILIATES (the "Company") and all right, title, and interest in and to the
-# software product, including all associated intellectual property rights, are
-# and shall remain exclusively with the Company.
-#
-# This software product is governed by the End User License Agreement
-# provided with the software product.
-#
-
 # Samples
 
 > **Note:** The following samples are for the CPU datapath. For GPU datapath samples, see [DOCA GPUNetIO](https://docs.nvidia.com/doca/archive/2-9-0/DOCA+GPUNetIO).
@@ -82,7 +72,7 @@ The sample logic includes:
 - Initializing and configuring DOCA ETH TXQ context.
 - Starting the DOCA ETH TXQ context.
 - Allocating DOCA ETH TXQ send task batch.
-- Copying all buffers' pointers to task batch's pkt_array.
+- Copying all buffers' pointers to task batch's pkt_arry.
 - Submitting DOCA ETH TXQ send task batch into the progress engine.
 - Retrieving DOCA ETH TXQ send task batch from the progress engine.
 - Handling the completed task batch using the provided callback.
@@ -112,8 +102,8 @@ The sample logic includes:
 - Initializing and configuring DOCA ETH TXQ context.
 - Starting the DOCA ETH TXQ context.
 - Allocating DOCA ETH TXQ LSO send task.
-- Copying all buffers' pointers to task batch's pkt_payload_array.
-- Copying all gather lists' pointers to task batch's headers_array.
+- Copying all buffers' pointers to task batch's pkt_payload_arry.
+- Copying all gather lists' pointers to task batch's headers_arry.
 - Submitting DOCA ETH TXQ LSO send task batch into the progress engine.
 - Retrieving DOCA ETH TXQ LSO send task batch from the progress engine.
 - Handling the completed task batch using the provided callback.

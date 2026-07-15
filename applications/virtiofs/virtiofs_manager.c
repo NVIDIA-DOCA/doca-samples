@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -30,7 +30,7 @@
 #include <virtiofs_core.h>
 #include <virtiofs_manager.h>
 
-DOCA_LOG_REGISTER(VIRTIOFS_MANAGER);
+DOCA_LOG_REGISTER(VIRTIOFS_MANAGER)
 
 static doca_error_t virtiofs_function_destroy(struct virtiofs_function *func, bool rep_destroy)
 {
@@ -245,7 +245,7 @@ doca_error_t virtiofs_managers_create(struct virtiofs_resources *ctx)
 	}
 
 	for (idx = 0; idx < num_devices; idx++) {
-		result = doca_devemu_vfs_cap_is_default_vfs_type_supported(devinfo_list[idx], &is_supported);
+		result = doca_devemu_vfs_is_default_vfs_type_supported(devinfo_list[idx], &is_supported);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query Virtio FS support for doca_devinfo, err: %s",
 				     doca_error_get_name(result));

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,9 +23,6 @@
  *
  */
 
-#ifndef APPLICATIONS_DPU_GPU_REMOTE_OFFLOAD_SERVER_THREAD_HPP_
-#define APPLICATIONS_DPU_GPU_REMOTE_OFFLOAD_SERVER_THREAD_HPP_
-
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -42,6 +39,9 @@
 #include <remote_offload_common/thread_control.hpp>
 
 #include <server/comch_control_channel.hpp>
+
+#ifndef APPLICATIONS_DPU_GPU_REMOTE_OFFLOAD_SERVER_THREAD_HPP_
+#define APPLICATIONS_DPU_GPU_REMOTE_OFFLOAD_SERVER_THREAD_HPP_
 
 namespace remote_offload {
 namespace server {

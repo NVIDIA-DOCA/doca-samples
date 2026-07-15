@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -139,7 +139,7 @@ static const char *doca_telemetry_pci_lane_reversal_mode_to_string(enum doca_tel
 
 static void fetch_and_display_management_info(struct doca_devinfo *devinfo,
 					      struct doca_telemetry_pci *pci,
-					      const struct telemetry_pci_sample_cfg *cfg)
+					      struct doca_telemetry_pci_dpn dpn)
 {
 	doca_error_t result;
 	struct doca_telemetry_pci_management_info data = {0};
@@ -151,13 +151,9 @@ static void fetch_and_display_management_info(struct doca_devinfo *devinfo,
 	link_peer_max_speed_supported =
 		doca_telemetry_pci_cap_management_info_link_peer_max_speed_is_supported(devinfo) == DOCA_SUCCESS;
 
-	if (cfg->target_pci_addr_set) {
-		result = doca_telemetry_pci_read_management_info_by_pci_addr(pci, cfg->target_pci_addr, &data);
-	} else {
-		result = doca_telemetry_pci_read_management_info(pci, cfg->target_dpn, &data);
-	}
+	result = doca_telemetry_pci_read_management_info(pci, dpn, &data);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to read Management info. Err: %s", doca_error_get_name(result));
+		DOCA_LOG_ERR("Failed to read Managament info. Err: %s", doca_error_get_name(result));
 		return;
 	}
 
@@ -194,7 +190,7 @@ static void fetch_and_display_management_info(struct doca_devinfo *devinfo,
 
 static void fetch_and_display_perf_counters_1(struct doca_devinfo *devinfo,
 					      struct doca_telemetry_pci *pci,
-					      const struct telemetry_pci_sample_cfg *cfg)
+					      struct doca_telemetry_pci_dpn dpn)
 {
 	doca_error_t result;
 	bool tx_overflow_supported;
@@ -213,11 +209,7 @@ static void fetch_and_display_perf_counters_1(struct doca_devinfo *devinfo,
 
 	fber_supported = doca_telemetry_pci_cap_perf_counters_1_fber_is_supported(devinfo) == DOCA_SUCCESS;
 
-	if (cfg->target_pci_addr_set) {
-		result = doca_telemetry_pci_read_perf_counters_1_by_pci_addr(pci, cfg->target_pci_addr, &data);
-	} else {
-		result = doca_telemetry_pci_read_perf_counters_1(pci, cfg->target_dpn, &data);
-	}
+	result = doca_telemetry_pci_read_perf_counters_1(pci, dpn, &data);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to read Perf counters group 1. Err: %s", doca_error_get_name(result));
 		return;
@@ -248,7 +240,7 @@ static void fetch_and_display_perf_counters_1(struct doca_devinfo *devinfo,
 
 static void fetch_and_display_latency_histogram(struct doca_devinfo *devinfo,
 						struct doca_telemetry_pci *pci,
-						const struct telemetry_pci_sample_cfg *cfg)
+						struct doca_telemetry_pci_dpn dpn)
 {
 	(void)(devinfo);
 
@@ -259,20 +251,9 @@ static void fetch_and_display_latency_histogram(struct doca_devinfo *devinfo,
 	uint32_t bin_lower_bound;
 	uint32_t bin_upper_bound;
 
-	if (cfg->target_pci_addr_set) {
-		result = doca_telemetry_pci_get_latency_histogram_dimensions_by_pci_addr(pci,
-											 cfg->target_pci_addr,
-											 &bucket_count,
-											 &bucket_width);
-	} else {
-		result = doca_telemetry_pci_get_latency_histogram_dimensions(pci,
-									     cfg->target_dpn,
-									     &bucket_count,
-									     &bucket_width);
-	}
-
+	result = doca_telemetry_pci_get_latency_histogram_dimensions(pci, dpn, &bucket_count, &bucket_width);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to read Latency histogram dimensions. Err: %s", doca_error_get_name(result));
+		DOCA_LOG_ERR("Failed to read Latency histogram dimmensions. Err: %s", doca_error_get_name(result));
 		return;
 	}
 
@@ -284,11 +265,7 @@ static void fetch_and_display_latency_histogram(struct doca_devinfo *devinfo,
 
 	memset(bucket_data, 0, sizeof(uint64_t) * bucket_count);
 
-	if (cfg->target_pci_addr_set) {
-		result = doca_telemetry_pci_read_latency_histogram_by_pci_addr(pci, cfg->target_pci_addr, bucket_data);
-	} else {
-		result = doca_telemetry_pci_read_latency_histogram(pci, cfg->target_dpn, bucket_data);
-	}
+	result = doca_telemetry_pci_read_latency_histogram(pci, dpn, bucket_data);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to read Latency histogram. Err: %s", doca_error_get_name(result));
 		free(bucket_data);
@@ -321,7 +298,7 @@ doca_error_t telemetry_pci_sample_run(const struct telemetry_pci_sample_cfg *cfg
 	doca_error_t result, feature;
 
 	/* Open DOCA device based on the given PCI address */
-	result = open_doca_device_with_pci(cfg->dev_pci_addr, NULL, &dev);
+	result = open_doca_device_with_pci(cfg->pci_addr, NULL, &dev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to open device with error=%s", doca_error_get_name(result));
 		return result;
@@ -344,21 +321,21 @@ doca_error_t telemetry_pci_sample_run(const struct telemetry_pci_sample_cfg *cfg
 	/* Run each supported feature - if they are not supported print a log and continue */
 	feature = doca_telemetry_pci_cap_management_info_is_supported(doca_dev_as_devinfo(dev));
 	if (feature == DOCA_SUCCESS) {
-		fetch_and_display_management_info(doca_dev_as_devinfo(dev), pci, cfg);
+		fetch_and_display_management_info(doca_dev_as_devinfo(dev), pci, cfg->dpn);
 	} else {
 		DOCA_LOG_INFO("doca_telemetry_pci management info is not supported on this device");
 	}
 
 	feature = doca_telemetry_pci_cap_perf_counters_1_is_supported(doca_dev_as_devinfo(dev));
 	if (feature == DOCA_SUCCESS) {
-		fetch_and_display_perf_counters_1(doca_dev_as_devinfo(dev), pci, cfg);
+		fetch_and_display_perf_counters_1(doca_dev_as_devinfo(dev), pci, cfg->dpn);
 	} else {
 		DOCA_LOG_INFO("doca_telemetry_pci performance counters group 1 is not supported on this device");
 	}
 
 	feature = doca_telemetry_pci_cap_latency_histogram_is_supported(doca_dev_as_devinfo(dev));
 	if (feature == DOCA_SUCCESS) {
-		fetch_and_display_latency_histogram(doca_dev_as_devinfo(dev), pci, cfg);
+		fetch_and_display_latency_histogram(doca_dev_as_devinfo(dev), pci, cfg->dpn);
 	} else {
 		DOCA_LOG_INFO("doca_telemetry_pci latency histogram is not supported on this device");
 	}

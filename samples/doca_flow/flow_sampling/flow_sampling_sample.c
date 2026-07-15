@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -146,7 +146,7 @@ static doca_error_t add_root_pipe_entry(struct doca_flow_pipe *pipe,
 	DOCA_LOG_DBG("Adding root pipe entry matching of: "
 		     "IPv4(src='1.1.1.1',dst='8.8.8.8') and TCP(src_port=1234,dst_port=80)");
 
-	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
+	return doca_flow_pipe_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, entry);
 }
 
 /*
@@ -249,6 +249,7 @@ static doca_error_t add_random_sampling_pipe_entry(struct doca_flow_pipe *pipe,
 	fwd.port_id = 1;
 
 	return doca_flow_pipe_control_add_entry(0 /* queue */,
+						0 /* priority */,
 						pipe,
 						&match,
 						NULL /* match_mask */,
@@ -257,7 +258,6 @@ static doca_error_t add_random_sampling_pipe_entry(struct doca_flow_pipe *pipe,
 						NULL /* actions_mask */,
 						NULL /* action_descs */,
 						&monitor,
-						0 /* priority */,
 						&fwd,
 						status,
 						entry);
@@ -277,7 +277,7 @@ static doca_error_t random_sampling_results(struct doca_flow_pipe_entry *root_en
 {
 	struct doca_flow_resource_query root_query_stats;
 	struct doca_flow_resource_query random_query_stats;
-	double actual_percentage;
+	double actuall_percentage;
 	uint32_t total_packets;
 	uint32_t nb_sampled_packets;
 	doca_error_t result;
@@ -299,12 +299,12 @@ static doca_error_t random_sampling_results(struct doca_flow_pipe_entry *root_en
 	}
 
 	nb_sampled_packets = random_query_stats.counter.total_pkts;
-	actual_percentage = GET_PERCENTAGE(nb_sampled_packets, total_packets);
+	actuall_percentage = GET_PERCENTAGE(nb_sampled_packets, total_packets);
 
 	DOCA_LOG_INFO("Sampling result information (%g%% is requested):", requested_percentage);
 	DOCA_LOG_INFO("This pipeline samples %u packets which is %g%% of the traffic (%u/%u)",
 		      nb_sampled_packets,
-		      actual_percentage,
+		      actuall_percentage,
 		      nb_sampled_packets,
 		      total_packets);
 

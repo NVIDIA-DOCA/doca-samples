@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,8 +23,8 @@
  *
  */
 
-#ifndef DOCA_GPU_PACKET_PROCESSING_FILTERS_H
-#define DOCA_GPU_PACKET_PROCESSING_FILTERS_H
+#ifndef DOCA_GPUNETIO_FILTERS_H
+#define DOCA_GPUNETIO_FILTERS_H
 
 #include "common.h"
 #include "packets.h"
@@ -140,4 +140,4 @@ __device__ __inline__ unsigned long long _gputimestamp()
 	return globaltimer;
 }
 
-#endif /* DOCA_GPU_PACKET_PROCESSING_FILTERS_H */
+#endif /* DOCA_GPUNETIO_FILTERS_H */

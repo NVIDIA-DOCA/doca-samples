@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -66,8 +66,12 @@ doca_error_t flow_ct_register_params(void)
 doca_error_t init_doca_flow_ct(uint32_t flags,
 			       uint32_t nb_arm_queues,
 			       uint32_t nb_ctrl_queues,
-			       uint32_t actions_mem_size,
+			       uint32_t nb_user_actions,
 			       doca_flow_ct_entry_finalize_cb entry_finalize_cb,
+			       uint32_t nb_ipv4_sessions,
+			       uint32_t nb_ipv6_sessions,
+			       uint32_t nb_asym_counter,
+			       uint32_t dup_filter_sz,
 			       bool o_match_inner,
 			       struct doca_flow_meta *o_zone_mask,
 			       struct doca_flow_ct_meta *o_modify_mask,
@@ -95,13 +99,16 @@ doca_error_t init_doca_flow_ct(uint32_t flags,
 	doca_flow_ct_cfg_set_flags(ct_cfg, flags);
 	doca_flow_ct_cfg_set_queues(ct_cfg, nb_arm_queues);
 	doca_flow_ct_cfg_set_ctrl_queues(ct_cfg, nb_ctrl_queues);
-	doca_flow_ct_cfg_set_actions_mem_size(ct_cfg, actions_mem_size);
+	doca_flow_ct_cfg_set_user_actions(ct_cfg, nb_user_actions);
 	doca_flow_ct_cfg_set_aging_core(ct_cfg, nb_arm_queues + 1);
 	doca_flow_ct_cfg_set_entry_finalize_cb(ct_cfg, entry_finalize_cb);
+	doca_flow_ct_cfg_set_connections(ct_cfg, nb_ipv4_sessions, nb_ipv6_sessions, 0);
+	doca_flow_ct_cfg_set_counter_asymmetric(ct_cfg, nb_asym_counter);
+	doca_flow_ct_cfg_set_dup_filter_size(ct_cfg, dup_filter_sz);
 	doca_flow_ct_cfg_set_direction(ct_cfg, false, o_match_inner, o_zone_mask, o_modify_mask);
 	doca_flow_ct_cfg_set_direction(ct_cfg, true, r_match_inner, r_zone_mask, r_modify_mask);
+	doca_flow_ct_cfg_set_max_connections_per_zone(ct_cfg, 8192 * 1024);
 
-	/* Asymmetric counter is determined by core from pool/counter capacity; no config param. */
 	result = doca_flow_ct_init(ct_cfg);
 	if (result != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to initialize DOCA Flow CT: %s", doca_error_get_name(result));
@@ -202,6 +209,7 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 		match.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
 		match.outer.ip4.dst_ip = BE_IPV4_ADDR(1, 1, 1, 1);
 		result = doca_flow_pipe_control_add_entry(0,
+							  1,
 							  *pipe,
 							  &match,
 							  NULL,
@@ -210,7 +218,6 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 							  NULL,
 							  NULL,
 							  NULL,
-							  1,
 							  &fwd,
 							  status,
 							  NULL);
@@ -222,6 +229,7 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 		match.outer.ip4.dst_ip = 0;
 		match.outer.ip4.src_ip = BE_IPV4_ADDR(1, 1, 1, 1);
 		result = doca_flow_pipe_control_add_entry(0,
+							  1,
 							  *pipe,
 							  &match,
 							  NULL,
@@ -230,7 +238,6 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 							  NULL,
 							  NULL,
 							  NULL,
-							  1,
 							  &fwd,
 							  status,
 							  NULL);
@@ -250,6 +257,7 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 		match.outer.ip6.dst_ip[2] = 0x01010101;
 		match.outer.ip6.dst_ip[3] = 0x01010101;
 		result = doca_flow_pipe_control_add_entry(0,
+							  1,
 							  *pipe,
 							  &match,
 							  NULL,
@@ -258,7 +266,6 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 							  NULL,
 							  NULL,
 							  NULL,
-							  1,
 							  &fwd,
 							  status,
 							  NULL);
@@ -273,6 +280,7 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 		match.outer.ip6.src_ip[2] = 0x01010101;
 		match.outer.ip6.src_ip[3] = 0x01010101;
 		result = doca_flow_pipe_control_add_entry(0,
+							  1,
 							  *pipe,
 							  &match,
 							  NULL,
@@ -281,7 +289,6 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 							  NULL,
 							  NULL,
 							  NULL,
-							  1,
 							  &fwd,
 							  status,
 							  NULL);
@@ -295,6 +302,7 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 	fwd.type = DOCA_FLOW_FWD_DROP;
 	memset(&match, 0, sizeof(match));
 	result = doca_flow_pipe_control_add_entry(0,
+						  2,
 						  *pipe,
 						  &match,
 						  NULL,
@@ -303,7 +311,6 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
 						  NULL,
 						  NULL,
 						  NULL,
-						  2,
 						  &fwd,
 						  status,
 						  NULL);
@@ -334,19 +341,14 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 				  uint32_t hash_reply,
 				  const struct doca_flow_ct_actions *actions_origin,
 				  const struct doca_flow_ct_actions *actions_reply,
-				  const struct doca_flow_fwd *fwd_origin,
-				  const struct doca_flow_fwd *fwd_reply,
+				  uint32_t fwd_handle_origin,
+				  uint32_t fwd_handle_reply,
 				  uint32_t timeout_s,
 				  struct entries_status *ct_status,
 				  struct doca_flow_pipe_entry **entry)
 {
 	doca_error_t result;
 	bool conn_found = false;
-
-	if (port == NULL || pipe == NULL) {
-		DOCA_LOG_ERR("Invalid input parameters");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
 
 	/* Allocate CT entry */
 	result = doca_flow_ct_entry_prepare(ct_queue,
@@ -374,8 +376,8 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 					match_reply,
 					actions_origin,
 					actions_reply,
-					fwd_origin,
-					fwd_reply,
+					fwd_handle_origin,
+					fwd_handle_reply,
 					timeout_s,
 					ct_status,
 					*entry);

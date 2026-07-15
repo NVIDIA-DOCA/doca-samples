@@ -136,7 +136,6 @@ int main(int argc, char **argv)
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse application input: %s", doca_error_get_descr(result));
-		destroy_doca_flow_devs(&app_cfg.flow_devs);
 		doca_argp_destroy();
 		return EXIT_FAILURE;
 	}
@@ -144,7 +143,6 @@ int main(int argc, char **argv)
 	result = init_doca_flow_devs(&app_cfg.flow_devs);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init flow devices: %s", doca_error_get_descr(result));
-		destroy_doca_flow_devs(&app_cfg.flow_devs);
 		doca_argp_destroy();
 		return EXIT_FAILURE;
 	}
@@ -152,7 +150,6 @@ int main(int argc, char **argv)
 	result = doca_log_backend_create_with_syslog("doca_core", &logger);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to allocate the logger");
-		destroy_doca_flow_devs(&app_cfg.flow_devs);
 		doca_argp_destroy();
 		return EXIT_FAILURE;
 	}
@@ -218,6 +215,7 @@ exit_app:
 dpdk_destroy:
 	simple_fwd_close_doca_devs(dpdk_config.port_config.nb_ports);
 	dpdk_fini();
+
 	/* ARGP cleanup */
 	doca_argp_destroy();
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -164,16 +164,16 @@ static doca_error_t add_switch_pipe_entries(uint8_t switch_port_idx,
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = (switch_port_idx * 3) + 1; /* first representor of this port */
 
-	result = doca_flow_pipe_basic_add_entry(0,
-						control->pipe,
-						&match,
-						0,
-						NULL,
-						NULL,
-						&fwd,
-						DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
-						status,
-						&control->tcp_entry);
+	result = doca_flow_pipe_add_entry(0,
+					  control->pipe,
+					  &match,
+					  0,
+					  NULL,
+					  NULL,
+					  &fwd,
+					  DOCA_FLOW_WAIT_FOR_BATCH,
+					  status,
+					  &control->tcp_entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add TCP pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -182,16 +182,16 @@ static doca_error_t add_switch_pipe_entries(uint8_t switch_port_idx,
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_UDP;
 	fwd.port_id = (switch_port_idx * 3) + 2; /* second representor of this port */
 
-	result = doca_flow_pipe_basic_add_entry(0,
-						control->pipe,
-						&match,
-						0,
-						NULL,
-						NULL,
-						&fwd,
-						DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
-						status,
-						&control->udp_entry);
+	result = doca_flow_pipe_add_entry(0,
+					  control->pipe,
+					  &match,
+					  0,
+					  NULL,
+					  NULL,
+					  &fwd,
+					  DOCA_FLOW_NO_WAIT,
+					  status,
+					  &control->udp_entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add UDP pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -512,7 +512,7 @@ static doca_error_t init_hot_upgrade_ports(struct flow_devs_manager devs_manager
  * @nb_queues [in]: number of queues the sample will use.
  * @nb_ports [in]: number of ports the sample will use.
  * @devs_manager [in]: Array of DOCA devices for the switch ports
- * @nb_devs [in]: Amount of eswitch manager dev bundles in the switch_manager_devs array
+ * @nb_devs [in]: Amount of eswtich manager dev bundles in the switch_manager_devs array
  * @state [in]: the operation state of this instance.
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
@@ -532,7 +532,7 @@ doca_error_t flow_switch_hot_upgrade(int nb_queues,
 	uint8_t switch_port_idx;
 	doca_error_t result;
 
-	result = init_doca_flow(nb_queues, "switch", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,isolated", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;

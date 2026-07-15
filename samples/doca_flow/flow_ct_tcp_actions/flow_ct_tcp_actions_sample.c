@@ -119,7 +119,7 @@ static doca_error_t create_rss_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add RSS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -191,7 +191,7 @@ static doca_error_t create_egress_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	/* Match on any packet */
-	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, &fwd, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add EGRESS pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -275,7 +275,7 @@ static doca_error_t create_tcp_flags_filter_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(cfg);
 
 	match.outer.tcp.flags = 0;
-	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
+	result = doca_flow_pipe_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, 0, status, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create TCP flags filter pipe entry: %s", doca_error_get_descr(result));
 		return result;
@@ -298,16 +298,12 @@ destroy_pipe_cfg:
  * @port [in]: Pipe port
  * @fwd_pipe [in]: Forward pipe pointer
  * @fwd_miss_pipe [in]: Forward miss pipe pointer
- * @nb_ipv4_sessions [in]: Number of IPv4 sessions
- * @nb_ipv6_sessions [in]: Number of IPv6 sessions
  * @pipe [out]: Created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t create_ct_pipe(struct doca_flow_port *port,
 				   struct doca_flow_pipe *fwd_pipe,
 				   struct doca_flow_pipe *fwd_miss_pipe,
-				   uint32_t nb_ipv4_sessions,
-				   uint32_t nb_ipv6_sessions,
 				   struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
@@ -365,16 +361,6 @@ static doca_error_t create_ct_pipe(struct doca_flow_port *port,
 	result = set_flow_pipe_cfg(cfg, "CT_PIPE", DOCA_FLOW_PIPE_CT, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-	result = doca_flow_pipe_cfg_set_ct_connections(cfg, nb_ipv4_sessions, nb_ipv6_sessions, 0);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set CT connections: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-	result = doca_flow_pipe_cfg_set_ct_max_connections_per_zone(cfg, CT_DEFAULT_MAX_ZONE_SESSIONS);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set CT max connections per zone: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 	result = doca_flow_pipe_cfg_set_match(cfg, &match, NULL);
@@ -439,7 +425,6 @@ static void parse_packet(struct rte_mbuf *packet,
  *
  * @port [in]: Port id to which an entry should be inserted
  * @ct_queue [in]: DOCA Flow CT queue number
- * @ct_pipe [in]: DOCA Flow CT pipe
  * @ct_status [in]: User context for adding CT entry
  * @shared_handle [in]: Shared action handle
  * @entry [in/out]: CT entry
@@ -447,7 +432,6 @@ static void parse_packet(struct rte_mbuf *packet,
  */
 static doca_error_t process_packets(struct doca_flow_port *port,
 				    uint16_t ct_queue,
-				    struct doca_flow_pipe *ct_pipe,
 				    struct entries_status *ct_status,
 				    uint32_t shared_handle,
 				    struct doca_flow_pipe_entry **entry)
@@ -503,7 +487,7 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 
 				result = flow_ct_create_entry(port,
 							      ct_queue,
-							      ct_pipe,
+							      NULL,
 							      prepare_flags,
 							      entry_flags,
 							      &match_o,
@@ -512,8 +496,8 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 							      0,
 							      &shared_action_o,
 							      &action_r,
-							      NULL,
-							      NULL,
+							      0,
+							      0,
 							      0,
 							      ct_status,
 							      entry);
@@ -527,6 +511,8 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 					"Entry %d matches on the 5-tuple of the incoming packet. Reply direction matches on the inversed origin direction",
 					i);
 			}
+			rte_flow_dynf_metadata_set(packets[i], 1);
+			packets[i]->ol_flags |= RTE_MBUF_DYNFLAG_TX_METADATA;
 			rte_eth_tx_burst(0, 0, &packets[i], 1);
 		}
 	} while (time(NULL) < end_time);
@@ -561,9 +547,8 @@ doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct flow_switch_ctx *ctx
 	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ctrl_status, ct_status;
-	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_ipv4_sessions = 1024, shared_action_handle,
-			   nb_ipv6_sessions = 0; /* On BF2 should always be 0 */
-	uint32_t ct_actions_mem_size = 4096 * 64;
+	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, nb_user_actions = 4096, nb_ipv4_sessions = 1024,
+			   shared_action_handle, nb_ipv6_sessions = 0; /* On BF2 should always be 0 */
 	uint16_t ct_queue = nb_queues;
 	doca_error_t result;
 
@@ -574,16 +559,15 @@ doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct flow_switch_ctx *ctx
 
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 1;
-	resource.nr_ct_counters = nb_ipv4_sessions + nb_ipv6_sessions;
 	resource.nr_rss = 1;
 
-	result = init_doca_flow(nb_queues, "switch,hws,expert", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch,hws,isolated,expert", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
 	}
 
-	/* Don't use zone masking */
+	/* Dont use zone masking */
 	memset(&o_zone_mask, 0, sizeof(o_zone_mask));
 	memset(&o_modify_mask, 0, sizeof(o_modify_mask));
 	memset(&r_zone_mask, 0, sizeof(r_zone_mask));
@@ -593,8 +577,12 @@ doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct flow_switch_ctx *ctx
 	result = init_doca_flow_ct(ct_flags,
 				   nb_arm_queues,
 				   nb_ctrl_queues,
-				   ct_actions_mem_size,
+				   nb_user_actions,
 				   NULL,
+				   nb_ipv4_sessions,
+				   nb_ipv6_sessions,
+				   nb_ipv4_sessions + nb_ipv6_sessions,
+				   0,
 				   false,
 				   &o_zone_mask,
 				   &o_modify_mask,
@@ -632,8 +620,7 @@ doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct flow_switch_ctx *ctx
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
-	result =
-		create_ct_pipe(ports[0], tcp_flags_filter_pipe, rss_pipe, nb_ipv4_sessions, nb_ipv6_sessions, &ct_pipe);
+	result = create_ct_pipe(ports[0], tcp_flags_filter_pipe, rss_pipe, &ct_pipe);
 	if (result != DOCA_SUCCESS)
 		goto cleanup;
 
@@ -662,7 +649,7 @@ doca_error_t flow_ct_tcp_actions(uint16_t nb_queues, struct flow_switch_ctx *ctx
 	}
 
 	DOCA_LOG_INFO("Wait a few seconds for 'SYN' packets to arrive");
-	result = process_packets(ports[0], ct_queue, ct_pipe, &ct_status, shared_action_handle, &tcp_entry);
+	result = process_packets(ports[0], ct_queue, &ct_status, shared_action_handle, &tcp_entry);
 	if (result != DOCA_SUCCESS)
 		goto cleanup_shared_res;
 

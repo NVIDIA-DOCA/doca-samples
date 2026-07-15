@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,8 +23,6 @@
  *
  */
 
-#include <assert.h>
-#include <stdlib.h>
 #include <unistd.h>
 #include <doca_log.h>
 #include <doca_flow.h>
@@ -59,6 +57,7 @@ enum integrity_flow_priority {
  * Create DOCA Flow control pipe with parser_meta checks
  *
  * @port [in]: port of the pipe
+ * @port_id [in]: port ID of the pipe
  * @pipe [out]: created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
@@ -76,12 +75,6 @@ static doca_error_t create_parser_meta_pipe(struct doca_flow_port *port, struct 
 	result = set_flow_pipe_cfg(pipe_cfg, "PARSER_META_PIPE", DOCA_FLOW_PIPE_CONTROL, true);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-
-	result = doca_flow_pipe_cfg_set_nr_entries(pipe_cfg, MAX_ENTRIES);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set nr_entries: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
 
@@ -348,8 +341,7 @@ static doca_error_t add_valid_flows_table_entries(struct doca_flow_pipe *pipe,
 	doca_error_t result;
 	int entry_idx = g_flow_db[port_id].count;
 
-	/* Initialize match and match mask for all fields we want to check */
-	memset(&match, 0, sizeof(match));
+	/* Initialize match mask for all fields we want to check */
 	memset(&match_mask, 0, sizeof(match_mask));
 	match_mask.parser_meta = (struct doca_flow_parser_meta){
 		.outer_l3_type = UINT32_MAX,
@@ -406,6 +398,7 @@ static doca_error_t add_valid_flows_table_entries(struct doca_flow_pipe *pipe,
 		monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
 		result = doca_flow_pipe_control_add_entry(0,
+							  priority,
 							  pipe,
 							  &match,
 							  &match_mask,
@@ -414,7 +407,6 @@ static doca_error_t add_valid_flows_table_entries(struct doca_flow_pipe *pipe,
 							  NULL,
 							  NULL,
 							  &monitor,
-							  priority,
 							  &fwd,
 							  status,
 							  &((*entries)[entry_idx]));
@@ -491,6 +483,7 @@ static doca_error_t add_valid_flows_table_entries(struct doca_flow_pipe *pipe,
 
 			/* Add entry to pipe */
 			result = doca_flow_pipe_control_add_entry(0,
+								  priority,
 								  pipe,
 								  &match,
 								  &match_mask,
@@ -499,7 +492,6 @@ static doca_error_t add_valid_flows_table_entries(struct doca_flow_pipe *pipe,
 								  NULL,
 								  NULL,
 								  &monitor,
-								  priority,
 								  &fwd,
 								  status,
 								  &((*entries)[entry_idx])); /* Only store first entry
@@ -569,6 +561,7 @@ static doca_error_t add_fragmented_flows_table_entries(struct doca_flow_pipe *pi
 	memset(&monitor, 0, sizeof(monitor));
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 	result = doca_flow_pipe_control_add_entry(0,
+						  priority,
 						  pipe,
 						  &match,
 						  &match_mask,
@@ -577,7 +570,6 @@ static doca_error_t add_fragmented_flows_table_entries(struct doca_flow_pipe *pi
 						  NULL,
 						  NULL,
 						  &monitor,
-						  priority,
 						  &fwd,
 						  status,
 						  &((*entries)[g_flow_db[port_id].count]));
@@ -616,6 +608,7 @@ static doca_error_t add_fragmented_flows_table_entries(struct doca_flow_pipe *pi
 	memset(&monitor, 0, sizeof(monitor));
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 	result = doca_flow_pipe_control_add_entry(0,
+						  priority,
 						  pipe,
 						  &match,
 						  &match_mask,
@@ -624,7 +617,6 @@ static doca_error_t add_fragmented_flows_table_entries(struct doca_flow_pipe *pi
 						  NULL,
 						  NULL,
 						  &monitor,
-						  priority,
 						  &fwd,
 						  status,
 						  &((*entries)[g_flow_db[port_id].count]));
@@ -2657,6 +2649,7 @@ static doca_error_t add_invalid_csum_flows_table_entries(struct doca_flow_pipe *
 
 		memset(&match_mask, 0, sizeof(match_mask));
 
+		/* Set outer match mask fields */
 		match_mask.parser_meta = (struct doca_flow_parser_meta){
 			.outer_l3_type = UINT32_MAX,
 			.outer_l4_type = UINT32_MAX,
@@ -2673,6 +2666,8 @@ static doca_error_t add_invalid_csum_flows_table_entries(struct doca_flow_pipe *
 			.inner_l4_ok = UINT8_MAX,
 			.inner_l4_checksum_ok = UINT8_MAX,
 		};
+
+		memset(&match, 0, sizeof(match));
 
 		/* Set outer match fields */
 		match.parser_meta = (struct doca_flow_parser_meta){
@@ -2698,6 +2693,7 @@ static doca_error_t add_invalid_csum_flows_table_entries(struct doca_flow_pipe *
 		monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
 		result = doca_flow_pipe_control_add_entry(0,
+							  priority,
 							  pipe,
 							  &match,
 							  &match_mask,
@@ -2706,7 +2702,6 @@ static doca_error_t add_invalid_csum_flows_table_entries(struct doca_flow_pipe *
 							  NULL,
 							  NULL,
 							  &monitor,
-							  priority,
 							  &fwd,
 							  status,
 							  &((*entries)[g_flow_db[port_id].count]));
@@ -2732,7 +2727,7 @@ static doca_error_t add_invalid_csum_flows_table_entries(struct doca_flow_pipe *
  * such as invalid length (mainly due to length check errors) or other reasons that cause
  * the parser to stop processing the input packet.
  * Uses the existing packet_attrs and flow_entry structures.
- * Priority is 3 and fwd action is DROP.
+ * Priority is 4 and fwd action is DROP.
  */
 static doca_error_t add_not_ok_flows_table_entries(struct doca_flow_pipe *pipe,
 						   int port_id,
@@ -3118,6 +3113,7 @@ static doca_error_t add_not_ok_flows_table_entries(struct doca_flow_pipe *pipe,
 
 		memset(&match_mask, 0, sizeof(match_mask));
 
+		/* Set match mask fields */
 		match_mask.parser_meta = (struct doca_flow_parser_meta){
 			.outer_l3_type = UINT32_MAX,
 			.outer_l4_type = UINT32_MAX,
@@ -3130,6 +3126,8 @@ static doca_error_t add_not_ok_flows_table_entries(struct doca_flow_pipe *pipe,
 			.inner_l3_ok = UINT8_MAX,
 			.inner_l4_ok = UINT8_MAX,
 		};
+
+		memset(&match, 0, sizeof(match));
 
 		/* Set match fields */
 		match.parser_meta = (struct doca_flow_parser_meta){
@@ -3151,6 +3149,7 @@ static doca_error_t add_not_ok_flows_table_entries(struct doca_flow_pipe *pipe,
 		monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
 		result = doca_flow_pipe_control_add_entry(0,
+							  priority,
 							  pipe,
 							  &match,
 							  &match_mask,
@@ -3159,7 +3158,6 @@ static doca_error_t add_not_ok_flows_table_entries(struct doca_flow_pipe *pipe,
 							  NULL,
 							  NULL,
 							  &monitor,
-							  priority,
 							  &fwd,
 							  status,
 							  &((*entries)[g_flow_db[port_id].count]));

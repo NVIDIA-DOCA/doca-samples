@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -22,11 +22,19 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-app_srcs = files([
-	APP_NAME + '.c',
+json_c_dependency = dependency('json-c', required: false)
+if not json_c_dependency.found()
+	warning('Skipping compilation of DOCA Application - @0@ - Missing json-c support.'.format(APP_NAME))
+	subdir_done()
+endif
+
+app_dependencies += json_c_dependency
+
+app_srcs += files([
 	'config.c',
 	'flow_common.c',
 	'flow_decrypt.c',
+	'flow_encrypt.c',
 	'flow_encrypt.c',
 	'ipsec_ctx.c',
 	'policy.c',
@@ -35,20 +43,14 @@ app_srcs = files([
 	common_dir_path + '/utils.c',
 	common_dir_path + '/flow_parser.c',
 	samples_dir_path + '/common.c',
-
 ])
 
-# We need to avoid installation of internal files
-app_install_excludes += 'add-doca-plugin-to-strongswan.patch'
+vanilla_app_srcs = [
+	APP_NAME + '.c',
+]
 
-# Check if we should skip the compilation of the applications
-if flag_disable_applications_compilation
-	subdir_done()
-endif
-
-app_dependencies += dependency('json-c')
-
-executable(DOCA_PREFIX + APP_NAME, app_srcs,
-	c_args : apps_common_c_args,
+executable(DOCA_PREFIX + APP_NAME,
+	app_srcs + vanilla_app_srcs,
 	dependencies : app_dependencies,
-	include_directories: app_inc_dirs)
+	include_directories : app_inc_dirs,
+	install: install_apps)

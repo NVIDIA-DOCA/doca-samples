@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -39,7 +39,8 @@ DOCA_LOG_REGISTER(GPUVERBS::HIGH_LEVEL);
 
 static doca_error_t create_uar(struct doca_dev *dev,
 			       enum doca_gpu_dev_verbs_nic_handler nic_handler,
-			       struct doca_uar **external_uar)
+			       struct doca_uar **external_uar,
+			       bool bf_supported)
 {
 	doca_error_t status = DOCA_SUCCESS;
 
@@ -59,21 +60,15 @@ static doca_error_t create_uar(struct doca_dev *dev,
 			return DOCA_SUCCESS;
 	}
 
-	if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF) {
+	if (bf_supported && (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF ||
+			     (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO && status != DOCA_SUCCESS))) {
 		status = doca_uar_create(dev, DOCA_UAR_ALLOCATION_TYPE_BLUEFLAME, external_uar);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to doca_uar_create NC");
 			return status;
 		}
-	}
-
-	if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO && status != DOCA_SUCCESS) {
-		status = doca_uar_create(dev, DOCA_UAR_ALLOCATION_TYPE_BLUEFLAME, external_uar);
-		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to doca_uar_create NC");
-			return status;
-		}
-	}
+	} else
+		return DOCA_ERROR_DRIVER;
 
 	return status;
 }
@@ -85,7 +80,7 @@ static uint32_t calc_cq_external_umem_size(uint32_t queue_size)
 	if (queue_size != 0)
 		cqe_buf_size = (uint32_t)(queue_size * sizeof(struct mlx5_cqe64));
 
-	return common_utils_align_up_uint32(cqe_buf_size + VERBS_TEST_DBR_SIZE, get_page_size());
+	return align_up_uint32(cqe_buf_size + VERBS_TEST_DBR_SIZE, get_page_size());
 }
 
 static void mlx5_init_cqes(struct mlx5_cqe64 *cqes, uint32_t nb_cqes)
@@ -99,7 +94,6 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 			      struct doca_dev *dev,
 			      struct doca_verbs_context *verbs_ctx,
 			      uint32_t ncqes,
-			      uint8_t cq_collapsed,
 			      void **gpu_umem_dev_ptr,
 			      struct doca_umem **gpu_umem,
 			      struct doca_uar *external_uar,
@@ -157,7 +151,7 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 
 	status_cuda = cudaMemcpy((*gpu_umem_dev_ptr), (void *)(cq_ring_haddr), external_umem_size, cudaMemcpyDefault);
 	if (status_cuda != cudaSuccess) {
-		DOCA_LOG_ERR("Failed to cudaMempy gpu cq ring buffer ret %d", status_cuda);
+		DOCA_LOG_ERR("Failed to cudaMempy gpu cq cq ring buffer ret %d", status_cuda);
 		goto destroy_resources;
 	}
 
@@ -190,16 +184,8 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 
 	status = doca_verbs_cq_attr_set_cq_overrun(verbs_cq_attr, 1);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca verbs cq overrun");
+		DOCA_LOG_ERR("Failed to set doca verbs cq size");
 		goto destroy_resources;
-	}
-
-	if (cq_collapsed == 1) {
-		status = doca_verbs_cq_attr_set_cq_collapsed(verbs_cq_attr, 1);
-		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set doca verbs cq collapsed");
-			goto destroy_resources;
-		}
 	}
 
 	if (external_uar != NULL) {
@@ -268,7 +254,7 @@ static uint32_t calc_qp_external_umem_size(uint32_t rq_nwqes, uint32_t sq_nwqes)
 	if (sq_nwqes != 0)
 		sq_ring_size = (uint32_t)(sq_nwqes * sizeof(struct doca_gpu_dev_verbs_wqe));
 
-	return common_utils_align_up_uint32(rq_ring_size + sq_ring_size, get_page_size());
+	return align_up_uint32(rq_ring_size + sq_ring_size, get_page_size());
 }
 
 static doca_error_t create_qp(struct doca_gpu *gpu_dev,
@@ -294,30 +280,19 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 	struct doca_verbs_qp *new_qp = NULL;
 	uint32_t external_umem_size = 0;
 	size_t dbr_umem_align_sz = ROUND_UP(VERBS_TEST_DBR_SIZE, get_page_size());
-	struct doca_verbs_device_attr *verbs_device_attr;
-
-	status = doca_verbs_query_device(verbs_ctx, &verbs_device_attr);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to query device attributes: %s", doca_error_get_descr(status));
-		return status;
-	}
 
 	if (recv_inline == 1) {
+		struct doca_verbs_device_attr *verbs_device_attr;
+
+		status = doca_verbs_query_device(verbs_ctx, &verbs_device_attr);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query device attributes: %s", doca_error_get_descr(status));
+			return status;
+		}
+
 		status = doca_verbs_device_attr_get_is_cqe_inline_supported(verbs_device_attr);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("CQE inline resp not supported by this device: %s", doca_error_get_descr(status));
-			return status;
-		}
-	}
-
-	if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_NO_DBR ||
-	    nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
-		status = doca_verbs_device_attr_get_is_send_dbr_mode_supported(verbs_device_attr,
-									       DOCA_VERBS_QP_SEND_DBR_MODE_NO_DBR_EXT);
-		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR(
-				"Send DBR mode ext not supported by this device: %s. NO_DBR mode can't be used here.",
-				doca_error_get_descr(status));
 			return status;
 		}
 	}
@@ -480,16 +455,6 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 	if (set_core_direct)
 		doca_verbs_qp_init_attr_set_core_direct_master(verbs_qp_init_attr, 1);
 
-	if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_NO_DBR ||
-	    nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
-		status = doca_verbs_qp_init_attr_set_send_dbr_mode(verbs_qp_init_attr,
-								   DOCA_VERBS_QP_SEND_DBR_MODE_NO_DBR_EXT);
-		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set send_dbr_mode");
-			goto destroy_resources;
-		}
-	}
-
 	status = doca_verbs_qp_create(verbs_ctx, verbs_qp_init_attr, &new_qp);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca verbs QP");
@@ -566,12 +531,11 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 	qp_->gpu_dev = qp_init_attr->gpu_dev;
 
 	if (qp_init_attr->sq_nwqe > 0) {
-		qp_init_attr->sq_nwqe = (uint32_t)common_utils_next_power_of_two(qp_init_attr->sq_nwqe);
+		qp_init_attr->sq_nwqe = (uint32_t)next_power_of_two(qp_init_attr->sq_nwqe);
 		status = create_cq(qp_->gpu_dev,
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->sq_nwqe,
-				   qp_init_attr->cq_collapsed,
 				   &qp_->cq_sq_umem_gpu_ptr,
 				   &qp_->cq_sq_umem,
 				   NULL,
@@ -583,12 +547,11 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 	}
 
 	if (qp_init_attr->rq_nwqe > 0) {
-		qp_init_attr->rq_nwqe = (uint32_t)common_utils_next_power_of_two(qp_init_attr->rq_nwqe);
+		qp_init_attr->rq_nwqe = (uint32_t)next_power_of_two(qp_init_attr->rq_nwqe);
 		status = create_cq(qp_->gpu_dev,
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->rq_nwqe,
-				   qp_init_attr->cq_collapsed,
 				   &qp_->cq_rq_umem_gpu_ptr,
 				   &qp_->cq_rq_umem,
 				   NULL,
@@ -601,7 +564,7 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 
 	qp_->nic_handler = qp_init_attr->nic_handler;
 
-	status = create_uar(qp_init_attr->dev, qp_->nic_handler, &qp_->external_uar);
+	status = create_uar(qp_init_attr->dev, qp_->nic_handler, &qp_->external_uar, true);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca verbs uar: %s", doca_error_get_descr(status));
 		goto exit_error;
@@ -781,20 +744,19 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 
 	qpg_->qp_main.gpu_dev = qp_init_attr->gpu_dev;
 
-	status = create_uar(qp_init_attr->dev, qpg_->qp_main.nic_handler, &qpg_->qp_main.external_uar);
+	status = create_uar(qp_init_attr->dev, qpg_->qp_main.nic_handler, &qpg_->qp_main.external_uar, false);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca verbs uar");
 		goto exit_error;
 	}
 
 	if (qp_init_attr->sq_nwqe > 0) {
-		qp_init_attr->sq_nwqe = (uint32_t)common_utils_next_power_of_two(qp_init_attr->sq_nwqe);
+		qp_init_attr->sq_nwqe = (uint32_t)next_power_of_two(qp_init_attr->sq_nwqe);
 
 		status = create_cq(qpg_->qp_main.gpu_dev,
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->sq_nwqe,
-				   qp_init_attr->cq_collapsed,
 				   &qpg_->qp_main.cq_sq_umem_gpu_ptr,
 				   &qpg_->qp_main.cq_sq_umem,
 				   qpg_->qp_main.external_uar,
@@ -806,12 +768,11 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 	}
 
 	if (qp_init_attr->rq_nwqe > 0) {
-		qp_init_attr->rq_nwqe = (uint32_t)common_utils_next_power_of_two(qp_init_attr->rq_nwqe);
+		qp_init_attr->rq_nwqe = (uint32_t)next_power_of_two(qp_init_attr->rq_nwqe);
 		status = create_cq(qpg_->qp_main.gpu_dev,
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->rq_nwqe,
-				   qp_init_attr->cq_collapsed,
 				   &qpg_->qp_main.cq_rq_umem_gpu_ptr,
 				   &qpg_->qp_main.cq_rq_umem,
 				   qpg_->qp_main.external_uar,
@@ -866,13 +827,12 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 	qpg_->qp_companion.external_uar = qpg_->qp_main.external_uar;
 
 	if (qp_init_attr->sq_nwqe > 0) {
-		qp_init_attr->sq_nwqe = (uint32_t)common_utils_next_power_of_two(qp_init_attr->sq_nwqe);
+		qp_init_attr->sq_nwqe = (uint32_t)next_power_of_two(qp_init_attr->sq_nwqe);
 
 		status = create_cq(qpg_->qp_companion.gpu_dev,
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->sq_nwqe,
-				   qp_init_attr->cq_collapsed,
 				   &qpg_->qp_companion.cq_sq_umem_gpu_ptr,
 				   &qpg_->qp_companion.cq_sq_umem,
 				   qpg_->qp_companion.external_uar,
@@ -884,12 +844,11 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 	}
 
 	if (qp_init_attr->rq_nwqe > 0) {
-		qp_init_attr->rq_nwqe = (uint32_t)common_utils_next_power_of_two(qp_init_attr->rq_nwqe);
+		qp_init_attr->rq_nwqe = (uint32_t)next_power_of_two(qp_init_attr->rq_nwqe);
 		status = create_cq(qpg_->qp_companion.gpu_dev,
 				   qp_init_attr->dev,
 				   qp_init_attr->verbs_context,
 				   qp_init_attr->rq_nwqe,
-				   qp_init_attr->cq_collapsed,
 				   &qpg_->qp_companion.cq_rq_umem_gpu_ptr,
 				   &qpg_->qp_companion.cq_rq_umem,
 				   qpg_->qp_companion.external_uar,

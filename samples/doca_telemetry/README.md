@@ -1,13 +1,3 @@
-#
-# This software product is a proprietary product of NVIDIA CORPORATION &
-# AFFILIATES (the "Company") and all right, title, and interest in and to the
-# software product, including all associated intellectual property rights, are
-# and shall remain exclusively with the Company.
-#
-# This software product is governed by the End User License Agreement
-# provided with the software product.
-#
-
 # DOCA Telemetry Diagnostics Sample
 
 This README describes the telemetry diagnostics sample based on the `doca_telemetry_diag` library.
@@ -55,3 +45,4 @@ Usage: doca_telemetry_diag [DOCA Flags] [Program Flags]
 The sample can use data IDs given by the user using a JSON file.
 
 An example of the JSON file format can be created by using the "-e" flag on the sample, to export an example JSON file containing the default data IDs to a given path.
+

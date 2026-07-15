@@ -1,13 +1,3 @@
-#
-# This software product is a proprietary product of NVIDIA CORPORATION &
-# AFFILIATES (the "Company") and all right, title, and interest in and to the
-# software product, including all associated intellectual property rights, are
-# and shall remain exclusively with the Company.
-#
-# This software product is governed by the End User License Agreement
-# provided with the software product.
-#
-
 # DOCA UROM Samples
 
 This section provides DOCA UROM library sample implementations on top of BlueField.
@@ -88,3 +78,4 @@ ninja -C /tmp/build
 ### Info
 
 The binary `worker_<sample_name>.so` file is created under `/tmp/build/`.
+

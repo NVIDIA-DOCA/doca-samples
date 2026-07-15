@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -22,34 +22,57 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-# telemetry_diag does not depends on the common.c
-sample_commons = []
+project('DOCA_SAMPLE', 'C', 'CPP',
+	# Get version number from file.
+	version: run_command(find_program('cat'),
+		files('../../../VERSION'), check: true).stdout().strip(),
+	license: 'BSD-3',
+	default_options: ['buildtype=debug'],
+	meson_version: '>= 0.61.2'
+)
 
-sample_srcs = files([
+SAMPLE_NAME = 'telemetry_diag'
+
+json_c_dependency = dependency('json-c', required: false, version : '> 0.13') # earlier versions have different function signatures
+if not json_c_dependency.found()
+	error('Stopping compilation of DOCA Sample - @0@ - Missing json-c support.'.format(SAMPLE_NAME))
+endif
+
+# Comment this line to restore warnings of experimental DOCA features
+add_project_arguments('-D DOCA_ALLOW_EXPERIMENTAL_API', language: ['c', 'cpp'])
+
+sample_dependencies = []
+# Required for all DOCA programs
+sample_dependencies += dependency('doca-common')
+# The DOCA library of the sample itself
+sample_dependencies += dependency('doca-telemetry')
+# Utility DOCA library for executables
+sample_dependencies += dependency('doca-argp')
+# Dependency on json-c
+sample_dependencies += json_c_dependency
+
+sample_srcs = [
+	# The sample itself
 	SAMPLE_NAME + '_sample.c',
-])
-
-sample_main_srcs = files([
+	# Main function for the sample's executable
 	SAMPLE_NAME + '_main.c',
-])
+	# Common code for all DOCA samples
+	'../../common.c',
+	# Common code for all DOCA applications
+	'../../../applications/common/utils.c',
+]
 
-if skip_sample_compilation
-	subdir_done()
-endif
+sample_inc_dirs  = []
+# Common DOCA logic (samples)
+sample_inc_dirs += include_directories('../..')
+# Common DOCA logic
+sample_inc_dirs += include_directories('../../..')
+# Common DOCA logic (applications)
+sample_inc_dirs += include_directories('../../../applications/common/')
 
-if is_compiler_msvc
-	json_c_installation_path = get_option('json_c_path')
 
-	# Meson requires that linkage will use relative path,
-	# so there is a need to copy it to local directory.
-	run_command(python_exe, windows_copy_dlls, meson.current_build_dir(), json_c_installation_path / 'lib' / 'json-c.lib', check: true)
-
-	# we are using version 0.18, which is higher than 0.13, that changed function signatures
-	sample_depends += c_compiler.find_library('json-c', dirs: [meson.current_build_dir()])
-
-	sample_dll_files_to_copy += [json_c_installation_path / 'bin' / 'json-c.dll']
-
-	sample_main_includes += include_directories(json_c_installation_path / 'include')
-else
-	sample_depends += dependency('json-c', version : '> 0.13') # earlier versions have different function signatures
-endif
+executable('doca_' + SAMPLE_NAME, sample_srcs,
+	c_args : '-Wno-missing-braces',
+	dependencies : sample_dependencies,
+	include_directories: sample_inc_dirs,
+	install: false)

@@ -32,6 +32,8 @@
  * the pkt based on the pkt content, so user can send the traffic
  * from different src and check if the pkt goes to the expected
  * destinations.
+ * As this sample add the RSS pipe, so doca-flow isolated mode
+ * is chosen without any internal RSS pipes.
  * In expert mode, the missed traffic will be tagged with port_id
  * and the traffic will be sent to egress root.
  *
@@ -120,17 +122,6 @@ int main(int argc, char **argv)
 	result = register_doca_flow_switch_params();
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register flow param: %s", doca_error_get_descr(result));
-		goto argp_cleanup;
-	}
-	/*
-	 * Enable --no-wire2wire when the test environment has no wire-to-wire
-	 * traffic path (e.g. only Wire-to-VF or VF-to-Wire). This skips
-	 * the pre-egress loopback and pre-wire direction checks, reducing
-	 * latency for ingress-to-egress and forward-to-port forwarding.
-	 */
-	result = register_flow_device_no_wire_to_wire_params();
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register no wire_to_wire param: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 

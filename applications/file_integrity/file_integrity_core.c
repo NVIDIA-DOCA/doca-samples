@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -45,7 +45,7 @@
 #define SHA_ALGORITHM (DOCA_SHA_ALGORITHM_SHA256) /* doca_sha_algorithm for the sample */
 #define LOG_NUM_SHA_TASKS (0)			  /* Log of SHA tasks number */
 
-DOCA_LOG_REGISTER(FILE_INTEGRITY::CORE);
+DOCA_LOG_REGISTER(FILE_INTEGRITY::Core);
 
 /*
  * Free callback - free doca_buf allocated pointer
@@ -141,12 +141,12 @@ static doca_error_t populate_dst_buf(struct program_core_objects *state, struct 
 /*
  * Construct DOCA SHA task, submit it and print the result
  *
- * @param state [in]: application configuration struct
- * @param sha_ctx [in]: context of SHA library
- * @param dst_doca_buf [in]: destination doca buffer
- * @param file_data [in]: file data to the source buffer
- * @param file_size [in]: file size
- * @return DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ * @state [in]: application configuration struct
+ * @sha_ctx [in]: context of SHA library
+ * @dst_doca_buf [in]: destination doca buffer
+ * @file_data [in]: file data to the source buffer
+ * @file_size [in]: file size
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t calculate_sha(struct program_core_objects *state,
 				  struct doca_sha *sha_ctx,
@@ -268,14 +268,14 @@ static doca_error_t calculate_sha(struct program_core_objects *state,
 /*
  * Send the input file over comch to the server in segments of that can be handled by SHA
  *
- * @param comch_cfg [in]: comch configuration object to send file across
- * @param app_cfg [in]: app configuration
- * @param file_data [in]: file data to the source buffer
- * @param file_size [in]: file size
- * @param file_sha [in]: SHA of the file to send
- * @param sha_len [in]: length of the sha array
- * @param min_partial_block_size [in]: minimum size of a SHA partial block
- * @return DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ * @comch_cfg [in]: comch configuration object to send file across
+ * @app_cfg [in]: app configuration
+ * @file_data [in]: file data to the source buffer
+ * @file_size [in]: file size
+ * @file_sha [in]: SHA of the file to send
+ * @sha_len [in]: length of the sha array
+ * @min_partial_block_size [in]: minimum size of a SHA partial block
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t send_file(struct comch_cfg *comch_cfg,
 			      struct file_integrity_config *app_cfg,
@@ -342,7 +342,7 @@ static doca_error_t send_file(struct comch_cfg *comch_cfg,
 	for (i = 0; i < total_msgs; i++) {
 		msg_len = MIN(file_size, partial_block_size);
 
-		/* Verify that the other side has not signaled it is done */
+		/* Verify that the other side has not signalled it is done */
 		if (app_cfg->state == TRANSFER_COMPLETE)
 			break;
 

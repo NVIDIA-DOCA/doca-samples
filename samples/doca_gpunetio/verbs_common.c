@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -54,20 +54,7 @@ doca_error_t nic_handler_callback(void *param, void *config)
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	if (nic_handler == 0)
-		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
-	else if (nic_handler == 1)
-		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY;
-	else if (nic_handler == 2)
-		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_DB;
-	else if (nic_handler == 3)
-		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF;
-	else if (nic_handler == 4)
-		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_NO_DBR;
-	else if (nic_handler == 5)
-		verbs_cfg->nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR;
-	else
-		return DOCA_ERROR_INVALID_VALUE;
+	verbs_cfg->nic_handler = (enum doca_gpu_dev_verbs_nic_handler)nic_handler;
 
 	return DOCA_SUCCESS;
 }
@@ -205,7 +192,7 @@ doca_error_t threads_callback(void *param, void *config)
 
 	if (threads < 0 || (threads % VERBS_CUDA_BLOCK) != 0 ||
 	    threads < (VERBS_CUDA_BLOCK * DOCA_GPUNETIO_VERBS_WARP_SIZE)) {
-		DOCA_LOG_ERR("CUDA threads must be > 0, at least %d and divisible by %d",
+		DOCA_LOG_ERR("CUDA threads must be > 0, at leas %d and divisible by %d",
 			     VERBS_CUDA_BLOCK * DOCA_GPUNETIO_VERBS_WARP_SIZE,
 			     VERBS_CUDA_BLOCK);
 		return DOCA_ERROR_INVALID_VALUE;
@@ -488,7 +475,7 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 
 	/*
 	 * A CUDA context must be initialized before calling GPUNetIO functions.
-	 * cudaFree(0) triggers the CUDA runtime initialization and report any errors.
+	 * cudaFree(0) triggers tje CUDA runtime initialization and report any errors.
 	 */
 	cuda_ret = cudaFree(0);
 	if (cuda_ret != cudaSuccess) {
@@ -580,7 +567,6 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 	qp_init.sq_nwqe = VERBS_TEST_QUEUE_SIZE;
 	qp_init.nic_handler = resources->nic_handler;
 	qp_init.recv_inline = resources->recv_inline;
-	qp_init.cq_collapsed = resources->cq_collapsed;
 
 	if (resources->qp_group) {
 		status = doca_gpu_verbs_create_qp_group_hl(&qp_init, &(resources->qpg));
@@ -707,18 +693,12 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 	}
 
 	/* IB only parameter */
-	if (port_attr.link_layer == IBV_LINK_LAYER_INFINIBAND) {
+	if (port_attr.link_layer == 1) {
 		status = doca_verbs_ah_attr_set_dlid(resources->verbs_ah_attr, resources->dlid);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set dlid");
 			return status;
 		}
-	}
-
-	status = doca_verbs_ah_attr_set_sl(resources->verbs_ah_attr, 0);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set sl");
-		return status;
 	}
 
 	status = doca_verbs_qp_attr_create(&verbs_qp_attr);
@@ -727,7 +707,7 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 		return status;
 	}
 
-	status = doca_verbs_qp_attr_set_path_mtu(verbs_qp_attr, DOCA_MTU_SIZE_4K_BYTES);
+	status = doca_verbs_qp_attr_set_path_mtu(verbs_qp_attr, DOCA_MTU_SIZE_1K_BYTES);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set path MTU: %s", doca_error_get_descr(status));
 		goto destroy_verbs_qp_attr;
@@ -805,15 +785,23 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 		goto destroy_verbs_qp_attr;
 	}
 
-	status = doca_verbs_qp_attr_set_ah_attr(verbs_qp_attr, resources->verbs_ah_attr);
+	max_rd_atomic = doca_verbs_device_attr_get_max_qp_rd_atom(verbs_device_attr);
+	status = doca_verbs_qp_attr_set_max_rd_atomic(verbs_qp_attr, max_rd_atomic);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set address handle: %s", doca_error_get_descr(status));
+		DOCA_LOG_ERR("Failed to set max_rd_atomic: %s", doca_error_get_descr(status));
 		goto destroy_verbs_qp_attr;
 	}
 
-	status = doca_verbs_qp_attr_set_pkey_index(verbs_qp_attr, 0);
+	max_dest_rd_atomic = doca_verbs_device_attr_get_max_qp_init_rd_atom(verbs_device_attr);
+	status = doca_verbs_qp_attr_set_max_dest_rd_atomic(verbs_qp_attr, max_dest_rd_atomic);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set PKey index: %d", status);
+		DOCA_LOG_ERR("Failed to set max_dest_rd_atomic: %s", doca_error_get_descr(status));
+		goto destroy_verbs_qp_attr;
+	}
+
+	status = doca_verbs_qp_attr_set_ah_attr(verbs_qp_attr, resources->verbs_ah_attr);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set address handle: %s", doca_error_get_descr(status));
 		goto destroy_verbs_qp_attr;
 	}
 
@@ -922,13 +910,6 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 			goto destroy_verbs_qp_attr;
 		}
 
-		max_dest_rd_atomic = doca_verbs_device_attr_get_max_qp_init_rd_atom(verbs_device_attr);
-		status = doca_verbs_qp_attr_set_max_dest_rd_atomic(verbs_qp_attr, max_dest_rd_atomic);
-		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set max_dest_rd_atomic: %s", doca_error_get_descr(status));
-			goto destroy_verbs_qp_attr;
-		}
-
 		status = doca_verbs_qp_modify(resources->qp->qp,
 					      verbs_qp_attr,
 					      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE |
@@ -950,8 +931,7 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 					      verbs_qp_attr,
 					      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_RQ_PSN |
 						      DOCA_VERBS_QP_ATTR_DEST_QP_NUM | DOCA_VERBS_QP_ATTR_PATH_MTU |
-						      DOCA_VERBS_QP_ATTR_AH_ATTR | DOCA_VERBS_QP_ATTR_MIN_RNR_TIMER |
-						      DOCA_VERBS_QP_ATTR_MAX_DEST_RD_ATOMIC);
+						      DOCA_VERBS_QP_ATTR_AH_ATTR | DOCA_VERBS_QP_ATTR_MIN_RNR_TIMER);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to modify QP: %s", doca_error_get_descr(status));
 			goto destroy_verbs_qp_attr;
@@ -963,19 +943,11 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources)
 			goto destroy_verbs_qp_attr;
 		}
 
-		max_rd_atomic = doca_verbs_device_attr_get_max_qp_rd_atom(verbs_device_attr);
-		status = doca_verbs_qp_attr_set_max_rd_atomic(verbs_qp_attr, max_rd_atomic);
-		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set max_rd_atomic: %s", doca_error_get_descr(status));
-			goto destroy_verbs_qp_attr;
-		}
-
 		status = doca_verbs_qp_modify(resources->qp->qp,
 					      verbs_qp_attr,
 					      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_SQ_PSN |
 						      DOCA_VERBS_QP_ATTR_ACK_TIMEOUT | DOCA_VERBS_QP_ATTR_RETRY_CNT |
-						      DOCA_VERBS_QP_ATTR_RNR_RETRY |
-						      DOCA_VERBS_QP_ATTR_MAX_QP_RD_ATOMIC);
+						      DOCA_VERBS_QP_ATTR_RNR_RETRY);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to modify QP: %s", doca_error_get_descr(status));
 			goto destroy_verbs_qp_attr;

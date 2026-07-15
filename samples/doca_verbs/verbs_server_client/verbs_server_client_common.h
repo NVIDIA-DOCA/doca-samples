@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -38,7 +38,7 @@
 #define MAX_IP_ADDRESS_LEN 128
 #define DEFAULT_BUFFER_SIZE 64
 #define DEFAULT_GID_INDEX 0
-#define DEFAULT_NUM_OF_ITERATIONS 1
+#define DEFAULT_NUM_OF_INTERATIONS 1
 #define QP_TYPE_LEN 5
 #define RDMA_OPER_TYPE_LEN 6
 #define DEFAULT_PORT 1

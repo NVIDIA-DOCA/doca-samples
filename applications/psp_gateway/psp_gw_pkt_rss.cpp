@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -179,7 +179,7 @@ int lcore_pkt_proc_func(void *lcore_args)
 	return 0;
 }
 
-bool reinject_packet(struct rte_mbuf *packet, uint16_t port_id, uint32_t pkt_meta)
+bool reinject_packet(struct rte_mbuf *packet, uint16_t port_id)
 {
 	uint32_t lcore_id = rte_lcore_id();
 	if (lcore_id == 0) {
@@ -188,14 +188,11 @@ bool reinject_packet(struct rte_mbuf *packet, uint16_t port_id, uint32_t pkt_met
 	}
 	uint16_t queue_id = lcore_id - 1;
 
-	*RTE_MBUF_DYNFIELD(packet, rte_flow_dynf_metadata_offs, uint32_t *) = pkt_meta;
-	packet->ol_flags |= rte_flow_dynf_metadata_mask;
-
 	uint16_t nsent = 0;
 	for (uint16_t i = 0; i < max_tx_retries && nsent < 1; i++) {
 		nsent = rte_eth_tx_burst(port_id, queue_id, &packet, 1);
 	}
-	DOCA_LOG_DBG("Reinjected packet on port %d, pkt_meta 0x%x", port_id, pkt_meta);
+	DOCA_LOG_DBG("Reinjected packet on port %d", port_id);
 	return nsent == 1;
 }
 
@@ -304,22 +301,14 @@ __attribute__((no_sanitize("alignment"))) uint16_t handle_neighbor_solicitation(
 	response_ipv6_hdr->proto = IPPROTO_ICMPV6;
 	response_ipv6_hdr->hop_limits = 255;
 
-#ifdef DOCA_BUNDLE_DPDK_FOUND
 	memcpy(response_ipv6_hdr->src_addr, request_icmp6_ns_hdr->target_addr, IPV6_ADDR_LEN); // icmpv6 contains full
 											       // dst ipv6 addr
 	memcpy(response_ipv6_hdr->dst_addr, request_ipv6_hdr->src_addr, IPV6_ADDR_LEN);
-	memcpy(response_na_hdr->target_addr, request_icmp6_ns_hdr->target_addr, IPV6_ADDR_LEN);
-#else
-	memcpy(response_ipv6_hdr->src_addr.a, request_icmp6_ns_hdr->target_addr.a, IPV6_ADDR_LEN); // icmpv6 contains
-												   // full dst ipv6 addr
-	memcpy(response_ipv6_hdr->dst_addr.a, request_ipv6_hdr->src_addr.a, IPV6_ADDR_LEN);
-	memcpy(response_na_hdr->target_addr.a, request_icmp6_ns_hdr->target_addr.a, IPV6_ADDR_LEN);
-#endif
 
 	response_na_hdr->type = ND_NEIGHBOR_ADVERT;
 	response_na_hdr->code = 0;
 	response_na_hdr->checksum = 0;
-	response_na_hdr->rso_reserved = ND_NA_FLAG_SOLICITED | ND_NA_FLAG_OVERRIDE;
+	memcpy(response_na_hdr->target_addr, request_icmp6_ns_hdr->target_addr, IPV6_ADDR_LEN);
 
 	uint8_t *options = (uint8_t *)(response_na_hdr + 1);
 	options[0] = 2;

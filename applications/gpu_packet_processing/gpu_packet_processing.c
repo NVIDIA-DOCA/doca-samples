@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -162,9 +162,6 @@ static void *stats_core(void *args)
 				udp_st[idxq].dns += custom_udp_st->dns;
 				udp_st[idxq].others += custom_udp_st->others;
 				udp_st[idxq].total += custom_udp_st->total;
-				udp_st[idxq].dns_bytes += custom_udp_st->dns_bytes;
-				udp_st[idxq].others_bytes += custom_udp_st->others_bytes;
-				udp_st[idxq].total_bytes += custom_udp_st->total_bytes;
 
 				result = doca_gpu_semaphore_set_status(udp_queues.sem_cpu[idxq],
 								       sem_idx_udp[idxq],
@@ -221,21 +218,11 @@ static void *stats_core(void *args)
 			printf("\nSeconds %ld\n", interval_sec - start_time_sec);
 
 			for (int idxq = 0; idxq < udp_queues.numq; idxq++) {
-				double dns_bw_gbps = (udp_st[idxq].dns_bytes * 8.0) /
-						     ((interval_sec - start_time_sec) * 1000000000.0);
-				double other_bw_gbps = (udp_st[idxq].others_bytes * 8.0) /
-						       ((interval_sec - start_time_sec) * 1000000000.0);
-				double total_bw_gbps = (udp_st[idxq].total_bytes * 8.0) /
-						       ((interval_sec - start_time_sec) * 1000000000.0);
-
-				printf("[UDP] QUEUE: %d DNS: %ld DNS_BW: %.3f Gbps OTHER: %ld OTHER_BW: %.3f Gbps TOTAL: %ld TOTAL_BW: %.3f Gbps\n",
+				printf("[UDP] QUEUE: %d DNS: %ld OTHER: %ld TOTAL: %ld\n",
 				       idxq,
 				       udp_st[idxq].dns,
-				       dns_bw_gbps,
 				       udp_st[idxq].others,
-				       other_bw_gbps,
-				       udp_st[idxq].total,
-				       total_bw_gbps);
+				       udp_st[idxq].total);
 			}
 
 			for (int idxq = 0; idxq < tcp_queues.numq; idxq++) {

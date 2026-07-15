@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -28,8 +28,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <rte_bitops.h>
-
 #include <doca_flow.h>
 #include <doca_log.h>
 
@@ -48,7 +46,7 @@ struct simple_fwd_ft_bucket {
 struct simple_fwd_ft_stats {
 	uint64_t add;	 /* Number of insertions to the flow table */
 	uint64_t rm;	 /* Number of removals from the flow table */
-	uint64_t memuse; /* Memory usage of the flow table */
+	uint64_t memuse; /* Memory ysage of the flow table */
 };
 
 /* Flow table configuration */
