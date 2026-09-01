@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -201,10 +201,63 @@ static doca_error_t buf_info_path_callback(void *param, void *config)
 	return DOCA_SUCCESS;
 }
 
-doca_error_t register_dma_params(bool is_remote)
+/*
+ * ARGP Callback - Handle number of tasks parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t num_tasks_callback(void *param, void *config)
+{
+	struct dma_config *conf = (struct dma_config *)config;
+	const int *num = (int *)param;
+
+	if (*num <= 0) {
+		DOCA_LOG_ERR("Entered number of tasks: %d, valid value must be >= 1", *num);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (*num > MAX_NUM_TASKS) {
+		DOCA_LOG_ERR("Entered number of tasks: %d, valid value must be <= %d", *num, MAX_NUM_TASKS);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	conf->num_tasks = *num;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle maximum number of NVTX ranges that can be displayed in parallel parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t max_num_range_profiling_displayed_callback(void *param, void *config)
+{
+	struct dma_config *conf = (struct dma_config *)config;
+	const int *num = (int *)param;
+
+	if (*num < 0 || *num > MAX_NUM_RANGE_PROFILING_DISPLAYED_UPPER_BOUND) {
+		DOCA_LOG_ERR(
+			"Entered maximum number of NVTX ranges that can be displayed in parallel: %d, valid value must be >= 0 and <= %d",
+			*num,
+			MAX_NUM_RANGE_PROFILING_DISPLAYED_UPPER_BOUND);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	conf->max_num_range_profiling_displayed = *num;
+
+	return DOCA_SUCCESS;
+}
+
+doca_error_t register_dma_params(bool is_remote, bool is_local_copy_sample)
 {
 	doca_error_t result;
 	struct doca_argp_param *pci_address_param, *cpy_txt_param, *export_desc_path_param, *buf_info_path_param;
+	struct doca_argp_param *num_tasks_param, *max_num_range_profiling_displayed_param;
 #ifdef DOCA_ARCH_DPU
 	struct doca_argp_param *num_src_buf_param, *num_dst_buf_param;
 #endif /* DOCA_ARCH_DPU */
@@ -291,7 +344,7 @@ doca_error_t register_dma_params(bool is_remote)
 	}
 	doca_argp_param_set_short_name(num_src_buf_param, "ns");
 	doca_argp_param_set_long_name(num_src_buf_param, "num-src-buf");
-	doca_argp_param_set_description(num_src_buf_param, "number of doca_buf for source buffer");
+	doca_argp_param_set_description(num_src_buf_param, "Number of doca_buf for source buffer");
 	doca_argp_param_set_callback(num_src_buf_param, num_src_buf_callback);
 	doca_argp_param_set_type(num_src_buf_param, DOCA_ARGP_TYPE_INT);
 	result = doca_argp_register_param(num_src_buf_param);
@@ -308,7 +361,7 @@ doca_error_t register_dma_params(bool is_remote)
 	}
 	doca_argp_param_set_short_name(num_dst_buf_param, "nd");
 	doca_argp_param_set_long_name(num_dst_buf_param, "num-dst-buf");
-	doca_argp_param_set_description(num_dst_buf_param, "number of doca_buf for destination buffer");
+	doca_argp_param_set_description(num_dst_buf_param, "Number of doca_buf for destination buffer");
 	doca_argp_param_set_callback(num_dst_buf_param, num_dst_buf_callback);
 	doca_argp_param_set_type(num_dst_buf_param, DOCA_ARGP_TYPE_INT);
 	result = doca_argp_register_param(num_dst_buf_param);
@@ -317,6 +370,47 @@ doca_error_t register_dma_params(bool is_remote)
 		return result;
 	}
 #endif /* DOCA_ARCH_DPU */
+
+	if (is_local_copy_sample) {
+		/* Create and register number of tasks param */
+		result = doca_argp_param_create(&num_tasks_param);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+			return result;
+		}
+		doca_argp_param_set_short_name(num_tasks_param, "nt");
+		doca_argp_param_set_long_name(num_tasks_param, "num-tasks");
+		doca_argp_param_set_description(num_tasks_param,
+						"Number of tasks to submit, only valid for dma_local_copy sample");
+		doca_argp_param_set_callback(num_tasks_param, num_tasks_callback);
+		doca_argp_param_set_type(num_tasks_param, DOCA_ARGP_TYPE_INT);
+		result = doca_argp_register_param(num_tasks_param);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+			return result;
+		}
+
+		/* Create and register maximum number of NVTX ranges that can be displayed in parallel param */
+		result = doca_argp_param_create(&max_num_range_profiling_displayed_param);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+			return result;
+		}
+		doca_argp_param_set_short_name(max_num_range_profiling_displayed_param, "mnr");
+		doca_argp_param_set_long_name(max_num_range_profiling_displayed_param,
+					      "max-num-range-profiling-displayed");
+		doca_argp_param_set_description(
+			max_num_range_profiling_displayed_param,
+			"Maximum number of NVTX ranges that can be displayed in parallel, default value is 0, upper bound is 128. If set to 0, NVTX trace collecting is disabled.");
+		doca_argp_param_set_callback(max_num_range_profiling_displayed_param,
+					     max_num_range_profiling_displayed_callback);
+		doca_argp_param_set_type(max_num_range_profiling_displayed_param, DOCA_ARGP_TYPE_INT);
+		result = doca_argp_register_param(max_num_range_profiling_displayed_param);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+			return result;
+		}
+	}
 
 	return DOCA_SUCCESS;
 }
@@ -424,13 +518,20 @@ static void dma_state_changed_callback(const union doca_data user_data,
 	}
 }
 
-doca_error_t allocate_dma_resources(const char *pcie_addr, int num_buf, struct dma_resources *resources)
+doca_error_t allocate_dma_resources(const char *pcie_addr,
+				    uint32_t num_src_buf_per_task,
+				    uint32_t num_dst_buf_per_task,
+				    uint32_t num_tasks,
+				    struct dma_resources *resources)
 {
 	memset(resources, 0, sizeof(*resources));
 	union doca_data ctx_user_data = {0};
 	struct program_core_objects *state = &resources->state;
 	doca_error_t result, tmp_result;
 	uint32_t max_buf_list_len = 0;
+	uint32_t max_tasks_num = 0;
+	uint64_t total_num_buf =
+		((uint64_t)num_src_buf_per_task + (uint64_t)num_dst_buf_per_task) * (uint64_t)num_tasks;
 
 	result = open_doca_device_with_pci(pcie_addr, &dma_task_is_supported, &state->dev);
 	if (result != DOCA_SUCCESS) {
@@ -442,18 +543,33 @@ doca_error_t allocate_dma_resources(const char *pcie_addr, int num_buf, struct d
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get memcpy task max_buf_list_len capability for DMA: %s",
 			     doca_error_get_descr(result));
-		return result;
+		goto close_device;
 	}
-	if ((uint32_t)num_buf > max_buf_list_len) {
+	if (num_src_buf_per_task > max_buf_list_len) {
 		result = DOCA_ERROR_INVALID_VALUE;
-		DOCA_LOG_ERR("Number of doca_buf [%d] exceed the limitation [%u]: %s",
-			     num_buf,
+		DOCA_LOG_ERR("Number of source doca_buf [%d] exceed the limitation [%u]: %s",
+			     num_src_buf_per_task,
 			     max_buf_list_len,
 			     doca_error_get_descr(result));
-		return result;
+		goto close_device;
+	}
+	if (num_dst_buf_per_task > max_buf_list_len) {
+		result = DOCA_ERROR_INVALID_VALUE;
+		DOCA_LOG_ERR("Number of destination doca_buf [%d] exceed the limitation [%u]: %s",
+			     num_dst_buf_per_task,
+			     max_buf_list_len,
+			     doca_error_get_descr(result));
+		goto close_device;
 	}
 
-	result = create_core_objects(state, (uint32_t)num_buf);
+	if (total_num_buf > UINT32_MAX || total_num_buf == 0) {
+		result = DOCA_ERROR_INVALID_VALUE;
+		DOCA_LOG_ERR("Total number of buffers [%lu] is invalid: %s",
+			     total_num_buf,
+			     doca_error_get_descr(result));
+		goto close_device;
+	}
+	result = create_core_objects(state, (uint32_t)total_num_buf);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create DOCA core objects: %s", doca_error_get_descr(result));
 		goto close_device;
@@ -473,10 +589,24 @@ doca_error_t allocate_dma_resources(const char *pcie_addr, int num_buf, struct d
 		goto destroy_dma;
 	}
 
+	result = doca_dma_cap_get_max_num_tasks(resources->dma_ctx, &max_tasks_num);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get memcpy task max_tasks_num capability for DMA: %s",
+			     doca_error_get_descr(result));
+		goto destroy_dma;
+	}
+	if (num_tasks > max_tasks_num) {
+		result = DOCA_ERROR_INVALID_VALUE;
+		DOCA_LOG_ERR("Number of tasks [%d] exceed the memcpy task max_tasks_num capability [%u]: %s",
+			     num_tasks,
+			     max_tasks_num,
+			     doca_error_get_descr(result));
+		goto destroy_dma;
+	}
 	result = doca_dma_task_memcpy_set_conf(resources->dma_ctx,
 					       dma_memcpy_completed_callback,
 					       dma_memcpy_error_callback,
-					       NUM_DMA_TASKS);
+					       num_tasks);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set configurations for DMA memcpy task: %s", doca_error_get_descr(result));
 		goto destroy_dma;

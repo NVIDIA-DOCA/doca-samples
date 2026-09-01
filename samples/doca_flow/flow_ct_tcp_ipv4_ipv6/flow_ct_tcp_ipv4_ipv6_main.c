@@ -38,7 +38,9 @@
 DOCA_LOG_REGISTER(FLOW_CT_TCP_IPV4_IPV6::MAIN);
 
 /* Sample's Logic */
-doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues, struct flow_switch_ctx *ctx);
+doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues,
+				   struct flow_switch_ctx *ctx,
+				   struct flow_devs_manager devs_manager[]);
 
 /*
  * Sample main function
@@ -111,7 +113,7 @@ int main(int argc, char **argv)
 	}
 
 	/* run sample */
-	result = flow_ct_tcp_ipv4_ipv6(dpdk_config.port_config.nb_queues, &ct_cfg);
+	result = flow_ct_tcp_ipv4_ipv6(dpdk_config.port_config.nb_queues, &ct_cfg, ct_cfg.devs_ctx.devs_manager);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("flow_ct_tcp_ipv4_ipv6() encountered an error: %s", doca_error_get_descr(result));
 		goto dpdk_ports_queues_cleanup;

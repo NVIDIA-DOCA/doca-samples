@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -28,7 +28,7 @@
 #include <doca_error.h>
 #include <doca_log.h>
 
-DOCA_LOG_REGISTER(PE_POLLING::MAIN);
+DOCA_LOG_REGISTER(PE_MULTI_CONTEXT::MAIN);
 
 /* Sample's Logic */
 doca_error_t run_pe_multi_ctx_sample(void);

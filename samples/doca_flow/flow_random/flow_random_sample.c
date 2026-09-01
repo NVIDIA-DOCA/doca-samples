@@ -105,6 +105,7 @@ static doca_error_t create_root_pipe(struct doca_flow_port *port, struct doca_fl
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = NULL;
@@ -288,6 +289,7 @@ static doca_error_t create_sampling_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = port_id ^ 1;
@@ -333,8 +335,6 @@ static doca_error_t create_copy_random_to_port_pipe(struct doca_flow_port *port,
 						    struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions;
-	struct doca_flow_actions *actions_arr[1];
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	struct doca_flow_action_descs descs;
@@ -343,7 +343,6 @@ static doca_error_t create_copy_random_to_port_pipe(struct doca_flow_port *port,
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&descs, 0, sizeof(descs));
 
@@ -355,7 +354,6 @@ static doca_error_t create_copy_random_to_port_pipe(struct doca_flow_port *port,
 	desc_array[0].field_op.dst.bit_offset = 0;
 	desc_array[0].field_op.width = RANDOM_WIDTH;
 
-	actions_arr[0] = &actions;
 	descs_arr[0] = &descs;
 	descs.nb_action_desc = 1;
 	descs.desc_array = desc_array;
@@ -381,7 +379,7 @@ static doca_error_t create_copy_random_to_port_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, descs_arr, 1);
+	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, NULL, NULL, descs_arr, 1);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -442,6 +440,7 @@ static doca_error_t create_random_distribution_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	fwd.type = DOCA_FLOW_FWD_RSS;
 	fwd.rss_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;

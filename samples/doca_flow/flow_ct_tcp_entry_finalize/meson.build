@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -22,29 +22,82 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-sample_srcs = files([
-	SAMPLE_NAME + '_sample.c',
-	'../flow_ct_common.c',
-	'../flow_switch_common.c',
-	apps_common_path + '/dpdk_utils.c',
-])
+project('DOCA_SAMPLE', 'C', 'CPP',
+	# Get version number from file.
+	version: run_command(find_program('cat'),
+		files('../../../VERSION'), check: true).stdout().strip(),
+	license: 'BSD-3',
+	default_options: ['buildtype=debug'],
+	meson_version: '>= 0.61.2'
+)
 
-sample_main_srcs = files([
-	SAMPLE_NAME + '_main.c',
-])
+SAMPLE_NAME = 'flow_ct_tcp_entry_finalize'
 
-# Exclude internal directory from installation
-sample_dir_excludes += 'internal'
+sample_project_arguments = []
+# Comment this line to restore warnings of experimental DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_EXPERIMENTAL_API']
+# Comment this line to restore warnings of deprecated DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_DEPRECATED_API']
 
-# install specific common files per sample
-install_data(sources : '../flow_ct_common.c', install_dir : '/'.join([doca_samples_dir, 'doca_flow']))
-install_data(sources : '../flow_switch_common.c', install_dir : '/'.join([doca_samples_dir, 'doca_flow']))
+add_project_arguments(sample_project_arguments, language: ['c', 'cpp'])
 
-if available_libs.contains('dpdk_bridge') and enabled_drivers.contains('dpdk')
-	sample_depends += get_variable('doca_dpdk_bridge_dependency')
-	sample_depends += dependency_dpdk
+sample_dependencies = []
+# Required for all DOCA programs
+sample_dependencies += dependency('doca-common')
+# The DOCA library of the sample itself
+sample_dependencies += dependency('doca-flow')
+# Additional DOCA library that is relevant for this sample
+sample_dependencies += dependency('doca-dpdk-bridge')
+# Utility DOCA library for executables
+sample_dependencies += dependency('doca-argp')
+# Required DOCA Driver
+sample_dependencies += dependency('libdpdk')
+
+# Check flavour of DPDK used
+c_compiler = meson.get_compiler('c')
+if c_compiler.has_header_symbol('rte_pmd_mlx5.h',
+				'rte_pmd_mlx5_driver_disable_steering',
+				dependencies: dependency('libdpdk'),
+				prefix: '#include <rte_pmd_mlx5.h>')
+	add_project_arguments('-DDOCA_BUNDLE_DPDK_FOUND', language: ['c', 'cpp'])
+	message('Found rte_pmd_mlx5_driver_disable_steering(), using DOCA-Bundle DPDK')
+elif c_compiler.has_header_symbol('rte_pmd_mlx5.h',
+				'rte_pmd_mlx5_disable_steering',
+				dependencies: dependency('libdpdk'),
+				prefix: '#include <rte_pmd_mlx5.h>')
+	add_project_arguments('-DUPSTREAM_DPDK_FOUND', language: ['c', 'cpp'])
+	message('Found rte_pmd_mlx5_disable_steering(), using Upstream DPDK')
 else
-	warning('Skipping compilation of DOCA Sample @0@ that needs library - @1@ and driver - @2@.'.format(SAMPLE_NAME, 'doca_dpdk_bridge', 'dpdk'))
-	skip_sample_compilation = true
-	subdir_done()
+	warning('Unable to find rte_pmd_mlx5_driver_disable_steering() or rte_pmd_mlx5_disable_steering()')
 endif
+
+sample_srcs = [
+	# The sample itself
+	SAMPLE_NAME + '_sample.c',
+	# Main function for the sample's executable
+	SAMPLE_NAME + '_main.c',
+	# Common code for the DOCA library samples
+	'../flow_ct_common.c',
+	# Common code for the DOCA Flow library samples
+	'../flow_common.c',
+	# Common switch code for the DOCA Flow library samples
+	'../flow_switch_common.c',
+	# Common code for all DOCA samples
+	'../../common.c',
+	# Common code for all DOCA applications
+	'../../../applications/common/dpdk_utils.c',
+]
+
+sample_inc_dirs  = []
+# Common DOCA library logic
+sample_inc_dirs += include_directories('..')
+# Common DOCA logic (samples)
+sample_inc_dirs += include_directories('../..')
+# Common DOCA logic (applications)
+sample_inc_dirs += include_directories('../../../applications/common')
+
+executable('doca_' + SAMPLE_NAME, sample_srcs,
+	c_args : '-Wno-missing-braces',
+	dependencies : sample_dependencies,
+	include_directories: sample_inc_dirs,
+	install: false)

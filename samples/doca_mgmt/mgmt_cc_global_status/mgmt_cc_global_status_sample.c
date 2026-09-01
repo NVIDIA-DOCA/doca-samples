@@ -24,13 +24,12 @@
  */
 
 #include <stdbool.h>
+#include <stdio.h>
 
 #include <doca_error.h>
 #include <doca_log.h>
 #include <doca_mgmt.h>
 #include <doca_mgmt_cc_global_status.h>
-
-#include "common.h"
 
 DOCA_LOG_REGISTER(MGMT_CC_GLOBAL_STATUS::SAMPLE);
 
@@ -50,10 +49,9 @@ static doca_error_t mgmt_cc_global_status_protocol_type_from_str(const char *pro
 	return DOCA_SUCCESS;
 }
 
-doca_error_t mgmt_cc_global_status_get(const char *dev_pci_addr, uint8_t priority, char *protocol)
+doca_error_t mgmt_cc_global_status_get(const char *target_string, uint8_t priority, char *protocol)
 {
 	enum doca_mgmt_cc_global_status_protocol cc_protocol;
-	struct doca_dev *dev;
 	struct doca_mgmt_dev_ctx *ctx;
 	struct doca_mgmt_cc_global_status *cc;
 	uint8_t enabled;
@@ -66,18 +64,11 @@ doca_error_t mgmt_cc_global_status_get(const char *dev_pci_addr, uint8_t priorit
 		return result;
 	}
 
-	/* Open the DOCA device */
-	result = open_doca_device_with_pci(dev_pci_addr, NULL, &dev);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to open DOCA device: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	/* Create the DOCA management device context */
-	result = doca_mgmt_dev_ctx_create(dev, &ctx);
+	/* Create the DOCA management device context from the target string */
+	result = doca_mgmt_dev_ctx_create_from_target_string(target_string, &ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create DOCA management device context: %s", doca_error_get_descr(result));
-		goto out;
+		return result;
 	}
 
 	/* Create the cc global status handle */
@@ -114,12 +105,7 @@ doca_error_t mgmt_cc_global_status_get(const char *dev_pci_addr, uint8_t priorit
 		goto out_cc_destroy;
 	}
 
-	DOCA_LOG_INFO("Congestion control global status for device %s, priority %d and protocol %s is %s",
-		      dev_pci_addr,
-		      priority,
-		      protocol,
-		      enabled ? "enabled" : "disabled");
-	result = DOCA_SUCCESS;
+	printf("global_status: %s\n", enabled ? "enabled" : "disabled");
 
 out_cc_destroy:
 	if (doca_mgmt_cc_global_status_destroy(cc) != DOCA_SUCCESS)
@@ -129,17 +115,12 @@ out_dev_ctx_destroy:
 	if (doca_mgmt_dev_ctx_destroy(ctx) != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to destroy DOCA management device context");
 
-out:
-	if (doca_dev_close(dev) != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to close DOCA device");
-
 	return result;
 }
 
-doca_error_t mgmt_cc_global_status_set(const char *dev_pci_addr, uint8_t priority, char *protocol, bool enabled)
+doca_error_t mgmt_cc_global_status_set(const char *target_string, uint8_t priority, char *protocol, bool enabled)
 {
 	enum doca_mgmt_cc_global_status_protocol cc_protocol;
-	struct doca_dev *dev;
 	struct doca_mgmt_dev_ctx *ctx;
 	struct doca_mgmt_cc_global_status *cc;
 	doca_error_t result;
@@ -151,18 +132,11 @@ doca_error_t mgmt_cc_global_status_set(const char *dev_pci_addr, uint8_t priorit
 		return result;
 	}
 
-	/* Open the DOCA device */
-	result = open_doca_device_with_pci(dev_pci_addr, NULL, &dev);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to open DOCA device: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	/* Create the DOCA management device context */
-	result = doca_mgmt_dev_ctx_create(dev, &ctx);
+	/* Create the DOCA management device context from the target string */
+	result = doca_mgmt_dev_ctx_create_from_target_string(target_string, &ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create DOCA management device context: %s", doca_error_get_descr(result));
-		goto out;
+		return result;
 	}
 
 	/* Create the cc global status handle */
@@ -198,13 +172,6 @@ doca_error_t mgmt_cc_global_status_set(const char *dev_pci_addr, uint8_t priorit
 		goto out_cc_destroy;
 	}
 
-	DOCA_LOG_INFO("Congestion control global status for device %s, priority %d and protocol %s was set to %s",
-		      dev_pci_addr,
-		      priority,
-		      protocol,
-		      enabled ? "enabled" : "disabled");
-	result = DOCA_SUCCESS;
-
 out_cc_destroy:
 	if (doca_mgmt_cc_global_status_destroy(cc) != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to destroy cc global status handle");
@@ -212,10 +179,6 @@ out_cc_destroy:
 out_dev_ctx_destroy:
 	if (doca_mgmt_dev_ctx_destroy(ctx) != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to destroy DOCA management device context");
-
-out:
-	if (doca_dev_close(dev) != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to close DOCA device");
 
 	return result;
 }

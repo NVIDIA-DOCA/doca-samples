@@ -276,7 +276,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_devs_manager d
 		return result;
 	}
 
-	result = doca_flow_entries_process(doca_flow_port_switch_get(ports[0]), 0, DEFAULT_TIMEOUT_US, NB_ENTRIES);
+	result = doca_flow_pipe_queue_drain(doca_flow_port_switch_get(ports[0]), 0, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
@@ -300,7 +300,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_devs_manager d
 		return result;
 	}
 
-	result = doca_flow_entries_process(doca_flow_port_switch_get(ports[3]), 0, DEFAULT_TIMEOUT_US, NB_ENTRIES);
+	result = doca_flow_pipe_queue_drain(doca_flow_port_switch_get(ports[3]), 0, NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);

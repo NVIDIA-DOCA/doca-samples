@@ -253,10 +253,7 @@ doca_error_t devemu_pci_device_stateful_region_dpu(const char *pci_address, cons
 		return result;
 	}
 
-	result = find_supported_device(pci_address,
-				       resources.pci_type,
-				       doca_devemu_pci_cap_type_is_hotplug_supported,
-				       &resources.dev);
+	result = find_generic_hotpluggable_device(pci_address, &resources.dev);
 	if (result != DOCA_SUCCESS) {
 		devemu_resources_cleanup(&resources, destroy_rep);
 		return result;

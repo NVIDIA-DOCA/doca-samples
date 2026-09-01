@@ -28,108 +28,11 @@
 
 #include <stdint.h>
 
-// PCI Configuration Space Layout
-#define PCI_CONFIG_SPACE_SIZE 256
-#define PCIE_CONFIG_SPACE_SIZE 4096
-
-// Standard PCI Configuration Space Offsets
-#define PCI_VENDOR_ID 0x00
-#define PCI_DEVICE_ID 0x02
-#define PCI_COMMAND 0x04
-#define PCI_STATUS 0x06
-#define PCI_REVISION_ID 0x08
-#define PCI_CLASS_PROG 0x09
-#define PCI_CLASS_DEVICE 0x0A
-#define PCI_CLASS_CODE 0x0B
-#define PCI_CACHE_LINE_SIZE 0x0C
-#define PCI_LATENCY_TIMER 0x0D
-#define PCI_HEADER_TYPE 0x0E
-#define PCI_BIST 0x0F
-#define PCI_BASE_ADDRESS_0 0x10
-#define PCI_BASE_ADDRESS_1 0x14
-#define PCI_BASE_ADDRESS_2 0x18
-#define PCI_BASE_ADDRESS_3 0x1C
-#define PCI_BASE_ADDRESS_4 0x20
-#define PCI_BASE_ADDRESS_5 0x24
-#define PCI_CARDBUS_CIS 0x28
-#define PCI_SUBSYSTEM_VENDOR_ID 0x2C
-#define PCI_SUBSYSTEM_ID 0x2E
-#define PCI_ROM_ADDRESS 0x30
-#define PCI_CAPABILITIES_PTR 0x34
-#define PCI_INTERRUPT_LINE 0x3C
-#define PCI_INTERRUPT_PIN 0x3D
-#define PCI_MIN_GNT 0x3E
-#define PCI_MAX_LAT 0x3F
-
-// PCI-to-PCI Bridge Configuration Space Offsets
-#define PCI_PRIMARY_BUS 0x18
-#define PCI_SECONDARY_BUS 0x19
-#define PCI_SUBORDINATE_BUS 0x1A
-#define PCI_SEC_LATENCY_TIMER 0x1B
-#define PCI_IO_BASE 0x1C
-#define PCI_IO_LIMIT 0x1D
-#define PCI_SEC_STATUS 0x1E
-#define PCI_MEMORY_BASE 0x20
-#define PCI_MEMORY_LIMIT 0x22
-#define PCI_PREF_MEMORY_BASE 0x24
-#define PCI_PREF_MEMORY_LIMIT 0x26
-#define PCI_PREF_BASE_UPPER32 0x28
-#define PCI_PREF_LIMIT_UPPER32 0x2C
-#define PCI_IO_BASE_UPPER16 0x30
-#define PCI_IO_LIMIT_UPPER16 0x32
-#define PCI_BRIDGE_ROM_ADDRESS 0x38
-#define PCI_BRIDGE_CONTROL 0x3E
+#include <linux/pci_regs.h>
+#include <linux/virtio_pci.h>
 
 // PCI Command Register Bits
-#define PCI_COMMAND_IO 0x0001	       // Enable I/O Space
-#define PCI_COMMAND_MEMORY 0x0002      // Enable Memory Space
-#define PCI_COMMAND_MASTER 0x0004      // Enable Bus Mastering
-#define PCI_COMMAND_SPECIAL 0x0008     // Enable Special Cycles
-#define PCI_COMMAND_INVALIDATE 0x0010  // Enable Memory Write and Invalidate
-#define PCI_COMMAND_VGA_PALETTE 0x0020 // Enable VGA Palette Snooping
-#define PCI_COMMAND_PARITY 0x0040      // Enable Parity Checking
-#define PCI_COMMAND_WAIT 0x0080	       // Enable Address/Data Stepping
-#define PCI_COMMAND_SERR 0x0100	       // Enable SERR
-#define PCI_COMMAND_FAST_BACK 0x0200   // Enable Fast Back-to-Back
-#define PCI_COMMAND_INT_DISABLE 0x0400 // Disable INT style interrupts
 #define PCI_COMMAND_RES_BIT_MASK ((1 << 11) | (1 << 12) | (1 << 13) | (1 << 14) | (1 << 15))
-
-// PCI Status Register Bits
-#define PCI_STATUS_READY 0x0001	      // Immediate Readiness
-#define PCI_STATUS_INTERRUPT 0x0008   // Interrupt Status
-#define PCI_STATUS_CAP_LIST 0x0010    // Capabilities List
-#define PCI_STATUS_66MHZ 0x0020	      // 66 MHz Capable
-#define PCI_STATUS_UDF 0x0040	      // User Definable Features
-#define PCI_STATUS_FAST_BACK 0x0080   // Fast Back-to-Back Capable
-#define PCI_STATUS_PARITY 0x0100      // Data Parity Detected
-#define PCI_STATUS_DEVSEL_MASK 0x0600 // DEVSEL Timing
-#define PCI_STATUS_DEVSEL_FAST 0x0000
-#define PCI_STATUS_DEVSEL_MEDIUM 0x0200
-#define PCI_STATUS_DEVSEL_SLOW 0x0400
-#define PCI_STATUS_SIG_TARGET_ABORT 0x0800 // Signaled Target Abort
-#define PCI_STATUS_REC_TARGET_ABORT 0x1000 // Received Target Abort
-#define PCI_STATUS_REC_MASTER_ABORT 0x2000 // Received Master Abort
-#define PCI_STATUS_SIG_SYSTEM_ERROR 0x4000 // Signaled System Error
-#define PCI_STATUS_DETECTED_PARITY 0x8000  // Detected Parity Error
-
-// PCI Header Types
-#define PCI_HEADER_TYPE_NORMAL 0x00
-#define PCI_HEADER_TYPE_BRIDGE 0x01
-#define PCI_HEADER_TYPE_CARDBUS 0x02
-#define PCI_HEADER_TYPE_MASK 0x7F
-#define PCI_HEADER_TYPE_MULTI_FUNC 0x80
-
-// PCI Base Address Register (BAR) Bits
-#define PCI_BASE_ADDRESS_SPACE 0x01 // 0 = Memory, 1 = I/O
-#define PCI_BASE_ADDRESS_SPACE_IO 0x01
-#define PCI_BASE_ADDRESS_SPACE_MEMORY 0x00
-#define PCI_BASE_ADDRESS_MEM_TYPE_MASK 0x06
-#define PCI_BASE_ADDRESS_MEM_TYPE_32 0x00  // 32-bit
-#define PCI_BASE_ADDRESS_MEM_TYPE_1M 0x02  // Below 1M (obsolete)
-#define PCI_BASE_ADDRESS_MEM_TYPE_64 0x04  // 64-bit
-#define PCI_BASE_ADDRESS_MEM_PREFETCH 0x08 // Prefetchable
-#define PCI_BASE_ADDRESS_MEM_MASK 0xFFFFFFF0
-#define PCI_BASE_ADDRESS_IO_MASK 0xFFFFFFFC
 
 // PCI Device Classes
 #define PCI_CLASS_NOT_DEFINED 0x00
@@ -175,72 +78,6 @@
 #define PCI_CLASS_BRIDGE_CARDBUS 0x07
 #define PCI_CLASS_BRIDGE_RACEWAY 0x08
 #define PCI_CLASS_BRIDGE_OTHER 0x80
-
-// PCI Capability IDs
-#define PCI_CAP_ID_PM 0x01     // Power Management
-#define PCI_CAP_ID_AGP 0x02    // AGP
-#define PCI_CAP_ID_VPD 0x03    // Vital Product Data
-#define PCI_CAP_ID_SLOTID 0x04 // Slot Identification
-#define PCI_CAP_ID_MSI 0x05    // Message Signaled Interrupts
-#define PCI_CAP_ID_CHSWP 0x06  // CompactPCI HotSwap
-#define PCI_CAP_ID_PCIX 0x07   // PCI-X
-#define PCI_CAP_ID_HT 0x08     // HyperTransport
-#define PCI_CAP_ID_VNDR 0x09   // Vendor Specific
-#define PCI_CAP_ID_DBG 0x0A    // Debug port
-#define PCI_CAP_ID_CCRC 0x0B   // CompactPCI Central Resource Control
-#define PCI_CAP_ID_SHPC 0x0C   // PCI Standard Hot-Plug Controller
-#define PCI_CAP_ID_SSVID 0x0D  // Bridge subsystem vendor/device ID
-#define PCI_CAP_ID_AGP3 0x0E   // AGP Target PCI-PCI bridge
-#define PCI_CAP_ID_SECDEV 0x0F // Secure Device
-#define PCI_CAP_ID_EXP 0x10    // PCI Express
-#define PCI_CAP_ID_MSIX 0x11   // MSI-X
-#define PCI_CAP_ID_SATA 0x12   // SATA Data/Index Conf.
-#define PCI_CAP_ID_AF 0x13     // PCI Advanced Features
-#define PCI_CAP_ID_EA 0x14     // PCI Enhanced Allocation
-
-// PCIe Extended Capability IDs
-#define PCIE_EXT_CAP_ID_ERR 0x0001     // Advanced Error Reporting
-#define PCIE_EXT_CAP_ID_VC 0x0002      // Virtual Channel
-#define PCIE_EXT_CAP_ID_DSN 0x0003     // Device Serial Number
-#define PCIE_EXT_CAP_ID_PWR 0x0004     // Power Budgeting
-#define PCIE_EXT_CAP_ID_RCLD 0x0005    // Root Complex Link Declaration
-#define PCIE_EXT_CAP_ID_RCILC 0x0006   // Root Complex Internal Link Control
-#define PCIE_EXT_CAP_ID_RCEC 0x0007    // Root Complex Event Collector
-#define PCIE_EXT_CAP_ID_MFVC 0x0008    // Multi-Function VC
-#define PCIE_EXT_CAP_ID_VC9 0x0009     // Virtual Channel (9)
-#define PCIE_EXT_CAP_ID_RCRB 0x000A    // Root Complex RB
-#define PCIE_EXT_CAP_ID_VNDR 0x000B    // Vendor Specific
-#define PCIE_EXT_CAP_ID_CAC 0x000C     // Configuration Access Correlation
-#define PCIE_EXT_CAP_ID_ACS 0x000D     // Access Control Services
-#define PCIE_EXT_CAP_ID_ARI 0x000E     // Alternative Routing-ID
-#define PCIE_EXT_CAP_ID_ATS 0x000F     // Address Translation Services
-#define PCIE_EXT_CAP_ID_SRIOV 0x0010   // Single Root I/O Virtualization
-#define PCIE_EXT_CAP_ID_MRIOV 0x0011   // Multi Root I/O Virtualization
-#define PCIE_EXT_CAP_ID_MCAST 0x0012   // Multicast
-#define PCIE_EXT_CAP_ID_PRI 0x0013     // Page Request Interface
-#define PCIE_EXT_CAP_ID_AMD_XXX 0x0014 // AMD reserved
-#define PCIE_EXT_CAP_ID_REBAR 0x0015   // Resizable BAR
-#define PCIE_EXT_CAP_ID_DPA 0x0016     // Dynamic Power Allocation
-#define PCIE_EXT_CAP_ID_TPH 0x0017     // TPH Requester
-#define PCIE_EXT_CAP_ID_LTR 0x0018     // Latency Tolerance Reporting
-#define PCIE_EXT_CAP_ID_SECPCI 0x0019  // Secondary PCIe
-#define PCIE_EXT_CAP_ID_PMUX 0x001A    // Protocol Multiplexing
-#define PCIE_EXT_CAP_ID_PASID 0x001B   // Process Address Space ID
-#define PCIE_EXT_CAP_ID_LNR 0x001C     // LN Requester
-#define PCIE_EXT_CAP_ID_DPC 0x001D     // Downstream Port Containment
-#define PCIE_EXT_CAP_ID_L1SS 0x001E    // L1 PM Substates
-#define PCIE_EXT_CAP_ID_PTM 0x001F     // Precision Time Measurement
-
-// PCIe Device/Port Types
-#define PCIE_TYPE_ENDPOINT 0x0	  // PCIe Endpoint
-#define PCIE_TYPE_LEG_END 0x1	  // Legacy PCIe Endpoint
-#define PCIE_TYPE_ROOT_PORT 0x4	  // Root Port of RC
-#define PCIE_TYPE_UPSTREAM 0x5	  // Upstream Port of Switch
-#define PCIE_TYPE_DOWNSTREAM 0x6  // Downstream Port of Switch
-#define PCIE_TYPE_PCI_BRIDGE 0x7  // PCIe to PCI/PCI-X Bridge
-#define PCIE_TYPE_PCI_HOST 0x8	  // PCI/PCI-X to PCIe Bridge
-#define PCIE_TYPE_ROOT_INT_EP 0x9 // Root Complex Integrated Endpoint
-#define PCIE_TYPE_ROOT_EC 0xA	  // Root Complex Event Collector
 
 // Standard PCI Configuration Space Header (Type 0)
 struct pci_config_header_type0 {
@@ -371,13 +208,6 @@ struct msix_capability {
 	uint32_t pba_offset;   // BAR indicator + offset
 } __attribute__((packed));
 
-// Virtio specific caps
-#define VIRTIO_PCI_CAP_COMMON_CFG 1
-#define VIRTIO_PCI_CAP_NOTIFY_CFG 2
-#define VIRTIO_PCI_CAP_ISR_CFG 3
-#define VIRTIO_PCI_CAP_DEVICE_CFG 4
-#define VIRTIO_PCI_CAP_PCI_CFG 5
-
 struct virtio_pci_capability {
 	struct pci_capability_header cap; // = 0x09 (Vendor-Specific PCI capability)
 	uint8_t cap_len;		  // Length of this capability structure in bytes
@@ -409,7 +239,7 @@ struct pcie_bar64_map {
 
 // Example of pcie devices
 struct pcie_raw_cfg {
-	uint32_t dw_regs[PCIE_CONFIG_SPACE_SIZE / sizeof(uint32_t)];
+	uint32_t dw_regs[PCI_CFG_SPACE_EXP_SIZE / sizeof(uint32_t)];
 	struct pcie_bar64_map bar64_map[3];
 } __attribute__((packed));
 
@@ -426,7 +256,7 @@ struct pcie_virtio_dev {
 			struct virtio_pci_cfg_capability pci_cfg;
 
 		} cfg;
-		uint32_t dw_regs[PCIE_CONFIG_SPACE_SIZE / sizeof(uint32_t)];
+		uint32_t dw_regs[PCI_CFG_SPACE_EXP_SIZE / sizeof(uint32_t)];
 	};
 	struct pcie_bar64_map bar64_map[3];
 } __attribute__((packed));

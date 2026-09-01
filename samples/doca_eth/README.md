@@ -217,4 +217,35 @@ The sample logic includes:
 - `eth_rxq_batch_managed_mempool_receive/eth_rxq_batch_managed_mempool_receive_sample.c`
 - `eth_rxq_batch_managed_mempool_receive/eth_rxq_batch_managed_mempool_receive_main.c`
 - `eth_rxq_batch_managed_mempool_receive/meson.build`
+
+## ETH RXQ Batch Shared Receive
+
+This sample illustrates how to receive batches of packets using DOCA ETH RXQ in Shared Memory Pool Receive mode, where the packet buffers are managed by a single shared memory pool that is shared between multiple DOCA ETH RXQ contexts. This is the core of the shared memory pool mode: instead of every RXQ owning a private buffer pool, a configurable number of RXQs (`-nq`, default 1) draw their buffers from one common pool, and incoming traffic is spread across them using RSS.
+
+The sample logic includes:
+
+- Locating DOCA device.
+- Initializing the required DOCA Core structures.
+- Creating, configuring and starting a DOCA ETH RXQ shared memory pool sized for the requested number of queues.
+- Initializing DOCA Flow.
+- Initializing and configuring the requested number of DOCA ETH RXQ contexts in shared memory pool mode, all sharing the same memory pool.
+- Registering a DOCA ETH RXQ shared mempool receive event batch for each RXQ context.
+- Starting the DOCA ETH RXQ contexts and applying a unique queue ID to each.
+- Starting DOCA Flow.
+- Creating a root pipe that distributes incoming traffic across the RXQs' RX queues using RSS.
+- Retrieving DOCA ETH RXQ shared mempool receive event batches from the progress engine.
+- Handling the completed event batches using the provided callback (reporting the receiving queue ID).
+- Freeing the received packet buffers back to the shared memory pool.
+- Stopping DOCA Flow.
+- Stopping the DOCA ETH RXQ contexts.
+- Destroying the DOCA ETH RXQ contexts (before the shared memory pool).
+- Stopping and destroying the DOCA ETH RXQ shared memory pool.
+- Destroying DOCA Flow.
+- Destroying all DOCA Core structures.
+
+**Reference:**
+
+- `eth_rxq_batch_shared_mempool_receive/eth_rxq_batch_shared_mempool_receive_sample.c`
+- `eth_rxq_batch_shared_mempool_receive/eth_rxq_batch_shared_mempool_receive_main.c`
+- `eth_rxq_batch_shared_mempool_receive/meson.build`
 ```

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -77,6 +77,8 @@ static doca_error_t create_classifier_pipe(struct doca_flow_port *port, struct d
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	result = doca_flow_pipe_create(pipe_cfg, NULL, NULL, pipe);
 destroy_pipe_cfg:
@@ -312,7 +314,6 @@ static doca_error_t add_vxlan_copy_to_meta_pipe_entry(struct doca_flow_pipe *pip
 static doca_error_t create_vxlan_lpm_pipe(struct doca_flow_port *port, struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match, match_mask;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	struct doca_flow_fwd fwd = {.type = DOCA_FLOW_FWD_CHANGEABLE};
 	struct doca_flow_monitor counter;
@@ -320,7 +321,6 @@ static doca_error_t create_vxlan_lpm_pipe(struct doca_flow_port *port, struct do
 
 	memset(&match, 0, sizeof(match));
 	memset(&match_mask, 0, sizeof(match_mask));
-	memset(&actions, 0, sizeof(actions));
 	memset(&counter, 0, sizeof(counter));
 
 	match.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
@@ -330,8 +330,6 @@ static doca_error_t create_vxlan_lpm_pipe(struct doca_flow_port *port, struct do
 	match_mask.tun.type = DOCA_FLOW_TUN_VXLAN;
 	match_mask.tun.vxlan_tun_id = UINT32_MAX;
 	memset(match_mask.inner.eth.dst_mac, UINT8_MAX, sizeof(match_mask.inner.eth.dst_mac));
-
-	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -357,18 +355,14 @@ static doca_error_t create_vxlan_lpm_pipe(struct doca_flow_port *port, struct do
 		goto destroy_pipe_cfg;
 	}
 
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-
 	counter.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &counter);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg counter: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
 destroy_pipe_cfg:
@@ -537,7 +531,6 @@ static doca_error_t add_vxlan_lpm_pipe_entries(struct doca_flow_pipe *pipe,
 static doca_error_t create_nvgre_lpm_pipe(struct doca_flow_port *port, struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match, match_mask;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	struct doca_flow_fwd fwd = {.type = DOCA_FLOW_FWD_CHANGEABLE};
 	struct doca_flow_monitor counter;
@@ -545,7 +538,6 @@ static doca_error_t create_nvgre_lpm_pipe(struct doca_flow_port *port, struct do
 
 	memset(&match, 0, sizeof(match));
 	memset(&match_mask, 0, sizeof(match_mask));
-	memset(&actions, 0, sizeof(actions));
 	memset(&counter, 0, sizeof(counter));
 
 	match.inner.l3_type = DOCA_FLOW_L3_TYPE_IP4;
@@ -560,8 +552,6 @@ static doca_error_t create_nvgre_lpm_pipe(struct doca_flow_port *port, struct do
 	memset(match_mask.inner.eth.dst_mac, UINT8_MAX, sizeof(match_mask.inner.eth.dst_mac));
 	match_mask.inner.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
 	match_mask.inner.udp.l4_port.src_port = UINT16_MAX;
-
-	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -587,18 +577,14 @@ static doca_error_t create_nvgre_lpm_pipe(struct doca_flow_port *port, struct do
 		goto destroy_pipe_cfg;
 	}
 
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
-
 	counter.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &counter);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg counter: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, NULL, pipe);
 destroy_pipe_cfg:
@@ -1004,7 +990,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 			return result;
 		}
 
-		result = doca_flow_entries_process(ports[port_id], 0, DEFAULT_TIMEOUT_US, NB_ENTRIES);
+		result = doca_flow_pipe_queue_drain(ports[port_id], 0, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);

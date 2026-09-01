@@ -22,11 +22,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-# Check if we should skip the compilation of the applications
-if flag_disable_applications_compilation
-	subdir_done()
-endif
-
 # Check for libnfs library
 dependency_libnfs = dependency('libnfs', required: false)
 if not dependency_libnfs.found()
@@ -65,6 +60,7 @@ app_inc_dirs += include_directories('.')
 
 executable(DOCA_PREFIX + APP_NAME, app_srcs,
 	override_options: ['cpp_std=c++17'],
-	c_args : apps_common_c_args,
+	c_args : base_c_args,
 	dependencies : app_dependencies,
-	include_directories: app_inc_dirs)
+	include_directories : app_inc_dirs,
+	install: install_apps)

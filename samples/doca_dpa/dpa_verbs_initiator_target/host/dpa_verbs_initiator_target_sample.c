@@ -1033,13 +1033,13 @@ static doca_error_t create_local_resources(struct verbs_config *cfg, struct verb
 				    &resources->dpa_thread_arg_dev_ptr);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to alloc doca dpa thread argument memory: %s", doca_error_get_descr(status));
-		goto destroy_mmap_obj;
+		goto destroy_resources;
 	}
 
 	status = doca_dpa_thread_create(resources->dpa_ctx, &resources->dpa_thread);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca dpa thread: %s", doca_error_get_descr(status));
-		goto destroy_mmap_obj;
+		goto destroy_resources;
 	}
 
 	if (cfg->is_target) {
@@ -1048,7 +1048,7 @@ static doca_error_t create_local_resources(struct verbs_config *cfg, struct verb
 						      resources->dpa_thread_arg_dev_ptr);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set doca dpa thread func: %s", doca_error_get_descr(status));
-			goto destroy_mmap_obj;
+			goto destroy_resources;
 		}
 	} else {
 		status = doca_dpa_thread_set_func_arg(resources->dpa_thread,
@@ -1056,20 +1056,20 @@ static doca_error_t create_local_resources(struct verbs_config *cfg, struct verb
 						      resources->dpa_thread_arg_dev_ptr);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set doca dpa thread func: %s", doca_error_get_descr(status));
-			goto destroy_mmap_obj;
+			goto destroy_resources;
 		}
 	}
 
 	status = doca_dpa_thread_start(resources->dpa_thread);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to start doca dpa thread: %s", doca_error_get_descr(status));
-		goto destroy_mmap_obj;
+		goto destroy_resources;
 	}
 
 	status = doca_uar_dpa_create(resources->dpa_ctx, &resources->dpa_uar);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca uar: %s", doca_error_get_descr(status));
-		goto destroy_mmap_obj;
+		goto destroy_resources;
 	}
 
 	resources->dpa_completion_obj.doca_dpa = resources->dpa_ctx;
@@ -1078,26 +1078,26 @@ static doca_error_t create_local_resources(struct verbs_config *cfg, struct verb
 	status = dpa_completion_obj_init(&resources->dpa_completion_obj);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function dpa_completion_obj_init failed (%s)", doca_error_get_descr(status));
-		goto destroy_mmap_obj;
+		goto destroy_resources;
 	}
 
 	status = doca_dpa_thread_run(resources->dpa_thread);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to run doca dpa thread: %s", doca_error_get_descr(status));
-		goto destroy_completion_obj;
+		goto destroy_resources;
 	}
 
 	status = doca_rdma_bridge_get_dev_pd(resources->dev, &pd);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get ibv_pd: %s", doca_error_get_descr(status));
-		goto destroy_completion_obj;
+		goto destroy_resources;
 	}
 
 	ret = ibv_query_gid(pd->context, 1, cfg->gid_index, &rgid);
 	if (ret) {
 		DOCA_LOG_ERR("Failed to query ibv gid attributes");
 		status = DOCA_ERROR_DRIVER;
-		goto destroy_completion_obj;
+		goto destroy_resources;
 	}
 	memcpy(resources->gid.raw, rgid.raw, DOCA_GID_BYTE_LENGTH);
 
@@ -1107,7 +1107,7 @@ static doca_error_t create_local_resources(struct verbs_config *cfg, struct verb
 				      &resources->verbs_ah_attr);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca verbs ah: %s", doca_error_get_descr(status));
-		goto destroy_completion_obj;
+		goto destroy_resources;
 	}
 
 	status = create_verbs_qp(resources->verbs_context,
@@ -1124,29 +1124,17 @@ static doca_error_t create_local_resources(struct verbs_config *cfg, struct verb
 				 &resources->verbs_qp);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca verbs qp: %s", doca_error_get_descr(status));
-		goto destroy_completion_obj;
+		goto destroy_resources;
 	}
 	resources->local_qp_number = doca_verbs_qp_get_qpn(resources->verbs_qp);
 
 	status = create_completion_sync_event(resources);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create completion sync event: %s", doca_error_get_descr(status));
-		goto destroy_completion_obj;
+		goto destroy_resources;
 	}
 
 	return DOCA_SUCCESS;
-
-destroy_completion_obj:
-	tmp_status = dpa_completion_obj_destroy(&resources->dpa_completion_obj);
-	if (tmp_status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to destroy doca dpa completion obj %s", doca_error_get_descr(status));
-	}
-
-destroy_mmap_obj:
-	tmp_status = doca_mmap_obj_destroy(&resources->local_buff_mmap_obj);
-	if (tmp_status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to destroy doca mmap object: %s", doca_error_get_descr(status));
-	}
 
 destroy_resources:
 	tmp_status = destroy_local_resources(resources);

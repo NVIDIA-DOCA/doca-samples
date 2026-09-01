@@ -23,6 +23,12 @@
  *
  */
 
+#include <exception>
+
+#include <doca_log.h>
+
+DOCA_LOG_REGISTER(NFS_FSDEV_IO_DEVICE);
+
 #include "nfs_fsdev_gpt.hpp"
 #include "nfs_fsdev_io_device.h"
 #include "nfs_fsdev.h"
@@ -31,7 +37,15 @@ extern "C" {
 
 struct nfs_fsdev_context *create_nfs_fsdev_context(char *server, char *mount_point)
 {
-	return (struct nfs_fsdev_context *)(new IoDevice<nfs_fsdev_global, nfs_fsdev>(server, mount_point));
+	try {
+		return (struct nfs_fsdev_context *)(new IoDevice<nfs_fsdev_global, nfs_fsdev>(server, mount_point));
+	} catch (const std::exception &e) {
+		DOCA_LOG_ERR("Failed to create nfs fsdev context: %s", e.what());
+		return NULL;
+	} catch (...) {
+		DOCA_LOG_ERR("Failed to create nfs fsdev context: unknown exception");
+		return NULL;
+	}
 }
 void destroy_nfs_fsdev_context(struct nfs_fsdev_context *nfs_fsdev_context)
 {

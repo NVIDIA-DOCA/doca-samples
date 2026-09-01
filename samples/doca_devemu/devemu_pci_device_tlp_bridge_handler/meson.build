@@ -22,16 +22,58 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-sample_srcs = files([
+project('DOCA_SAMPLE', 'C', 'CPP',
+	# Get version number from file.
+	version: run_command(find_program('cat'),
+		files('../../../VERSION'), check: true).stdout().strip(),
+	license: 'BSD-3',
+	default_options: ['buildtype=debug'],
+	meson_version: '>= 0.61.2'
+)
+
+SAMPLE_NAME = 'devemu_pci_device_tlp_bridge_handler'
+
+sample_project_arguments = []
+# Comment this line to restore warnings of experimental DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_EXPERIMENTAL_API']
+# Comment this line to restore warnings of deprecated DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_DEPRECATED_API']
+
+add_project_arguments(sample_project_arguments, language: ['c', 'cpp'])
+
+sample_dependencies = []
+# Required for all DOCA programs
+sample_dependencies += dependency('doca-common')
+# The DOCA library of the sample itself
+sample_dependencies += dependency('doca-devemu')
+# Utility DOCA library for executables
+sample_dependencies += dependency('doca-argp')
+# Required for DPA APIs
+sample_dependencies += dependency('doca-dpa')
+
+sample_srcs = [
+	# The sample itself
 	SAMPLE_NAME + '_sample.c',
-])
-
-sample_main_srcs = files([
+	# Main function for the sample's executable
 	SAMPLE_NAME + '_main.c',
-])
+	# Common code for the DOCA library samples
+	'../devemu_pci_common.c',
+	# Common code for all DOCA samples
+	'../../common.c',
+]
 
-if is_variable('lib_devemu_vnet_disabled')
-	warning('Skipping compilation of DOCA Sample @0@ that needs library - @1@.'.format(SAMPLE_NAME, 'devemu_vnet'))
-	skip_sample_compilation = true
-	subdir_done()
-endif
+sample_inc_dirs  = []
+# Common DOCA library logic
+sample_inc_dirs += include_directories('..')
+# Common DOCA logic (samples)
+sample_inc_dirs += include_directories('../..')
+# Common DOCA logic
+sample_inc_dirs += include_directories('../../..')
+# Common DOCA logic (applications)
+sample_inc_dirs += include_directories('../../../applications/common/')
+
+executable('doca_' + SAMPLE_NAME, sample_srcs,
+	c_args : '-Wno-missing-braces',
+	dependencies : sample_dependencies,
+	include_directories: sample_inc_dirs,
+	install: false)

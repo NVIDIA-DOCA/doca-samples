@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -61,7 +61,7 @@ struct buf_arr_obj client_remote_buf_arr_A[NUM_CONN] = {0};
 struct buf_arr_obj client_local_buf_arr_B[NUM_CONN] = {0};
 struct buf_arr_obj client_local_buf_arr_C[NUM_CONN] = {0};
 struct buf_arr_obj client_local_buf_arr_F[NUM_CONN] = {0};
-cudaStream_t cstream;
+cudaStream_t cstream = NULL;
 int oob_sock_fd = -1;
 int oob_client_sock = -1;
 
@@ -70,6 +70,8 @@ int oob_client_sock = -1;
  *
  * @oob_sock_fd [in]: socket fd
  * @resources [in]: rdma resources
+ * @conn_idx [in]: RDMA connection index to use
+ * @stream [in]: CUDA stream used to initialize the buffers
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t create_memory_local_remote_server(int oob_sock_fd,
@@ -182,7 +184,6 @@ static doca_error_t create_memory_local_remote_server(int oob_sock_fd,
 	result = create_buf_arr_on_gpu(&server_remote_buf_arr_F[conn_idx]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function create_buf_arr_on_gpu failed: %s", doca_error_get_descr(result));
-		doca_buf_arr_destroy(server_local_buf_arr_A[conn_idx].buf_arr);
 		goto error;
 	}
 
@@ -191,6 +192,7 @@ static doca_error_t create_memory_local_remote_server(int oob_sock_fd,
 	return DOCA_SUCCESS;
 
 error:
+	/* Partially created resources are released by the caller via destroy_memory_local_remote_server() */
 	if (server_remote_export_F)
 		free(server_remote_export_F);
 
@@ -202,6 +204,8 @@ error:
  *
  * @oob_sock_fd [in]: socket fd
  * @resources [in]: rdma resources
+ * @conn_idx [in]: RDMA connection index to use
+ * @stream [in]: CUDA stream used to initialize the buffers
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t create_memory_local_remote_client(int oob_sock_fd,
@@ -380,7 +384,6 @@ static doca_error_t create_memory_local_remote_client(int oob_sock_fd,
 	DOCA_LOG_INFO("Create local DOCA buf array context C");
 	result = create_buf_arr_on_gpu(&client_local_buf_arr_C[conn_idx]);
 	if (result != DOCA_SUCCESS) {
-		doca_buf_arr_destroy(client_local_buf_arr_B[conn_idx].buf_arr);
 		DOCA_LOG_ERR("Function create_buf_arr_on_gpu failed: %s", doca_error_get_descr(result));
 		goto error;
 	}
@@ -394,7 +397,6 @@ static doca_error_t create_memory_local_remote_client(int oob_sock_fd,
 	DOCA_LOG_INFO("Create local DOCA buf array context F");
 	result = create_buf_arr_on_gpu(&client_local_buf_arr_F[conn_idx]);
 	if (result != DOCA_SUCCESS) {
-		doca_buf_arr_destroy(client_local_buf_arr_B[conn_idx].buf_arr);
 		DOCA_LOG_ERR("Function create_buf_arr_on_gpu failed: %s", doca_error_get_descr(result));
 		goto error;
 	}
@@ -409,8 +411,6 @@ static doca_error_t create_memory_local_remote_client(int oob_sock_fd,
 	result = create_buf_arr_on_gpu(&client_remote_buf_arr_A[conn_idx]);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function create_buf_arr_on_gpu failed: %s", doca_error_get_descr(result));
-		doca_buf_arr_destroy(client_local_buf_arr_B[conn_idx].buf_arr);
-		doca_buf_arr_destroy(client_local_buf_arr_C[conn_idx].buf_arr);
 		goto error;
 	}
 
@@ -419,6 +419,7 @@ static doca_error_t create_memory_local_remote_client(int oob_sock_fd,
 	return DOCA_SUCCESS;
 
 error:
+	/* Partially created resources are released by the caller via destroy_memory_local_remote_client() */
 	if (client_remote_export_A)
 		free(client_remote_export_A);
 
@@ -751,6 +752,8 @@ doca_error_t rdma_write_server(struct rdma_config *cfg)
 	}
 
 	cudaStreamSynchronize(cstream);
+	cudaStreamDestroy(cstream);
+	cstream = NULL;
 
 	DOCA_LOG_INFO("After launching CUDA kernel, buffer array A is:");
 	for (int idx = 0; idx < 4; idx++) {
@@ -797,6 +800,8 @@ doca_error_t rdma_write_server(struct rdma_config *cfg)
 	return DOCA_SUCCESS;
 
 close_connection:
+	if (cstream != NULL)
+		cudaStreamDestroy(cstream);
 	oob_connection_server_close(oob_sock_fd, oob_client_sock);
 
 destroy_resources:
@@ -1045,10 +1050,9 @@ doca_error_t rdma_write_client(struct rdma_config *cfg)
 	DOCA_GPUNETIO_VOLATILE(*cpu_exit_flag) = 1;
 	cudaStreamSynchronize(0);
 
-	if (cfg->use_rdma_cm) {
-		cudaStreamSynchronize(cstream);
-		cudaStreamDestroy(cstream);
-	}
+	cudaStreamSynchronize(cstream);
+	cudaStreamDestroy(cstream);
+	cstream = NULL;
 
 	oob_connection_client_close(oob_sock_fd);
 
@@ -1063,6 +1067,8 @@ doca_error_t rdma_write_client(struct rdma_config *cfg)
 	return DOCA_SUCCESS;
 
 close_connection:
+	if (cstream != NULL)
+		cudaStreamDestroy(cstream);
 	oob_connection_client_close(oob_sock_fd);
 
 destroy_resources:

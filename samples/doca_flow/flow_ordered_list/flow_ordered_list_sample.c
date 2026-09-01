@@ -96,7 +96,6 @@ doca_error_t create_root_pipe(struct doca_flow_port *port,
 			      struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions;
 	struct ordered_list_entry_actions meta_actions;
 	struct ordered_list_entry_actions meta_actions_mask;
 	struct doca_flow_actions *actions_arr[NB_ACTIONS_ARR];
@@ -106,7 +105,6 @@ doca_error_t create_root_pipe(struct doca_flow_port *port,
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&meta_actions, 0, sizeof(meta_actions));
 	memset(&meta_actions_mask, 0, sizeof(meta_actions_mask));
 	memset(&fwd, 0, sizeof(fwd));
@@ -127,8 +125,6 @@ doca_error_t create_root_pipe(struct doca_flow_port *port,
 		meta_actions_mask.ordered_list_fwd_idx = DOCA_HTOBE32(UINT32_MAX);
 		actions_arr[0] = (struct doca_flow_actions *)&meta_actions;
 		actions_mask_arr[0] = (struct doca_flow_actions *)&meta_actions_mask;
-	} else {
-		actions_arr[0] = &actions;
 	}
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
@@ -147,14 +143,14 @@ doca_error_t create_root_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg,
-						actions_arr,
-						use_meta_fwd_mode ? actions_mask_arr : NULL,
-						NULL,
-						NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
+
+	/* No pipe actions; no need to set actions in the pipe config. */
+	if (use_meta_fwd_mode) {
+		result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, actions_mask_arr, NULL, NB_ACTIONS_ARR);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
+			goto destroy_pipe_cfg;
+		}
 	}
 
 	if (use_meta_fwd_mode) {
@@ -751,7 +747,7 @@ doca_error_t flow_ordered_list(int nb_queues, bool use_meta_fwd_mode)
 			goto cleanup;
 		}
 
-		result = doca_flow_entries_process(ports[port_id], 0, DEFAULT_TIMEOUT_US, num_of_entries);
+		result = doca_flow_pipe_queue_drain(ports[port_id], 0, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			goto cleanup;

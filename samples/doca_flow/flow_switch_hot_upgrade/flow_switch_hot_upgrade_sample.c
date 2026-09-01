@@ -503,7 +503,8 @@ static doca_error_t init_hot_upgrade_ports(struct flow_devs_manager devs_manager
 						       NULL /* port_rep_cb */,
 						       &state,
 						       actions_mem_size,
-						       resources);
+						       resources,
+						       NULL /* no CT */);
 }
 
 /*

@@ -22,8 +22,12 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-app_srcs = files([
-	APP_NAME + '_common.c',
-])
+app_srcs += [
+
+]
+
+vanilla_app_srcs += [
+	'./common/' + APP_NAME + '_common.c',
+]
 
 app_inc_dirs += include_directories('.')

@@ -41,6 +41,7 @@ struct lcore_params {
 	psp_pf_dev *pf_dev;	     /* The PF device to poll */
 	PSP_GatewayFlows *psp_flows; /* The DOCA Flow objects */
 	PSP_GatewayImpl *psp_svc;    /* The RPC service which manages tunnels */
+	uint16_t queue_id;	     /* DPDK Rx/Tx queue index for this worker */
 };
 
 /**
@@ -67,7 +68,7 @@ int lcore_pkt_proc_func(void *lcore_args);
  *        identify reinjected packets regardless of source port
  * @return: true if the packet was successfully sent, false if too many retries failed
  */
-bool reinject_packet(struct rte_mbuf *packet, uint16_t port_id, uint32_t pkt_meta);
+bool reinject_packet(struct rte_mbuf *packet, uint16_t port_id, uint32_t pkt_meta, uint16_t queue_id);
 
 /**
  * @brief Used to reply to an ARP request.

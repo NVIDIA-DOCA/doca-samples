@@ -1,0 +1,96 @@
+#
+# Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+number_of_ports: 2
+ports_description:
+  port_0: doca_dev
+  port_1: doca_dev/doca_rep_dev
+description: "This sample exercises the DOCA Flow shared trim resource. On each port it allocates a trim shared
+              resource whose target is a per-port \"post-trim\" pipe, configures an ingress pipe that forwards every
+              IPv4 packet to that trim resource (FWD_TRIM), and demonstrates two post-trim destinations:
+              packets with IPv4 dst 8.8.8.8 are forwarded to the peer port (FWD_PORT), and packets with IPv4 dst
+              9.9.9.9 are forwarded to RSS queue 0. A worker dequeues the RSS-routed trimmed packets, logs the L4
+              type, the original packet size (IPv4 total_length + L2 header) and the actual (post-trim) packet size.
+              At the end of the run, the sample queries and logs the counters of the ingress trim pipe and both
+              post-trim entries.
+              VNF Sample Command Line: ./build/doca_flow_trim -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60
+              Switch Sample Command Line: ./build/doca_flow_trim -- --switch-mode -a pci/08:00.0 -r pci/08:00.0,pf0sf0"
+use_cases:
+  - name: "VNF Flow trim use case"
+    mode_args:
+      - vnf
+    args: "--trim-size 128"
+    stages:
+      - name: "Sending packets to demonstrate FWD_PORT and FWD_RSS branches"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(src="1.2.3.4", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 ' + b'A'*256)
+              - Ether()/IP(src="1.2.3.4", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 padded with \x00')
+          - receiving_port: 1
+            packets:
+              - Ether()/IP(src="5.6.7.8", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 ' + b'C'*256)
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether()/IP(dst='8.8.8.8', src='1.2.3.4')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 AAAAAAAAAAAAAAA')
+                  - Ether()/IP(dst='8.8.8.8', src='1.2.3.4')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 padded with \x00\x00\x00')
+              - forwarding_port: 0
+                packets:
+                  - Ether()/IP(dst='8.8.8.8', src='5.6.7.8')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 CCCCCCCCCCCCCCC')
+  - name: "Switch Flow trim use case"
+    mode_args:
+      - switch
+    args: "--switch-mode --trim-size 128"
+    stages:
+      - name: "Sending packets to demonstrate FWD_PORT and FWD_RSS branches"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(src="1.2.3.4", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 ' + b'A'*256)
+              - Ether()/IP(src="1.2.3.4", dst="8.8.8.8")/UDP(sport=1234, dport=4789)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 ' + b'B'*256)
+              - Ether()/IP(src="1.2.3.4", dst="9.9.9.9")/UDP(sport=1234, dport=4789)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded to RSS ' + b'B'*256)
+          - receiving_port: 1
+            packets:
+              - Ether()/IP(src="5.6.7.8", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 ' + b'C'*256)
+              - Ether()/IP(src="5.6.7.8", dst="9.9.9.9")/UDP(sport=1234, dport=4789)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded to RSS ' + b'D'*256)
+              - Ether()/IP(src="5.6.7.8", dst="8.8.8.8")/UDP(sport=1234, dport=4789)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 padded with \x00')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether()/IP(dst='8.8.8.8', src='1.2.3.4')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 AAAAAAAAAAAAAAA')
+                  - Ether()/IP(dst='8.8.8.8', src='1.2.3.4')/UDP(dport=4789, sport=1234)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 BBBBBBBBBBBBBBBBBBBBBBBBBBB')
+              - forwarding_port: 0
+                packets:
+                  - Ether()/IP(dst='8.8.8.8', src='5.6.7.8')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 CCCCCCCCCCCCCCC')
+                  - Ether()/IP(dst='8.8.8.8', src='5.6.7.8')/UDP(dport=4789, sport=1234)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 padded with \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
+          - type: pattern
+            expected_pattern:
+              - counter\[port=0 post post_trim_pipe\(9.9.9.9->FWD_RSS\)\]: total_pkts=1 total_bytes=128
+              - counter\[port=1 post post_trim_pipe\(9.9.9.9->FWD_RSS\)\]: total_pkts=1 total_bytes=128
+

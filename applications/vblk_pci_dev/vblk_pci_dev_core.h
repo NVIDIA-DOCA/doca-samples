@@ -82,6 +82,9 @@ struct vblk_ep_hotplug_state {
 	_Atomic bool need_io_ctx_shutdown;
 	_Atomic uint8_t io_ctx_ready;
 	_Atomic uint8_t io_ctx_shutdown_done;
+	_Atomic uint8_t io_ctx_flr_destroyed;  /* IO: count of io_ctxs destroyed during FLR teardown */
+	_Atomic bool need_post_flr_oe_restart; /* OE: restart OE (disable->stop->start) after FLR teardown */
+	_Atomic bool need_post_flr_reenable;   /* OE: post-FLR re-enable deferred until io_ctxs rebind */
 	_Atomic bool enabled;
 	_Atomic bool plug_msi_pending;	 /* Plug MSI send failed, retry on next OE cycle */
 	_Atomic bool unplug_msi_pending; /* Unplug MSI send failed, retry on next OE cycle */
@@ -126,6 +129,10 @@ struct vblk_pci_dev_config {
 	uint32_t stats_ios_period;			/* Stats query period (0 = disabled) */
 	bool hotplug_mode;				/* Hotplug mode (dynamic plug/unplug) */
 	bool indirect_enabled;				/* Enable indirect descriptor feature */
+	bool sriov_enabled;				/* Enable SR-IOV capability exposure */
+	uint16_t sriov_total_vfs;			/* SR-IOV TotalVFs (1-7, no ARI) */
+	uint16_t sriov_num_vf_msix;			/* Initial MSI-X vectors per VF */
+	uint16_t sriov_num_vf_db;			/* Initial doorbells per VF */
 };
 
 /**

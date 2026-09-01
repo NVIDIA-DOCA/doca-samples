@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -66,16 +66,23 @@ int main(int argc, char **argv)
 
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
-	if (result != DOCA_SUCCESS)
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create standard logger backend: %s", doca_error_get_descr(result));
 		goto sample_exit;
+	}
 
 	/* Register a logger backend for internal SDK errors and warnings */
 	result = doca_log_backend_create_with_file_sdk(stderr, &sdk_log);
-	if (result != DOCA_SUCCESS)
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create logger backend for internal SDK errors and warnings: %s",
+			     doca_error_get_descr(result));
 		goto sample_exit;
+	}
 	result = doca_log_backend_set_sdk_level(sdk_log, DOCA_LOG_LEVEL_WARNING);
-	if (result != DOCA_SUCCESS)
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set SDK level: %s", doca_error_get_descr(result));
 		goto sample_exit;
+	}
 
 	DOCA_LOG_INFO("Starting the sample");
 
@@ -89,7 +96,7 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
 		goto sample_exit;
 	}
-	result = register_dma_params(true);
+	result = register_dma_params(true, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register DMA sample parameters: %s", doca_error_get_descr(result));
 		goto argp_cleanup;

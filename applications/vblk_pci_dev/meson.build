@@ -22,13 +22,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-if flag_disable_applications_compilation
-	subdir_done()
-endif
-
-samples_dir_path_aux = '../../samples'
-common_dir_path_aux = '../common'
-
 app_srcs += files([
 	'vblk_pci.c',
 	'pci_spec_tlp.c',
@@ -38,18 +31,9 @@ app_srcs += files([
 	'vblk_pci_dev.c',
 	'vblk_pci_dev_core.c',
 	'vblk_mpool.c',
-	common_dir_path_aux + '/utils.c',
-	samples_dir_path_aux + '/common.c',
+	common_dir_path + '/utils.c',
+	samples_dir_path + '/common.c',
 ])
-
-vblk_doca_deps = ['devemu']
-foreach doca_dep : vblk_doca_deps
-	if not available_libs.contains(doca_dep)
-		set_variable('app_' + APP_NAME + '_disable_reason', 'Missing dependency: ' + doca_dep)
-		subdir_done()
-	endif
-	app_dependencies += get_variable(DOCA_PREFIX + doca_dep + '_dependency_internal')
-endforeach
 
 # Add libbsd for strlcpy
 libbsd_dep = dependency('libbsd', required: false)
@@ -58,12 +42,13 @@ if libbsd_dep.found()
 endif
 
 app_inc_dirs += include_directories('.')
-app_inc_dirs += include_directories(samples_dir_path_aux)
+app_inc_dirs += include_directories(samples_dir_path)
 
 executable(DOCA_PREFIX + APP_NAME, app_srcs,
 	c_args : base_c_args,
 	dependencies : app_dependencies,
-	include_directories: app_inc_dirs)
+	include_directories: app_inc_dirs,
+	install: install_apps)
 
 # Common LU sources shared by TLP LU and EMU binaries
 common_lu_srcs = files([
@@ -73,8 +58,8 @@ common_lu_srcs = files([
 	'vblk_mpool_lu.c',
 	'vblk_ipc.c',
 	'vblk_handover.c',
-	common_dir_path_aux + '/utils.c',
-	samples_dir_path_aux + '/common.c',
+	common_dir_path + '/utils.c',
+	samples_dir_path + '/common.c',
 ])
 
 # TLP LU binary (user-facing, spawns EMU child)
@@ -87,7 +72,8 @@ tlp_lu_srcs = common_lu_srcs + files([
 executable(DOCA_PREFIX + APP_NAME + '_lu', tlp_lu_srcs,
 	c_args : base_c_args,
 	dependencies : app_dependencies,
-	include_directories: app_inc_dirs)
+	include_directories: app_inc_dirs,
+	install: install_apps)
 
 # EMU child binary (spawned by TLP LU app)
 emu_srcs = common_lu_srcs + files([
@@ -99,4 +85,5 @@ emu_srcs = common_lu_srcs + files([
 executable(DOCA_PREFIX + APP_NAME + '_emu', emu_srcs,
 	c_args : base_c_args,
 	dependencies : app_dependencies,
-	include_directories: app_inc_dirs)
+	include_directories: app_inc_dirs,
+	install: install_apps)

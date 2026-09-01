@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -97,7 +97,6 @@ static doca_error_t create_rss_tcp_ip_pipe(struct doca_flow_port *port,
 					   struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
 	struct doca_flow_fwd fwd_miss;
 	struct doca_flow_pipe_cfg *pipe_cfg;
@@ -105,7 +104,6 @@ static doca_error_t create_rss_tcp_ip_pipe(struct doca_flow_port *port,
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&fwd_miss, 0, sizeof(fwd_miss));
 
@@ -119,8 +117,6 @@ static doca_error_t create_rss_tcp_ip_pipe(struct doca_flow_port *port,
 	match.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
 	match.outer.tcp.l4_port.src_port = 0xffff;
 	match.outer.tcp.l4_port.dst_port = 0xffff;
-
-	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -138,11 +134,8 @@ static doca_error_t create_rss_tcp_ip_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	/* RSS queue - send matched traffic to queue 0 */
 	rss_queues[0] = 0;
@@ -589,7 +582,7 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 			return result;
 		}
 
-		result = doca_flow_entries_process(ports[port_id], 0, DEFAULT_TIMEOUT_US, num_of_entries);
+		result = doca_flow_pipe_queue_drain(ports[port_id], 0, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);

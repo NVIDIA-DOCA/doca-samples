@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2021-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -22,20 +22,20 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-app_srcs = files([
-	APP_NAME + '.c',
-	APP_NAME + '_core.c',
+app_srcs += [
+	'secure_channel_core.c',
 	common_dir_path + '/comch_utils.c',
 	common_dir_path + '/utils.c',
 	samples_dir_path + '/common.c',
-])
+]
 
-# Check if we should skip the compilation of the applications
-if flag_disable_applications_compilation
-	subdir_done()
-endif
+vanilla_app_srcs = [
+	APP_NAME + '.c',
+]
 
-executable(DOCA_PREFIX + APP_NAME, app_srcs,
-	c_args : apps_common_c_args,
+executable(DOCA_PREFIX + APP_NAME,
+	app_srcs + vanilla_app_srcs,
+	c_args : base_c_args,
 	dependencies : app_dependencies,
-	include_directories: app_inc_dirs)
+	include_directories : app_inc_dirs,
+	install: install_apps)

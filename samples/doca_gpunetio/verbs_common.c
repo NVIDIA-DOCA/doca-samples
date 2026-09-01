@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <doca_log.h>
 #include <doca_error.h>
@@ -205,9 +206,10 @@ doca_error_t threads_callback(void *param, void *config)
 
 	if (threads < 0 || (threads % VERBS_CUDA_BLOCK) != 0 ||
 	    threads < (VERBS_CUDA_BLOCK * DOCA_GPUNETIO_VERBS_WARP_SIZE)) {
-		DOCA_LOG_ERR("CUDA threads must be > 0, at least %d and divisible by %d",
+		DOCA_LOG_ERR("CUDA threads must be > 0, at least %d and divisible by %d, requested %d",
 			     VERBS_CUDA_BLOCK * DOCA_GPUNETIO_VERBS_WARP_SIZE,
-			     VERBS_CUDA_BLOCK);
+			     VERBS_CUDA_BLOCK,
+			     threads);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -263,7 +265,7 @@ doca_error_t exec_callback(void *param, void *config)
  *
  * @oob_sock_fd [out]: Socket FD
  * @oob_client_sock [out]: Client socket FD
- * @return: positive integer on success and -1 otherwise
+ * @return: 0 on success and -1 otherwise
  */
 int oob_verbs_connection_server_setup(int *oob_sock_fd, int *oob_client_sock)
 {
@@ -332,14 +334,13 @@ int oob_verbs_connection_server_setup(int *oob_sock_fd, int *oob_client_sock)
  *
  * @oob_sock_fd [in]: Socket FD
  * @oob_client_sock [in]: Client socket FD
- * @return: positive integer on success and -1 otherwise
  */
 void oob_verbs_connection_server_close(int oob_sock_fd, int oob_client_sock)
 {
-	if (oob_client_sock > 0)
+	if (oob_client_sock >= 0)
 		close(oob_client_sock);
 
-	if (oob_sock_fd > 0)
+	if (oob_sock_fd >= 0)
 		close(oob_sock_fd);
 }
 
@@ -348,7 +349,7 @@ void oob_verbs_connection_server_close(int oob_sock_fd, int oob_client_sock)
  *
  * @server_ip [in]: Server IP address to connect
  * @oob_sock_fd [out]: Socket FD
- * @return: positive integer on success and -1 otherwise
+ * @return: 0 on success and -1 otherwise
  */
 int oob_verbs_connection_client_setup(const char *server_ip, int *oob_sock_fd)
 {
@@ -384,11 +385,10 @@ int oob_verbs_connection_client_setup(const char *server_ip, int *oob_sock_fd)
  * OOB connection to exchange RDMA info - client side closure
  *
  * @oob_sock_fd [in]: Socket FD
- * @return: positive integer on success and -1 otherwise
  */
 void oob_verbs_connection_client_close(int oob_sock_fd)
 {
-	if (oob_sock_fd > 0)
+	if (oob_sock_fd >= 0)
 		close(oob_sock_fd);
 }
 
@@ -483,6 +483,7 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 	struct doca_gpu_verbs_qp_init_attr_hl qp_init;
 	int cuda_id = 0;
 	cudaError_t cuda_ret;
+	int fd, fd_flags = 0, fd_fcntl_status = 0;
 
 	resources->cfg = cfg;
 
@@ -492,7 +493,7 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 	 */
 	cuda_ret = cudaFree(0);
 	if (cuda_ret != cudaSuccess) {
-		DOCA_LOG_ERR("CUDA initialization failed: %s\n", cudaGetErrorString(cuda_ret));
+		DOCA_LOG_ERR("CUDA initialization failed: %s", cudaGetErrorString(cuda_ret));
 		return DOCA_ERROR_INITIALIZATION;
 	}
 
@@ -503,7 +504,11 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	cudaSetDevice(cuda_id);
+	cuda_ret = cudaSetDevice(cuda_id);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("Failed to cudaSetDevice %s: %d", cfg->gpu_pcie_addr, cuda_ret);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
 	status = doca_gpu_create(cfg->gpu_pcie_addr, &resources->gpu_dev);
 	if (status != DOCA_SUCCESS) {
@@ -526,6 +531,7 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 
 	resources->pd = doca_verbs_bridge_verbs_pd_get_ibv_pd(resources->verbs_pd);
 	if (resources->pd == NULL) {
+		status = DOCA_ERROR_UNEXPECTED;
 		DOCA_LOG_ERR("Failed to get ibv_pd");
 		goto destroy_resources;
 	}
@@ -582,6 +588,37 @@ doca_error_t create_verbs_resources(struct verbs_config *cfg, struct verbs_resou
 	qp_init.recv_inline = resources->recv_inline;
 	qp_init.cq_collapsed = resources->cq_collapsed;
 
+	if (resources->enable_comp_channel) {
+		status = doca_verbs_comp_channel_create(resources->verbs_context, &resources->comp_channel);
+		if (status == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_WARN("DOCA SDK version doesn't support Verbs comp channel feature");
+			resources->comp_channel = NULL;
+		} else if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed doca_verbs_comp_channel_create with %d", status);
+			goto destroy_resources;
+		}
+
+		if (resources->comp_channel) {
+			fd = (int)doca_verbs_comp_channel_get_handle(resources->comp_channel);
+
+			fd_flags = fcntl(fd, F_GETFL);
+			if (fd_flags < 0) {
+				DOCA_LOG_ERR("Failed to set at %s fcntl %d", __func__, fd_flags);
+				status = DOCA_ERROR_DRIVER;
+				goto destroy_resources;
+			}
+
+			fd_fcntl_status = fcntl(fd, F_SETFL, fd_flags | O_NONBLOCK);
+			if (fd_fcntl_status < 0) {
+				DOCA_LOG_ERR("Failed to set at %s fcntl %d", __func__, fd_fcntl_status);
+				status = DOCA_ERROR_DRIVER;
+				goto destroy_resources;
+			}
+		}
+	}
+
+	qp_init.comp_channel = resources->comp_channel;
+
 	if (resources->qp_group) {
 		status = doca_gpu_verbs_create_qp_group_hl(&qp_init, &(resources->qpg));
 		if (status != DOCA_SUCCESS) {
@@ -620,7 +657,8 @@ doca_error_t destroy_verbs_resources(struct verbs_resources *resources)
 	if (resources->qp_group) {
 		status = doca_gpu_verbs_destroy_qp_group_hl(resources->qpg);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to destroy doca verbs high-level qp group");
+			DOCA_LOG_ERR("Failed to destroy doca verbs high-level qp group: %s",
+				     doca_error_get_descr(status));
 			return status;
 		}
 
@@ -628,11 +666,19 @@ doca_error_t destroy_verbs_resources(struct verbs_resources *resources)
 	} else {
 		status = doca_gpu_verbs_destroy_qp_hl(resources->qp);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to destroy doca verbs high-level qp");
+			DOCA_LOG_ERR("Failed to destroy doca verbs high-level qp: %s", doca_error_get_descr(status));
 			return status;
 		}
 
 		free(resources->qp);
+	}
+
+	if (resources->comp_channel) {
+		status = doca_verbs_comp_channel_destroy(resources->comp_channel);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy doca verbs comp_channel: %s", doca_error_get_descr(status));
+			return status;
+		}
 	}
 
 	if (resources->verbs_ah_attr) {

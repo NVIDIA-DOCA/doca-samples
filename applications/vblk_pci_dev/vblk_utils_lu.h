@@ -62,4 +62,4 @@
 #define ARRAY_SIZE(n) (uint32_t)((sizeof(n) / sizeof(*n)))
 #endif
 
-#endif /* VBLK_UTILS_H */
+#endif /* VBLK_UTILS_LU_H */

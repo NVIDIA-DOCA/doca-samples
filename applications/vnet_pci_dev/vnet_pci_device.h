@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdatomic.h>
+#include <pthread.h>
 
 #include <doca_dev.h>
 #include <doca_ctx.h>
@@ -216,14 +217,20 @@ doca_error_t send_msi_via_memory_write_tlp(struct tlp_context *tlp_ctx, struct p
 #define VNET_CTRL_MAX_QUEUES_PAIRS 127 /* Absolute hardware max */
 #define VNET_DEFAULT_QUEUE_PAIRS 1     /* Default active QPs for first-stage bring-up */
 
+/* Computes the number of data VQs given the number of queue pairs.
+ * Each queue pair consists of 2 data VQs (RX and TX). */
+#define VNET_NUM_DATA_VQS(num_qp) ((num_qp)*2)
+
 /* CVQ index calculation: max_queue_pairs * 2 (RX+TX per QP) */
 #define VNET_CVQ_INDEX(max_qp) ((max_qp)*2)
 
 /* Total VQs = all data queue pairs + 1 CVQ */
 #define VNET_TOTAL_VQS(max_qp) (VNET_CVQ_INDEX(max_qp) + 1)
+#define VNET_ADMIN_VQ_INDEX(max_qp) VNET_TOTAL_VQS(max_qp)
+#define VNET_TOTAL_VQ_SLOTS(max_qp, admin_qs) (VNET_TOTAL_VQS(max_qp) + (admin_qs))
 
 #define VNET_DEFAULT_QUEUE_SIZE 1024 /* Default queue size */
-#define VNET_MIN_QUEUE_SIZE 16	     /* Minimum queue size */
+#define VNET_MIN_QUEUE_SIZE 32	     /* Minimum queue size */
 #define VNET_MAX_QUEUE_SIZE 4096     /* Maximum queue size */
 
 /**
@@ -248,6 +255,7 @@ doca_error_t send_msi_via_memory_write_tlp(struct tlp_context *tlp_ctx, struct p
 /* MSI-X Configuration */
 #define VNET_PCI_DEV_NUM_MSIX 256	     /* Number of MSI-X vectors supported */
 #define VNET_PCI_DEV_NUM_DB 256		     /* Number of doorbells supported */
+#define VNET_PCI_DEV_MAX_ADMIN_QUEUES 1	     /* Max Admin VQs per PF (backend-limited) */
 #define VNET_VIRTIO_MSIX_TABLE_OFFSET 0x2000 /* MSI-X table location */
 #define VNET_VIRTIO_MSIX_TABLE_LEN 0x1000    /* 4KB for MSI-X table */
 #define VNET_VIRTIO_MSIX_PBA_OFFSET 0x3000   /* MSI-X Pending Bit Array */
@@ -281,6 +289,25 @@ struct vnet_pci_device {
 	 * of the full operation duration (seconds for 64-127 QPs). */
 	atomic_bool cancel_in_progress;
 
+	/* FLR (Function Level Reset) coalescing guard.
+	 *
+	 * Set by the TLP thread when host's FLR cfg-write is detected;
+	 * cleared by the controller-cleanup workqueue item once cleanup
+	 * completes (vnet_controller_cleanup, after the reset_status_state
+	 * HELD -> RELEASE_PENDING transition).
+	 *
+	 * Used purely to drop duplicate FLR requests that arrive while a
+	 * previous FLR is still being cleaned up.
+	 *
+	 * Note: post-FLR device-status handling, MMIO write protection, and
+	 * engine restart are driven entirely by the existing virtio reset
+	 * state machine (reset_status_state HELD/RELEASE_PENDING/IDLE,
+	 * vnet_pci_device_apply_reset_status_release, the cb's HELD re-assert
+	 * at line 3026 of vnet_pci_dev_core.c, and the FEATURES_OK rebind
+	 * path). FLR is just another trigger of that state machine.
+	 */
+	atomic_bool flr_in_progress;
+
 	/* emulated device with complete VirtIO capability chain */
 	struct pcie_virtio_dev pcie_dev;
 
@@ -291,9 +318,27 @@ struct vnet_pci_device {
 	uint64_t device_features;
 	uint64_t driver_features;
 
-	/* vq shadow array - dynamically allocated based on num_queues */
+	/* vq shadow array - dynamically allocated based on num_queues.
+	 *
+	 * The cross-thread race the lock prevents:
+	 *   Writer: main TLP thread doing memset(dev->vqs, ...) inside
+	 *           vnet_pci_device_queue_init() (called by the reset path
+	 *           after the 20 ms timed wait expires).
+	 *   Reader: worker thread iterating dev->vqs[] in start_vqs /
+	 *           start_and_enable / start_additional_queue_pairs / vq_config.
+	 *
+	 * NOT a race: the queue_select / shadow update / DRIVER_OK save sites
+	 * inside vnet_pci_device_pci_cfg_write32() also touch dev->vqs[], but
+	 * they execute on the same main TLP thread as the reset path and are
+	 * therefore mutually serialised by the single TLP execution context.
+	 *
+	 * vqs_mutex is held only across the memcpy/memset itself - never across
+	 * a DOCA / FW round-trip. Worker readers must use
+	 * vnet_pci_device_snapshot_vqs() / vnet_pci_device_snapshot_vq() to
+	 * take a consistent local copy. */
 	struct vnet_virtio_queue_config *vqs;
 	uint16_t vqs_count;
+	pthread_mutex_t vqs_mutex;
 	uint16_t queue_size; /* Configured VirtQueue size (entries per queue) */
 
 	/* virtio pci config - fixme: static assert */
@@ -310,6 +355,99 @@ struct vnet_pci_device {
 /* fixme: inheritance from the base ep */
 LIST_HEAD(vnet_pci_device_list, vnet_pci_device);
 
+struct doca_devemu_vnet_offload_engine;
+struct doca_devemu_vnet_rx_vq;
+struct doca_devemu_vnet_tx_vq;
+struct doca_devemu_vnet_ctrl_vq;
+struct doca_devemu_vnet_counters;
+struct doca_devemu_pci_msix;
+struct doca_devemu_vnet_io;
+
+/* Per-VF runtime slot. One per VF in struct vnet_sriov_pf_state::vf_slots[],
+ * populated by vnet_sriov_discover_vf_reps() with the opened representor and
+ * the VF's globally-unique index. Beyond the rep/tlp_dev plumbing, each slot
+ * carries the per-VF datapath state (offload engine, VQs, control-VQ IO
+ * context) that is brought up on the VF's own FEATURES_OK / DRIVER_OK MMIO
+ * transitions, mirroring the PF controller. */
+struct vnet_vf_slot {
+	struct doca_dev_rep *rep;				/* Opened VF representor (NULL until discovered) */
+	struct vnet_pci_device *vf_dev;				/* Per-VF emulated cfg-space (NULL until built) */
+	struct doca_devemu_pci_tlp_dev *tlp_dev;		/* SDK tlp_dev (NULL until VFE 0->1 starts the slot) */
+	struct doca_devemu_vnet_offload_engine *offload_engine; /* Per-VF datapath engine (created on FEATURES_OK) */
+	struct doca_devemu_vnet_rx_vq **rx_vqs;			/* [max_queue_pairs] per-VF RX VQs */
+	struct doca_devemu_vnet_tx_vq **tx_vqs;			/* [max_queue_pairs] per-VF TX VQs */
+	struct doca_devemu_vnet_ctrl_vq *cvq;			/* per-VF control VQ */
+	uint16_t max_queue_pairs;				/* size of rx_vqs/tx_vqs arrays */
+	uint32_t vf_index;				 /* Globally-unique VF id (pool base + PF-relative index) */
+	atomic_bool active;				 /* tlp_dev started; toggles with VFE */
+	atomic_bool flr_in_progress;			 /* per-VF FLR coalescing guard */
+	atomic_bool engine_started;			 /* offload engine created+started on VF FEATURES_OK */
+	atomic_bool vqs_created;			 /* per-VF VQ structures created */
+	atomic_bool engine_enabled;			 /* VQs started + engine enabled on VF DRIVER_OK */
+	struct doca_devemu_vnet_counters *vnet_counters; /* per-VF datapath counters (RX/TX visibility) */
+	struct doca_devemu_pci_msix *vq_msix[2];	 /* armed per-VQ MSI-X on the VF endpoint (RX VQ0, TX VQ1) */
+
+	/* Control-VQ / multi-queue state, mirroring the PF controller's MQ fields.
+	 * These stay inert for a single-queue VF: mq_feature_negotiated only becomes
+	 * true once the VF advertises and the guest negotiates F_CTRL_VQ + F_MQ, at
+	 * which point the per-VF CVQ + IO-context paths are exercised. */
+	struct doca_devemu_vnet_io *io_ctx; /* per-VF CVQ IO context (MQ only) */
+	struct doca_pe *cvq_worker_pe;	    /* PF worker PE the io_ctx is attached to (for drain on teardown) */
+	atomic_bool io_ctx_started;	    /* io_ctx doca_ctx_start() succeeded */
+	atomic_bool cvq_bound;		    /* CVQ bound to io_ctx */
+	bool mq_feature_negotiated;	    /* guest negotiated F_CTRL_VQ + F_MQ */
+	_Atomic uint16_t num_active_qps;    /* currently started data queue pairs */
+};
+
+/*
+ * Per-PF SR-IOV runtime state (up to 255 VFs via ARI).
+ *
+ * Allocated when SR-IOV is enabled for an EP (--total-vfs > 0) and hung off
+ * pci_device_config::sriov. NULL when SR-IOV is disabled for that EP (the
+ * default).
+ *
+ * The fields fall into three groups:
+ *
+ *   1. Static config (set once at PF create; never changes after):
+ *      total_vf, first_vf_offset, vf_stride, vf_device_id, vf_num_msix,
+ *      vf_num_db.
+ *
+ *   2. Host-writable shadow (updated by the SR-IOV cap cfg-write handler):
+ *      control_shadow, status_shadow, num_vfs_shadow, system_pg_size,
+ *      vf_bar[].
+ *
+ *   3. SDK-allocated runtime state (populated when the SDK creates the
+ *      dynamic SR-IOV instance and enumerates VFs): first_vf_idx, vf_slots.
+ *
+ * The on-wire SR-IOV cap layout is documented in struct sriov_ext_cap_layout
+ * (vnet_pcie_defs.h). This struct holds the semantic values; the cfg-space
+ * reader synthesizes each on-wire DW from these fields.
+ */
+struct vnet_sriov_pf_state {
+	/* Static config — set at PF create from CLI */
+	uint16_t total_vf;	  /* TotalVFs / InitialVFs (1..64, per VNET_SRIOV_MAX_VFS_PER_PF) */
+	uint16_t first_vf_offset; /* PCIe SR-IOV cap FirstVFOffset (= 1) */
+	uint16_t vf_stride;	  /* PCIe SR-IOV cap VFStride (= 1) */
+	uint16_t vf_device_id;	  /* PCIe SR-IOV cap VF Device ID */
+	uint16_t vf_num_msix;	  /* Initial MSI-X per VF (derived from queue count) */
+	uint16_t vf_num_db;	  /* Initial doorbells per VF (derived from queue count) */
+
+	/* Host-writable shadow — updated by the SR-IOV cap cfg-write handler */
+	uint16_t control_shadow; /* SR-IOV Control register (VF Enable, MSE, ...) */
+	uint16_t status_shadow;	 /* SR-IOV Status register (mostly RO/W1C) */
+	uint16_t num_vfs_shadow; /* Host-written NumVFs (clamped to total_vf) */
+	uint32_t system_pg_size; /* Host-written System Page Size */
+	uint32_t vf_bar[6];	 /* Host-written VF BAR registers (size-probe + base) */
+
+	/* SDK-allocated runtime state */
+	uint32_t first_vf_idx; /* Starting index in the global dynamic VF pool */
+	/* True iff this process reserved this PF's VF-index range and must release it on
+	 * destroy; false for LU-restored PFs that reattach without reserving. Explicit so
+	 * the release does not hinge on vf_slots being populated. */
+	bool owns_pool_range;
+	struct vnet_vf_slot *vf_slots; /* Array of length total_vf; NULL until allocated */
+};
+
 enum vnet_virtio_device_types {
 	VNET_VIRTIO_INVALID_DEVICE = 0,
 	VNET_VIRTIO_NETWORK_DEVICE = 1,
@@ -319,6 +457,7 @@ struct vnet_pci_device_attrs {
 	uint16_t virtio_type;
 	uint64_t device_features;
 	int num_queues;
+	uint16_t admin_queue_num;
 	uint16_t queue_size; /* VirtQueue size (entries per queue) */
 	void *dev_cfg;
 	vnet_pci_device_status_change_cb_t pci_cfg_change_cb;
@@ -338,6 +477,62 @@ struct vnet_pci_device_attrs {
  * @return DOCA_SUCCESS on success, DOCA_ERROR otherwise
  */
 doca_error_t vnet_pci_device_init(struct tlp_context *tlp_ctx);
+
+/**
+ * @brief Populate per-PF cfg-space dw_regs[64..79] with the SR-IOV PCIe ext cap
+ *
+ * Synthesizes the 16 DWs of the SR-IOV cap from the per-PF shadow and writes
+ * them into the VirtIO device's raw cfg-space array. Required because endpoint
+ * cfg-reads (vnet_pci_dev_handle_cfg_read0) read dw_regs[] directly via
+ * VIRTIO_DEV_CONFIG_READ — they bypass the handle_config_space_ext_caps_read
+ * dispatcher, which only fires for non-endpoint cfg paths.
+ *
+ * Called once per PF at create_device time, after endpoint->sriov has been
+ * allocated and populated with static fields from the CLI config. No-op when
+ * either argument is NULL (caller guards against calling for SR-IOV-disabled
+ * EPs by simply not calling).
+ *
+ * @param[in] virtio_dev Per-PF VirtIO device (host-visible cfg-space owner)
+ * @param[in] sriov Per-PF SR-IOV shadow state (static + host-writable fields)
+ */
+void vnet_pci_device_sriov_populate_cfg(struct vnet_pci_device *virtio_dev, const struct vnet_sriov_pf_state *sriov);
+
+/**
+ * @brief Rebuild PF config/MMIO routing tables after Channel LU restore.
+ *
+ * Channel LU restores BDF and BAR state without replaying host enumeration TLPs.
+ * This helper publishes the restored PF virtio devices into the same lookup
+ * tables normal enumeration populates.
+ *
+ * @param[in] tlp_ctx TLP context with restored devs_config and virtio_dev state
+ */
+void vnet_pci_device_lu_restore_pf_routing(struct tlp_context *tlp_ctx);
+
+/**
+ * Build / tear down the per-VF emulated VirtIO config-space template.
+ *
+ * init_vf allocates a vnet_pci_device mirroring the PF's VirtIO interface with a
+ * VF-specific Device ID (from the SR-IOV shadow), the PF queue geometry, and a
+ * per-VF MAC; it sits in vf_slots[].vf_dev until a tlp_dev is bound. destroy_vf
+ * frees it.
+ */
+doca_error_t vnet_pci_device_init_vf(struct tlp_context *tlp_ctx,
+				     const struct pci_device_config *pf_endpoint,
+				     uint32_t vf_index,
+				     struct vnet_pci_device **out_vf_dev);
+void vnet_pci_device_destroy_vf(struct vnet_pci_device *vf_dev);
+
+/**
+ * @brief Reset an SR-IOV VF's emulated common-config shadow to reset defaults.
+ *
+ * Called on VF datapath teardown (guest device reset, app exit) so a subsequent
+ * guest re-probe re-runs the full status/feature/queue handshake. In particular
+ * it clears each queue's stale queue_enable so the re-probe's queue_enable 0->1
+ * transition re-applies the VQ configuration.
+ *
+ * @param[in,out] vf VF emulated device shadow. NULL is tolerated (no-op).
+ */
+void vnet_pci_device_reset_vf_shadow(struct vnet_pci_device *vf);
 
 /**
  * @brief Create VirtIO network device instance
@@ -377,10 +572,42 @@ struct vnet_virtio_common_config *vnet_pci_device_get_pci_cfg(struct vnet_pci_de
 
 /**
  * @brief Get VirtIO queue configuration array
+ *
+ * NOTE: The returned pointer aliases the device's mutable shadow array. It is
+ * NOT safe to dereference from a worker thread while the host can issue a
+ * RESET (the TLP path may concurrently memset the array under vqs_mutex when
+ * the 20 ms reset wait expires). Worker-thread callers must use
+ * vnet_pci_device_snapshot_vqs() / vnet_pci_device_snapshot_vq() instead.
+ *
  * @param[in] dev VirtIO device
  * @return Pointer to queue configuration array
  */
 const struct vnet_virtio_queue_config *vnet_pci_device_get_virtq_pci_cfg(struct vnet_pci_device *dev);
+
+/**
+ * @brief Snapshot the entire VQ shadow array into caller-provided storage.
+ *
+ * Briefly takes dev->vqs_mutex around a memcpy. Callers MUST NOT call this
+ * while holding any DOCA/FW round-trip in flight - the lock must not contend
+ * with the TLP main thread for more than the memcpy duration.
+ *
+ * @param[in]  dev VirtIO device
+ * @param[out] dst Destination buffer with room for at least dev->vqs_count entries
+ */
+void vnet_pci_device_snapshot_vqs(struct vnet_pci_device *dev, struct vnet_virtio_queue_config *dst);
+
+/**
+ * @brief Snapshot a single VQ entry into caller-provided storage.
+ *
+ * If vq_index is out of range the destination is zero-filled and the function
+ * returns false.
+ *
+ * @param[in]  dev      VirtIO device
+ * @param[in]  vq_index Queue index
+ * @param[out] dst      Destination entry
+ * @return true if vq_index was in range, false otherwise
+ */
+bool vnet_pci_device_snapshot_vq(struct vnet_pci_device *dev, uint16_t vq_index, struct vnet_virtio_queue_config *dst);
 
 /**
  * @brief Get VirtIO network device configuration
@@ -416,21 +643,15 @@ void pci_cfg_workqueue_submit_delayed_destroy(struct tlp_context *tlp_ctx, struc
 void pci_cfg_workqueue_submit_hotplug(struct tlp_context *tlp_ctx, uint32_t dsp_index, bool plug);
 
 /**
- * @brief Spawn a detached thread to start additional queue pairs
+ * @brief Spawn a serialized MQ resize worker for one controller
  *
- * Called after the CVQ ctrl_req has already been completed with VIRTIO_NET_OK.
- * Each device's start_additional_queue_pairs runs in its own detached thread,
- * enabling parallel QP startup across all devices (~8s each, in parallel).
- *
- * The caller MUST complete the ctrl_req BEFORE calling this function.
+ * The controller state guarantees that only one worker is submitted per
+ * controller. Workers for different controllers can run in parallel.
  *
  * @param[in] controller VNet controller
- * @param[in] old_qps Current number of active queue pairs
- * @param[in] new_qps Target number of active queue pairs
+ * @return DOCA_SUCCESS if the worker was created, error otherwise
  */
-void pci_cfg_workqueue_submit_mq_start_qps(struct vnet_pci_dev_controller *controller,
-					   uint16_t old_qps,
-					   uint16_t new_qps);
+doca_error_t pci_cfg_workqueue_submit_mq_resize(struct vnet_pci_dev_controller *controller);
 
 /**
  * @brief Submit speed change to async workqueue
@@ -442,5 +663,91 @@ void pci_cfg_workqueue_submit_mq_start_qps(struct vnet_pci_dev_controller *contr
  * @param[in] new_speed New speed in Mbps
  */
 void pci_cfg_workqueue_submit_speed_change(struct vnet_pci_dev_controller *controller, uint32_t new_speed);
+
+/**
+ * @brief Submit an on-demand SF-info dump to the workqueue
+ *
+ * Queues the interactive 'sfinfo' dump for PF 'ep_index' (and its VFs) to the
+ * worker thread, keeping the blocking representor queries off the PE progress
+ * loop. "Dump all" is issued as one bounded work item per PF.
+ *
+ * @param[in] tlp_ctx TLP context
+ * @param[in] ep_index PF/endpoint index (0 .. num_ep-1)
+ */
+void pci_cfg_workqueue_submit_dump_sf_info(struct tlp_context *tlp_ctx, uint32_t ep_index);
+
+/**
+ * @brief Queue creation + start of a VF's datapath offload engine.
+ *
+ * Submitted from the VF MMIO common-config write path when the guest VF driver
+ * sets the virtio FEATURES_OK status bit. Runs on the workqueue worker thread
+ * because the engine create is a heavy call that must not block the TLP thread.
+ * The worker re-validates the slot under pf_endpoint->endpoint_lock and is a
+ * no-op when the slot's engine is already started.
+ *
+ * @param[in] tlp_ctx TLP context (MTU / MAC / queue config for the engine).
+ * @param[in] pf_endpoint Owning PF endpoint; valid until the worker drains.
+ * @param[in] slot_idx Index into pf_endpoint->sriov->vf_slots[]; < total_vf.
+ */
+void pci_cfg_workqueue_submit_vf_engine_setup(struct tlp_context *tlp_ctx,
+					      struct pci_device_config *pf_endpoint,
+					      uint16_t slot_idx);
+
+/**
+ * @brief Queue application of one SR-IOV VF virtqueue's configuration.
+ *
+ * Submitted from the VF MMIO common-config write path when the guest enables a
+ * VF queue (queue_enable 0->1, or addresses become complete). The worker
+ * re-validates the slot under pf_endpoint->endpoint_lock and applies the
+ * queue's descriptor/driver/device addresses to the backing VQ via the SDK.
+ *
+ * @param[in] tlp_ctx TLP context.
+ * @param[in] pf_endpoint Owning PF endpoint; valid until the worker drains.
+ * @param[in] slot_idx Index into pf_endpoint->sriov->vf_slots[]; < total_vf.
+ * @param[in] vq_index VirtIO queue index to configure.
+ */
+void pci_cfg_workqueue_submit_vf_vq_config(struct tlp_context *tlp_ctx,
+					   struct pci_device_config *pf_endpoint,
+					   uint16_t slot_idx,
+					   uint16_t vq_index);
+
+/**
+ * @brief Queue start + enable of an SR-IOV VF's offload engine.
+ *
+ * Submitted from the VF MMIO common-config write path on the VF's DRIVER_OK
+ * transition. The worker re-validates the slot under pf_endpoint->endpoint_lock
+ * and starts the VF's virtqueues + enables its offload engine.
+ *
+ * @param[in] pf_endpoint Owning PF endpoint; valid until the worker drains.
+ * @param[in] slot_idx Index into pf_endpoint->sriov->vf_slots[]; < total_vf.
+ */
+void pci_cfg_workqueue_submit_vf_engine_enable(struct pci_device_config *pf_endpoint, uint16_t slot_idx);
+
+/**
+ * @brief Queue teardown of an SR-IOV VF's offload engine on a guest device reset.
+ *
+ * Submitted from the VF MMIO common-config write path when the guest clears
+ * device_status to 0 (device reset, e.g. driver unbind). The worker re-validates
+ * the slot under pf_endpoint->endpoint_lock and destroys the VF's engine + VQs
+ * so the next FEATURES_OK rebuilds a fresh datapath. The emulated shadow is
+ * reset inline by the caller.
+ *
+ * @param[in] pf_endpoint Owning PF endpoint; valid until the worker drains.
+ * @param[in] slot_idx Index into pf_endpoint->sriov->vf_slots[]; < total_vf.
+ */
+void pci_cfg_workqueue_submit_vf_datapath_reset(struct pci_device_config *pf_endpoint, uint16_t slot_idx);
+
+/**
+ * @brief Queue teardown of an SR-IOV VF's offload engine on a host-initiated FLR.
+ *
+ * Submitted from the VF config write path when the host sets the Initiate FLR
+ * bit. The VF keeps answering the host while the teardown is pending, and the
+ * guest's next FEATURES_OK rebuilds the datapath.
+ *
+ * @param[in] pf_endpoint Owning PF endpoint; valid until the worker drains.
+ * @param[in] slot_idx Index into pf_endpoint->sriov->vf_slots[]; < total_vf.
+ * @return true on success, false if the work item could not be queued.
+ */
+bool pci_cfg_workqueue_submit_vf_flr_reset(struct pci_device_config *pf_endpoint, uint16_t slot_idx);
 
 #endif

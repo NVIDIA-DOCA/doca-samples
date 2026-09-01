@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -27,45 +27,18 @@ app_common_src = []
 app_common_hdr = []
 app_common_includes = []
 app_srcs = []
-
-# For installs, remove regular build files and install public ones
-app_install_excludes += 'host' / public_meson_file_name
-app_install_excludes += 'dpu' / 'build_time_sync.sh.public'
-app_install_excludes += 'dpu' / 'build_device_code.sh.public'
-app_install_excludes += 'dpu' / public_meson_file_name
-app_install_excludes += 'common' / public_meson_file_name
-
-install_data(sources : 'host' / public_meson_file_name, rename : ['host' / regular_meson_file_name],
-		install_dir : app_install_dir)
-install_data(sources : '/'.join(['dpu', 'build_time_sync.sh.public']), rename : ['/'.join(['dpu', 'build_time_sync.sh'])],
-		install_dir : app_install_dir)
-install_data(sources : '/'.join(['dpu', 'build_device_code.sh.public']), rename : ['/'.join(['dpu', 'build_device_code.sh'])],
-		install_dir : app_install_dir)
-install_data(sources : 'dpu' / public_meson_file_name, rename : ['dpu' / regular_meson_file_name],
-		install_dir : app_install_dir)
-install_data(sources : 'common' / public_meson_file_name, rename : ['common' / regular_meson_file_name],
-		install_dir : app_install_dir)
-
-# Check if we should skip the compilation of the applications after checking installation configurations
-if flag_disable_applications_compilation
-	subdir_done()
-endif
+vanilla_app_srcs = []
 
 if is_dpu
 	subdir('dpu')
-
-	# We still need to properly install ALL files
-	if flag_disable_applications_compilation
-		subdir('host')
-	endif
 else
 	subdir('common')
 	subdir('host')
 
-	# Build host executable
 	executable(DOCA_PREFIX + APP_NAME + '_host',
-		app_srcs,
-		c_args : apps_common_c_args,
+		app_srcs + vanilla_app_srcs,
+		c_args : base_c_args,
 		dependencies : app_dependencies,
-		include_directories: app_inc_dirs)
+		include_directories : app_inc_dirs,
+		install: install_apps)
 endif

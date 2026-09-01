@@ -159,7 +159,7 @@ doca_error_t vblk_init(const struct vblk_app_cfg *app_cfg, struct doca_dev **g_d
 
 	err = vblk_ctrl_manager_set_max_seg_max(doca_dev_as_devinfo(dev), VBLK_CTRLS_MAX_SEG_MAX);
 	if (err != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to seg seg_max on vblk ctrl manager:%s, err:%s",
+		DOCA_LOG_ERR("Failed to set seg_max on vblk ctrl manager: %s, err: %s",
 			     dev_name,
 			     doca_error_get_name(err));
 		goto rm_dev;
@@ -1021,28 +1021,43 @@ doca_error_t vblk_ctrl_init(struct vblk_ctrl *ctrl, const struct vblk_ctrl_attrs
 	for (int qid = 0; qid < ctrl->num_queues; qid++)
 		ctrl->vqs[qid].io_ctx_id = vblk_qid_to_io_ctx_id(ctrl, qid);
 
-	if (ctrl->recovery_export_desc != NULL && ctrl->recovery_export_desc_len > 0) {
+	bool is_recovery = (ctrl->recovery_export_desc != NULL && ctrl->recovery_export_desc_len > 0);
+
+	if (is_recovery) {
 		err = doca_devemu_vblk_offload_engine_create_from_export(ctrl->recovery_export_desc,
 									 ctrl->recovery_export_desc_len,
+									 attr->shm_dir_path,
 									 ep,
 									 &ctrl->vq_engine);
+		/* shm_dir_path is configured by create_from_export(); calling
+		 * set_shm_dir_path() here is forbidden (DOCA_ERROR_NOT_SUPPORTED). */
 		vblk_ctrl_release_recovery_export(ctrl);
 	} else {
 		err = doca_devemu_vblk_offload_engine_create(ep, &ctrl->vq_engine);
-		if (err == DOCA_SUCCESS)
-			err = doca_devemu_vblk_offload_engine_set_seg_max(ctrl->vq_engine, attr->seg_max);
-		if (err == DOCA_SUCCESS) {
-			struct doca_devemu_virtio_offload_engine *voe =
-				doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
-			err = doca_devemu_virtio_offload_engine_set_indir_descs_enabled(voe, attr->indirect_enabled);
-			if (err == DOCA_SUCCESS)
-				err = doca_devemu_virtio_offload_engine_set_num_queues(voe, ctrl->num_queues);
-		}
 	}
 	if (err != DOCA_SUCCESS)
 		goto destroy_vqs;
 
 	virtio_engine = doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
+
+	if (!is_recovery) {
+		err = doca_devemu_virtio_offload_engine_set_shm_dir_path(virtio_engine, attr->shm_dir_path);
+		if (err != DOCA_SUCCESS)
+			goto destroy_vq_engine;
+	}
+
+	err = doca_devemu_vblk_offload_engine_set_seg_max(ctrl->vq_engine, attr->seg_max);
+	if (err != DOCA_SUCCESS)
+		goto destroy_vq_engine;
+
+	err = doca_devemu_virtio_offload_engine_set_indir_descs_enabled(virtio_engine, attr->indirect_enabled);
+	if (err != DOCA_SUCCESS)
+		goto destroy_vq_engine;
+
+	err = doca_devemu_virtio_offload_engine_set_num_queues(virtio_engine, ctrl->num_queues);
+	if (err != DOCA_SUCCESS)
+		goto destroy_vq_engine;
+
 	err = doca_devemu_virtio_offload_engine_start(virtio_engine);
 	if (err != DOCA_SUCCESS)
 		goto destroy_vq_engine;
@@ -1173,7 +1188,7 @@ doca_error_t vblk_ctrl_shutdown_io_ctx_on_thread(struct vblk_ctrl *ctrl, uint16_
 			continue;
 		while ((err = vblk_ctrl_queue_stop(ctrl, qid)) == DOCA_ERROR_AGAIN) {
 			doca_pe_progress(pe);
-		};
+		}
 
 		if (err != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("failed to stop vq qid=%d, err=%s", qid, doca_error_get_name(err));
@@ -1206,6 +1221,8 @@ doca_error_t vblk_ctrl_shutdown_io_ctx_on_thread(struct vblk_ctrl *ctrl, uint16_
 
 void vblk_ctrl_cleanup(struct vblk_ctrl *ctrl)
 {
+	doca_error_t err;
+
 	vblk_ctrl_vqs_destroy(ctrl);
 	vblk_ctrl_io_ctxs_reset(ctrl, ctrl->num_io_ctx);
 
@@ -1214,10 +1231,17 @@ void vblk_ctrl_cleanup(struct vblk_ctrl *ctrl)
 			doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
 		enum doca_devemu_virtio_offload_engine_states state;
 		if (doca_devemu_virtio_offload_engine_get_state(virtio_engine, &state) == DOCA_SUCCESS &&
-		    state == DOCA_DEVEMU_VIRTIO_OFFLOAD_ENGINE_STATE_ENABLED)
-			(void)doca_devemu_virtio_offload_engine_disable(virtio_engine);
-		(void)doca_devemu_virtio_offload_engine_stop(virtio_engine);
-		(void)doca_devemu_vblk_offload_engine_destroy(ctrl->vq_engine);
+		    state == DOCA_DEVEMU_VIRTIO_OFFLOAD_ENGINE_STATE_ENABLED) {
+			err = doca_devemu_virtio_offload_engine_disable(virtio_engine);
+			if (err != DOCA_SUCCESS)
+				DOCA_LOG_ERR("cleanup: offload_engine_disable failed: %s", doca_error_get_name(err));
+		}
+		err = doca_devemu_virtio_offload_engine_stop(virtio_engine);
+		if (err != DOCA_SUCCESS)
+			DOCA_LOG_ERR("cleanup: offload_engine_stop failed: %s", doca_error_get_name(err));
+		err = doca_devemu_vblk_offload_engine_destroy(ctrl->vq_engine);
+		if (err != DOCA_SUCCESS)
+			DOCA_LOG_ERR("cleanup: offload_engine_destroy failed: %s", doca_error_get_name(err));
 		ctrl->vq_engine = NULL;
 	}
 

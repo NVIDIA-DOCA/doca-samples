@@ -28,7 +28,6 @@
 
 #include <doca_log.h>
 #include <doca_dev.h>
-#include <doca_log.h>
 #include <doca_types.h>
 #include <doca_devemu_vfs.h>
 #include <doca_devemu_vfs_dev.h>
@@ -42,16 +41,18 @@
 DOCA_LOG_REGISTER(VIRTIOFS_CORE);
 
 #define VIRTIOFS_THREAD_MAX_INFLIGHTS 128
+#define VIRTIOFS_MPOOL_MAX_BASE_BUF_SIZE (256 * 1024)
+#define VIRTIOFS_MPOOL_MAX_IO_BUF_SIZE (1024 * 1024) /* 1MB ceiling on max-IO pool slot */
 
 uint32_t num_devs;
 struct doca_dev *devs[64];
 
-static int virtiofs_num_cores_get(uint32_t core_mask)
+static int virtiofs_num_cores_get(uint64_t core_mask)
 {
 	int i, num_threads = 0;
 
 	for (i = 0; i < sysconf(_SC_NPROCESSORS_ONLN); i++)
-		if (core_mask & (1 << i))
+		if (core_mask & (1ULL << i))
 			num_threads++;
 
 	return num_threads;
@@ -66,6 +67,8 @@ static doca_error_t virtiofs_thread_ctx_init(struct virtiofs_resources *ctx,
 	struct virtiofs_manager *manager;
 	doca_error_t err;
 	int i = 0;
+	uint16_t max_pages = 0;
+	uint32_t max_io_buf_size = 0;
 
 	struct virtiofs_thread_attr thread_attr = {
 		.ctx = ctx,
@@ -76,14 +79,35 @@ static doca_error_t virtiofs_thread_ctx_init(struct virtiofs_resources *ctx,
 
 	err = virtiofs_thread_create(&thread_attr, &tctx->thread);
 	if (err != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create thread for core id %d", i);
+		DOCA_LOG_ERR("Failed to create thread for core id %d", core_id);
 		return err;
 	}
 
 	SLIST_FOREACH(manager, &ctx->managers, entry)
 	devs[i++] = manager->dev;
 
-	struct virtiofs_mpool_attr mpool_attr[3] = {
+	/* Pool slot is shared across all devs; size to the most-constrained DMA cap. */
+	max_pages = UINT16_MAX;
+	for (i = 0; i < ctx->num_managers; i++) {
+		uint16_t cap;
+
+		err = doca_devemu_vfs_cap_get_max_fuse_max_pages(doca_dev_as_devinfo(devs[i]), &cap);
+		if (err != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to query max_pages cap for dev %d, err: %s", i, doca_error_get_name(err));
+			return err;
+		}
+		if (cap < max_pages)
+			max_pages = cap;
+	}
+	max_io_buf_size = (uint32_t)max_pages * 4096;
+	if (max_io_buf_size > VIRTIOFS_MPOOL_MAX_IO_BUF_SIZE)
+		max_io_buf_size = VIRTIOFS_MPOOL_MAX_IO_BUF_SIZE;
+
+	struct virtiofs_mpool_attr mpool_attr[5] = {
+		{.buf_size = 4096,
+		 .num_bufs = VIRTIOFS_THREAD_MAX_INFLIGHTS * 4,
+		 .devs = devs,
+		 .num_devs = ctx->num_managers},
 		{.buf_size = 8192,
 		 .num_bufs = VIRTIOFS_THREAD_MAX_INFLIGHTS * 4,
 		 .devs = devs,
@@ -92,13 +116,20 @@ static doca_error_t virtiofs_thread_ctx_init(struct virtiofs_resources *ctx,
 		 .num_bufs = VIRTIOFS_THREAD_MAX_INFLIGHTS * 4,
 		 .devs = devs,
 		 .num_devs = ctx->num_managers},
-		{.buf_size = 262144,
+		{.buf_size = VIRTIOFS_MPOOL_MAX_BASE_BUF_SIZE,
+		 .num_bufs = VIRTIOFS_THREAD_MAX_INFLIGHTS * 4,
+		 .devs = devs,
+		 .num_devs = ctx->num_managers},
+		{.buf_size = max_io_buf_size,
 		 .num_bufs = VIRTIOFS_THREAD_MAX_INFLIGHTS * 4,
 		 .devs = devs,
 		 .num_devs = ctx->num_managers},
 	};
 
-	struct virtiofs_mpool_set_attr mpool_set_attr = {.mpools = mpool_attr, .num_pools = 3};
+	struct virtiofs_mpool_set_attr mpool_set_attr = {
+		.mpools = mpool_attr,
+		.num_pools = 5,
+	};
 
 	tctx->mpool_set = virtiofs_mpool_set_create(&mpool_set_attr);
 	if (tctx->mpool_set == NULL) {
@@ -141,16 +172,9 @@ static doca_error_t virtiofs_get_possible_doca_devs(void)
 	return DOCA_SUCCESS;
 }
 
-static doca_error_t virtiofs_devemu_vfs_init(void)
+static doca_error_t virtiofs_devemu_vfs_init(bool datapath_on_dpa)
 {
-	struct doca_devemu_vfs_cfg *cfg;
 	doca_error_t err;
-
-	err = doca_devemu_vfs_cfg_create(&cfg);
-	if (err != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create doca devemu vfs cfg, err: %d", err);
-		return err;
-	}
 
 	err = virtiofs_get_possible_doca_devs();
 	if (err != DOCA_SUCCESS) {
@@ -160,40 +184,41 @@ static doca_error_t virtiofs_devemu_vfs_init(void)
 	}
 
 	for (uint32_t i = 0; i < num_devs; i++) {
-		err = doca_devemu_vfs_cfg_add_dev(cfg, devs[i]);
+		err = doca_devemu_vfs_add_dev(devs[i]);
 		if (err != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to add dev to cfg at idx:%u, err: %s", i, doca_error_get_name(err));
+			DOCA_LOG_ERR("Failed to add dev to vfs at idx:%u, err: %s", i, doca_error_get_name(err));
+			return err;
 		}
 	}
 
-	err = doca_devemu_vfs_cfg_set_vfs_fuse_req_user_data_size(cfg, sizeof(struct virtiofs_request));
+	err = doca_devemu_vfs_set_vfs_fuse_req_user_data_size(sizeof(struct virtiofs_request));
 	if (err != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set cfg req user data size, err: %d", err);
+		DOCA_LOG_ERR("Failed to set vfs fuse req user data size, err: %d", err);
 		return err;
 	}
 
-	err = doca_devemu_vfs_init(cfg);
+	err = doca_devemu_vfs_set_datapath_on_dpa(datapath_on_dpa);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set datapath provider, err: %d", err);
+		return err;
+	}
+
+	err = doca_devemu_vfs_init();
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init doca devemu vfs, err: %d", err);
-		return err;
-	}
-
-	err = doca_devemu_vfs_cfg_destroy(cfg);
-	if (err != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to destroy doca devemu vfs cfg, err: %d", err);
 		return err;
 	}
 
 	return DOCA_SUCCESS;
 }
 
-struct virtiofs_resources *virtiofs_create(uint32_t core_mask)
+struct virtiofs_resources *virtiofs_create(uint64_t core_mask, bool datapath_on_dpa)
 {
 	struct virtiofs_resources *ctx;
 	int num_cores;
 	doca_error_t err;
 
-	err = virtiofs_devemu_vfs_init();
+	err = virtiofs_devemu_vfs_init(datapath_on_dpa);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init doca devemu vfs");
 		return NULL;
@@ -219,10 +244,23 @@ struct virtiofs_resources *virtiofs_create(uint32_t core_mask)
 	}
 
 	for (int i = 0; i < sysconf(_SC_NPROCESSORS_ONLN); i++) {
-		if (core_mask & (1 << i)) {
-			virtiofs_thread_ctx_init(ctx, i, ctx->num_threads == 0, &ctx->threads[ctx->num_threads]);
-			ctx->num_threads++;
+		if (!(core_mask & (1ULL << i)))
+			continue;
+
+		err = virtiofs_thread_ctx_init(ctx, i, ctx->num_threads == 0, &ctx->threads[ctx->num_threads]);
+		if (err != DOCA_SUCCESS) {
+			DOCA_LOG_WARN("Failed to init thread context for core %d, err: %s; skipping core",
+				      i,
+				      doca_error_get_name(err));
+			continue;
 		}
+		ctx->num_threads++;
+	}
+
+	if (ctx->num_threads == 0) {
+		DOCA_LOG_ERR("Failed to initialize a thread context on any requested core");
+		virtiofs_destroy(ctx);
+		return NULL;
 	}
 
 	return ctx;
@@ -246,10 +284,13 @@ doca_error_t virtiofs_start(struct virtiofs_resources *ctx)
 doca_error_t virtiofs_device_create_static(struct virtiofs_resources *ctx,
 					   char *nfs_server,
 					   char *nfs_export,
-					   uint16_t num_request_queues)
+					   uint16_t num_request_queues,
+					   bool indirect_enabled,
+					   char *emu_manager)
 {
 	doca_error_t err;
 	struct virtiofs_function *func;
+	struct virtiofs_manager *manager;
 
 	err = virtiofs_nfs_fsdev_create(ctx, "nfs_fsdev", nfs_server, nfs_export);
 	if (err != DOCA_SUCCESS) {
@@ -259,19 +300,26 @@ doca_error_t virtiofs_device_create_static(struct virtiofs_resources *ctx,
 
 	static struct virtiofs_device_config config = {
 		.name = "vfs_controller0",
-		.queue_size = 256,
+		.queue_size = 512,
 		.tag = "docavirtiofs",
 	};
 
-	config.num_request_queues = num_request_queues,
+	config.indirect_enabled = indirect_enabled;
+	config.num_request_queues = num_request_queues;
 
-	err = virtiofs_function_get_available(ctx, &func);
+	manager = virtiofs_manager_get_by_name(ctx, emu_manager);
+	if (manager == NULL) {
+		DOCA_LOG_ERR("Failed to find manager %s", emu_manager);
+		return DOCA_ERROR_NOT_FOUND;
+	}
+
+	err = virtiofs_function_get_available(manager, &func);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get available function");
 		return err;
 	}
 
-	err = virtiofs_device_create(ctx, &config, "mlx5_0", func->vuid, "nfs_fsdev");
+	err = virtiofs_device_create(ctx, &config, emu_manager, func->vuid, "nfs_fsdev");
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create vfs device");
 		return err;

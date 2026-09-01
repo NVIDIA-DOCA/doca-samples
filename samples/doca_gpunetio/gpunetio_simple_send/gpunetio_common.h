@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -110,12 +110,12 @@ struct cpu_proxy_args {
  */
 doca_error_t gpunetio_simple_send(struct sample_simple_send_cfg *sample_cfg);
 
-#if __cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
 /*
- * Launch a CUDA kernel to send packets with wait on time feature.
+ * Launch a CUDA kernel to send packets, optionally in shared QP mode.
  *
  * @stream [in]: CUDA stream to launch the kernel
  * @txq [in]: DOCA Eth Tx queue to use to send packets
@@ -130,7 +130,7 @@ doca_error_t kernel_send_packets(cudaStream_t stream,
 				 bool shared_qp,
 				 enum doca_gpu_dev_eth_exec_scope exec_scope);
 
-#if __cplusplus
+#ifdef __cplusplus
 }
 #endif
 #endif

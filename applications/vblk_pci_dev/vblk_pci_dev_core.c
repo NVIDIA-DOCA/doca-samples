@@ -88,13 +88,15 @@ DOCA_LOG_REGISTER(VBLK_PCI_DEV_CORE);
  * |    |      signal_io_exited()                                                  |
  * |    |                                                                          |
  * |    +--> TLP context thread:                                                   |
- * |           vblk_pci_stop()                                                     |
- * |             - stop PCI event channel (doca_ctx_stop)                          |
- * |           signal_pci_stopped()                                                |
+ * |    |      vblk_pci_stop()                                                     |
+ * |    |        - stop PCI event channel (doca_ctx_stop)                          |
+ * |    |      signal_pci_stopped()                                                |
  * |                                                                               |
  * |  Offload engine thread (waits for above):                                     |
  * |    wait_all_io_exited()                                                       |
  * |    wait_pci_stopped()                                                         |
+ * |    oe_teardown_all_vf_dp() [SR-IOV only]                                      |
+ * |      - drain/destroy live VF datapaths before PF cleanup destroys VF TLP devs  |
  * |    vblk_ctrl_cleanup()                                                        |
  * |      - reset IO contexts (vblk_ctrl_io_ctxs_reset)                            |
  * |      - disable offload engine (virtio_offload_engine_disable)                 |
@@ -447,6 +449,7 @@ static doca_error_t vblk_io_ctx_oe_threads_create(struct vblk_pci_dev_resources 
 		io_cfgs[ctx_id].num_queues = config->num_queues;
 		io_cfgs[ctx_id].seg_max = config->seg_max ? config->seg_max : 1;
 		io_cfgs[ctx_id].indirect_enabled = config->indirect_enabled;
+		io_cfgs[ctx_id].sriov_enabled = config->sriov_enabled;
 		io_cfgs[ctx_id].hotplug_mode = config->hotplug_mode;
 		io_cfgs[ctx_id].stats_ios_period = config->stats_ios_period;
 		io_cfgs[ctx_id].shared_mpool = res->shared_mpools[ctx_id];
@@ -677,6 +680,14 @@ doca_error_t vblk_pci_dev_run(struct vblk_pci_dev_config *config)
 	struct vblk_io_ctx_cfg *io_cfgs = NULL;
 	uint8_t num_io_ctx = 0;
 	doca_error_t err;
+	struct vblk_pci_init_cfg pci_cfg = {
+		.num_ep = config->num_ep,
+		.hotplug_mode = config->hotplug_mode,
+		.sriov_enabled = config->sriov_enabled,
+		.sriov_total_vfs = config->sriov_total_vfs,
+		.sriov_num_vf_msix = config->sriov_num_vf_msix,
+		.sriov_num_vf_db = config->sriov_num_vf_db,
+	};
 
 	DOCA_LOG_INFO("Initializing VBlk device (%u EPs, %s mode)...",
 		      config->num_ep,
@@ -718,6 +729,7 @@ doca_error_t vblk_pci_dev_run(struct vblk_pci_dev_config *config)
 		DOCA_LOG_ERR("Failed to initialize VBLK device: %s", doca_error_get_descr(err));
 		goto cleanup;
 	}
+	pci_cfg.dev = s_resources.doca_dev;
 
 	/* Per-thread progress contexts */
 	err = progress_contexts_init(&s_resources);
@@ -732,7 +744,7 @@ doca_error_t vblk_pci_dev_run(struct vblk_pci_dev_config *config)
 		goto cleanup_pe;
 	}
 
-	err = vblk_pci_init(s_resources.doca_dev, config->num_ep, config->hotplug_mode);
+	err = vblk_pci_init(&pci_cfg);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to initialize PCI: %s", doca_error_get_descr(err));
 		goto cleanup_mpool;

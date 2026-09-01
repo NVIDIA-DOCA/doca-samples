@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -159,7 +159,7 @@ static doca_error_t se_communicate_async(const struct sync_event_config *se_cfg,
 	DOCA_LOG_INFO("Waiting for sync event to be signaled from remote side");
 	result = sync_event_async_task_submit(se_rt_objs, doca_sync_event_task_wait_eq_as_doca_task(wait_eq_task));
 	if (result != DOCA_SUCCESS)
-		return result;
+		goto free_wait_eq_task;
 
 	se_value++;
 
@@ -171,7 +171,7 @@ static doca_error_t se_communicate_async(const struct sync_event_config *se_cfg,
 								    user_data,
 								    &notify_add_task);
 		if (result != DOCA_SUCCESS)
-			return result;
+			goto free_wait_eq_task;
 
 		result = sync_event_async_task_submit(se_rt_objs,
 						      doca_sync_event_task_notify_add_as_doca_task(notify_add_task));
@@ -179,14 +179,14 @@ static doca_error_t se_communicate_async(const struct sync_event_config *se_cfg,
 		doca_task_free(doca_sync_event_task_notify_add_as_doca_task(notify_add_task));
 
 		if (result != DOCA_SUCCESS)
-			return result;
+			goto free_wait_eq_task;
 	} else {
 		result = doca_sync_event_task_notify_set_alloc_init(se_rt_objs->se,
 								    se_value,
 								    user_data,
 								    &notify_set_task);
 		if (result != DOCA_SUCCESS)
-			return result;
+			goto free_wait_eq_task;
 
 		result = sync_event_async_task_submit(se_rt_objs,
 						      doca_sync_event_task_notify_set_as_doca_task(notify_set_task));
@@ -194,14 +194,17 @@ static doca_error_t se_communicate_async(const struct sync_event_config *se_cfg,
 		doca_task_free(doca_sync_event_task_notify_set_as_doca_task(notify_set_task));
 
 		if (result != DOCA_SUCCESS)
-			return result;
+			goto free_wait_eq_task;
 	}
 
 	DOCA_LOG_INFO("Done");
 
+	result = DOCA_SUCCESS;
+
+free_wait_eq_task:
 	doca_task_free(doca_sync_event_task_wait_eq_as_doca_task(wait_eq_task));
 
-	return DOCA_SUCCESS;
+	return result;
 }
 
 /*

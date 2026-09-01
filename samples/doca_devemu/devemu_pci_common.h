@@ -40,11 +40,6 @@
 #define SLEEP_IN_MICROS (10) /* Sample the task every 10 microseconds */
 #define SLEEP_IN_NANOS (SLEEP_IN_MICROS * 1000)
 
-/* Function to check if a given device supports PCI emulation */
-typedef doca_error_t (*emulation_supported_cb_t)(const struct doca_devinfo *,
-						 const struct doca_devemu_pci_type *pci_type,
-						 uint8_t *is_supported);
-
 struct devemu_resources {
 	struct doca_pe *pe;					/**< Progress engine to retrieve events */
 	struct doca_dev *dev;					/**< Device that manage the emulated device */
@@ -105,19 +100,25 @@ doca_error_t parse_vuid(const char *vuid, char *parsed_vuid);
 doca_error_t register_vuid_param(const char *description, doca_argp_param_cb_t vuid_callback);
 
 /*
- * Open a DOCA device according to a given PCI address
- * Picks device that has given PCI address and supports hotplug of the PCI type
+ * Open a DOCA device according to a given PCI address, that can be hotplugged for a generic PCI type
  *
  * @pci_address [in]: PCI address
- * @pci_type [in]: The emulated PCI type
- * @has_support [in]: Method to check if device hsupports emulation
  * @dev [out]: pointer to doca_dev struct, NULL if not found
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t find_supported_device(const char *pci_address,
-				   const struct doca_devemu_pci_type *pci_type,
-				   emulation_supported_cb_t has_support,
-				   struct doca_dev **dev);
+doca_error_t find_generic_hotpluggable_device(const char *pci_address, struct doca_dev **dev);
+
+/*
+ * Open a DOCA device according to a given PCI address, that can be used as an emulation manager for a given PCI type
+ *
+ * @pci_address [in]: PCI address
+ * @pci_type [in]: The PCI type for which the device emulation management capability will be checked
+ * @dev [out]: pointer to doca_dev struct, NULL if not found
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t find_emulation_manager_device(const char *pci_address,
+					   const struct doca_devemu_pci_type *pci_type,
+					   struct doca_dev **dev);
 
 /*
  * Open a DOCA device according to a given PCI address, that can be used as an emulation manager for generic PCI type

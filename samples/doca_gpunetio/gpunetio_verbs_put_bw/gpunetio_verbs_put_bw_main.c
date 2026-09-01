@@ -30,7 +30,7 @@
 
 #include "verbs_common.h"
 
-DOCA_LOG_REGISTER(VERBS_WRITE_BW::MAIN);
+DOCA_LOG_REGISTER(VERBS_PUT_BW::MAIN);
 
 /*
  * Register sample argp params
@@ -128,7 +128,7 @@ static doca_error_t register_verbs_params(void)
 	}
 	doca_argp_param_set_short_name(gid_index_param, "gid");
 	doca_argp_param_set_long_name(gid_index_param, "gid-index");
-	doca_argp_param_set_description(gid_index_param, "GID index for DOCA RDMA (optional)");
+	doca_argp_param_set_description(gid_index_param, "GID index for DOCA Verbs (optional)");
 	doca_argp_param_set_callback(gid_index_param, gid_index_callback);
 	doca_argp_param_set_type(gid_index_param, DOCA_ARGP_TYPE_INT);
 	status = doca_argp_register_param(gid_index_param);

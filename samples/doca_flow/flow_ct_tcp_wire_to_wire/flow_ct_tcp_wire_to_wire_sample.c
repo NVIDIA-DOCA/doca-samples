@@ -459,8 +459,13 @@ doca_error_t flow_ct_tcp_wire_to_wire(uint16_t nb_queues, struct flow_switch_ctx
 	struct doca_flow_ct_meta mark_mask = {.mark = MARK_MASK};
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ctrl_status, ct_status;
-	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, ct_actions_mem_size = 131072, nb_ipv4_sessions = 1024,
-			   nb_ipv6_sessions = 0; /* On BF2 should always be 0 */
+	struct ct_port_cfg ct_port_cfg = {.ct_flags = DOCA_FLOW_CT_FLAG_NO_AGING | DOCA_FLOW_CT_FLAG_ORIGIN_WIRE |
+						      DOCA_FLOW_CT_FLAG_REPLY_WIRE,
+					  .ct_actions_mem_size = 131072,
+					  .zone_match_mask = {&o_zone_mask, &r_zone_mask},
+					  .modify_mask = {&mark_mask, &mark_mask}};
+	uint32_t nb_arm_queues = 1, nb_ctrl_queues = 1, nb_ipv4_sessions = 1024, nb_ipv6_sessions = 0; /* On BF2 should
+													  always be 0 */
 	uint16_t ct_queue = nb_queues;
 	doca_error_t result;
 
@@ -473,7 +478,8 @@ doca_error_t flow_ct_tcp_wire_to_wire(uint16_t nb_queues, struct flow_switch_ctx
 	resource.nr_ct_counters = nb_ipv4_sessions + nb_ipv6_sessions;
 	resource.nr_rss = 1;
 
-	result = init_doca_flow(nb_queues, "switch,hws,expert", &resource, nr_shared_resources);
+	struct ct_init_cfg ct_cfg = {.ct_queues = nb_arm_queues, .ct_ctrl_queues = nb_ctrl_queues};
+	result = init_doca_flow_with_ct(nb_queues, "switch,hws,expert", &resource, nr_shared_resources, &ct_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -483,33 +489,16 @@ doca_error_t flow_ct_tcp_wire_to_wire(uint16_t nb_queues, struct flow_switch_ctx
 	memset(&o_zone_mask, 0, sizeof(o_zone_mask));
 	memset(&r_zone_mask, 0, sizeof(r_zone_mask));
 
-	ct_flags = DOCA_FLOW_CT_FLAG_NO_AGING | DOCA_FLOW_CT_FLAG_ORIGIN_WIRE | DOCA_FLOW_CT_FLAG_REPLY_WIRE;
-	result = init_doca_flow_ct(ct_flags,
-				   nb_arm_queues,
-				   nb_ctrl_queues,
-				   ct_actions_mem_size,
-				   NULL,
-				   false,
-				   &o_zone_mask,
-				   &mark_mask,
-				   false,
-				   &r_zone_mask,
-				   &mark_mask);
-	if (result != DOCA_SUCCESS) {
-		doca_flow_destroy();
-		return result;
-	}
-
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_entries));
-	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
-					     ctx->devs_ctx.nb_devs,
-					     ports,
-					     nb_ports,
-					     actions_mem_size,
-					     &resource);
+	result = init_doca_flow_switch_ports_with_ct(ctx->devs_ctx.devs_manager,
+						     ctx->devs_ctx.nb_devs,
+						     ports,
+						     nb_ports,
+						     actions_mem_size,
+						     &resource,
+						     &ct_port_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_ct_destroy();
 		doca_flow_destroy();
 		return result;
 	}

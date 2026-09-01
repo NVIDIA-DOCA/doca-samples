@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -51,7 +51,6 @@
 #define MAX_PCI_ADDRESS_LEN 32U
 #define CUDA_BLOCK_THREADS 32
 #define PACKET_SIZE 1024
-#define ETHER_ADDR_LEN 6
 #define MAX_RQ_DESCR_NUM 8192
 #define MAX_PKT_NUM 16384
 #define MAX_PKT_SIZE 2048
@@ -64,7 +63,7 @@ struct sample_simple_recv_cfg {
 	char gpu_pcie_addr[MAX_PCI_ADDRESS_LEN]; /* GPU PCIe address */
 	char nic_pcie_addr[MAX_PCI_ADDRESS_LEN]; /* Network card PCIe address */
 	int cuda_id;				 /* CUDA ID of the device */
-	uint32_t exec_scope;			 /* Define the shared qp exec scope */
+	uint32_t exec_scope;			 /* Execution scope of the receive kernel */
 };
 
 /* receive queues objects */
@@ -92,7 +91,7 @@ struct rxq_queue {
  */
 doca_error_t gpunetio_simple_receive(struct sample_simple_recv_cfg *sample_cfg);
 
-#if __cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -103,7 +102,7 @@ extern "C" {
  * @rxq [in]: DOCA Eth Rx queue to use to receive packets
  * @exec_scope [in]: Exec scope for the GPUNetIO Ethernet recv function
  * @gpu_exit_condition [in]: exit from CUDA kernel
- * @tot_pkts [in]: Total number of received packets
+ * @tot_pkts [out]: Total number of received packets
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t kernel_receive_packets(cudaStream_t stream,
@@ -112,7 +111,7 @@ doca_error_t kernel_receive_packets(cudaStream_t stream,
 				    uint32_t *gpu_exit_condition,
 				    uint64_t *tot_pkts);
 
-#if __cplusplus
+#ifdef __cplusplus
 }
 #endif
 #endif

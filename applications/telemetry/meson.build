@@ -22,58 +22,63 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-# Check if we should skip the compilation of the applications
-if flag_disable_applications_compilation
-	subdir_done()
-endif
-
 # Compilation of Traceback application
-json_c_dep = dependency('json-c', required : false)
+if get_option('enable_telemetry_traceback')
+	json_c_dep = dependency('json-c', required : false)
 
-if json_c_dep.found()
-	executable(DOCA_PREFIX + APP_NAME + '_traceback',
-			   [
-				   'traceback/traceback.cpp',
-				   'traceback/traceback_core.cpp',
-			   ],
-			   override_options : ['cpp_std=c++17'],
-			   c_args : base_c_args,
-			   cpp_args : base_cpp_args,
-			   dependencies : app_dependencies + json_c_dep,
-			   include_directories : app_inc_dirs + include_directories('traceback'),
-	)
+	if json_c_dep.found()
+		executable(DOCA_PREFIX + APP_NAME + '_traceback',
+				   [
+					   'traceback/traceback.cpp',
+					   'traceback/traceback_core.cpp',
+				   ],
+				   override_options : ['cpp_std=c++17'],
+				   c_args : base_c_args,
+				   cpp_args : base_cpp_args,
+				   dependencies : app_dependencies + json_c_dep,
+				   include_directories : app_inc_dirs + include_directories('traceback'),
+				   install : install_apps,
+		)
+	else
+		message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_traceback' + ' - Missing library json-c')
+	endif
 else
-	message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_traceback' + ' - Missing library json-c')
+	message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_traceback')
 endif
 
 # Compilation of OpenTelemetry application
-otel_dep = dependency(
-	'opentelemetry-cpp',
-	method : 'cmake',
-	cmake_module_path : ['/usr/lib/cmake/opentelemetry-cpp'],
-	modules : [
-		'opentelemetry-cpp::api',
-		'opentelemetry-cpp::otlp_http_metric_exporter',
-		'opentelemetry-cpp::http_client_curl',
-	],
-	required : false
-)
-
-curl_dep = dependency('libcurl', required: false)
-
-if not otel_dep.found()
-	message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_opentelemetry' + ' - Missing OpenTelemetry-cpp SDK')
-elif not curl_dep.found()
-	message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_opentelemetry' + ' - Missing Curl support')
-else
-	executable(DOCA_PREFIX + APP_NAME + '_opentelemetry',
-			[
-				'opentelemetry/opentelemetry.cpp',
-				'opentelemetry/opentelemetry_core.cpp',
-			],
-			override_options : ['cpp_std=c++17'],
-			c_args : base_c_args,
-			dependencies : app_dependencies + otel_dep + curl_dep,
-			include_directories: app_inc_dirs + include_directories('opentelemetry'),
+if get_option('enable_telemetry_opentelemetry')
+	otel_dep = dependency(
+		'opentelemetry-cpp',
+		method : 'cmake',
+		cmake_module_path : ['/usr/lib/cmake/opentelemetry-cpp'],
+		modules : [
+			'opentelemetry-cpp::api',
+			'opentelemetry-cpp::otlp_http_metric_exporter',
+			'opentelemetry-cpp::http_client_curl',
+		],
+		required : false
 	)
+
+	curl_dep = dependency('libcurl', required: false)
+
+	if not otel_dep.found()
+		message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_opentelemetry' + ' - Missing OpenTelemetry-cpp SDK')
+	elif not curl_dep.found()
+		message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_opentelemetry' + ' - Missing Curl support')
+	else
+		executable(DOCA_PREFIX + APP_NAME + '_opentelemetry',
+				[
+					'opentelemetry/opentelemetry.cpp',
+					'opentelemetry/opentelemetry_core.cpp',
+				],
+				override_options : ['cpp_std=c++17'],
+				c_args : base_c_args,
+				dependencies : app_dependencies + otel_dep + curl_dep,
+				include_directories: app_inc_dirs + include_directories('opentelemetry'),
+				install : install_apps,
+		)
+	endif
+else
+	message('Skipping compilation of DOCA Application - ' + DOCA_PREFIX + APP_NAME + '_opentelemetry')
 endif

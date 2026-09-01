@@ -27,14 +27,13 @@
 set -e
 
 # This script uses the mpicc (MPI C compiler) to compile the dpa_all_to_all application
-# This script takes 5 arguments:
-# arg1: The DOCA directory path
+# This script takes 3 arguments:
+# arg1: The project's source path
 # arg2: The project's build path
-# arg3: DOCA version
-# arg4: Address sanitizer option
-# arg5: Buildtype
-# arg6: Is it an amalgamation build mode (true) or fine-grained build mode (false)
-
+# arg3: Address sanitizer option
+# arg4: Buildtype
+# arg5: DPACC MCPU flag
+# arg6: DOCA SDK libraries directory
 ####################
 ## Configurations ##
 ####################
@@ -43,45 +42,27 @@ APP_NAME="time_sync"
 MPI_COMPILER="mpicc"
 
 # DOCA Configurations
-DOCA_DIR=$1
+DOCA_DIR="/opt/mellanox/doca"
+TIME_SYNC_DPU_DIR=$1
+TIME_SYNC_COMMON_DIR="${TIME_SYNC_DPU_DIR}/../common"
 DOCA_BUILD_DIR=$2
-DOCA_VERSION=$3
-ADDRESS_SANITIZER_OPTION=$4
-BUILD_TYPE=$5
-AMALGAMATION_BUILD_MODE=$6
-DPACC_MCPU_FLAG=$7
-DOCA_INCLUDE="/opt/mellanox/doca/include"
-TIME_SYNC_DPU_DIR="${DOCA_DIR}/applications/$APP_NAME/dpu"
-TIME_SYNC_COMMON_DIR="${DOCA_DIR}/applications/$APP_NAME/common"
-DOCA_LIBS_DIR="${DOCA_DIR}/libs"
-DPA_DIR="${DOCA_LIBS_DIR}/doca_dpa"
-DPA_SRC_DIR="${DPA_DIR}/src"
-DOCA_COMMON_DIR="${DOCA_LIBS_DIR}/doca_common/"
-DOCA_LOG_DIR="${DOCA_LIBS_DIR}/doca_common/log/"
-DOCA_ARGP_DIR="${DOCA_LIBS_DIR}/doca_argp/include/public/"
-DOCA_COMCH_DIR="${DOCA_LIBS_DIR}/doca_comch/include/public/"
-DOCA_ERR_INC="${DOCA_LIBS_DIR}/doca_common/core/include/public/"
-DOCA_VER_INC="${DOCA_LIBS_DIR}/doca_common/version"
-DOCA_DPA_DEV_BUILD_DIR="${DOCA_BUILD_DIR}/libs/doca_dpa/src/device/build/"
+ADDRESS_SANITIZER_OPTION=$3
+BUILD_TYPE=$4
+DPACC_MCPU_FLAG=$5
+DOCA_LIB_DIR=$6
+DOCA_INCLUDE="${DOCA_DIR}/include"
 TIME_SYNC_DPU_SRC_FILES="${TIME_SYNC_DPU_DIR}/${APP_NAME}_dpu.c ${TIME_SYNC_DPU_DIR}/${APP_NAME}_dpu_core.c"
-TIME_SYNC_COMMON_SRC_FILES="${TIME_SYNC_COMMON_DIR}/${APP_NAME}_common.c"
 TIME_SYNC_DEVICE_SRC_DIR="${TIME_SYNC_DPU_DIR}/device"
 TIME_SYNC_DEVICE_SRC_FILES="${TIME_SYNC_DEVICE_SRC_DIR}/${APP_NAME}_dev.c"
+TIME_SYNC_COMMON_SRC_FILES="${TIME_SYNC_COMMON_DIR}/${APP_NAME}_common.c"
 TIME_SYNC_DEVICE_ATTRIBUTES="${TIME_SYNC_DEVICE_SRC_DIR}/dpa_${APP_NAME}_attributes.yaml"
-TIME_SYNC_DPU_APP_EXE="${DOCA_BUILD_DIR}/applications/${APP_NAME}/doca_${APP_NAME}_dpu"
+TIME_SYNC_DPU_APP_EXE="${DOCA_BUILD_DIR}/${APP_NAME}/doca_${APP_NAME}_dpu"
 DEVICE_CODE_BUILD_SCRIPT="${TIME_SYNC_DPU_DIR}/build_device_code.sh"
-DEVICE_CODE_LIB="${DOCA_BUILD_DIR}/applications/${APP_NAME}/dpu/device/build_dpacc/dpa_${APP_NAME}_program.a"
+DEVICE_CODE_LIB="${DOCA_BUILD_DIR}/${APP_NAME}/dpu/device/build_dpacc/dpa_${APP_NAME}_program.a "
 
-# Finalize includes and flags
-if [ ${AMALGAMATION_BUILD_MODE} = "true" ]; then
-	DOCA_INC_LIST="-I$DOCA_COMMON_DIR -I${DPA_DIR}/include/public/ -I${DOCA_BUILD_DIR}/configs/ -I${DOCA_VER_INC} \
-		-I$DOCA_ERR_INC -I$DOCA_LOG_DIR -I$DOCA_ARGP_DIR -I$DOCA_COMCH_DIR -I$TIME_SYNC_COMMON_DIR"
-else
-	DOCA_INC_LIST="-I${DOCA_INCLUDE}"
-fi
-
+# Finalize flags
 CC_FLAGS="-Werror -Wall -Wextra -Wno-sign-compare -Wno-unused-parameter"
-LINK_FLAGS="-pthread -lm -lflexio -lstdc++ -libverbs -lmlx5 -lbsd"
+LINK_FLAGS="-pthread -lm -lflexio -lstdc++ -libverbs -lmlx5"
 
 # If address sanitizer option is not none then add it to the link flags
 if [ "$ADDRESS_SANITIZER_OPTION" != "none" ]; then
@@ -93,18 +74,8 @@ if [ "$BUILD_TYPE" != "none" ]; then
 	LINK_FLAGS="${LINK_FLAGS} -g"
 fi
 
-# DOCA Link Flags
-if [ ${AMALGAMATION_BUILD_MODE} = "true" ]; then
-	DOCA_LINK_FLAGS="-Wl,-rpath,$DOCA_BUILD_DIR/libs -Wl,--as-needed -Wl,-rpath-link,${DOCA_BUILD_DIR}/libs \
-		-Wl,--start-group ${DOCA_BUILD_DIR}/libs/libdoca_common.so.${DOCA_VERSION} \
-		${DOCA_BUILD_DIR}/libs/libdoca_argp.so.${DOCA_VERSION} ${DOCA_BUILD_DIR}/libs/libdoca_dpa.so.${DOCA_VERSION} \
-		${DOCA_BUILD_DIR}/libs/libdoca_comch.so.${DOCA_VERSION} \
-		-Wl,--end-group"
-else
-	DOCA_LINK_FLAGS=`pkg-config --libs doca-common doca-argp doca-dpa`
-fi
-
 DOCA_FLAGS="-DDOCA_ALLOW_EXPERIMENTAL_API"
+DOCA_LINK_FLAGS=`pkg-config --libs doca-common doca-argp doca-dpa doca-comch`
 
 # FlexIO Configurations
 MLNX_INSTALL_PATH="/opt/mellanox/"
@@ -115,8 +86,8 @@ FLEXIO_LIBS_DIR="${MLNX_INSTALL_PATH}/flexio/lib/"
 ##################
 
 # Compile device code
-/bin/bash $DEVICE_CODE_BUILD_SCRIPT $DOCA_DIR $DOCA_BUILD_DIR $TIME_SYNC_DEVICE_SRC_FILES $AMALGAMATION_BUILD_MODE $DPACC_MCPU_FLAG $TIME_SYNC_DEVICE_ATTRIBUTES
+/bin/bash $DEVICE_CODE_BUILD_SCRIPT $DOCA_BUILD_DIR $TIME_SYNC_DEVICE_SRC_FILES $DPACC_MCPU_FLAG $DOCA_LIB_DIR $TIME_SYNC_DEVICE_ATTRIBUTES
 
 # Compile application using MPI compiler
 $MPI_COMPILER $TIME_SYNC_DPU_SRC_FILES $TIME_SYNC_COMMON_SRC_FILES -o $TIME_SYNC_DPU_APP_EXE $DEVICE_CODE_LIB -I$TIME_SYNC_DPU_DIR \
-	$DOCA_INC_LIST -L$FLEXIO_LIBS_DIR $CC_FLAGS $DOCA_FLAGS $DOCA_LINK_FLAGS $LINK_FLAGS
+	-I$TIME_SYNC_COMMON_DIR -I$DOCA_INCLUDE -L$FLEXIO_LIBS_DIR $CC_FLAGS $DOCA_FLAGS $DOCA_LINK_FLAGS $LINK_FLAGS

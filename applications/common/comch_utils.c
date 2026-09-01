@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -175,7 +175,7 @@ static void server_disconnection_cb(struct doca_comch_event_connection_status_ch
 
 	comch_cfg = (struct comch_cfg *)ctx_user_data.ptr;
 	if (comch_cfg == NULL) {
-		DOCA_LOG_ERR("Failed to get configuration from server context: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to get configuration from server context");
 		return;
 	}
 
@@ -338,7 +338,7 @@ doca_error_t comch_utils_fast_path_init(const char *server_name,
 	}
 #else
 	if (client_recv_event_cb == NULL) {
-		DOCA_LOG_ERR("Init: server recv event callback is NULL");
+		DOCA_LOG_ERR("Init: client recv event callback is NULL");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 #endif
@@ -596,6 +596,11 @@ doca_error_t comch_utils_destroy(struct comch_cfg *comch_cfg)
 		.tv_nsec = SLEEP_IN_NANOS,
 	};
 	doca_error_t result;
+
+	if (comch_cfg == NULL) {
+		DOCA_LOG_ERR("Destroy: configuration object is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
 	if (comch_cfg->is_server) {
 		/* Wait until the client has closed the connection to end gracefully */

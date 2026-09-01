@@ -59,6 +59,12 @@ DOCA_LOG_REGISTER(FLOW_CUSTOM_HEADER);
 #define PIPE_TLV 3
 #define PIPE_MAX 4
 
+#define NB_ROOT_ENTRIES 3 /* root entries: one route each to the data, tcp and tlv pipes */
+#define NB_DATA_ENTRIES 1
+#define NB_TCP_ENTRIES 1
+#define NB_TLV_ENTRIES 16
+#define NB_TOTAL_ENTRIES (NB_ROOT_ENTRIES + NB_DATA_ENTRIES + NB_TCP_ENTRIES + NB_TLV_ENTRIES)
+
 #define UDP_PORT_DATA 4500
 #define UDP_PORT_TCP 4501
 #define UDP_PORT_TLV 4502
@@ -1365,7 +1371,7 @@ static doca_error_t add_tlv_pipe_entry(struct doca_flow_pipe *pipe, struct entri
 	match->parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
 
 	/* install multiple flows with different match and meta values */
-	for (v = 0; v < 16; v++) {
+	for (v = 0; v < NB_TLV_ENTRIES; v++) {
 		app_match.tlv_option[0] = DOCA_HTOBE32(0x12345670 + v);
 		actions->meta.pkt_meta = DOCA_HTOBE32(0x30000 + v);
 
@@ -1394,7 +1400,7 @@ doca_error_t flow_custom_header(int nb_queues)
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *pipe[PIPE_MAX] = {NULL};
 	struct entries_status status;
-	int num_of_entries = 6;
+	int num_of_entries = NB_TOTAL_ENTRIES;
 	doca_error_t result;
 	int port_id;
 
@@ -1468,7 +1474,7 @@ doca_error_t flow_custom_header(int nb_queues)
 			goto stop;
 		}
 
-		result = doca_flow_entries_process(ports[port_id], 0, DEFAULT_TIMEOUT_US, num_of_entries);
+		result = doca_flow_pipe_queue_drain(ports[port_id], 0, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			goto stop;

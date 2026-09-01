@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -130,7 +130,7 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 	doca_error_t status;
 	char *tmp_cpu;
 	int dmabuf_fd;
-	size_t size = DMA_MEMCPY_SIZE;
+	size_t size = (get_host_page_size() < DMA_MEMCPY_SIZE ? DMA_MEMCPY_SIZE : get_host_page_size());
 
 	ALIGN_SIZE(size, get_host_page_size());
 
@@ -383,11 +383,11 @@ static doca_error_t init_sample_mem_objs(struct gpu_dma_sample_objects *state)
 		}
 	} else {
 		/* Get a DOCA buffer from src mmap (CPU) */
-		doca_buf_inventory_buf_get_by_data(state->core_objs.buf_inv,
-						   state->core_objs.src_mmap,
-						   state->src_buffer,
-						   size,
-						   &state->src_doca_buf);
+		status = doca_buf_inventory_buf_get_by_data(state->core_objs.buf_inv,
+							    state->core_objs.src_mmap,
+							    state->src_buffer,
+							    size,
+							    &state->src_doca_buf);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR(
 				"Failed to initialize memory objects: Unable to acquire DOCA buffer representing src buffer: %s",

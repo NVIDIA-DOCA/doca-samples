@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -38,7 +38,10 @@
 #define MAX_ARG_SIZE (MAX_USER_ARG_SIZE + 1) /* Maximum size of input argument */
 #define MAX_USER_TXT_SIZE 4096		     /* Maximum size of user input text */
 #define MAX_TXT_SIZE (MAX_USER_TXT_SIZE + 1) /* Maximum size of input text */
-#define NUM_DMA_TASKS (1)		     /* DMA tasks number */
+#define DEFAULT_NUM_TASKS (1)		     /* DMA tasks number */
+#define MAX_NUM_TASKS (128)		     /* Maximum number of DMA tasks */
+#define MAX_NUM_RANGE_PROFILING_DISPLAYED_UPPER_BOUND \
+	(128) /* Maximum number of NVTX ranges that can be displayed in parallel */
 
 /* Configuration struct */
 struct dma_config {
@@ -47,7 +50,11 @@ struct dma_config {
 	char export_desc_path[MAX_ARG_SIZE];	      /* Path to save/read the exported descriptor file */
 	char buf_info_path[MAX_ARG_SIZE];	      /* Path to save/read the buffer information file */
 	int num_src_buf;			      /* Number of linked_list doca_buf element for the source buffer */
-	int num_dst_buf; /* Number of linked_list doca_buf element for the destination buffer */
+	int num_dst_buf;		       /* Number of linked_list doca_buf element for the destination buffer */
+	int num_tasks;			       /* Number of tasks to submit, must be >=1 and <= MAX_NUM_TASKS */
+	int max_num_range_profiling_displayed; /* Set maximum number of NVTX ranges that can be displayed in parallel,
+						  default value == 0, indicate not to use NVTX trace collecting in
+						  default */
 };
 
 struct dma_resources {
@@ -62,25 +69,32 @@ struct dma_resources {
  *
  * @is_remote [in]: Indication for handling configuration parameters which are
  * needed when there is a remote side
+ * @is_local_copy_sample [in]: Indication for handling configuration parameters which are
+ * needed when the sample code is dma_local_copy
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t register_dma_params(bool is_remote);
+doca_error_t register_dma_params(bool is_remote, bool is_local_copy_sample);
 
 /*
  * Allocate DOCA DMA resources
  *
  * @pcie_addr [in]: PCIe address of device to open
- * @num_buf [in]: Number of doca_buf to allocate
+ * @num_src_buf_per_task [in]: Number of source doca_buf to allocate per task
+ * @num_dst_buf_per_task [in]: Number of destination doca_buf to allocate per task
+ * @num_tasks [in]: Number of tasks to submit
  * @resources [out]: Structure containing all DMA resources
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t allocate_dma_resources(const char *pcie_addr, int num_buf, struct dma_resources *resources);
+doca_error_t allocate_dma_resources(const char *pcie_addr,
+				    uint32_t num_src_buf_per_task,
+				    uint32_t num_dst_buf_per_task,
+				    uint32_t num_tasks,
+				    struct dma_resources *resources);
 
 /*
  * Destroy DOCA DMA resources
  *
- * @resources [out]: Structure containing all DMA resources
- * @dma_ctx [in]: DOCA DMA context
+ * @resources [in]: Structure containing all DMA resources
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t destroy_dma_resources(struct dma_resources *resources);

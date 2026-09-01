@@ -49,7 +49,6 @@ __global__ void client(struct doca_gpu_dev_verbs_qp *qp,
 {
 	doca_gpu_dev_verbs_ticket_t out_ticket;
 	uint32_t tidx = threadIdx.x + (blockIdx.x * blockDim.x);
-	uint32_t lane_idx = doca_gpu_dev_verbs_get_lane_id();
 
 	for (uint32_t iter_idx = blockIdx.x * blockDim.x + threadIdx.x; iter_idx < num_iters; iter_idx += (blockDim.x * gridDim.x)) {
 		// Wait for RDMA Write from server, only 1 thread per block
@@ -94,11 +93,10 @@ __global__ void server(struct doca_gpu_dev_verbs_qp *qp,
 				uint8_t recv_inline)
 {
 	doca_gpu_dev_verbs_ticket_t out_ticket;
-	uint32_t lane_idx = doca_gpu_dev_verbs_get_lane_id();
 	uint32_t tidx = threadIdx.x + (blockIdx.x * blockDim.x);
 	uint64_t wqe_idx;
 	struct doca_gpu_dev_verbs_wqe *wqe_ptr;
-	struct mlx5_cqe64 *cqe64;
+	struct doca_gpu_dev_verbs_cqe64 *cqe64;
 	uint8_t *inl_data;
 
 	for (uint32_t iter_idx = tidx; iter_idx < num_iters; iter_idx += (blockDim.x * gridDim.x)) {
@@ -217,7 +215,7 @@ doca_error_t gpunetio_verbs_two_sided_bw(cudaStream_t stream,
 	/* Check no previous CUDA errors */
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 
@@ -242,6 +240,10 @@ doca_error_t gpunetio_verbs_two_sided_bw(cudaStream_t stream,
 									   src_buf_mkey,
 									   src_flag,
 									   src_flag_mkey);
+		else {
+			DOCA_LOG_ERR("Invalid exec scope %d, must be thread or warp", scope);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
 	} else {
 		if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD)
 			server<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>
@@ -273,11 +275,15 @@ doca_error_t gpunetio_verbs_two_sided_bw(cudaStream_t stream,
 									   dump_flag,
 									   dump_flag_mkey,
 									recv_inline);
+		else {
+			DOCA_LOG_ERR("Invalid exec scope %d, must be thread or warp", scope);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
 	}
 
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 

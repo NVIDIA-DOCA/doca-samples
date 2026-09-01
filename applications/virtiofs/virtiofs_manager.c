@@ -182,9 +182,7 @@ static struct virtiofs_manager *virtiofs_manager_create(struct doca_devinfo *dev
 		goto destroy_dev;
 	}
 
-	result = doca_devemu_pci_cap_type_is_hotplug_supported(devinfo,
-							       doca_devemu_vfs_type_as_pci_type(manager->vfs_type),
-							       &manager->hotplug_supported);
+	result = doca_devemu_vfs_cap_is_default_vfs_type_hotplug_supported(devinfo, &manager->hotplug_supported);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to check hotplug support, ret: %s", doca_error_get_name(result));
 		goto destroy_dev;
@@ -292,19 +290,15 @@ struct virtiofs_manager *virtiofs_manager_get_by_name(struct virtiofs_resources 
 	return NULL;
 }
 
-doca_error_t virtiofs_function_get_available(struct virtiofs_resources *ctx, struct virtiofs_function **func_out)
+doca_error_t virtiofs_function_get_available(struct virtiofs_manager *manager, struct virtiofs_function **func_out)
 {
-	struct virtiofs_manager *manager;
 	struct virtiofs_function *func;
 
-	SLIST_FOREACH(manager, &ctx->managers, entry)
+	STAILQ_FOREACH(func, &manager->funcs, entry)
 	{
-		STAILQ_FOREACH(func, &manager->funcs, entry)
-		{
-			if (func->is_hotplugged == false) {
-				*func_out = func;
-				return DOCA_SUCCESS;
-			}
+		if (func->is_hotplugged == false) {
+			*func_out = func;
+			return DOCA_SUCCESS;
 		}
 	}
 

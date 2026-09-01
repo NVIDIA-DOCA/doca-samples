@@ -109,4 +109,4 @@ void vblk_mpool_set_buf_put(struct doca_buf *buf);
  */
 void vblk_mpool_set_destroy(struct vblk_mpool_set *set);
 
-#endif /* VBLK_MPOOL_H */
+#endif /* VBLK_MPOOL_LU_H */

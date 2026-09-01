@@ -40,24 +40,18 @@
 #define SPDK_APP_DEBUG
 
 /* Function to check if a given device supports PCI emulation */
-typedef doca_error_t (*emulation_supported_cb_t)(const struct doca_devinfo *,
-						 const struct doca_devemu_pci_type *pci_type,
-						 uint8_t *is_supported);
+typedef doca_error_t (*emulation_supported_cb_t)(const struct doca_devinfo *, uint8_t *is_supported);
 
 /*
  * Open a DOCA device according to a given device name
  * Picks a device that has given name and supports hotplug of the PCI type
  *
  * @dev_name [in]: device name
- * @pci_type [in]: The emulated PCI type
- * @has_support [in]: Method to check if device hsupports emulation
+ * @has_support [in]: Method to check if device supports hotplug
  * @dev [out]: pointer to doca_dev struct, NULL if not found
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t find_supported_device(const char *dev_name,
-				   const struct doca_devemu_pci_type *pci_type,
-				   emulation_supported_cb_t has_support,
-				   struct doca_dev **dev);
+doca_error_t find_supported_device(const char *dev_name, emulation_supported_cb_t has_support, struct doca_dev **dev);
 /*
  * Open an emulated PCI device representor according to type and given VUID
  *

@@ -111,7 +111,6 @@ static doca_error_t create_resizable_pipe(struct doca_flow_port *port,
 	doca_error_t result;
 	struct doca_flow_match match;
 	struct doca_flow_monitor monitor;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
 	uint16_t port_id = 0;
 	uint16_t queue_id;
@@ -119,7 +118,6 @@ static doca_error_t create_resizable_pipe(struct doca_flow_port *port,
 	if (is_basic_pipe) {
 		memset(&match, 0, sizeof(match));
 		memset(&monitor, 0, sizeof(monitor));
-		memset(&actions, 0, sizeof(actions));
 		memset(&fwd, 0, sizeof(fwd));
 
 		/* 5 tuple match */
@@ -129,8 +127,6 @@ static doca_error_t create_resizable_pipe(struct doca_flow_port *port,
 		match.outer.ip4.dst_ip = 0xffffffff;
 		match.outer.tcp.l4_port.dst_port = 0xffff;
 		match.outer.tcp.l4_port.src_port = 0xffff;
-
-		actions_arr[0] = &actions;
 	}
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
@@ -186,11 +182,8 @@ static doca_error_t create_resizable_pipe(struct doca_flow_port *port,
 			DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 			goto destroy_pipe_cfg;
 		}
-		result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-			goto destroy_pipe_cfg;
-		}
+
+		/* No pipe actions; no need to set actions in the pipe config. */
 
 		fwd.type = DOCA_FLOW_FWD_PORT;
 		fwd.port_id = port_id ^ 1;
@@ -446,6 +439,7 @@ doca_error_t flow_pipe_resize(uint16_t nb_queues, struct flow_switch_ctx *ctx, b
 				   nr_shared_resources,
 				   check_for_valid_entry,
 				   pipe_process_cb,
+				   NULL,
 				   NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));

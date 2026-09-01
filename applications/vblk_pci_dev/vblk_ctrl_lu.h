@@ -83,8 +83,9 @@ struct vblk_vq_cfg {
 
 struct vblk_lu_device_cfg {
 	uint32_t magic_header;
+	uint16_t seg_max;
 	uint8_t device_status;
-	uint8_t _pad[7];
+	uint8_t indir_desc_enabled;
 	uint64_t driver_features;
 	struct vblk_vq_cfg vq_cfg;
 	uint32_t magic_footer;
@@ -206,6 +207,7 @@ struct vblk_ctrl_attrs {
 	uint16_t num_queues;   /* Number of virtio queues */
 	uint8_t num_io_ctx;    /* Number of IO contexts */
 	bool indirect_enabled; /* True: enable Spec VIRTIO_F_INDIRECT_DESC feature */
+	const char *shm_dir_path;
 };
 
 doca_error_t vblk_init(const struct vblk_app_cfg *app_cfg, struct doca_dev **g_dev);

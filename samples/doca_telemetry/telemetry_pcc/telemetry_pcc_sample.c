@@ -184,6 +184,174 @@ free_counters:
 	return result;
 }
 
+/*
+ * Get and print histogram information from an algo slot
+ *
+ * @pcc [in]: pcc telemetry context
+ * @slot [in]: algo slot to parse
+ * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
+ */
+static doca_error_t get_histo_information(struct doca_telemetry_pcc *pcc, uint8_t slot)
+{
+	uint32_t max_histo_per_slot, max_histo_desc_len, max_histo_edges, max_histo_bins;
+	uint32_t num_histo_ids, num_histo_edges, num_histo_bins, i, j;
+	uint32_t *histo_ids, *histo_edges, *histo_bins;
+	uint16_t histo_mode;
+	uint8_t histo_en;
+	char *histo_desc;
+	doca_error_t result;
+
+	result = doca_telemetry_pcc_get_max_histo_per_slot(pcc, &max_histo_per_slot);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get max histos per slot: Error=%s", doca_error_get_name(result));
+		return result;
+	}
+
+	histo_ids = (uint32_t *)malloc(sizeof(uint32_t) * max_histo_per_slot);
+	if (histo_ids == NULL) {
+		DOCA_LOG_ERR("Failed to allocate array for histo ids");
+		return DOCA_ERROR_NO_MEMORY;
+	}
+
+	result = doca_telemetry_pcc_get_histo_ids_per_slot(pcc, slot, &num_histo_ids, histo_ids);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get histo ids per slot: Error=%s", doca_error_get_name(result));
+		goto free_histo_ids;
+	}
+
+	if (num_histo_ids == 0)
+		goto free_histo_ids;
+
+	result = doca_telemetry_pcc_get_max_histo_desc_len(pcc, &max_histo_desc_len);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get max histo desc length: Error=%s", doca_error_get_name(result));
+		goto free_histo_ids;
+	}
+
+	histo_desc = (char *)malloc(sizeof(char) * max_histo_desc_len);
+	if (histo_desc == NULL) {
+		DOCA_LOG_ERR("Failed to allocate memory for histo description");
+		result = DOCA_ERROR_NO_MEMORY;
+		goto free_histo_ids;
+	}
+
+	result = doca_telemetry_pcc_get_max_histo_edges(pcc, &max_histo_edges);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get max histo edges: Error=%s", doca_error_get_name(result));
+		goto free_histo_desc;
+	}
+
+	histo_edges = (uint32_t *)malloc(sizeof(uint32_t) * max_histo_edges);
+	if (histo_edges == NULL) {
+		DOCA_LOG_ERR("Failed to allocate memory for histo edges");
+		result = DOCA_ERROR_NO_MEMORY;
+		goto free_histo_desc;
+	}
+
+	result = doca_telemetry_pcc_get_max_histo_bins(pcc, &max_histo_bins);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get max histo bins: Error=%s", doca_error_get_name(result));
+		goto free_histo_edges;
+	}
+
+	histo_bins = (uint32_t *)malloc(sizeof(uint32_t) * max_histo_bins);
+	if (histo_bins == NULL) {
+		DOCA_LOG_ERR("Failed to allocate memory for histo bins");
+		result = DOCA_ERROR_NO_MEMORY;
+		goto free_histo_edges;
+	}
+
+	/* Extract information for each histogram id associated with the slot */
+	for (i = 0; i < num_histo_ids; i++) {
+		uint32_t histo_id = histo_ids[i];
+
+		result = doca_telemetry_pcc_get_histo_desc(pcc, histo_id, histo_desc);
+		if (result == DOCA_ERROR_BAD_STATE) {
+			/* Bad state can mean histogram is found but is not initialised so skip it rather than fail */
+			printf("-------------------------------------\n");
+			printf("Histogram ID (%u): Not initialised.\n", histo_id);
+			printf("-------------------------------------\n");
+			result = DOCA_SUCCESS;
+			continue;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get histo description for id (%u): Error=%s",
+				     histo_id,
+				     doca_error_get_name(result));
+			goto free_histo_bins;
+		}
+
+		result = doca_telemetry_pcc_get_histo_edge_info(pcc, histo_id, &num_histo_edges, &histo_mode);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get histo edge info for id (%u): Error=%s",
+				     histo_id,
+				     doca_error_get_name(result));
+			goto free_histo_bins;
+		}
+
+		result = doca_telemetry_pcc_get_histo_enable_status(pcc, histo_id, &histo_en);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get histo enable status for id (%u): Error=%s",
+				     histo_id,
+				     doca_error_get_name(result));
+			goto free_histo_bins;
+		}
+
+		printf("-------------------------------------\n");
+		printf("Histogram found with ID: %u\n", histo_id);
+		printf("Description: %s\n", histo_desc);
+		printf("Number of edges: %u\n", num_histo_edges);
+		printf("Mode: %u\n", histo_mode);
+		printf("Status: %s\n", histo_en ? "ENABLED" : "DISABLED");
+
+		if (histo_en == 0) {
+			printf("-------------------------------------\n");
+			continue;
+		}
+
+		result = doca_telemetry_pcc_get_histo_edges(pcc, histo_id, &num_histo_edges, histo_edges);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get histo edges for id (%u): Error=%s",
+				     histo_id,
+				     doca_error_get_name(result));
+			goto free_histo_bins;
+		}
+
+		result = doca_telemetry_pcc_get_histo_bins(pcc, histo_id, &num_histo_bins, histo_bins);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get histo bins for id (%u): Error=%s",
+				     histo_id,
+				     doca_error_get_name(result));
+			goto free_histo_bins;
+		}
+
+		/* Sanity check that number of edges is one more than number of bins */
+		if (num_histo_edges != num_histo_bins + 1) {
+			DOCA_LOG_ERR("Edges populated (%u) is not one more than Bins populated (%u)",
+				     num_histo_edges,
+				     num_histo_bins);
+			result = DOCA_ERROR_BAD_STATE;
+			goto free_histo_bins;
+		}
+
+		printf("Bin edges and counters:\n");
+		for (j = 0; j < num_histo_bins; j++) {
+			printf("%u-%u: %u\n", histo_edges[j], histo_edges[j + 1], histo_bins[j]);
+		}
+		printf("-------------------------------------\n");
+	}
+
+free_histo_bins:
+	free(histo_bins);
+free_histo_edges:
+	free(histo_edges);
+free_histo_desc:
+	free(histo_desc);
+free_histo_ids:
+	free(histo_ids);
+
+	return result;
+}
+
 doca_error_t telemetry_pcc_sample_run(const struct telemetry_pcc_sample_cfg *cfg)
 {
 	uint32_t slots_populated, slot, i;
@@ -191,6 +359,7 @@ doca_error_t telemetry_pcc_sample_run(const struct telemetry_pcc_sample_cfg *cfg
 	uint8_t algo_en, counters_en;
 	struct doca_dev_rep *rep;
 	struct doca_dev *dev;
+	bool histo_support;
 	doca_error_t result;
 
 	/* Open DOCA device based on the given PCI address */
@@ -235,6 +404,17 @@ doca_error_t telemetry_pcc_sample_run(const struct telemetry_pcc_sample_cfg *cfg
 		goto close_rep;
 	}
 
+	/* Check if the PCC context supports histograms */
+	result = doca_telemetry_pcc_cap_histo_is_supported(pcc);
+	if (result == DOCA_SUCCESS) {
+		histo_support = true;
+	} else if (result == DOCA_ERROR_NOT_SUPPORTED) {
+		histo_support = false;
+	} else {
+		DOCA_LOG_ERR("Failed to detect histogram support. Error=%s", doca_error_get_name(result));
+		goto destroy_pcc;
+	}
+
 	/* Parse all the slots on the card for PCC algos */
 	slots_populated = 0;
 	result = get_algo_information(pcc, dev, &slots_populated);
@@ -272,13 +452,29 @@ doca_error_t telemetry_pcc_sample_run(const struct telemetry_pcc_sample_cfg *cfg
 		/* Mark slot as parsed */
 		slots_populated &= ~(1 << slot);
 
-		if (counters_en == 0)
+		if (algo_en == 0)
 			continue;
 
-		result = get_counter_information(pcc, dev, (uint8_t)slot);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to get counters on slot %u: Error=%s", slot, doca_error_get_name(result));
-			goto stop_pcc;
+		/* Get counter information if they are enabled */
+		if (counters_en == 1) {
+			result = get_counter_information(pcc, dev, (uint8_t)slot);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to get counters on slot %u: Error=%s",
+					     slot,
+					     doca_error_get_name(result));
+				goto stop_pcc;
+			}
+		}
+
+		/* Get histogram information associated with the slot */
+		if (histo_support == true) {
+			result = get_histo_information(pcc, (uint8_t)slot);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to get histogram information on slot %u: Error=%s",
+					     slot,
+					     doca_error_get_name(result));
+				goto stop_pcc;
+			}
 		}
 	}
 	printf("\n");

@@ -93,8 +93,15 @@ static doca_error_t handle_stdin_command(bool hotplug, uint32_t num_ep, struct v
 	uint32_t dsp_idx = (uint32_t)val;
 
 	if (strcmp(cmd, "plug") == 0) {
-		if (hp[dsp_idx].enabled || hp[dsp_idx].plug_requested) {
-			DOCA_LOG_WARN("EP %u already plugged or pending", dsp_idx);
+		/* plug_msi_pending also implies a plug is in progress: controller is
+		 * already enabled and OE is retrying to send the hotplug MSI. Accepting
+		 * a new "plug" here would re-create the virtio_dev on top of the
+		 * existing one. */
+		if (hp[dsp_idx].enabled || hp[dsp_idx].plug_requested || hp[dsp_idx].need_io_ctx ||
+		    hp[dsp_idx].plug_msi_pending) {
+			DOCA_LOG_WARN("EP %u already plugged or plug in progress", dsp_idx);
+		} else if (hp[dsp_idx].unplug_requested || hp[dsp_idx].need_io_ctx_shutdown) {
+			DOCA_LOG_WARN("EP %u is still unplugging, wait for unplug to complete", dsp_idx);
 		} else {
 			DOCA_LOG_INFO("Queuing plug for DSP[%u] to OE thread", dsp_idx);
 			hp[dsp_idx].plug_requested = true;
@@ -103,8 +110,16 @@ static doca_error_t handle_stdin_command(bool hotplug, uint32_t num_ep, struct v
 	}
 
 	if (strcmp(cmd, "unplug") == 0) {
+		/* If plug MSI never went out, the host has no idea this device exists,
+		 * so issuing an unplug ABP would land on an unprepared host slot. The
+		 * usual recovery for a stuck plug_msi_pending EP is to wait for OE to
+		 * eventually retry MSI successfully (which sets 'enabled') or for the
+		 * application to be restarted. */
 		if (!hp[dsp_idx].enabled) {
-			DOCA_LOG_WARN("EP %u not plugged", dsp_idx);
+			if (hp[dsp_idx].plug_msi_pending)
+				DOCA_LOG_WARN("EP %u plug MSI still pending — cannot unplug yet", dsp_idx);
+			else
+				DOCA_LOG_WARN("EP %u not plugged", dsp_idx);
 		} else if (hp[dsp_idx].unplug_requested) {
 			DOCA_LOG_WARN("EP %u already has a pending unplug", dsp_idx);
 		} else {
@@ -137,6 +152,8 @@ static void *vblk_tlp_ctx_thread(void *arg)
 	while (!force_quit) {
 		(void)doca_pe_progress(pe);
 		vblk_pci_tlp_poll();
+		vblk_pci_retry_cmd_completed_msi();
+		vblk_pci_retry_hotplug_msi(hp, num_ep);
 
 		if (stdin_has_input())
 			handle_stdin_command(hotplug, num_ep, hp);

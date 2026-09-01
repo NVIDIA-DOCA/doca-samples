@@ -31,9 +31,8 @@ DOCA_LOG_REGISTER(VERBS_WRITE_LAT);
 #define RESULT_FMT_LAT " #bytes 	#iterations    Unidirectional[usec]    Bidirectional[usec]    CUDA Kernel[usec]"
 #define REPORT_FMT_LAT " %-7lu 		%-7d          %-7.2f       		%-7.2f    	 	%-7.2f"
 
-cudaStream_t cstream;
+cudaStream_t cstream = NULL;
 int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144};
-volatile bool server_force_quit = false;
 
 static doca_error_t destroy_local_memory_objects(struct verbs_resources *resources)
 {
@@ -114,7 +113,8 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 								   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
 									   IBV_ACCESS_RELAXED_ORDERING);
 			if (resources->local_poll_mr[idx] == NULL) {
-				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
+				status = DOCA_ERROR_DRIVER;
+				DOCA_LOG_ERR("Failed to create local poll mr: %s", doca_error_get_descr(status));
 				goto exit_error;
 			}
 		}
@@ -155,7 +155,8 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 					   size_data,
 					   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_RELAXED_ORDERING);
 			if (resources->local_post_mr[idx] == NULL) {
-				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
+				status = DOCA_ERROR_DRIVER;
+				DOCA_LOG_ERR("Failed to create local post mr: %s", doca_error_get_descr(status));
 				goto exit_error;
 			}
 		}
@@ -267,7 +268,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	int server_sock_fd = -1;
 	cudaError_t cuda_ret;
 	CUresult cu_result;
-	CUevent e_start, e_end;
+	CUevent e_start = NULL, e_end = NULL;
 	float et_ms = 0.0f;
 	pthread_t thread_id;
 	struct cpu_proxy_args args;
@@ -328,7 +329,6 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	cu_result = cuEventCreate(&e_end, CU_EVENT_BLOCKING_SYNC);
 	if (cu_result) {
 		DOCA_LOG_ERR("Function cuEventCreate for e_end %d", cu_result);
-		cuEventDestroy(e_start);
 		status = DOCA_ERROR_DRIVER;
 		goto destroy_events;
 	}
@@ -346,11 +346,17 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 		args.qp_cpu_main = resources.qp->qp_gverbs;
 		args.qp_cpu_companion = NULL;
 		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
-		*(args.exit_flag) = 0;
+		if (args.exit_flag == NULL) {
+			DOCA_LOG_ERR("Failed to allocate CPU proxy exit flag");
+			status = DOCA_ERROR_NO_MEMORY;
+			goto destroy_events;
+		}
 
 		int result = pthread_create(&thread_id, NULL, progress_cpu_proxy, (void *)&args);
 		if (result != 0) {
 			perror("Failed to create thread");
+			free(args.exit_flag);
+			status = DOCA_ERROR_OPERATING_SYSTEM;
 			goto destroy_events;
 		}
 	}
@@ -383,7 +389,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						  resources.nic_handler,
 						  false);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_write_lat failed: %s", doca_error_get_descr(status));
 			goto stop_thread;
 		}
 
@@ -409,7 +415,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						  resources.nic_handler,
 						  false);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_write_lat failed: %s", doca_error_get_descr(status));
 			goto stop_thread;
 		}
 
@@ -452,15 +458,19 @@ stop_thread:
 	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
 		WRITE_ONCE_64b(*args.exit_flag, 1);
 		pthread_join(thread_id, NULL);
+		free(args.exit_flag);
 	}
 
 destroy_events:
-	cuEventDestroy(e_start);
-	cuEventDestroy(e_end);
-	cudaStreamDestroy(cstream);
+	if (e_start != NULL)
+		cuEventDestroy(e_start);
+	if (e_end != NULL)
+		cuEventDestroy(e_end);
+	if (cstream != NULL)
+		cudaStreamDestroy(cstream);
 
 server_cleanup:
-	oob_verbs_connection_client_close(resources.conn_socket);
+	oob_verbs_connection_server_close(server_sock_fd, resources.conn_socket);
 
 	tmp_status = destroy_local_memory_objects(&resources);
 	if (tmp_status != DOCA_SUCCESS) {
@@ -483,7 +493,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	struct verbs_resources resources = {0};
 	cudaError_t cuda_ret;
 	CUresult cu_result;
-	CUevent e_start, e_end;
+	CUevent e_start = NULL, e_end = NULL;
 	float et_ms = 0.0f;
 	pthread_t thread_id;
 	struct cpu_proxy_args args;
@@ -544,7 +554,6 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	cu_result = cuEventCreate(&e_end, CU_EVENT_BLOCKING_SYNC);
 	if (cu_result) {
 		DOCA_LOG_ERR("Function cuEventCreate for e_end %d", cu_result);
-		cuEventDestroy(e_start);
 		status = DOCA_ERROR_DRIVER;
 		goto destroy_events;
 	}
@@ -562,11 +571,17 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 		args.qp_cpu_main = resources.qp->qp_gverbs;
 		args.qp_cpu_companion = NULL;
 		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
-		*(args.exit_flag) = 0;
+		if (args.exit_flag == NULL) {
+			DOCA_LOG_ERR("Failed to allocate CPU proxy exit flag");
+			status = DOCA_ERROR_NO_MEMORY;
+			goto destroy_events;
+		}
 
 		int result = pthread_create(&thread_id, NULL, progress_cpu_proxy, (void *)&args);
 		if (result != 0) {
 			perror("Failed to create thread");
+			free(args.exit_flag);
+			status = DOCA_ERROR_OPERATING_SYSTEM;
 			goto destroy_events;
 		}
 	}
@@ -599,7 +614,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						  resources.nic_handler,
 						  true);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_write_lat failed: %s", doca_error_get_descr(status));
 			goto stop_thread;
 		}
 
@@ -625,7 +640,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						  resources.nic_handler,
 						  true);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_write_lat failed: %s", doca_error_get_descr(status));
 			goto stop_thread;
 		}
 
@@ -668,12 +683,16 @@ stop_thread:
 	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
 		WRITE_ONCE_64b(*args.exit_flag, 1);
 		pthread_join(thread_id, NULL);
+		free(args.exit_flag);
 	}
 
 destroy_events:
-	cuEventDestroy(e_start);
-	cuEventDestroy(e_end);
-	cudaStreamDestroy(cstream);
+	if (e_start != NULL)
+		cuEventDestroy(e_start);
+	if (e_end != NULL)
+		cuEventDestroy(e_end);
+	if (cstream != NULL)
+		cudaStreamDestroy(cstream);
 
 client_cleanup:
 	oob_verbs_connection_client_close(resources.conn_socket);

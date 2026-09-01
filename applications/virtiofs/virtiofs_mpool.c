@@ -56,8 +56,10 @@ struct virtiofs_mpool {
 };
 
 #define HUGE_PAGE_SIZE_2MB (2UL * 1024 * 1024)
+#define HUGE_PAGE_SIZE_512MB (512UL * 1024 * 1024)
 #define KB_TO_BYTES 1024UL
 #define HUGEPAGES_SYSFS_DIR "/sys/kernel/mm/hugepages"
+#define HUGEPAGES_PATH_MAX 256
 
 static inline int virtiofs_mpool_is_power_of_two(size_t x)
 {
@@ -66,14 +68,33 @@ static inline int virtiofs_mpool_is_power_of_two(size_t x)
 	return (x & (x - 1)) == 0;
 }
 
-static size_t virtiofs_mpool_get_hugepage_size(void)
+static unsigned long virtiofs_mpool_get_free_hugepages(const char *hugepage_dir_name)
+{
+	char path[HUGEPAGES_PATH_MAX];
+	FILE *fp;
+	unsigned long free_hugepages = 0;
+
+	if (snprintf(path, sizeof(path), "%s/%s/free_hugepages", HUGEPAGES_SYSFS_DIR, hugepage_dir_name) >=
+	    (int)sizeof(path))
+		return 0;
+
+	fp = fopen(path, "r");
+	if (fp == NULL)
+		return 0;
+
+	if (fscanf(fp, "%lu", &free_hugepages) != 1)
+		free_hugepages = 0;
+
+	fclose(fp);
+	return free_hugepages;
+}
+
+static size_t virtiofs_mpool_get_hugepage_size(size_t malloc_size)
 {
 	DIR *dir;
 	struct dirent *entry;
 	size_t smallest_hugepage_size = 0;
 	unsigned long size_kb;
-	if (access(HUGEPAGES_SYSFS_DIR "/hugepages-2048kB", F_OK) == 0)
-		return HUGE_PAGE_SIZE_2MB;
 
 	dir = opendir(HUGEPAGES_SYSFS_DIR);
 	if (dir == NULL) {
@@ -87,6 +108,8 @@ static size_t virtiofs_mpool_get_hugepage_size(void)
 				continue;
 			size_t size = size_kb * KB_TO_BYTES;
 			if (!virtiofs_mpool_is_power_of_two(size))
+				continue;
+			if (virtiofs_mpool_get_free_hugepages(entry->d_name) * size < malloc_size)
 				continue;
 			if (smallest_hugepage_size == 0 || size < smallest_hugepage_size)
 				smallest_hugepage_size = size;
@@ -114,7 +137,9 @@ static size_t virtiofs_mpool_hp_align(size_t size, size_t hugepage_size)
 
 static void *virtiofs_mpool_hp_malloc(size_t size, size_t *aligned_size)
 {
-	size_t hugepage_size = virtiofs_mpool_get_hugepage_size();
+	size_t hugepage_size = virtiofs_mpool_get_hugepage_size(size);
+	if (hugepage_size == HUGE_PAGE_SIZE_512MB)
+		DOCA_LOG_INFO("Using 512MB hugepage size, application supports up to 5 cores only.");
 	unsigned int flags;
 
 	*aligned_size = virtiofs_mpool_hp_align(size, hugepage_size);
@@ -336,8 +361,12 @@ void virtiofs_mpool_set_buf_put(struct doca_buf *buf)
 
 void virtiofs_mpool_set_destroy(struct virtiofs_mpool_set *set)
 {
-	for (int i = 0; i < set->num_pools; i++)
-		virtiofs_mpool_destroy(set->mpools[i]);
-
+	if (!set)
+		return;
+	for (int i = 0; i < set->num_pools; i++) {
+		if (set->mpools[i]) {
+			virtiofs_mpool_destroy(set->mpools[i]);
+		}
+	}
 	free(set);
 }

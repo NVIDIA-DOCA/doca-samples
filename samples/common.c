@@ -52,8 +52,18 @@ doca_error_t open_doca_device_with_pci_and_callback(const char *pci_addr,
 	doca_error_t res;
 	size_t i;
 
+	if (retval == NULL) {
+		DOCA_LOG_ERR("Invalid value found, retval is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
 	/* Set default return value */
 	*retval = NULL;
+
+	if (pci_addr == NULL) {
+		DOCA_LOG_ERR("Invalid value found, pci_addr is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
 	res = doca_devinfo_create_list(&dev_list, &nb_devs);
 	if (res != DOCA_SUCCESS) {
@@ -109,14 +119,30 @@ doca_error_t open_doca_device_with_ibdev_name(const uint8_t *value,
 	doca_error_t res;
 	size_t i;
 
+	if (retval == NULL) {
+		DOCA_LOG_ERR("Invalid value found, retval is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
 	/* Set default return value */
 	*retval = NULL;
 
-	/* Setup */
-	if (val_size > DOCA_DEVINFO_IBDEV_NAME_SIZE) {
-		DOCA_LOG_ERR("Value size too large. Failed to locate device");
+	if (value == NULL) {
+		DOCA_LOG_ERR("Invalid value found, value is NULL");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
+
+	if (val_size == 0) {
+		DOCA_LOG_ERR("Invalid IB device name size (0)");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (val_size > DOCA_DEVINFO_IBDEV_NAME_SIZE) {
+		DOCA_LOG_ERR("Invalid IB device name size (%zu > %d)", val_size, DOCA_DEVINFO_IBDEV_NAME_SIZE);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	/* Setup */
 	memcpy(val_copy, value, val_size);
 
 	res = doca_devinfo_create_list(&dev_list, &nb_devs);
@@ -161,14 +187,30 @@ doca_error_t open_doca_device_with_iface_name(const uint8_t *value,
 	doca_error_t res;
 	size_t i;
 
+	if (retval == NULL) {
+		DOCA_LOG_ERR("Invalid value found, retval is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
 	/* Set default return value */
 	*retval = NULL;
 
-	/* Setup */
-	if (val_size > DOCA_DEVINFO_IFACE_NAME_SIZE) {
-		DOCA_LOG_ERR("Value size too large. Failed to locate device");
+	if (value == NULL) {
+		DOCA_LOG_ERR("Invalid value found, value is NULL");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
+
+	if (val_size == 0) {
+		DOCA_LOG_ERR("Invalid interface name size (0)");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (val_size > DOCA_DEVINFO_IFACE_NAME_SIZE) {
+		DOCA_LOG_ERR("Invalid interface name size (%zu > %d)", val_size, DOCA_DEVINFO_IFACE_NAME_SIZE);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	/* Setup */
 	memcpy(val_copy, value, val_size);
 
 	res = doca_devinfo_create_list(&dev_list, &nb_devs);
@@ -180,7 +222,7 @@ doca_error_t open_doca_device_with_iface_name(const uint8_t *value,
 	/* Search */
 	for (i = 0; i < nb_devs; i++) {
 		res = doca_devinfo_get_iface_name(dev_list[i], buf, DOCA_DEVINFO_IFACE_NAME_SIZE);
-		if (res == DOCA_SUCCESS && strncmp(buf, val_copy, val_size) == 0) {
+		if (res == DOCA_SUCCESS && strncmp(buf, val_copy, DOCA_DEVINFO_IFACE_NAME_SIZE) == 0) {
 			/* If any special capabilities are needed */
 			if (func != NULL && func(dev_list[i]) != DOCA_SUCCESS)
 				continue;
@@ -209,6 +251,11 @@ doca_error_t open_doca_device_with_sf_index(uint32_t sf_index, tasks_check func,
 	uint32_t sf_idx;
 	doca_error_t res;
 	size_t i;
+
+	if (retval == NULL) {
+		DOCA_LOG_ERR("Invalid value found, retval is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
 	/* Set default return value */
 	*retval = NULL;
@@ -259,6 +306,11 @@ doca_error_t open_doca_device_with_capabilities(tasks_check func, struct doca_de
 	doca_error_t result;
 	size_t i;
 
+	if (retval == NULL) {
+		DOCA_LOG_ERR("Invalid value found, retval is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
 	/* Set default return value */
 	*retval = NULL;
 
@@ -271,7 +323,7 @@ doca_error_t open_doca_device_with_capabilities(tasks_check func, struct doca_de
 	/* Search */
 	for (i = 0; i < nb_devs; i++) {
 		/* If any special capabilities are needed */
-		if (func(dev_list[i]) != DOCA_SUCCESS)
+		if (func != NULL && func(dev_list[i]) != DOCA_SUCCESS)
 			continue;
 
 		/* If device can be opened */
@@ -299,22 +351,44 @@ doca_error_t open_doca_device_rep_with_vuid(struct doca_dev *local,
 	doca_error_t result;
 	size_t i;
 
+	if (retval == NULL) {
+		DOCA_LOG_ERR("Invalid value found, retval is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
 	/* Set default return value */
 	*retval = NULL;
 
-	/* Setup */
-	if (val_size > DOCA_DEVINFO_REP_VUID_SIZE) {
-		DOCA_LOG_ERR("Value size too large. Ignored");
+	if (local == NULL) {
+		DOCA_LOG_ERR("Invalid value found, local is NULL");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
+
+	if (value == NULL) {
+		DOCA_LOG_ERR("Invalid value found, value is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (val_size == 0) {
+		DOCA_LOG_ERR("Invalid representor VUID size (0)");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (val_size > DOCA_DEVINFO_REP_VUID_SIZE) {
+		DOCA_LOG_ERR("Invalid representor VUID size (%zu > %d)", val_size, DOCA_DEVINFO_REP_VUID_SIZE);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	/* Setup */
 	memcpy(val_copy, value, val_size);
 
 	/* Search */
 	result = doca_devinfo_rep_create_list(local, filter, &rep_dev_list, &nb_rdevs);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR(
-			"Failed to create devinfo representor list. Representor devices are available only on DPU, do not run on Host");
-		return DOCA_ERROR_INVALID_VALUE;
+			"Failed to create devinfo representor list (representor devices are available only on DPU, do not run on Host): %s",
+			doca_error_get_descr(result));
+		return result;
 	}
 
 	for (i = 0; i < nb_rdevs; i++) {
@@ -342,14 +416,31 @@ doca_error_t open_doca_device_rep_with_pci(struct doca_dev *local,
 	doca_error_t result;
 	size_t i;
 
+	if (retval == NULL) {
+		DOCA_LOG_ERR("Invalid value found, retval is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	/* Set default return value */
 	*retval = NULL;
+
+	if (local == NULL) {
+		DOCA_LOG_ERR("Invalid value found, local is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (pci_addr == NULL) {
+		DOCA_LOG_ERR("Invalid value found, pci_addr is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
 	/* Search */
 	result = doca_devinfo_rep_create_list(local, filter, &rep_dev_list, &nb_rdevs);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR(
-			"Failed to create devinfo representors list. Representor devices are available only on DPU, do not run on Host");
-		return DOCA_ERROR_INVALID_VALUE;
+			"Failed to create devinfo representors list (representor devices are available only on DPU, do not run on Host): %s",
+			doca_error_get_descr(result));
+		return result;
 	}
 
 	for (i = 0; i < nb_rdevs; i++) {
@@ -369,6 +460,17 @@ doca_error_t open_doca_device_rep_with_pci(struct doca_dev *local,
 doca_error_t create_core_objects(struct program_core_objects *state, uint32_t max_bufs)
 {
 	doca_error_t res;
+
+	if (state == NULL) {
+		DOCA_LOG_ERR("Invalid value found, state is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	/* Keep the cleanup path safe even when failing before a field is created */
+	state->src_mmap = NULL;
+	state->dst_mmap = NULL;
+	state->buf_inv = NULL;
+	state->pe = NULL;
 
 	res = doca_mmap_create(&state->src_mmap);
 	if (res != DOCA_SUCCESS) {
@@ -460,6 +562,11 @@ doca_error_t destroy_core_objects(struct program_core_objects *state)
 {
 	doca_error_t tmp_result, result = DOCA_SUCCESS;
 
+	if (state == NULL) {
+		DOCA_LOG_ERR("Invalid value found, state is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
 	if (state->pe != NULL) {
 		tmp_result = doca_pe_destroy(state->pe);
 		if (tmp_result != DOCA_SUCCESS) {
@@ -523,12 +630,20 @@ char *hex_dump(const void *data, size_t size)
 	char ascii_line[17];
 	const unsigned char *input_buffer;
 
+	/* An empty dump would write the string terminator before the buffer start */
+	if (data == NULL || size == 0) {
+		DOCA_LOG_ERR("Failed to dump hex: invalid input, data=%p, size=%zu", data, size);
+		return NULL;
+	}
+
 	/* Allocate a dynamic buffer to hold the full result */
 	num_lines = (size + 16 - 1) / 16;
 	buffer_size = num_lines * line_size + 1;
 	buffer = (char *)malloc(buffer_size);
-	if (buffer == NULL)
+	if (buffer == NULL) {
+		DOCA_LOG_ERR("Failed to dump hex: failed to allocate buffer of size %zu", buffer_size);
 		return NULL;
+	}
 	write_head = buffer;
 	input_buffer = data;
 	read_index = 0;
@@ -585,11 +700,11 @@ doca_error_t allocate_doca_buf_list(struct doca_buf_inventory *buf_inv,
 				    struct doca_buf **dbuf)
 {
 	int i = 0;
-	size_t other_seg_len = buf_len / num_buf;
-	size_t first_seg_len = other_seg_len + (buf_len % num_buf);
-	doca_error_t result = DOCA_SUCCESS;
+	size_t other_seg_len;
+	size_t first_seg_len;
+	doca_error_t tmp_result, result = DOCA_SUCCESS;
 	struct doca_buf *tmp_dbuf = NULL;
-	size_t seg_len = first_seg_len;
+	size_t seg_len;
 	void *seg_addr = buf_addr;
 
 	if (buf_inv == NULL) {
@@ -623,6 +738,10 @@ doca_error_t allocate_doca_buf_list(struct doca_buf_inventory *buf_inv,
 		return result;
 	}
 
+	other_seg_len = buf_len / num_buf;
+	first_seg_len = other_seg_len + (buf_len % num_buf);
+	seg_len = first_seg_len;
+
 	for (i = 0; i < num_buf; i++) {
 		if (i > 0) {
 			seg_addr = (uint8_t *)seg_addr + seg_len;
@@ -634,13 +753,13 @@ doca_error_t allocate_doca_buf_list(struct doca_buf_inventory *buf_inv,
 		result = doca_buf_inventory_buf_get_by_addr(buf_inv, mmap, seg_addr, seg_len, &tmp_dbuf);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Unable to acquire DOCA buffer: %s", doca_error_get_descr(result));
-			return result;
+			goto destroy_dbuf;
 		}
 		if (set_data_pos == true) {
 			result = doca_buf_set_data(tmp_dbuf, seg_addr, seg_len);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to set data for DOCA buffer: %s", doca_error_get_descr(result));
-				return result;
+				goto destroy_tmp_dbuf;
 			}
 		}
 		if (i == 0) {
@@ -649,10 +768,26 @@ doca_error_t allocate_doca_buf_list(struct doca_buf_inventory *buf_inv,
 			result = doca_buf_chain_list(*dbuf, tmp_dbuf);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to construct doca_buf chain: %s", doca_error_get_descr(result));
-				return result;
+				goto destroy_tmp_dbuf;
 			}
 		}
 	}
+
+	return result;
+
+destroy_tmp_dbuf:
+	tmp_result = doca_buf_dec_refcount(tmp_dbuf, NULL);
+	if (tmp_result != DOCA_SUCCESS)
+		DOCA_LOG_ERR("Failed to release DOCA buffer: %s", doca_error_get_descr(tmp_result));
+
+destroy_dbuf:
+	/* Releasing the list head releases every buffer chained so far */
+	if (i > 0) {
+		tmp_result = doca_buf_dec_refcount(*dbuf, NULL);
+		if (tmp_result != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to release DOCA buffer list: %s", doca_error_get_descr(tmp_result));
+	}
+	*dbuf = NULL;
 
 	return result;
 }

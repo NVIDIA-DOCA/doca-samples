@@ -74,7 +74,7 @@ extern "C" {
 #endif
 
 #ifndef SHARED_RESOURCE_NUM_VALUES
-#define SHARED_RESOURCE_NUM_VALUES (7) /* Number of doca_flow_shared_resource_type values */
+#define SHARED_RESOURCE_NUM_VALUES (9) /* Number of doca_flow_shared_resource_type values */
 #endif
 
 #define FLOW_COMMON_DEV_MAX (8)	      /* Max number of devices */
@@ -132,6 +132,14 @@ struct entries_status {
 	int nb_processed; /* will hold the number of entries that was already processed */
 };
 
+/**
+ * @brief CT initialization configuration for doca_flow_init
+ */
+struct ct_init_cfg {
+	uint16_t ct_queues;	 /**< Number of CT worker queues */
+	uint16_t ct_ctrl_queues; /**< Number of CT control queues */
+};
+
 /* User struct that hold number of counters and meters to configure for doca_flow */
 struct flow_resources {
 	enum doca_flow_resource_mode mode; /* resource mode */
@@ -143,6 +151,17 @@ struct flow_resources {
 	uint32_t nr_decap;		   /* number of decap to configure */
 	uint32_t nr_ipsec_sa;		   /* number of IPSec SA to configure */
 	uint32_t nr_psp;		   /* number of PSP to configure */
+	uint32_t nr_event_rss;		   /* number of event RSS resources to configure */
+	uint32_t nr_trim;		   /* number of trim shared resources to configure */
+};
+
+struct ct_port_cfg {
+	uint32_t ct_flags;			   /**< CT behavior flags (0 if CT not used) */
+	uint32_t ct_actions_mem_size;		   /**< CT actions memory size in bytes */
+	uint32_t ct_aging_core;			   /**< CT aging core (0 to skip) */
+	bool match_inner[2];			   /**< Match inner headers */
+	struct doca_flow_meta *zone_match_mask[2]; /**< Zone match mask */
+	struct doca_flow_ct_meta *modify_mask[2];  /**< Modify mask */
 };
 
 struct flow_devs_manager {
@@ -220,6 +239,8 @@ doca_error_t init_doca_flow_with_defs(int nb_queues,
  * @nr_shared_resources [in]: total shared resource per type
  * @cb [in]: entry process callback pointer
  * @pipe_process_cb [in]: pipe process callback pointer
+ * @defs [in]: doca flow configured definitions to be set
+ * @ct_cfg [in]: CT queue configuration (NULL if not using CT)
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t init_doca_flow_cb(int nb_queues,
@@ -228,7 +249,24 @@ doca_error_t init_doca_flow_cb(int nb_queues,
 			       uint32_t nr_shared_resources[],
 			       doca_flow_entry_process_cb cb,
 			       doca_flow_pipe_process_cb pipe_process_cb,
-			       struct doca_flow_definitions *defs);
+			       struct doca_flow_definitions *defs,
+			       struct ct_init_cfg *ct_cfg);
+
+/*
+ * Initialize DOCA Flow library with CT queue configuration
+ *
+ * @nb_queues [in]: number of queues the sample will use
+ * @mode [in]: doca flow architecture mode
+ * @resource [in]: number of meters and counters to configure
+ * @nr_shared_resources [in]: total shared resource per type
+ * @ct_cfg [in]: CT queue configuration
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t init_doca_flow_with_ct(int nb_queues,
+				    const char *mode,
+				    struct flow_resources *resource,
+				    uint32_t nr_shared_resources[],
+				    struct ct_init_cfg *ct_cfg);
 
 /*
  * Initialize DOCA Flow ports
@@ -285,6 +323,8 @@ typedef doca_error_t (*port_config_cb)(struct doca_flow_port_cfg *port_cfg, int 
  * @port_rep_cb [in]: port representor configuration callback
  * @config_cb_ctx [in]: users configuration context
  * @actions_mem_size[in]: array of actions memory size
+ * @resources [in]: flow resources configuration
+ * @ct_cfg [in]: CT port configuration (NULL if CT is not used)
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t init_doca_flow_ports_with_custom_config(int nb_ports,
@@ -296,7 +336,8 @@ doca_error_t init_doca_flow_ports_with_custom_config(int nb_ports,
 						     port_config_cb port_rep_cb,
 						     void *config_cb_ctx,
 						     uint32_t actions_mem_size[],
-						     struct flow_resources *resources);
+						     struct flow_resources *resources,
+						     const struct ct_port_cfg *ct_cfg);
 
 /*
  * Stop DOCA Flow ports

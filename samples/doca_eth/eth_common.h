@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -35,6 +35,8 @@
 #include <doca_error.h>
 
 #include "common.h"
+
+#define MAX_QUEUES_NUM 128 /* Max number of ETH RXQs the sample can share the memory pool between */
 
 struct eth_core_resources {
 	struct program_core_objects core_objs; /* DOCA core objects */

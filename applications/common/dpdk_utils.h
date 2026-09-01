@@ -189,7 +189,7 @@ doca_error_t dpdk_mempool_shadow_find_buf_by_data(struct dpdk_mempool_shadow *me
 /*
  * Destroy the DPDK memory pool shadow
  *
- * @mempool_shadow [in]: shadow of a DPDK memory pool to be destroyed
+ * @mempool_shadow [in]: shadow of a DPDK memory pool to be destroyed, NULL is allowed (no-op)
  * @Note: this should be done before destroying the DPDK memory pool
  */
 void dpdk_mempool_shadow_destroy(struct dpdk_mempool_shadow *mempool_shadow);

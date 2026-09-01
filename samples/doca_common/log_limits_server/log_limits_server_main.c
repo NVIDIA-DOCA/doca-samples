@@ -119,7 +119,7 @@ int main(int argc, char **argv)
 	/* Start the sample */
 	result = run_log_limits_server(&log_conf);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to sample: %s", doca_error_get_name(result));
+		DOCA_LOG_ERR("Failed to run sample: %s", doca_error_get_name(result));
 		goto argp_cleanup;
 	}
 

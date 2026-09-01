@@ -35,6 +35,7 @@
 #include <psp_gw_flows.h>
 #include <psp_gw_pkt_rss.h>
 #include <psp_gw_svc_impl.h>
+#include <rte_lcore.h>
 
 DOCA_LOG_REGISTER(PSP_RSS);
 
@@ -127,14 +128,13 @@ static void handle_packet(struct lcore_params *params,
 						     params->config->return_to_vf_indicator);
 			return;
 		}
-		params->psp_svc->handle_miss_packet(packet);
+		params->psp_svc->handle_miss_packet(packet, queue_id);
 	}
 }
 
 int lcore_pkt_proc_func(void *lcore_args)
 {
 	auto *params = (struct lcore_params *)lcore_args;
-
 	uint32_t lcore_id = rte_lcore_id();
 
 	// Note lcore_id==0 is reserved for main()
@@ -142,7 +142,12 @@ int lcore_pkt_proc_func(void *lcore_args)
 		rte_exit(EXIT_FAILURE, "Unexpectedly entered RSS handler from main thread\n");
 	}
 
-	uint16_t queue_id = lcore_id - 1;
+	uint16_t queue_id = params->queue_id;
+	uint16_t nb_rss_queues = params->config->grpc_queue_id;
+
+	if (queue_id >= nb_rss_queues) {
+		rte_exit(EXIT_FAILURE, "RSS queue %u invalid for port %u\n", queue_id, params->pf_dev->port_id);
+	}
 
 	struct rte_mbuf *rx_packets[MAX_RX_BURST_SIZE];
 
@@ -179,14 +184,17 @@ int lcore_pkt_proc_func(void *lcore_args)
 	return 0;
 }
 
-bool reinject_packet(struct rte_mbuf *packet, uint16_t port_id, uint32_t pkt_meta)
+bool reinject_packet(struct rte_mbuf *packet, uint16_t port_id, uint32_t pkt_meta, uint16_t queue_id)
 {
 	uint32_t lcore_id = rte_lcore_id();
 	if (lcore_id == 0) {
 		DOCA_LOG_ERR("Cannot reinject packet from core 0");
 		return false;
 	}
-	uint16_t queue_id = lcore_id - 1;
+	if (lcore_id >= RTE_MAX_LCORE) {
+		DOCA_LOG_ERR("Cannot reinject packet from lcore %u: out-of-range lcore index", lcore_id);
+		return false;
+	}
 
 	*RTE_MBUF_DYNFIELD(packet, rte_flow_dynf_metadata_offs, uint32_t *) = pkt_meta;
 	packet->ol_flags |= rte_flow_dynf_metadata_mask;

@@ -44,7 +44,7 @@ static void server_validate_test(struct verbs_resources *resources)
 	for (int idx = 0; idx < NUM_MSG_SIZE; idx++) {
 		for (int pos = 0; pos < (int)resources->cuda_threads * message_size[idx]; pos++) {
 			if (resources->data_buf[idx][pos] != (idx + 1)) {
-				DOCA_LOG_ERR("Validation error: buffer %d pos %d has invalid data %d\n",
+				DOCA_LOG_ERR("Validation error: buffer %d pos %d has invalid data %d",
 					     idx,
 					     pos,
 					     resources->data_buf[idx][pos]);
@@ -109,8 +109,9 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 		if (resources->cfg->is_server) {
 			resources->data_buf[idx] = (uint8_t *)calloc(size_data, 1);
 			if (resources->data_buf[idx] == NULL) {
+				status = DOCA_ERROR_NO_MEMORY;
 				DOCA_LOG_ERR("Failed to allocate CPU memory buffer of size = %zd", size_data);
-				return DOCA_ERROR_NO_MEMORY;
+				goto exit_error;
 			}
 
 			memset(resources->data_buf[idx], 0, message_size[idx]);
@@ -121,9 +122,9 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 							     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
 								     IBV_ACCESS_RELAXED_ORDERING);
 			if (resources->data_mr[idx] == NULL) {
+				status = DOCA_ERROR_DRIVER;
 				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
-				doca_gpu_mem_free(resources->gpu_dev, (void *)resources->data_buf[idx]);
-				return status;
+				goto exit_error;
 			}
 		} else {
 			status = doca_gpu_mem_alloc(resources->gpu_dev,
@@ -133,12 +134,13 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 						    (void **)&(resources->data_buf[idx]),
 						    NULL);
 			if (status != DOCA_SUCCESS) {
+				status = DOCA_ERROR_NO_MEMORY;
 				DOCA_LOG_ERR("Failed to allocate GPU memory buffer %d of size = %zd (%d x %d)",
 					     idx,
 					     size_data,
 					     message_size[idx],
 					     resources->cuda_threads);
-				return DOCA_ERROR_NO_MEMORY;
+				goto exit_error;
 			}
 
 			cudaMemset(resources->data_buf[idx], idx + 1, size_data);
@@ -164,6 +166,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 								     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
 									     IBV_ACCESS_RELAXED_ORDERING);
 				if (resources->data_mr[idx] == NULL) {
+					status = DOCA_ERROR_DRIVER;
 					DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
 					goto exit_error;
 				}
@@ -330,6 +333,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	resources.cuda_threads = cfg->cuda_threads;
 	resources.nic_handler = cfg->nic_handler;
 	resources.qp_group = false;
+	resources.enable_comp_channel = true;
 
 	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF)
 		DOCA_LOG_WARN(
@@ -382,7 +386,6 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	cu_result = cuEventCreate(&e_end, CU_EVENT_BLOCKING_SYNC);
 	if (cu_result) {
 		DOCA_LOG_ERR("Function cuEventCreate for e_end %d", cu_result);
-		cuEventDestroy(e_start);
 		status = DOCA_ERROR_DRIVER;
 		goto destroy_events;
 	}
@@ -406,11 +409,17 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 		args.qp_cpu_main = resources.qp->qp_gverbs;
 		args.qp_cpu_companion = NULL;
 		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
-		*(args.exit_flag) = 0;
+		if (args.exit_flag == NULL) {
+			DOCA_LOG_ERR("Failed to allocate CPU proxy exit flag");
+			status = DOCA_ERROR_NO_MEMORY;
+			goto destroy_events;
+		}
 
 		int result = pthread_create(&thread_id, NULL, progress_cpu_proxy, (void *)&args);
 		if (result != 0) {
 			perror("Failed to create thread");
+			free(args.exit_flag);
+			status = DOCA_ERROR_OPERATING_SYSTEM;
 			goto destroy_events;
 		}
 	}
@@ -439,7 +448,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						 (uint8_t *)(resources.remote_data_buf[idx]),
 						 htobe32(resources.remote_data_mkey[idx]));
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_write_bw failed: %s", doca_error_get_descr(status));
 			goto stop_thread;
 		}
 
@@ -461,7 +470,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						 (uint8_t *)(resources.remote_data_buf[idx]),
 						 htobe32(resources.remote_data_mkey[idx]));
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_write_bw failed: %s", doca_error_get_descr(status));
 			goto stop_thread;
 		}
 
@@ -493,6 +502,37 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 		printf(REPORT_FMT_EXT, message_size[idx], resources.num_iters, bw, msgrate, (double)et_ms);
 
 		printf("\n");
+
+		if (resources.comp_channel) {
+			void *cq_context;
+			struct doca_verbs_cq *cq;
+			struct doca_verbs_qp *qp;
+
+			status = doca_verbs_get_cq_event(resources.comp_channel, &cq, &cq_context);
+			if (status == DOCA_SUCCESS && cq_context != NULL) {
+				uint32_t qpn;
+				struct doca_gpu_verbs_qp *qp_tmp = (struct doca_gpu_verbs_qp *)cq_context;
+
+				status = doca_gpu_verbs_get_qp_qp(qp_tmp, &qp);
+				if (status != DOCA_SUCCESS) {
+					doca_verbs_ack_cq_events(cq, 1);
+					DOCA_LOG_ERR("Function doca_gpu_verbs_get_qp_qp failed: %s",
+						     doca_error_get_descr(status));
+					goto stop_thread;
+				}
+
+				qpn = doca_verbs_qp_get_qpn(qp);
+
+				DOCA_LOG_ERR("Got error at QP %p QPN %x", qp_tmp, qpn);
+
+				doca_verbs_ack_cq_events(cq, 1);
+			} else if (status == DOCA_ERROR_AGAIN) {
+				status = DOCA_SUCCESS;
+			} else if (status != DOCA_SUCCESS && status != DOCA_ERROR_AGAIN) {
+				DOCA_LOG_ERR("Error in doca_verbs_get_cq_event: %s", doca_error_get_descr(status));
+				goto stop_thread;
+			}
+		}
 	}
 
 stop_thread:
@@ -500,6 +540,7 @@ stop_thread:
 	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
 		WRITE_ONCE_64b(*args.exit_flag, 1);
 		pthread_join(thread_id, NULL);
+		free(args.exit_flag);
 	}
 
 destroy_events:

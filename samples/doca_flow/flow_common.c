@@ -67,6 +67,9 @@ static doca_error_t set_system_level_resources(struct doca_flow_cfg *cfg,
 	}
 
 	for (int i = 0; i < SHARED_RESOURCE_NUM_VALUES; i++) {
+		if (nr_shared_resources[i] == 0)
+			continue;
+
 		result = doca_flow_cfg_set_nr_shared_resource(cfg, nr_shared_resources[i], i);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_shared_resources: %s",
@@ -148,6 +151,22 @@ static doca_error_t set_port_level_resources(struct doca_flow_port_cfg *cfg, str
 		return result;
 	}
 
+	result = doca_flow_port_cfg_set_nr_resources(cfg, DOCA_FLOW_RESOURCE_EVENT_RSS, resource->nr_event_rss);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level event_rss resource to %u: %s",
+			     resource->nr_event_rss,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(cfg, DOCA_FLOW_RESOURCE_TRIM, resource->nr_trim);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level trim resource to %d: %s",
+			     resource->nr_trim,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
 	return DOCA_SUCCESS;
 }
 
@@ -193,7 +212,7 @@ doca_error_t init_doca_flow(int nb_queues,
 			    struct flow_resources *resource,
 			    uint32_t nr_shared_resources[])
 {
-	return init_doca_flow_cb(nb_queues, mode, resource, nr_shared_resources, check_for_valid_entry, NULL, NULL);
+	return init_doca_flow_cb(nb_queues, mode, resource, nr_shared_resources, check_for_valid_entry, NULL, NULL, NULL);
 }
 
 doca_error_t init_doca_flow_with_defs(int nb_queues,
@@ -202,7 +221,23 @@ doca_error_t init_doca_flow_with_defs(int nb_queues,
 				      uint32_t nr_shared_resources[],
 				      struct doca_flow_definitions *defs)
 {
-	return init_doca_flow_cb(nb_queues, mode, resource, nr_shared_resources, check_for_valid_entry, NULL, defs);
+	return init_doca_flow_cb(nb_queues, mode, resource, nr_shared_resources, check_for_valid_entry, NULL, defs, NULL);
+}
+
+doca_error_t init_doca_flow_with_ct(int nb_queues,
+				    const char *mode,
+				    struct flow_resources *resource,
+				    uint32_t nr_shared_resources[],
+				    struct ct_init_cfg *ct_cfg)
+{
+	return init_doca_flow_cb(nb_queues,
+				 mode,
+				 resource,
+				 nr_shared_resources,
+				 check_for_valid_entry,
+				 NULL,
+				 NULL,
+				 ct_cfg);
 }
 
 doca_error_t init_doca_flow_cb(int nb_queues,
@@ -211,7 +246,8 @@ doca_error_t init_doca_flow_cb(int nb_queues,
 			       uint32_t nr_shared_resources[],
 			       doca_flow_entry_process_cb cb,
 			       doca_flow_pipe_process_cb pipe_process_cb,
-			       struct doca_flow_definitions *defs)
+			       struct doca_flow_definitions *defs,
+			       struct ct_init_cfg *ct_cfg)
 {
 	struct doca_flow_cfg *flow_cfg;
 	doca_error_t result, tmp_result;
@@ -264,6 +300,19 @@ doca_error_t init_doca_flow_cb(int nb_queues,
 		result = doca_flow_cfg_set_definitions(flow_cfg, defs);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set doca_flow_cfg defs: %s", doca_error_get_descr(result));
+			goto destroy_cfg;
+		}
+	}
+
+	if (ct_cfg && ct_cfg->ct_queues > 0) {
+		result = doca_flow_cfg_set_ct_queues(flow_cfg, ct_cfg->ct_queues);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_cfg ct_queues: %s", doca_error_get_descr(result));
+			goto destroy_cfg;
+		}
+		result = doca_flow_cfg_set_ct_ctrl_queues(flow_cfg, ct_cfg->ct_ctrl_queues);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca_flow_cfg ct_ctrl_queues: %s", doca_error_get_descr(result));
 			goto destroy_cfg;
 		}
 	}
@@ -337,7 +386,10 @@ static doca_error_t create_doca_flow_port_cfg(int port_id,
  * @port_id [in]: port ID
  * @actions_mem_size [in]: action memory size
  * @dev [in]: doca device to attach
- * @state [in]: port operation initial state
+ * @port_config_cb [in]: port configuration callback
+ * @config_cb_ctx [in]: user configuration context
+ * @resources [in]: flow resources configuration
+ * @ct_cfg [in]: CT port configuration (NULL if CT is not used)
  * @port [out]: port handler on success
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -347,6 +399,7 @@ static doca_error_t create_doca_flow_port(int port_id,
 					  port_config_cb port_config_cb,
 					  void *config_cb_ctx,
 					  struct flow_resources *resources,
+					  const struct ct_port_cfg *ct_cfg,
 					  struct doca_flow_port **port)
 {
 	struct doca_flow_port_cfg *port_cfg;
@@ -375,6 +428,62 @@ static doca_error_t create_doca_flow_port(int port_id,
 		result = doca_flow_port_cfg_set_devargs(port_cfg, "th_win_us=0");
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set doca_flow_port_cfg devargs: %s", doca_error_get_descr(result));
+			goto destroy_port_cfg;
+		}
+	}
+
+	/* Apply CT port configuration if provided */
+	if (ct_cfg != NULL) {
+		if (ct_cfg->ct_flags != 0) {
+			result = doca_flow_port_cfg_set_ct_flags(port_cfg, ct_cfg->ct_flags);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to set doca_flow_port_cfg ct_flags: %s",
+					     doca_error_get_descr(result));
+				goto destroy_port_cfg;
+			}
+		}
+		if (ct_cfg->ct_actions_mem_size != 0) {
+			result = doca_flow_port_cfg_set_ct_actions_mem_size(port_cfg, ct_cfg->ct_actions_mem_size);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to set doca_flow_port_cfg ct_actions_mem_size: %s",
+					     doca_error_get_descr(result));
+				goto destroy_port_cfg;
+			}
+		}
+		if (ct_cfg->ct_aging_core != 0) {
+			result = doca_flow_port_cfg_set_ct_aging_core(port_cfg, ct_cfg->ct_aging_core);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to set doca_flow_port_cfg ct_aging_core: %s",
+					     doca_error_get_descr(result));
+				goto destroy_port_cfg;
+			}
+		}
+		if (ct_cfg->zone_match_mask[0] == NULL || ct_cfg->modify_mask[0] == NULL) {
+			DOCA_LOG_ERR("Origin masks can't be null");
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto destroy_port_cfg;
+		}
+		if (ct_cfg->zone_match_mask[1] == NULL || ct_cfg->modify_mask[1] == NULL) {
+			DOCA_LOG_ERR("Reply masks can't be null");
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto destroy_port_cfg;
+		}
+		result = doca_flow_port_cfg_set_ct_direction(port_cfg,
+							     false,
+							     ct_cfg->match_inner[0],
+							     ct_cfg->zone_match_mask[0],
+							     ct_cfg->modify_mask[0]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set origin ct_direction: %s", doca_error_get_descr(result));
+			goto destroy_port_cfg;
+		}
+		result = doca_flow_port_cfg_set_ct_direction(port_cfg,
+							     true,
+							     ct_cfg->match_inner[1],
+							     ct_cfg->zone_match_mask[1],
+							     ct_cfg->modify_mask[1]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set reply ct_direction: %s", doca_error_get_descr(result));
 			goto destroy_port_cfg;
 		}
 	}
@@ -501,7 +610,8 @@ doca_error_t init_doca_flow_ports_with_custom_config(int nb_ports,
 						     port_config_cb port_rep_cb,
 						     void *config_cb_ctx,
 						     uint32_t actions_mem_size[],
-						     struct flow_resources *resources)
+						     struct flow_resources *resources,
+						     const struct ct_port_cfg *ct_cfg)
 {
 	int portid;
 	doca_error_t result;
@@ -524,6 +634,7 @@ doca_error_t init_doca_flow_ports_with_custom_config(int nb_ports,
 						       port_cb,
 						       config_cb_ctx,
 						       resources,
+						       ct_cfg,
 						       &ports[portid]);
 		}
 		if (result != DOCA_SUCCESS) {
@@ -574,7 +685,8 @@ doca_error_t init_doca_flow_ports(int nb_ports,
 						       NULL /* port_rep_cb */,
 						       NULL /* config_cb_ctx */,
 						       actions_mem_size,
-						       resources);
+						       resources,
+						       NULL /* ct_cfg */);
 }
 
 doca_error_t init_doca_flow_vnf_ports(int nb_ports,
@@ -643,9 +755,11 @@ doca_error_t flow_process_entries(struct doca_flow_port *port, struct entries_st
 {
 	doca_error_t result;
 
-	result = doca_flow_entries_process(port, 0, DEFAULT_TIMEOUT_US, nr_entries);
+	result = doca_flow_pipe_queue_drain(port, 0, NULL);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to process %u entries: %s", nr_entries, doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to drain queue (expected %u entries): %s",
+			     nr_entries,
+			     doca_error_get_descr(result));
 		return result;
 	}
 

@@ -40,7 +40,6 @@
 
 #define DEFAULT_UDP_DELAY_S 2
 #define DEFAULT_CNT_QUERY_INTERVAL 1
-#define CT_SHARED_COUNTERS 1
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -461,7 +460,7 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 	uint32_t entry_flags, prepare_flags;
 	doca_error_t result;
 	int i, nb_packets = 0, total_packets_processed = 0;
-	uint64_t timeout_s = 5; /* Timeout in seconds */
+	uint64_t timeout_s = 15; /* Timeout in seconds */
 	time_t end_time, max_end_time;
 
 	memset(&match_o_asym, 0, sizeof(match_o_asym));
@@ -552,7 +551,7 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 	} while (time(NULL) < end_time);
 
 	if (total_packets_processed == 0) {
-		DOCA_LOG_ERR("Sample didn't receive packets within 5 seconds timeout");
+		DOCA_LOG_ERR("Sample didn't receive packets within 15 seconds timeout");
 		return DOCA_ERROR_BAD_STATE;
 	}
 
@@ -654,9 +653,12 @@ doca_error_t flow_ct_udp_tunnel_asymmetric(uint16_t nb_queues, struct flow_switc
 	struct doca_flow_ct_meta o_modify_mask, r_modify_mask;
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ctrl_status, ct_status;
-	uint32_t ct_flags, nb_arm_queues = 1, nb_ctrl_queues = 1, ct_actions_mem_size = 0, nb_ipv4_sessions = 1024,
-			   nb_ipv6_sessions = 0; /* On BF2 should always be
-						    0 */
+	struct ct_port_cfg ct_port_cfg = {.ct_flags = DOCA_FLOW_CT_FLAG_NO_AGING | DOCA_FLOW_CT_FLAG_ASYMMETRIC_TUNNEL,
+					  .match_inner = {false, true},
+					  .zone_match_mask = {&o_zone_mask, &r_zone_mask},
+					  .modify_mask = {&o_modify_mask, &r_modify_mask}};
+	uint32_t nb_arm_queues = 1, nb_ctrl_queues = 1, nb_ipv4_sessions = 1024, nb_ipv6_sessions = 0; /* On BF2 should
+													  always be 0 */
 	uint16_t ct_queue = nb_queues;
 	struct ct_udp_tunnel_stats_context stats_ctx = {.ct_entry = ct_entry, .ct_queue = ct_queue};
 	doca_error_t result;
@@ -672,7 +674,8 @@ doca_error_t flow_ct_udp_tunnel_asymmetric(uint16_t nb_queues, struct flow_switc
 	resource.nr_encap = 1;
 	ct_status.nb_processed = 0;
 
-	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
+	struct ct_init_cfg ct_cfg = {.ct_queues = nb_arm_queues, .ct_ctrl_queues = nb_ctrl_queues};
+	result = init_doca_flow_with_ct(nb_queues, "switch,hws", &resource, nr_shared_resources, &ct_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -684,33 +687,16 @@ doca_error_t flow_ct_udp_tunnel_asymmetric(uint16_t nb_queues, struct flow_switc
 	memset(&r_zone_mask, 0, sizeof(r_zone_mask));
 	memset(&r_modify_mask, 0, sizeof(r_modify_mask));
 
-	ct_flags = DOCA_FLOW_CT_FLAG_NO_AGING | DOCA_FLOW_CT_FLAG_ASYMMETRIC_TUNNEL;
-	result = init_doca_flow_ct(ct_flags,
-				   nb_arm_queues,
-				   nb_ctrl_queues,
-				   ct_actions_mem_size,
-				   NULL,
-				   false, /* o_match_inner */
-				   &o_zone_mask,
-				   &o_modify_mask,
-				   true, /* r_match_inner */
-				   &r_zone_mask,
-				   &r_modify_mask);
-	if (result != DOCA_SUCCESS) {
-		doca_flow_destroy();
-		return result;
-	}
-
 	ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(nb_entries));
-	result = init_doca_flow_switch_ports(ctx->devs_ctx.devs_manager,
-					     ctx->devs_ctx.nb_devs,
-					     ports,
-					     nb_ports,
-					     actions_mem_size,
-					     &resource);
+	result = init_doca_flow_switch_ports_with_ct(ctx->devs_ctx.devs_manager,
+						     ctx->devs_ctx.nb_devs,
+						     ports,
+						     nb_ports,
+						     actions_mem_size,
+						     &resource,
+						     &ct_port_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_ct_destroy();
 		doca_flow_destroy();
 		return result;
 	}
@@ -747,7 +733,7 @@ doca_error_t flow_ct_udp_tunnel_asymmetric(uint16_t nb_queues, struct flow_switc
 		goto cleanup;
 
 	stats_ctx.ct_pipe = ct_pipe;
-	flow_wait_for_packets(5, print_ct_udp_tunnel_stats_wrapper, &stats_ctx);
+	flow_wait_for_packets(15, print_ct_udp_tunnel_stats_wrapper, &stats_ctx);
 
 cleanup:
 	cleanup_procedure(ct_pipe, nb_ports, ports);

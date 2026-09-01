@@ -58,6 +58,7 @@ static void *vblk_io_ctx_thread(void *arg)
 			.num_io_ctx = cfg->num_io_ctx,
 			.seg_max = cfg->seg_max,
 			.indirect_enabled = cfg->indirect_enabled,
+			.shm_dir_path = cfg->shm_dir_path,
 		};
 		err = vblk_ctrl_init(cfg->ctrl, &attr, cfg->ep);
 		if (err != DOCA_SUCCESS) {

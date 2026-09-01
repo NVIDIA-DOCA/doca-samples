@@ -23,6 +23,7 @@
  *
  */
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
@@ -73,6 +74,17 @@ static doca_error_t device_name_callback(void *param, void *config)
 		DOCA_LOG_ERR("Entered emulation manager device name exceeding the maximum size of %d",
 			     DOCA_DEVINFO_IBDEV_NAME_SIZE - 1);
 		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	/* Must match the EMU child's isspace()-based VBLK_EMU_CONFIG parser: any
+	 * whitespace would corrupt the space-delimited env-var serialization and
+	 * shift every subsequent field's parse. */
+	for (int i = 0; i < len; i++) {
+		if (isspace((unsigned char)device_name[i])) {
+			DOCA_LOG_ERR("Device name must not contain whitespace; "
+				     "it is passed to the EMU child as a space-delimited env-var token");
+			return DOCA_ERROR_INVALID_VALUE;
+		}
 	}
 
 	strncpy(cfg->device_name, device_name, len + 1);
@@ -234,6 +246,36 @@ static doca_error_t indirect_callback(void *param, void *config)
 }
 
 /**
+ * @brief ARGP callback for shared memory directory path
+ *
+ * Validates and stores the directory path used for live-update / recovery SHM
+ * files. Live-update SRC and DST instances must be configured with matching
+ * paths.
+ *
+ * @param[in] param Input parameter containing absolute directory path
+ * @param[in,out] config Program configuration context to update
+ * @return DOCA_SUCCESS on success, DOCA_ERROR_INVALID_VALUE if invalid
+ */
+static doca_error_t shm_dir_path_callback(void *param, void *config)
+{
+	struct vblk_pci_dev_config *cfg = (struct vblk_pci_dev_config *)config;
+	const char *path = (const char *)param;
+	doca_error_t err;
+
+	err = vblk_validate_shm_dir_path(path);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("shm-dir-path is invalid: must be a non-empty absolute path (start with '/'), "
+			     "at most %d chars, with no whitespace (it is passed to the EMU child as a "
+			     "space-delimited env-var token)",
+			     VBLK_SHM_DIR_PATH_LEN - 1);
+		return err;
+	}
+
+	memcpy(cfg->shm_dir_path, path, strnlen(path, VBLK_SHM_DIR_PATH_LEN) + 1);
+	return DOCA_SUCCESS;
+}
+
+/**
  * @brief ARGP callback to set data path provider
  *
  * Validates and stores the data path provider name provided via command line.
@@ -244,14 +286,14 @@ static doca_error_t indirect_callback(void *param, void *config)
  */
 static doca_error_t set_provider_callback(void *param, void *config)
 {
-	bool datapath_on_dpa = true;
+	bool datapath_on_dpa = false;
 	struct vblk_pci_dev_config *cfg = (struct vblk_pci_dev_config *)config;
 	char *provider_name = (char *)param;
 
 	if (provider_name) {
-		if (!strcmp(provider_name, "DPU")) {
-			datapath_on_dpa = false;
-		} else if (strcmp(provider_name, "DPA")) {
+		if (!strcmp(provider_name, "DPA")) {
+			datapath_on_dpa = true;
+		} else if (strcmp(provider_name, "DPU")) {
 			DOCA_LOG_ERR("Invalid data path provider value:%s", provider_name);
 			return DOCA_ERROR_INVALID_VALUE;
 		}
@@ -441,8 +483,28 @@ static doca_error_t register_vblk_pci_dev_params(void)
 	}
 	doca_argp_param_set_long_name(param, "provider");
 	doca_argp_param_set_arguments(param, "<datapath provider name>");
-	doca_argp_param_set_description(param, "Set data path provider, {DPA or DPU, default: DPA}");
+	doca_argp_param_set_description(param, "Set data path provider, {DPA or DPU, default: DPU}");
 	doca_argp_param_set_callback(param, set_provider_callback);
+	doca_argp_param_set_type(param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* SHM directory path parameter */
+	result = doca_argp_param_create(&param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(param, "shm-dir-path");
+	doca_argp_param_set_arguments(param, "<absolute path>");
+	doca_argp_param_set_description(
+		param,
+		"Directory for live-update / recovery SHM files; must be absolute, no whitespace. "
+		"SRC and DST instances must use matching paths (default: " VBLK_PCI_DEV_DEFAULT_SHM_DIR_PATH ")");
+	doca_argp_param_set_callback(param, shm_dir_path_callback);
 	doca_argp_param_set_type(param, DOCA_ARGP_TYPE_STRING);
 	result = doca_argp_register_param(param);
 	if (result != DOCA_SUCCESS) {
@@ -472,7 +534,8 @@ int main(int argc, char **argv)
 		.tlp_mgmt_core_idx = VBLK_PCI_DEV_DEFAULT_TLP_MGMT_CORE_IDX,
 		.offload_engine_core_idx = VBLK_PCI_DEV_DEFAULT_OFFLOAD_ENGINE_CORE_IDX,
 		.stats_ios_period = 0,
-		.datapath_on_dpa = true,
+		.datapath_on_dpa = false,
+		.shm_dir_path = VBLK_PCI_DEV_DEFAULT_SHM_DIR_PATH,
 	};
 	struct doca_log_backend *sdk_log;
 	int exit_status = EXIT_FAILURE;
@@ -519,10 +582,11 @@ int main(int argc, char **argv)
 	DOCA_LOG_INFO("Configuration:");
 	DOCA_LOG_INFO("  Device: %s", config.device_name);
 	DOCA_LOG_INFO("  Queues: %u", config.num_queues);
-	DOCA_LOG_INFO("  IO Context Mask: 0x%lx", config.io_ctx_mask);
+	DOCA_LOG_INFO("  IO Context Mask: 0x%" PRIx64, config.io_ctx_mask);
 	DOCA_LOG_INFO("  TLP Core: %u", config.tlp_core_idx);
 	DOCA_LOG_INFO("  TLP Mgmt Core: %u", config.tlp_mgmt_core_idx);
 	DOCA_LOG_INFO("  Offload Engine Core: %u", config.offload_engine_core_idx);
+	DOCA_LOG_INFO("  SHM Dir Path: %s", config.shm_dir_path);
 	DOCA_LOG_INFO("Runtime commands (enter via stdin):");
 	DOCA_LOG_INFO("  cap <GB>  - Set block device capacity in GB (e.g. cap 1)");
 	DOCA_LOG_INFO(" Datapath Provider: %s", config.datapath_on_dpa ? "DPA" : "DPU");

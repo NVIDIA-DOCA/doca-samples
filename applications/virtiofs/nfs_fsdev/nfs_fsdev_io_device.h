@@ -57,7 +57,7 @@ struct nfs_fsdev_global *get_global_context_nfs_fsdev(struct nfs_fsdev_context *
 /**
  * @brief Get the private context from an NFS fsdev context.
  * @param [in] nfs_fsdev The NFS fsdev context.
- * @return Pointer to the private context.
+ * @return Pointer to the per-thread private context, or NULL if per-thread initialization fails.
  */
 struct nfs_fsdev *get_private_context_nfs_fsdev(struct nfs_fsdev_context *nfs_fsdev_context);
 

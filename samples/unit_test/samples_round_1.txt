@@ -1,2 +1,0 @@
-doca_flow
-doca_telemetry

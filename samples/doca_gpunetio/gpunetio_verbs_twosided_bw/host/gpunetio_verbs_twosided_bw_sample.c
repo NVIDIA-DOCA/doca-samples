@@ -78,7 +78,7 @@ static void server_validate_test(struct verbs_resources *resources)
 				// in case of inline, no data in receive buffer
 				if (buffer[pos] != 0) {
 					DOCA_LOG_ERR(
-						"Validation error: buffer %d pos %d has invalid data %d expected 0\n",
+						"Validation error: buffer %d pos %d has invalid data %d expected 0",
 						idx,
 						pos,
 						buffer[pos]);
@@ -89,7 +89,7 @@ static void server_validate_test(struct verbs_resources *resources)
 			} else {
 				if (buffer[pos] != (idx + 1)) {
 					DOCA_LOG_ERR(
-						"Validation error: buffer %d pos %d has invalid data %d expected %d\n",
+						"Validation error: buffer %d pos %d has invalid data %d expected %d",
 						idx,
 						pos,
 						buffer[pos],
@@ -103,7 +103,7 @@ static void server_validate_test(struct verbs_resources *resources)
 		free(buffer);
 	}
 
-	DOCA_LOG_WARN("Data validation successful! Data received correctly from client\n");
+	DOCA_LOG_WARN("Data validation successful! Data received correctly from client");
 }
 
 static doca_error_t destroy_local_memory_objects(struct verbs_resources *resources)
@@ -215,6 +215,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 							     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
 								     IBV_ACCESS_RELAXED_ORDERING);
 			if (resources->data_mr[idx] == NULL) {
+				status = DOCA_ERROR_DRIVER;
 				DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
 				goto exit_error;
 			}
@@ -258,6 +259,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 		}
 
 		if (resources->flag_mr[idx] == NULL) {
+			status = DOCA_ERROR_DRIVER;
 			DOCA_LOG_ERR("Failed to create flag mr: %s", doca_error_get_descr(status));
 			goto exit_error;
 		}
@@ -298,6 +300,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 	}
 
 	if (resources->dump_flag_mr == NULL) {
+		status = DOCA_ERROR_DRIVER;
 		DOCA_LOG_ERR("Failed to create dump_flag_mr: %s", doca_error_get_descr(status));
 		goto exit_error;
 	}
@@ -429,10 +432,6 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	if (resources.recv_inline)
 		tot_msg = NUM_MSG_SIZE_INLINE;
 
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF)
-		DOCA_LOG_WARN(
-			"BlueFlame mode selected. In this bandwidth test, the UAR will be created as BlueFlame but the DB will be rung as GPU_SM_DB mode");
-
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create local rdma resources: %s", doca_error_get_descr(status));
@@ -454,13 +453,13 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	status = exchange_params_with_remote_peer(&resources);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to exchange params with remote peer: %s", doca_error_get_descr(status));
-		goto server_cleanup;
+		goto close_connection;
 	}
 
 	status = connect_verbs_qp(&resources);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to connect DOCA verbs QP: %s", doca_error_get_descr(status));
-		goto server_cleanup;
+		goto close_connection;
 	}
 
 	cuda_ret = cudaStreamCreateWithFlags(&cstream, cudaStreamNonBlocking);
@@ -480,7 +479,6 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	cu_result = cuEventCreate(&e_end, CU_EVENT_BLOCKING_SYNC);
 	if (cu_result) {
 		DOCA_LOG_ERR("Function cuEventCreate for e_end %d", cu_result);
-		cuEventDestroy(e_start);
 		status = DOCA_ERROR_DRIVER;
 		goto destroy_events;
 	}
@@ -534,7 +532,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						     false,
 						     data_val);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_two_sided_bw failed: %s", doca_error_get_descr(status));
 			goto destroy_events;
 		}
 
@@ -566,7 +564,7 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						     false,
 						     data_val);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_two_sided_bw failed: %s", doca_error_get_descr(status));
 			goto destroy_events;
 		}
 
@@ -613,7 +611,7 @@ destroy_events:
 		cuEventDestroy(e_end);
 
 close_connection:
-	oob_verbs_connection_client_close(resources.conn_socket);
+	oob_verbs_connection_server_close(server_sock_fd, resources.conn_socket);
 
 server_cleanup:
 	tmp_status = destroy_local_memory_objects(&resources);
@@ -654,10 +652,6 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	if (resources.recv_inline)
 		tot_msg = NUM_MSG_SIZE_INLINE;
 
-	if (resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF)
-		DOCA_LOG_WARN(
-			"BlueFlame mode selected. In this bandwidth test, the UAR will be created as BlueFlame but the DB will be rung as GPU_SM_DB mode");
-
 	status = create_verbs_resources(cfg, &resources);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create DOCA verbs resources: %s", doca_error_get_descr(status));
@@ -679,13 +673,13 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	status = exchange_params_with_remote_peer(&resources);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to exchange params with remote peer: %s", doca_error_get_descr(status));
-		goto client_cleanup;
+		goto close_connection;
 	}
 
 	status = connect_verbs_qp(&resources);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to connect DOCA verbs QP: %s", doca_error_get_descr(status));
-		goto client_cleanup;
+		goto close_connection;
 	}
 
 	cuda_ret = cudaStreamCreateWithFlags(&cstream, cudaStreamNonBlocking);
@@ -705,7 +699,6 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	cu_result = cuEventCreate(&e_end, CU_EVENT_BLOCKING_SYNC);
 	if (cu_result) {
 		DOCA_LOG_ERR("Function cuEventCreate for e_end %d", cu_result);
-		cuEventDestroy(e_start);
 		status = DOCA_ERROR_DRIVER;
 		goto destroy_events;
 	}
@@ -755,7 +748,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						     true,
 						     0);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_two_sided_bw failed: %s", doca_error_get_descr(status));
 			goto destroy_events;
 		}
 
@@ -781,13 +774,13 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						     htobe32(resources.flag_mr[idx]->lkey),
 						     (uint64_t *)(resources.remote_flag_buf[idx]),
 						     htobe32(resources.remote_flag_mkey[idx]),
-						     resources.prev_flag_buf[idx],
+						     (uint64_t *)(resources.dump_flag_buf),
 						     htobe32(resources.dump_flag_mr->lkey),
 						     resources.scope,
 						     true,
 						     0);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_two_sided_bw failed: %s", doca_error_get_descr(status));
 			goto destroy_events;
 		}
 

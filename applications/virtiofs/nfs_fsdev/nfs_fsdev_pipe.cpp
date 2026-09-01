@@ -25,11 +25,13 @@
 
 #include <filesystem>
 #include <string>
+#include <system_error>
 #include "nfs_fsdev_pipe.h"
-#include "nfs_fsdev_gpm.hpp"
 #include <doca_log.h>
 
 DOCA_LOG_REGISTER(NFS_FSDEV_PIPE);
+
+#include "nfs_fsdev_gpm.hpp"
 
 struct database {
 public:
@@ -63,7 +65,12 @@ extern "C" {
 
 struct database *allocate_and_init_map(const char *filename)
 {
-	std::filesystem::create_directories(std::filesystem::path(filename).parent_path());
+	std::error_code ec;
+	std::filesystem::create_directories(std::filesystem::path(filename).parent_path(), ec);
+	if (ec) {
+		DOCA_LOG_ERR("Failed to create parent directory for '%s': %s", filename, ec.message().c_str());
+		return NULL;
+	}
 
 	int fd = open(filename, O_RDWR | O_CREAT, 0666);
 	if (fd == -1) {

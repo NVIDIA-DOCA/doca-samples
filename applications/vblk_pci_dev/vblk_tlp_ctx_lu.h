@@ -34,4 +34,4 @@ struct doca_pe;
 /* Create and start TLP context thread */
 doca_error_t vblk_pci_tlp_thread_create(struct doca_pe *pe, pthread_t *thread, uint8_t affinity_core);
 
-#endif /* VBLK_TLP_CTX_H_ */
+#endif /* VBLK_TLP_CTX_LU_H_ */

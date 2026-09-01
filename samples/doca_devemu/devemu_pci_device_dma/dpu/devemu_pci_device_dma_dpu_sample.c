@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -421,10 +421,7 @@ static doca_error_t setup_devemu_resources(struct devemu_resources *resources,
 		return result;
 	}
 
-	result = find_supported_device(pci_address,
-				       resources->pci_type,
-				       doca_devemu_pci_cap_type_is_hotplug_supported,
-				       &resources->dev);
+	result = find_generic_hotpluggable_device(pci_address, &resources->dev);
 	if (result != DOCA_SUCCESS)
 		return result;
 

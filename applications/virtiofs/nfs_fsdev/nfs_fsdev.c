@@ -30,6 +30,7 @@
 #include <doca_log.h>
 #include "nfsc/libnfs-raw-nfs.h"
 #include <doca_devemu_vfs_fuse_kernel.h>
+#include <doca_devemu_vfs.h>
 #include <sys/sysmacros.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -47,6 +48,8 @@
 #include <doca_error.h>
 
 DOCA_LOG_REGISTER(NFS_FSDEV);
+
+#define FUSE_PAGE_SIZE (4 * 1024)
 
 /* File type bits (octal, as per POSIX/SUS) */
 #define BITS_MASK 0170000    /* Mask for file type bits */
@@ -91,6 +94,16 @@ struct unlink_cb_data {
 
 static void nfs_fsdev_complete(struct async_context *context, size_t len, int status);
 static void nimp(struct async_context *context);
+
+static inline bool nfs_fsdev_is_old_request(struct async_context *context)
+{
+	struct nfs_fsdev_recovery *recovery = context->fsdev_global->recovery;
+
+	if (recovery == NULL || context->src_domain_id >= NFS_FSDEV_NUM_OF_VIRTIO_QUEUES)
+		return false;
+
+	return context->req_id <= recovery->queues[context->src_domain_id].suffix_xid;
+}
 
 static struct async_context *alloc_init_async_context(struct nfs_fsdev_global *global_fsdev,
 						      struct nfs_fsdev *perthread_fsdev,
@@ -236,16 +249,19 @@ static void nfs_fsdev_getattr_cb(struct rpc_context *rpc, int status, void *data
 
 	if (status == RPC_STATUS_ERROR) {
 		DOCA_LOG_ERR("NFS getattr failed with error: %s", (char *)data);
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	} else if (status == RPC_STATUS_CANCEL) {
 		DOCA_LOG_ERR("NFS getattr operation was canceled");
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	}
 
 	GETATTR3res *result = data;
 	if (result->status != NFS3_OK) {
 		DOCA_LOG_ERR("failed with error:%d\n", result->status);
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	}
 
 	fattr3 *res = &result->GETATTR3res_u.resok.obj_attributes;
@@ -269,13 +285,13 @@ static void nfs_fsdev_getattr(struct async_context *context)
 		DOCA_LOG_ERR("No entry found for inode=%lu", hdr->nodeid);
 		nfs_fsdev_complete(context, 0, -ENOENT);
 		return;
-		exit(1);
 	}
 
 	struct NfsFsdevEntry temp = get_entry_by_left(context->fsdev_global->db, hdr->nodeid);
 	if (temp.state == NFS_FSDEV_PENDING_DELETION_STATE && temp.ref_count == 0) {
 		DOCA_LOG_WARN("Attempt to get attributes for inode=%lu which is pending deletion", hdr->nodeid);
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	struct GETATTR3args args = nfs_fsdev_getattr_args(&temp);
@@ -286,7 +302,8 @@ static void nfs_fsdev_getattr(struct async_context *context)
 				   &args,
 				   context)) {
 		DOCA_LOG_WARN("Failed to start async NFS getattr for inode=%lu", hdr->nodeid);
-		nfs_fsdev_complete(context, 0, -ENOENT);
+		pthread_mutex_lock(&context->fsdev_global->lock);
+		nfs_fsdev_complete(context, 0, -EIO);
 		return;
 	}
 }
@@ -302,10 +319,12 @@ static void nfs_fsdev_setattr_cb(struct rpc_context *rpc, int status, void *data
 
 	if (status == RPC_STATUS_ERROR) {
 		DOCA_LOG_ERR("NFS setattr failed with error: %s", (char *)data);
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	} else if (status == RPC_STATUS_CANCEL) {
 		DOCA_LOG_ERR("NFS setattr operation was canceled");
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	}
 
 	struct SETATTR3res *result = data;
@@ -421,7 +440,9 @@ static void nfs_fsdev_setattr(struct async_context *context)
 				   &args,
 				   context)) {
 		DOCA_LOG_ERR("in setting attributes ");
-		exit(1);
+		pthread_mutex_lock(&context->fsdev_global->lock);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 }
 
@@ -429,17 +450,22 @@ static void nfs_fsdev_init(struct async_context *context)
 {
 	struct fuse_init_out *outarg = (struct fuse_init_out *)context->cmnd_out_hdr;
 
+	/* outarg->max_pages is lib-prefilled from the DMA cap; assume 4K guest page for max_write/readahead. */
 	outarg->major = 7;
 	outarg->minor = 34;
-	outarg->max_readahead = 131072;
+	outarg->max_readahead = outarg->max_pages * FUSE_PAGE_SIZE;
 	outarg->flags = 1004469371;
 	outarg->max_background = 65535;
 	outarg->congestion_threshold = 65535;
-	outarg->max_write = 131072;
+	outarg->max_write = outarg->max_pages * FUSE_PAGE_SIZE;
 	outarg->time_gran = 1;
-	outarg->max_pages = 32;
 	outarg->map_alignment = 0;
 	memset(outarg->unused, 0, sizeof(outarg->unused));
+
+	DOCA_LOG_INFO("FUSE_INIT advertising: max_write=%u max_readahead=%u max_pages=%u",
+		      outarg->max_write,
+		      outarg->max_readahead,
+		      outarg->max_pages);
 
 	nfs_fsdev_complete(context, sizeof(*outarg), 0);
 }
@@ -454,10 +480,12 @@ static void nfs_fsdev_lookup_cb(struct rpc_context *rpc, int status, void *data,
 
 	if (status == RPC_STATUS_ERROR) {
 		DOCA_LOG_ERR("LOOKUP RPC failed with error [%s]", (char *)data);
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	} else if (status == RPC_STATUS_CANCEL) {
 		DOCA_LOG_ERR("LOOKUP failed: operation was canceled");
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	}
 
 	struct LOOKUP3res *result = data;
@@ -469,7 +497,7 @@ static void nfs_fsdev_lookup_cb(struct rpc_context *rpc, int status, void *data,
 			nfs_fsdev_complete(ctx, 0, -ENOENT);
 		} else {
 			DOCA_LOG_ERR("lookup result is other than OK or NOENT = [%d]", ret);
-			exit(1);
+			nfs_fsdev_complete(ctx, 0, -EINVAL);
 		}
 
 		return;
@@ -484,7 +512,8 @@ static void nfs_fsdev_lookup_cb(struct rpc_context *rpc, int status, void *data,
 		struct NfsFsdevEntry temp = get_entry_by_right(ctx->fsdev_global->db, &fh);
 		if (temp.state == NFS_FSDEV_PENDING_DELETION_STATE && temp.ref_count == 0) {
 			DOCA_LOG_ERR("Attempt to make I/O request on a file that is pending deletion");
-			exit(1);
+			nfs_fsdev_complete(ctx, 0, -ENOENT);
+			return;
 		}
 
 		inode = temp.inode_left_key;
@@ -496,7 +525,8 @@ static void nfs_fsdev_lookup_cb(struct rpc_context *rpc, int status, void *data,
 					 inode,
 					 &result->LOOKUP3res_u.resok.object)) {
 			DOCA_LOG_ERR("Failed to insert new entry to our data base");
-			exit(1);
+			nfs_fsdev_complete(ctx, 0, -EIO);
+			return;
 		}
 	}
 
@@ -512,18 +542,21 @@ static void nfs_fsdev_lookup(struct async_context *context)
 
 	if (hdr->nodeid == 0) {
 		DOCA_LOG_ERR("calling lookup with parent inode 0");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EINVAL);
+		return;
 	}
 
 	if (check_if_exist_by_left(context->fsdev_global->db, hdr->nodeid) == false) {
 		DOCA_LOG_ERR("parent directory not found");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	struct NfsFsdevEntry temp = get_entry_by_left(context->fsdev_global->db, hdr->nodeid);
 	if (temp.state == NFS_FSDEV_PENDING_DELETION_STATE) {
 		DOCA_LOG_WARN("Attempt to make I/O request on a file with parent directory that is pending deletion");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	struct LOOKUP3args args = {0};
@@ -537,7 +570,9 @@ static void nfs_fsdev_lookup(struct async_context *context)
 				  &args,
 				  context)) {
 		DOCA_LOG_ERR("Failed to start lookup");
-		exit(1);
+		pthread_mutex_lock(&context->fsdev_global->lock);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 }
 
@@ -593,10 +628,12 @@ static void nfs_fsdev_readdir_cb_common(struct rpc_context *rpc, int status, voi
 
 	if (status == RPC_STATUS_ERROR) {
 		DOCA_LOG_ERR("NFS readdir failed with error: %s", (char *)data);
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	} else if (status == RPC_STATUS_CANCEL) {
 		DOCA_LOG_ERR("NFS readdir operation was canceled");
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	}
 
 	struct READDIRPLUS3res *res = data;
@@ -631,7 +668,8 @@ static void nfs_fsdev_readdir_cb_common(struct rpc_context *rpc, int status, voi
 						 inode,
 						 &curr_entry->name_handle.post_op_fh3_u.handle)) {
 				DOCA_LOG_ERR("Failed to insert new entry to our data base");
-				exit(1);
+				nfs_fsdev_complete(ctx, 0, -EIO);
+				return;
 			}
 		}
 
@@ -703,13 +741,15 @@ static void nfs_fsdev_readdir_common(struct async_context *context, bool isPlus)
 
 	if (check_if_exist_by_left(context->fsdev_global->db, hdr->nodeid) == false) {
 		DOCA_LOG_ERR("Directory inode=%lu does not exist in DB", hdr->nodeid);
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	struct NfsFsdevEntry temp = get_entry_by_left(context->fsdev_global->db, hdr->nodeid);
 	if (temp.state == NFS_FSDEV_PENDING_DELETION_STATE) {
 		DOCA_LOG_ERR("Attempt to read directory inode=%lu which is pending deletion", hdr->nodeid);
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	struct READDIRPLUS3args args = nfs_fsdev_readdir_args(read_in->offset, &temp);
@@ -720,7 +760,9 @@ static void nfs_fsdev_readdir_common(struct async_context *context, bool isPlus)
 				       &args,
 				       context)) {
 		DOCA_LOG_ERR("Failed to start readdir");
-		exit(1);
+		pthread_mutex_lock(&context->fsdev_global->lock);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 }
 
@@ -750,20 +792,24 @@ static void nfs_fsdev_mknod_cb(struct rpc_context *rpc, int status, void *data, 
 	free(cb_data);
 	if (status == RPC_STATUS_ERROR) {
 		DOCA_LOG_ERR("Failed to create file: %s", (char *)data);
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	} else if (status == RPC_STATUS_CANCEL) {
 		DOCA_LOG_ERR("Failed MKNOD with status of RPC_STATUS_CANCEL");
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	}
 	struct CREATE3res *result = data;
 	if (result->status != NFS3_OK) {
 		DOCA_LOG_ERR("Create returned error [%d]", result->status);
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	}
 
 	if (result->CREATE3res_u.resok.obj.post_op_fh3_u.handle.data.data_len > NFS_FSDEV_MAX_FH_DATA_LEN) {
 		DOCA_LOG_ERR("File handle returned in mknod too long");
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -E2BIG);
+		return;
 	}
 
 	struct persistent_nfs_fh3 fh = {0};
@@ -775,7 +821,8 @@ static void nfs_fsdev_mknod_cb(struct rpc_context *rpc, int status, void *data, 
 
 		if (real_entry.state == NFS_FSDEV_PENDING_DELETION_STATE) {
 			DOCA_LOG_ERR("Edge case - NFS target reused this file handle");
-			exit(1);
+			nfs_fsdev_complete(ctx, 0, -EEXIST);
+			return;
 		} else {
 			fattr3 *res = &result->CREATE3res_u.resok.obj_attributes.post_op_attr_u.attributes;
 			struct fuse_out_header *hdr_out = (struct fuse_out_header *)ctx->fuse_out;
@@ -794,7 +841,8 @@ static void nfs_fsdev_mknod_cb(struct rpc_context *rpc, int status, void *data, 
 				 new_inode,
 				 &result->CREATE3res_u.resok.obj.post_op_fh3_u.handle)) {
 		DOCA_LOG_ERR("Failed to insert new entry to our data base");
-		exit(1);
+		nfs_fsdev_complete(ctx, 0, -EIO);
+		return;
 	}
 
 	fattr3 *res = &result->CREATE3res_u.resok.obj_attributes.post_op_attr_u.attributes;
@@ -846,17 +894,24 @@ static void nfs_fsdev_mknod(struct async_context *context)
 	case REGULAR_FILE:
 		if (check_if_exist_by_left(context->fsdev_global->db, hdr->nodeid) == false) {
 			DOCA_LOG_ERR("Attempt to create a new file in a directory that is pending deletion");
-			exit(1);
+			nfs_fsdev_complete(context, 0, -ENOENT);
+			return;
 		}
 
 		struct NfsFsdevEntry temp = get_entry_by_left(context->fsdev_global->db, hdr->nodeid);
 		assert(temp.state != NFS_FSDEV_PENDING_DELETION_STATE);
 		struct CREATE3args args = nfs_fsdev_mknod_args(hdr, mknod_in, name, &temp);
+		if (args.where.name == NULL) {
+			nfs_fsdev_complete(context, 0, -ENOMEM);
+			return;
+		}
 
 		struct mknod_cb_data *cb_data = malloc(sizeof(*cb_data));
 		if (!cb_data) {
 			DOCA_LOG_ERR("Failed to allocate memory for cb_data");
-			exit(1);
+			free(args.where.name);
+			nfs_fsdev_complete(context, 0, -ENOMEM);
+			return;
 		}
 		cb_data->ctx = context;
 		cb_data->name = args.where.name; // Transfer ownership
@@ -867,12 +922,17 @@ static void nfs_fsdev_mknod(struct async_context *context)
 					  &args,
 					  cb_data)) {
 			DOCA_LOG_ERR("Failed to start create");
-			exit(1);
+			free(cb_data->name);
+			free(cb_data);
+			pthread_mutex_lock(&context->fsdev_global->lock);
+			nfs_fsdev_complete(context, 0, -EIO);
+			return;
 		}
 		break;
 	default:
 		DOCA_LOG_ERR("Unexpected file type(HARD LINKS, SOFT LINKS, ETC) in mode: %o", mknod_in->mode);
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EINVAL);
+		return;
 	}
 }
 
@@ -884,6 +944,13 @@ static void nfs_fsdev_update_recovery(uint16_t src_domain_id,
 {
 	uint32_t xid = req_id;
 	int queue_number = src_domain_id;
+
+	if (queue_number >= NFS_FSDEV_NUM_OF_VIRTIO_QUEUES) {
+		DOCA_LOG_ERR("src_domain_id=%d exceeds max queue index (%d)",
+			     queue_number,
+			     NFS_FSDEV_NUM_OF_VIRTIO_QUEUES - 1);
+		return;
+	}
 
 	ptr->queues[queue_number].header_xid = xid;
 	compiler_barrier();
@@ -912,16 +979,16 @@ static void nfs_fsdev_open(struct async_context *context)
 	struct fuse_open_in *open_in = (struct fuse_open_in *)(context->cmnd_in_hdr);
 	struct fuse_open_out *open_out = (struct fuse_open_out *)(context->cmnd_out_hdr);
 
-	unsigned long xid = context->req_id;
-	if (xid <= context->fsdev_global->recovery->queues[context->src_domain_id].suffix_xid) {
-		DOCA_LOG_WARN("Got and old I/O request");
+	if (nfs_fsdev_is_old_request(context)) {
+		DOCA_LOG_WARN("Got an old I/O request");
 		open_out->fh = hdr->nodeid;
 		goto COMPLETE;
 	}
 
 	if (check_if_exist_by_left(context->fsdev_global->db, hdr->nodeid) == false) {
 		DOCA_LOG_ERR("Attempt to open a unknown file");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	struct NfsFsdevEntry temp = get_entry_by_left(context->fsdev_global->db, hdr->nodeid);
@@ -932,16 +999,19 @@ static void nfs_fsdev_open(struct async_context *context)
 	}
 
 	temp.ref_count++;
-	nfs_fsdev_update_recovery(context->src_domain_id,
-				  context->req_id,
-				  hdr->nodeid,
-				  temp.ref_count,
-				  context->fsdev_global->recovery);
+	if (context->fsdev_global->recovery != NULL) {
+		nfs_fsdev_update_recovery(context->src_domain_id,
+					  context->req_id,
+					  hdr->nodeid,
+					  temp.ref_count,
+					  context->fsdev_global->recovery);
+	}
 	compiler_barrier();
 
 	if (!update_entry_by_left(context->fsdev_global->db, &temp, temp.inode_left_key)) {
 		DOCA_LOG_ERR("Failed to open I/O request - updating the data base ");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 
 	/* Set FUSE response flags */
@@ -971,14 +1041,17 @@ static void nfs_fsdev_delayed_unlink_cb(struct rpc_context *rpc, int status, voi
 
 	if (status == RPC_STATUS_ERROR) {
 		DOCA_LOG_ERR("Unlink failed with error [%s]", (char *)data);
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	} else if (status == RPC_STATUS_CANCEL) {
 		DOCA_LOG_ERR("Unlink failed with status of RPC_STATUS_CANCEL");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 	if (!remove_entry_by_left(context->fsdev_global->db, hdr->nodeid)) {
 		DOCA_LOG_ERR("Failed to remove entry from data base in unlink replay");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 
 	nfs_fsdev_complete(context, 0, 0);
@@ -987,29 +1060,30 @@ static void nfs_fsdev_delayed_unlink_cb(struct rpc_context *rpc, int status, voi
 static void nfs_fsdev_release(struct async_context *context)
 {
 	struct fuse_in_header *hdr = (struct fuse_in_header *)(context->fuse_header);
-	unsigned long xid = context->req_id;
 
-	if (xid <= context->fsdev_global->recovery->queues[context->src_domain_id].suffix_xid) {
-		DOCA_LOG_WARN("Got and old I/O request");
+	if (nfs_fsdev_is_old_request(context)) {
+		DOCA_LOG_WARN("Got an old I/O request");
 		goto COMPLETE;
 	}
 
 	if (check_if_exist_by_left(context->fsdev_global->db, hdr->nodeid) == false) {
 		DOCA_LOG_ERR("Error: trying to close fd that don't have an entry in data base ");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	struct NfsFsdevEntry temp = get_entry_by_left(context->fsdev_global->db, hdr->nodeid);
 	temp.ref_count--;
 
-	nfs_fsdev_update_recovery(context->src_domain_id,
-				  context->req_id,
-				  hdr->nodeid,
-				  temp.ref_count,
-				  context->fsdev_global->recovery);
+	if (context->fsdev_global->recovery != NULL) {
+		nfs_fsdev_update_recovery(context->src_domain_id,
+					  context->req_id,
+					  hdr->nodeid,
+					  temp.ref_count,
+					  context->fsdev_global->recovery);
+	}
 
 	compiler_barrier();
-
 	if (temp.ref_count == 0 && temp.state == NFS_FSDEV_PENDING_DELETION_STATE) {
 		struct REMOVE3args args = {0};
 		args.object.dir.data.data_val = temp.replay_unlink_params.parent_fh.data.data_val;
@@ -1024,14 +1098,17 @@ static void nfs_fsdev_release(struct async_context *context)
 					  &args,
 					  context)) {
 			DOCA_LOG_ERR("Failed to unlink (replay) a file ");
-			exit(1);
+			pthread_mutex_lock(&context->fsdev_global->lock);
+			nfs_fsdev_complete(context, 0, -EIO);
+			return;
 		}
 		return;
 	}
 
 	if (!update_entry_by_left(context->fsdev_global->db, &temp, temp.inode_left_key)) {
 		DOCA_LOG_ERR("Failed to release I/O request - updating the data base ");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 
 COMPLETE:
@@ -1046,10 +1123,12 @@ static void nfs_fsdev_write_cb(struct rpc_context *rpc, int status, void *data, 
 
 	if (status == RPC_STATUS_ERROR) {
 		DOCA_LOG_ERR("Write failed with error [%s]", (char *)data);
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	} else if (status == RPC_STATUS_CANCEL) {
 		DOCA_LOG_ERR("Write failed with status of RPC_STATUS_CANCEL");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 
 	struct fuse_write_in *write_in = (struct fuse_write_in *)(context->cmnd_in_hdr);
@@ -1086,14 +1165,16 @@ static void nfs_fsdev_write(struct async_context *context)
 
 	if (check_if_exist_by_left(context->fsdev_global->db, hdr->nodeid) == false) {
 		DOCA_LOG_ERR("trying to write to a none existing file");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	struct NfsFsdevEntry temp = get_entry_by_left(context->fsdev_global->db, hdr->nodeid);
 	if (temp.state == NFS_FSDEV_PENDING_DELETION_STATE) {
 		DOCA_LOG_WARN("Trying to make I/O request on inode that is pending deletion");
 		if (temp.ref_count == 0) {
-			exit(1);
+			nfs_fsdev_complete(context, 0, -ENOENT);
+			return;
 		}
 	}
 
@@ -1105,7 +1186,9 @@ static void nfs_fsdev_write(struct async_context *context)
 				 &args,
 				 context)) {
 		DOCA_LOG_ERR("Error: in write operation");
-		exit(1);
+		pthread_mutex_lock(&context->fsdev_global->lock);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 }
 
@@ -1117,10 +1200,12 @@ static void nfs_fsdev_read_cb(struct rpc_context *rpc, int status, void *data, v
 
 	if (status == RPC_STATUS_ERROR) {
 		DOCA_LOG_ERR("Read failed with error [%s]", (char *)data);
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	} else if (status == RPC_STATUS_CANCEL) {
 		DOCA_LOG_ERR("Read failed with status of RPC_STATUS_CANCEL");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 	struct READ3res *result = data;
 
@@ -1164,14 +1249,16 @@ static void nfs_fsdev_read(struct async_context *context)
 
 	if (check_if_exist_by_left(context->fsdev_global->db, hdr->nodeid) == false) {
 		DOCA_LOG_ERR("Attempt to read a none existing file");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	struct NfsFsdevEntry temp = get_entry_by_left(context->fsdev_global->db, hdr->nodeid);
 	if (temp.state == NFS_FSDEV_PENDING_DELETION_STATE) {
 		DOCA_LOG_WARN("Attempt to make I/O request on inode that is pending deletion");
 		if (temp.ref_count == 0) {
-			exit(1);
+			nfs_fsdev_complete(context, 0, -ENOENT);
+			return;
 		}
 	}
 
@@ -1179,7 +1266,9 @@ static void nfs_fsdev_read(struct async_context *context)
 	pthread_mutex_unlock(&context->fsdev_global->lock);
 	if (rpc_nfs3_read_async(nfs_get_rpc_context(context->fsdev_perthread->nfs), nfs_fsdev_read_cb, &args, context)) {
 		DOCA_LOG_ERR("Failed to start read request ");
-		exit(1);
+		pthread_mutex_lock(&context->fsdev_global->lock);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 }
 
@@ -1204,21 +1293,21 @@ static void nfs_fsdev_unlink_cb(struct rpc_context *rpc, int status, void *data,
 
 	if (status == RPC_STATUS_ERROR) {
 		DOCA_LOG_ERR("Unlink failed with error [%s]", (char *)data);
-		free(cb_data->context);
+		nfs_fsdev_complete(cb_data->context, 0, -EIO);
 		free(cb_data);
-		exit(1);
+		return;
 	} else if (status == RPC_STATUS_CANCEL) {
 		DOCA_LOG_ERR("Unlink failed with status of RPC_STATUS_CANCEL");
-		free(cb_data->context);
+		nfs_fsdev_complete(cb_data->context, 0, -EIO);
 		free(cb_data);
-		exit(1);
+		return;
 	}
 
 	if (!remove_entry_by_left(cb_data->context->fsdev_global->db, cb_data->inode_for_deletion)) {
 		DOCA_LOG_ERR("Failed to remove entry from data base");
-		free(cb_data->context);
+		nfs_fsdev_complete(cb_data->context, 0, -EIO);
 		free(cb_data);
-		exit(1);
+		return;
 	}
 
 	nfs_fsdev_complete(cb_data->context, 0, 0);
@@ -1236,14 +1325,14 @@ static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status
 
 	if (status == RPC_STATUS_ERROR) {
 		DOCA_LOG_ERR("LOOKUP FROM UNLINK failed with error [%s]", (char *)data);
-		free(cb_data->context);
+		nfs_fsdev_complete(cb_data->context, 0, -EIO);
 		free(cb_data);
-		exit(1);
+		return;
 	} else if (status == RPC_STATUS_CANCEL) {
 		DOCA_LOG_ERR("LOOKUP FROM UNLINK failed with status of RPC_STATUS_CANCEL");
-		free(cb_data->context);
+		nfs_fsdev_complete(cb_data->context, 0, -EIO);
 		free(cb_data);
-		exit(1);
+		return;
 	}
 
 	struct LOOKUP3res *result = data;
@@ -1258,9 +1347,9 @@ static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status
 		}
 
 		DOCA_LOG_ERR("Lookup result is other than OK or NOENT = [%d]", ret);
-		free(cb_data->context);
+		nfs_fsdev_complete(cb_data->context, 0, -EINVAL);
 		free(cb_data);
-		exit(1);
+		return;
 	}
 
 	struct nfs_fh3 *fh = &(result->LOOKUP3res_u.resok.object);
@@ -1278,9 +1367,9 @@ static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status
 
 		if (!update_entry_by_left(cb_data->context->fsdev_global->db, &entry, entry.inode_left_key)) {
 			DOCA_LOG_ERR("Failed to update entry");
-			free(cb_data->context);
+			nfs_fsdev_complete(cb_data->context, 0, -EIO);
 			free(cb_data);
-			exit(1);
+			return;
 		}
 		cb_data->inode_for_deletion = entry.inode_left_key;
 		ref_count = entry.ref_count;
@@ -1293,9 +1382,9 @@ static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status
 					new_inode,
 					fh) == false) {
 			DOCA_LOG_ERR("Failed to insert to the map.");
-			free(cb_data->context);
+			nfs_fsdev_complete(cb_data->context, 0, -EIO);
 			free(cb_data);
-			exit(1);
+			return;
 		}
 
 		DOCA_LOG_INFO("Unlink dummy lookup complete ");
@@ -1317,8 +1406,9 @@ static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status
 
 		if (!update_entry_by_left(cb_data->context->fsdev_global->db, &entry, entry.inode_left_key)) {
 			DOCA_LOG_ERR("Failed to update entry");
+			nfs_fsdev_complete(cb_data->context, 0, -EIO);
 			free(cb_data);
-			exit(1);
+			return;
 		}
 
 		nfs_fsdev_complete(cb_data->context, 0, 0);
@@ -1328,9 +1418,9 @@ static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status
 
 	if (check_if_exist_by_left(cb_data->context->fsdev_global->db, hdr->nodeid) == false) {
 		DOCA_LOG_ERR("Parent entry in the map removed.");
-		free(cb_data->context);
+		nfs_fsdev_complete(cb_data->context, 0, -ENOENT);
 		free(cb_data);
-		exit(1);
+		return;
 	}
 
 	struct NfsFsdevEntry parent_temp_entry = get_entry_by_left(cb_data->context->fsdev_global->db, hdr->nodeid);
@@ -1347,9 +1437,10 @@ static void nfs_fsdev_unlink_dummy_lookup_cb(struct rpc_context *rpc, int status
 				  &args,
 				  cb_data)) {
 		DOCA_LOG_ERR("Failed to unlink a file ");
-		free(cb_data->context);
+		pthread_mutex_lock(&cb_data->context->fsdev_global->lock);
+		nfs_fsdev_complete(cb_data->context, 0, -EIO);
 		free(cb_data);
-		exit(1);
+		return;
 	}
 }
 
@@ -1360,24 +1451,28 @@ static void nfs_fsdev_unlink(struct async_context *context)
 
 	if (hdr->nodeid == 0) {
 		DOCA_LOG_ERR("Attempt to call LOOKUP with parent inode = 0");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EINVAL);
+		return;
 	}
 
 	if (check_if_exist_by_left(context->fsdev_global->db, hdr->nodeid) == false) {
 		DOCA_LOG_ERR("Attempt to delete a file that his parent is not in the map");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	if (strlen(filename) + 1 > NFS_FSDEV_MAX_FILE_NAME) {
 		DOCA_LOG_ERR("File name is too long = [%s]", filename);
-		exit(1);
+		nfs_fsdev_complete(context, 0, -E2BIG);
+		return;
 	}
 
 	struct NfsFsdevEntry parent = get_entry_by_left(context->fsdev_global->db, hdr->nodeid);
 
 	if (parent.state == NFS_FSDEV_PENDING_DELETION_STATE) {
 		DOCA_LOG_ERR("Attempt to delete a file that his parent is already pending deletion");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	struct LOOKUP3args args = {0};
@@ -1386,13 +1481,20 @@ static void nfs_fsdev_unlink(struct async_context *context)
 	args.what.name = filename;
 
 	struct unlink_cb_data *cb_data = allocate_and_initialize_unlink_cb_data(context);
+	if (cb_data == NULL) {
+		nfs_fsdev_complete(context, 0, -ENOMEM);
+		return;
+	}
 	pthread_mutex_unlock(&context->fsdev_global->lock);
 	if (rpc_nfs3_lookup_async(nfs_get_rpc_context(context->fsdev_perthread->nfs),
 				  nfs_fsdev_unlink_dummy_lookup_cb,
 				  &args,
 				  cb_data)) {
 		DOCA_LOG_ERR("Failed to call lookup from UNLINK function");
-		exit(1);
+		free(cb_data);
+		pthread_mutex_lock(&context->fsdev_global->lock);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 }
 
@@ -1407,21 +1509,25 @@ static void nfs_fsdev_mkdir_cb(struct rpc_context *rpc, int status, void *data, 
 
 	if (status == RPC_STATUS_ERROR) {
 		DOCA_LOG_ERR("NFS mkdir failed with error [%s]", (char *)data);
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	} else if (status == RPC_STATUS_CANCEL) {
 		DOCA_LOG_ERR("NFS mkdir failed with status of RPC_STATUS_CANCEL");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 
 	struct MKDIR3res *result = data;
 	if (result->status != NFS3_OK) {
 		DOCA_LOG_ERR("Problem in mkdir error code =[%d]", result->status);
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 
 	if (result->MKDIR3res_u.resok.obj.post_op_fh3_u.handle.data.data_len > NFS_FSDEV_MAX_FH_DATA_LEN) {
 		DOCA_LOG_ERR("File handle returned in mkdir is too long");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -E2BIG);
+		return;
 	}
 
 	struct persistent_nfs_fh3 fh = {0};
@@ -1431,7 +1537,8 @@ static void nfs_fsdev_mkdir_cb(struct rpc_context *rpc, int status, void *data, 
 	if (check_if_exist_by_right(context->fsdev_global->db, &fh)) {
 		// the case that is pending deletion is also here.
 		DOCA_LOG_ERR("Attempt to create a directory that already exist ");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EEXIST);
+		return;
 	}
 
 	unsigned long new_inode = generate_left_key(context->fsdev_global->db);
@@ -1442,7 +1549,8 @@ static void nfs_fsdev_mkdir_cb(struct rpc_context *rpc, int status, void *data, 
 				 new_inode,
 				 &result->MKDIR3res_u.resok.obj.post_op_fh3_u.handle)) {
 		DOCA_LOG_ERR("Failed to insert into data base new entry for a new directory ");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 
 	fattr3 *res = &result->MKDIR3res_u.resok.obj_attributes.post_op_attr_u.attributes;
@@ -1475,12 +1583,14 @@ static void nfs_fsdev_mkdir(struct async_context *context)
 
 	if (!check_if_exist_by_left(context->fsdev_global->db, hdr->nodeid)) {
 		DOCA_LOG_ERR("Attempt to create a directory in a not known parent directory");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 	struct NfsFsdevEntry temp = get_entry_by_left(context->fsdev_global->db, hdr->nodeid);
 	if (temp.state == NFS_FSDEV_PENDING_DELETION_STATE) {
 		DOCA_LOG_WARN("Attempt to make I/O request on inode that is pending deletion");
-		exit(1);
+		nfs_fsdev_complete(context, 0, -ENOENT);
+		return;
 	}
 
 	struct MKDIR3args args = nfs_fsdev_mkdir_args(context, &temp);
@@ -1490,7 +1600,9 @@ static void nfs_fsdev_mkdir(struct async_context *context)
 				 &args,
 				 context)) {
 		DOCA_LOG_ERR("Failed to call mkdir");
-		exit(1);
+		pthread_mutex_lock(&context->fsdev_global->lock);
+		nfs_fsdev_complete(context, 0, -EIO);
+		return;
 	}
 }
 
@@ -1567,6 +1679,15 @@ static void nimp(struct async_context *context)
 	nfs_fsdev_complete(context, 0, -ENOSYS);
 }
 
+static inline void nfs_fsdev_fill_fuse_error_reply(struct fuse_out_header *hdr_out, uint64_t unique, int error)
+{
+	if (hdr_out) {
+		hdr_out->len = sizeof(*hdr_out);
+		hdr_out->error = error;
+		hdr_out->unique = unique;
+	}
+}
+
 void nfs_fsdev_submit(struct nfs_fsdev *fsdev_priv,
 		      char *fuse_header,
 		      char *cmnd_in_hdr,
@@ -1582,26 +1703,59 @@ void nfs_fsdev_submit(struct nfs_fsdev *fsdev_priv,
 	struct fuse_in_header *hdr = (struct fuse_in_header *)fuse_header;
 	int op = hdr->opcode;
 
+	if (src_domain_id >= NFS_FSDEV_NUM_OF_VIRTIO_QUEUES) {
+		DOCA_LOG_ERR("src_domain_id=%u exceeds max allowed (%d)",
+			     src_domain_id,
+			     NFS_FSDEV_NUM_OF_VIRTIO_QUEUES - 1);
+		nfs_fsdev_fill_fuse_error_reply((struct fuse_out_header *)fuse_out, hdr->unique, -EINVAL);
+		app_cb(app_ctxt, -EINVAL);
+		return;
+	}
+
+	if (op < 0 || op >= (int)(sizeof(fuse_ll_ops) / sizeof(fuse_ll_ops[0])) || fuse_ll_ops[op].func == NULL) {
+		DOCA_LOG_ERR("Invalid FUSE opcode %d", op);
+		nfs_fsdev_fill_fuse_error_reply((struct fuse_out_header *)fuse_out, hdr->unique, -ENOSYS);
+		app_cb(app_ctxt, -ENOSYS);
+		return;
+	}
+
 	fflush(stdout);
 	rpc_set_next_xid(nfs_get_rpc_context(fsdev_priv->nfs), nfs_fsdev_get_xid(src_domain_id, req_id));
 	pthread_mutex_lock(&(fsdev_priv->nfs_global->lock));
-	if ((op == FUSE_OPEN || op == FUSE_RELEASE) && (src_domain_id == 0)) {
-		DOCA_LOG_ERR("Got [%s] request on priority queue", fuse_ll_ops[op].name);
-		exit(1);
+
+	struct async_context *ctx = alloc_init_async_context(fsdev_priv->nfs_global,
+							     fsdev_priv,
+							     fuse_header,
+							     cmnd_in_hdr,
+							     datain,
+							     fuse_out,
+							     cmnd_out_hdr,
+							     dataout,
+							     app_cb,
+							     app_ctxt,
+							     src_domain_id,
+							     req_id);
+
+	if (ctx == NULL) {
+		DOCA_LOG_ERR("Failed to allocate async context for %s", fuse_ll_ops[op].name);
+		nfs_fsdev_fill_fuse_error_reply((struct fuse_out_header *)fuse_out, hdr->unique, -ENOMEM);
+		pthread_mutex_unlock(&(fsdev_priv->nfs_global->lock));
+		app_cb(app_ctxt, -ENOMEM);
+		return;
 	}
 
-	fuse_ll_ops[op].func(alloc_init_async_context(fsdev_priv->nfs_global,
-						      fsdev_priv,
-						      fuse_header,
-						      cmnd_in_hdr,
-						      datain,
-						      fuse_out,
-						      cmnd_out_hdr,
-						      dataout,
-						      app_cb,
-						      app_ctxt,
-						      src_domain_id,
-						      req_id));
+	if ((op == FUSE_OPEN || op == FUSE_RELEASE) && (src_domain_id == 0)) {
+		DOCA_LOG_ERR("Got [%s] request on priority queue", fuse_ll_ops[op].name);
+		nfs_fsdev_complete(ctx, 0, -EINVAL);
+		/* nfs_fsdev_complete() releases fsdev_global->lock */
+		/* coverity[missing_unlock : FALSE] */
+		return;
+	}
+
+	/* Opcode handlers release fsdev_global->lock via nfs_fsdev_complete or async path */
+	fuse_ll_ops[op].func(ctx);
+	/* coverity[missing_unlock : FALSE] */
+	return;
 }
 
 void nfs_fsdev_progress(struct nfs_fsdev *fsdev_priv)
@@ -1649,15 +1803,23 @@ void nfs_fsdev_destroy(struct nfs_fsdev_context *nfs_fsdev_context)
 	destroy_nfs_fsdev_context(nfs_fsdev_context);
 }
 
-int priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global)
+doca_error_t priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global)
 {
+	doca_error_t result = DOCA_SUCCESS;
+	struct nfsfh *root_fh = NULL;
 	struct async_context *ios;
+	int ret;
+
+	if (global->db == NULL) {
+		DOCA_LOG_ERR("Persistent DB was not initialized; cannot start NFS fsdev");
+		return DOCA_ERROR_INITIALIZATION;
+	}
 
 	SLIST_INIT(&fsdev->free_ios);
 	ios = (struct async_context *)calloc(NFS_FSDEV_IO_POOL_SIZE, sizeof(*ios));
 	if (ios == NULL) {
 		DOCA_LOG_ERR("Failed to allocate memory for %d async_context objects", NFS_FSDEV_IO_POOL_SIZE);
-		exit(1);
+		return DOCA_ERROR_NO_MEMORY;
 	}
 	fsdev->ios_pool = ios;
 	for (int i = 0; i < NFS_FSDEV_IO_POOL_SIZE; i++)
@@ -1669,45 +1831,34 @@ int priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global
 	// For debug mode use: (NFS_FSDEV_DEBUG_RPC | NFS_FSDEV_DEBUG_NFS | NFS_FSDEV_DEBUG_STATE)
 	if (fsdev->nfs == NULL) {
 		DOCA_LOG_ERR("Failed to initialize NFS context");
-		free(fsdev->ios_pool);
-		pthread_mutex_unlock(&(global->lock));
-		return -EINVAL;
+		result = DOCA_ERROR_INITIALIZATION;
+		goto err_free_pool;
 	}
 
 	nfs_set_debug(fsdev->nfs, NFS_FSDEV_DEBUG_NONE);
 
-	int ret = nfs_mount(fsdev->nfs, global->server, global->mount_point);
+	ret = nfs_mount(fsdev->nfs, global->server, global->mount_point);
 	if (ret != 0) {
 		DOCA_LOG_ERR("Failed to mount NFS server '%s' export '%s' ret:%d",
 			     global->server,
 			     global->mount_point,
 			     ret);
-		nfs_destroy_context(fsdev->nfs);
-		free(fsdev->ios_pool);
-		pthread_mutex_unlock(&(global->lock));
-		return ret;
+		result = DOCA_ERROR_INITIALIZATION;
+		goto err_destroy_nfs;
 	}
 
-	struct nfsfh *root_fh = NULL;
 	ret = nfs_open(fsdev->nfs, "/", O_RDONLY, &root_fh);
 	if (ret != 0) {
 		DOCA_LOG_ERR("Failed to open root file handle on NFS server, ret: %d", ret);
-		nfs_umount(fsdev->nfs);
-		nfs_destroy_context(fsdev->nfs);
-		free(fsdev->ios_pool);
-		pthread_mutex_unlock(&(global->lock));
-		return ret;
+		result = DOCA_ERROR_INITIALIZATION;
+		goto err_umount;
 	}
 
 	if (!check_if_exist_by_left(global->db, 1)) {
 		if (!nfs_fsdev_db_init_new_root(1, nfs_get_fh(root_fh), global->db)) {
 			DOCA_LOG_ERR("Failed to insert root file handle into DB");
-			(void)nfs_close(fsdev->nfs, root_fh);
-			nfs_umount(fsdev->nfs);
-			nfs_destroy_context(fsdev->nfs);
-			free(fsdev->ios_pool);
-			pthread_mutex_unlock(&(global->lock));
-			return -EINVAL;
+			result = DOCA_ERROR_INITIALIZATION;
+			goto err_close_root;
 		}
 	} else {
 		DOCA_LOG_WARN("Root file handle already exists in DB, restoring database");
@@ -1716,7 +1867,20 @@ int priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global
 	(void)nfs_close(fsdev->nfs, root_fh);
 	pthread_mutex_unlock(&(global->lock));
 
-	return 0;
+	return DOCA_SUCCESS;
+
+err_close_root:
+	(void)nfs_close(fsdev->nfs, root_fh);
+err_umount:
+	nfs_umount(fsdev->nfs);
+err_destroy_nfs:
+	nfs_destroy_context(fsdev->nfs);
+	fsdev->nfs = NULL;
+err_free_pool:
+	free(fsdev->ios_pool);
+	fsdev->ios_pool = NULL;
+	pthread_mutex_unlock(&(global->lock));
+	return result;
 }
 
 void priv_nfs_fsdev_deinit(struct nfs_fsdev *fsdev)

@@ -26,10 +26,12 @@
 // system headers
 #include <fcntl.h>
 #include <memory>
+#include <vector>
 #include <signal.h>
 
 // DPDK
 #include <rte_ethdev.h>
+#include <rte_lcore.h>
 
 // gRPC
 #include <google/protobuf/util/json_util.h>
@@ -87,7 +89,7 @@ int main(int argc, char **argv)
 
 	struct psp_gw_app_config app_config = {};
 	app_config.dpdk_config.port_config.nb_ports = nb_ports;
-	app_config.dpdk_config.port_config.nb_queues = 2;
+	app_config.dpdk_config.port_config.nb_queues = 0; /* AUTO: set by dpdk_queues_and_ports_init() after EAL */
 	app_config.dpdk_config.port_config.switch_mode = true;
 	app_config.dpdk_config.port_config.enable_mbuf_metadata = true;
 	app_config.dpdk_config.reserve_main_thread = true;
@@ -282,7 +284,14 @@ int main(int argc, char **argv)
 	{
 		PSP_GatewayFlows psp_flows(&pf_dev, vf_dev, vf_port_id, &app_config);
 		std::vector<psp_gw_peer> remotes_to_connect;
-		uint32_t lcore_id;
+
+		const uint16_t nb_rss_queues = app_config.grpc_queue_id;
+		std::vector<lcore_params> rss_lcore_params(nb_rss_queues);
+		std::vector<uint32_t> rss_lcore_ids;
+		int current_lcore = 0;
+		std::string server_address;
+		grpc::ServerBuilder builder;
+		std::unique_ptr<grpc::Server> server_instance;
 
 		result = psp_flows.init();
 		if (result != DOCA_SUCCESS) {
@@ -293,26 +302,38 @@ int main(int argc, char **argv)
 
 		PSP_GatewayImpl psp_svc(&app_config, &psp_flows);
 
-		struct lcore_params lcore_params = {
-			&force_quit,
-			&app_config,
-			&pf_dev,
-			&psp_flows,
-			&psp_svc,
-		};
-
-		RTE_LCORE_FOREACH_WORKER(lcore_id)
-		{
-			rte_eal_remote_launch(lcore_pkt_proc_func, &lcore_params, lcore_id);
+		for (uint16_t q = 0; q < nb_rss_queues; q++) {
+			rss_lcore_params[q] = {
+				&force_quit,
+				&app_config,
+				&pf_dev,
+				&psp_flows,
+				&psp_svc,
+				q,
+			};
 		}
 
-		std::string server_address =
+		for (uint16_t q = 0; q < nb_rss_queues; q++) {
+			current_lcore = rte_get_next_lcore(current_lcore, true, false);
+			if (current_lcore == RTE_MAX_LCORE) {
+				DOCA_LOG_ERR("Not enough worker lcores for %u RSS queues", nb_rss_queues);
+				exit_status = EXIT_FAILURE;
+				goto workers_cleanup;
+			}
+			if (rte_eal_remote_launch(lcore_pkt_proc_func, &rss_lcore_params[q], current_lcore) != 0) {
+				DOCA_LOG_ERR("Failed to launch RSS worker on lcore %u", current_lcore);
+				exit_status = EXIT_FAILURE;
+				goto workers_cleanup;
+			}
+			rss_lcore_ids.push_back(current_lcore);
+		}
+
+		server_address =
 			grpc_target_with_port(app_config.local_svc_addr.empty() ? "" : app_config.local_svc_addr,
 					      PSP_GatewayImpl::DEFAULT_HTTP_PORT_NUM);
-		grpc::ServerBuilder builder;
 		builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
 		builder.RegisterService(&psp_svc);
-		auto server_instance = builder.BuildAndStart();
+		server_instance = builder.BuildAndStart();
 
 		if (!server_instance) {
 			DOCA_LOG_ERR("Failed to initialize gRPC server (%s)", server_address.c_str());
@@ -351,10 +372,9 @@ int main(int argc, char **argv)
 
 workers_cleanup:
 		force_quit = true;
-		RTE_LCORE_FOREACH_WORKER(lcore_id)
-		{
-			DOCA_LOG_INFO("Stopping L-Core %d", lcore_id);
-			rte_eal_wait_lcore(lcore_id);
+		for (uint32_t rss_lcore : rss_lcore_ids) {
+			DOCA_LOG_INFO("Stopping L-Core %u", rss_lcore);
+			rte_eal_wait_lcore(rss_lcore);
 		}
 	}
 

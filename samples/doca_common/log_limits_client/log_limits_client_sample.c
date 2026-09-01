@@ -38,7 +38,7 @@
 
 #include <log_common.h>
 
-DOCA_LOG_REGISTER(LOG_LIMITS_CLIENT);
+DOCA_LOG_REGISTER(LOG_LIMITS_CLIENT::SAMPLE);
 
 /*
  * Build UDP request string from cfg->command

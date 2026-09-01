@@ -37,14 +37,15 @@
 #include "virtiofs_manager.h"
 #include "virtiofs_device.h"
 
-#define VIRTIOFS_MANAGER_NAME_LENGTH 128	/* Manager name length */
-#define VIRTIOFS_CORE_MASK_SIZE 16		/* Core mask size */
+#define VIRTIOFS_EMU_MANAGER_NAME_LENGTH 128	/* Emulation manager name length */
+#define VIRTIOFS_CORE_MASK_SIZE 19		/* Core mask size */
 #define VIRTIOFS_NFS_SERVER_SIZE 36		/* NFS server size */
 #define VIRTIOFS_NFS_EXPORT_SIZE 36		/* NFS export size */
 #define VIRTIOFS_CORE_MASK_DEFAULT "0x1"	/* Default core mask */
 #define VIRTIOFS_NFS_SERVER_DEFAULT "localhost" /* Default NFS server */
 #define VIRTIOFS_NFS_EXPORT_DEFAULT "/VIRTUAL"	/* Default NFS export */
 #define VIRTIOFS_NUM_REQUEST_QUEUES_DEFAULT 32	/* Default num_request_queues */
+#define VIRTIOFS_EMU_MANAGER_DEFAULT "mlx5_0"	/* Default emulation manager ibdev name */
 
 /* VirtioFS callback */
 typedef void (*virtiofs_cb_t)(void *cb_arg, doca_error_t status);
@@ -54,10 +55,13 @@ typedef void (*vfs_doca_fsdev_io_cb)(void *app_ctxt, int status);
 
 /* VirtioFS application configuration */
 struct virtiofs_cfg {
-	uint16_t num_request_queues;		   /* Number of request queues */
-	char core_mask[VIRTIOFS_CORE_MASK_SIZE];   /* Core mask */
-	char nfs_server[VIRTIOFS_NFS_SERVER_SIZE]; /* NFS server */
-	char nfs_export[VIRTIOFS_NFS_EXPORT_SIZE]; /* NFS export */
+	bool datapath_on_dpa;				    /* Data path provider */
+	uint16_t num_request_queues;			    /* Number of request queues */
+	bool indirect_enabled;				    /* Enable indirect descriptor feature */
+	char core_mask[VIRTIOFS_CORE_MASK_SIZE];	    /* Core mask */
+	char nfs_server[VIRTIOFS_NFS_SERVER_SIZE];	    /* NFS server */
+	char nfs_export[VIRTIOFS_NFS_EXPORT_SIZE];	    /* NFS export */
+	char emu_manager[VIRTIOFS_EMU_MANAGER_NAME_LENGTH]; /* Emulation manager ibdev name */
 };
 
 /* VirtioFS resources */
@@ -75,9 +79,10 @@ struct virtiofs_resources {
  * Create VirtioFS resources
  *
  * @param core_mask [in]: Core mask
+ * @param datapath_on_dpa [in]: Datapath provider
  * @return: VirtioFS resources
  */
-struct virtiofs_resources *virtiofs_create(uint32_t core_mask);
+struct virtiofs_resources *virtiofs_create(uint64_t core_mask, bool datapath_on_dpa);
 
 /*
  * Start VirtioFS resources

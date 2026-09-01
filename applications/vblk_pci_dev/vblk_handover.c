@@ -77,16 +77,6 @@ doca_error_t vblk_export_desc_store(void **destp, size_t *lenp, const void *src,
 	return DOCA_SUCCESS;
 }
 
-doca_error_t vblk_export_desc_release(void **destp, size_t *lenp)
-{
-	doca_error_t err = DOCA_SUCCESS;
-
-	if (*destp != NULL)
-		err = doca_devemu_vblk_offload_engine_export_release(*destp);
-	vblk_export_desc_free(destp, lenp);
-	return err;
-}
-
 void vblk_export_desc_free(void **destp, size_t *lenp)
 {
 	free(*destp);
@@ -143,6 +133,11 @@ static void src_handle_get_state(struct vblk_ho_ctx *ho, struct vblk_ipc_ep *ep)
 	device_cfg.vq_cfg.num_queues = ctrl->num_queues;
 	for (uint16_t q = 0; q < ctrl->num_queues && q < VBLK_PCI_VIRTIO_MAX_QUEUES; q++)
 		device_cfg.vq_cfg.vqs[q] = ctrl->vqs[q].cfg;
+
+	doca_devemu_vblk_offload_engine_get_seg_max(ctrl->vq_engine, &device_cfg.seg_max);
+	struct doca_devemu_virtio_offload_engine *voe_get =
+		doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
+	doca_devemu_virtio_offload_engine_get_indir_descs_enabled(voe_get, &device_cfg.indir_desc_enabled);
 
 	uint32_t desc_len = (uint32_t)ho->export_desc_len;
 	uint32_t cfg_len = sizeof(struct vblk_lu_device_cfg);

@@ -98,7 +98,8 @@ enum vnet_lu_msg {
 	/* Channel LU */
 	VNET_LU_MSG_CH_EXPORT,	  /* active -> standby: export_desc */
 	VNET_LU_MSG_CH_BEGIN,	  /* standby -> active: ready for switchover */
-	VNET_LU_MSG_CH_BEGIN_ACK, /* active -> standby: config state */
+	VNET_LU_MSG_CH_BEGIN_ACK, /* active -> standby: active channel yielded primary */
+	VNET_LU_MSG_CH_PRIMARY,	  /* standby -> active: standby channel became primary */
 	VNET_LU_MSG_CH_END,	  /* standby -> active: outcome */
 	VNET_LU_MSG_CH_END_ACK,	  /* active -> standby: ack */
 	VNET_LU_MSG_NACK,	  /* error response (no payload) */
@@ -111,6 +112,9 @@ enum vnet_lu_msg {
 /** Shared memory region name for POSIX shm_open */
 #define VNET_LU_SHM_NAME "/vnet_live_update"
 
+/** Shared memory directory for OE export */
+#define VNET_LU_OE_SHM_DIR "/dev/shm/"
+
 /** Shared memory directory for TLP channel export */
 #define VNET_LU_CH_SHM_DIR "/dev/shm/vnet_lu_channel"
 
@@ -120,8 +124,19 @@ enum vnet_lu_msg {
 /** Maximum allowed export descriptor size (sanity bound for malloc) */
 #define VNET_LU_CH_EXPORT_MAX_LEN (1024 * 1024)
 
-/** Magic number for shared memory validation ("VNET") */
-#define VNET_LU_MAGIC 0x564E4554
+/** Magic for LU state validation: "VNET" base with a layout revision in the low byte.
+ *  Bump the low byte whenever vnet_lu_shm / vnet_lu_device_state layout changes, so a
+ *  mismatched active/standby fails the magic check instead of misreading the image. */
+#define VNET_LU_MAGIC 0x564E4555
+
+/** Shared memory region name for SR-IOV live update sidecar */
+#define VNET_LU_SRIOV_SHM_NAME "/vnet_live_update_sriov"
+
+/** Magic number for SR-IOV shared memory validation ("VSF2") */
+#define VNET_LU_SRIOV_MAGIC 0x56534632
+
+/** Initial SR-IOV sidecar schema version */
+#define VNET_LU_SRIOV_SCHEMA_VERSION 1
 
 /**
  * @brief Live update state machine
@@ -149,6 +164,7 @@ struct vnet_lu_vq_state {
 struct vnet_lu_net_config {
 	uint8_t mac[ETH_ALEN];
 	uint16_t mtu;
+	uint32_t speed; /* link speed in Mbps (operator's last-set value) */
 };
 
 struct vnet_lu_virtio_config {
@@ -156,12 +172,29 @@ struct vnet_lu_virtio_config {
 	uint16_t max_queue_pairs;
 	uint16_t num_active_qps;
 	uint16_t queue_size;
+	uint16_t config_msix_vector; /* host-assigned config-change MSI-X vector (or VIRTIO_MSI_NO_VECTOR) */
 	bool mq_feature_negotiated;
 };
 
 struct vnet_lu_vqs_state {
 	uint16_t num_vqs;
 	struct vnet_lu_vq_state vqs[VNET_TOTAL_VQS(VNET_CTRL_MAX_QUEUES_PAIRS)];
+};
+
+struct vnet_lu_sriov_bdf_state {
+	uint8_t bus;
+	uint8_t device;
+	uint8_t function;
+	uint8_t is_bdf_set;
+	uint16_t bdf;
+};
+
+struct vnet_lu_hotplug_state {
+	/* Hotplug LU only: sparse-topology metadata used to restore only
+	 * populated slots while preserving the configured slot count. */
+	uint32_t num_present_devices;	  /* Hotplug LU only: populated saved slots */
+	uint8_t base_mac[ETH_ALEN];	  /* Hotplug LU only: slot 0 may be absent */
+	uint8_t slot_present[MAX_NUM_EP]; /* Hotplug LU only: sparse slot bitmap */
 };
 
 struct vnet_lu_device_state {
@@ -177,8 +210,52 @@ struct vnet_lu_device_state {
 struct vnet_lu_shm {
 	enum vnet_lu_state state;
 	uint32_t num_devices;
-	uint32_t blob_data_offset; /* byte offset from SHM start to first blob */
+	uint32_t blob_data_offset;	      /* byte offset from SHM start to first blob */
+	struct vnet_lu_hotplug_state hotplug; /* Hotplug LU only */
 	struct vnet_lu_device_state devices[];
+};
+
+struct vnet_lu_sriov_vf_slot_state {
+	uint32_t vf_index;
+	uint16_t rep_vhca_id;
+
+	struct vnet_lu_net_config net;
+	struct vnet_lu_virtio_config virtio;
+	uint32_t blob_offset;
+	uint32_t blob_len;
+
+	struct pcie_virtio_dev vf_cfg_shadow;
+	struct vnet_lu_sriov_bdf_state bdf;
+};
+
+struct vnet_lu_sriov_vf_vq_entry {
+	uint32_t vf_index;
+	struct vnet_lu_vq_state vq;
+};
+
+struct vnet_lu_sriov_shm_hdr {
+	uint32_t magic;
+	uint16_t schema_version;
+	uint16_t header_size;
+	uint32_t total_size;
+	uint32_t num_pf_entries;
+	uint32_t blob_data_offset;
+};
+
+struct vnet_lu_sriov_pf_entry {
+	uint32_t dev_idx;
+	uint16_t ep_vhca_id;
+	char vuid[DOCA_DEVINFO_REP_VUID_SIZE];
+	struct vnet_sriov_pf_state sriov;
+
+	uint32_t num_active_vf;
+	struct vnet_lu_sriov_bdf_state bdf;
+	uint32_t num_vq_entries;
+};
+
+struct vnet_lu_sriov_shm {
+	struct vnet_lu_sriov_shm_hdr hdr;
+	struct vnet_lu_sriov_pf_entry pf_entries[];
 };
 
 /*********************************************************************************************************************
@@ -253,6 +330,38 @@ doca_error_t vnet_lu_restore_early(struct vnet_pci_dev_resources *resources);
 /** @brief Return the mapped SHM pointer (valid between restore_early and release_shm) */
 const struct vnet_lu_shm *vnet_lu_get_shm(void);
 
+/** @brief Return the mapped SR-IOV sidecar SHM pointer, or NULL when absent */
+const struct vnet_lu_sriov_shm *vnet_lu_sriov_get_shm(void);
+
+/** @brief Return the first byte after SR-IOV sidecar PF entries */
+const uint8_t *vnet_lu_sriov_get_tail_base(void);
+
+/** @brief Return the SR-IOV sidecar PF entry and its variable segments by PF endpoint vhca_id */
+doca_error_t vnet_lu_sriov_get_pf_state(uint16_t ep_vhca_id,
+					const struct vnet_lu_sriov_pf_entry **entry_out,
+					const struct vnet_lu_sriov_vf_slot_state **slots_out,
+					const struct vnet_lu_sriov_vf_vq_entry **vqs_out);
+
+/** @brief Return the export blob referenced by a sidecar VF slot */
+doca_error_t vnet_lu_sriov_get_vf_import_desc(const struct vnet_lu_sriov_vf_slot_state *slot_state,
+					      const void **export_desc,
+					      size_t *export_desc_len);
+
+/** @brief Save the active-side SR-IOV sidecar state */
+doca_error_t vnet_lu_sriov_save_state(struct tlp_context *tlp_ctx);
+
+/** @brief Quiesce one active-side PF's imported SR-IOV VF datapaths before handover */
+doca_error_t vnet_lu_sriov_quiesce_active_pf(struct tlp_context *tlp_ctx, uint32_t pf_idx);
+
+/** @brief Recreate active SR-IOV VF endpoints and datapaths from the sidecar */
+doca_error_t vnet_lu_sriov_replay(struct vnet_pci_dev_resources *resources);
+
+/** @brief Enable replayed SR-IOV VF engines after LU switchover */
+doca_error_t vnet_lu_sriov_enable_imported_vfs(struct vnet_pci_dev_resources *resources);
+
+/** @brief Sync PF SR-IOV shadows from restored Channel LU config space */
+void vnet_lu_sriov_sync_pf_shadow_from_dw_regs(struct tlp_context *tlp_ctx);
+
 /** @brief Unmap and release the standby-side SHM */
 void vnet_lu_release_shm(void);
 
@@ -261,6 +370,15 @@ doca_error_t vnet_lu_get_import_desc(uint32_t idx, const void **export_desc, siz
 
 /** @brief Get the saved endpoint vhca_id for device @idx (used for rep reattach) */
 doca_error_t vnet_lu_get_ep_vhca_id(uint32_t idx, uint16_t *vhca_id_out);
+
+/** @brief Check whether the saved slot @idx is populated */
+bool vnet_lu_hotplug_is_present_slot(uint32_t idx);
+
+/** @brief Return the number of populated slots saved in SHM */
+uint32_t vnet_lu_hotplug_get_num_present_devices(void);
+
+/** @brief Hotplug standby wrapper: return whether slot @idx should be recreated and its vhca_id */
+doca_error_t vnet_lu_hotplug_get_restore_slot(uint32_t idx, bool *is_present_out, uint16_t *vhca_id_out);
 
 /*********************************************************************************************************************
  * Two-phase handover protocol
@@ -279,6 +397,9 @@ void vnet_lu_close_conn(void);
 
 /** @brief Check whether a LU handover was triggered (SIGUSR1 received) */
 bool vnet_lu_handover_was_triggered(void);
+
+/** @brief Check whether a LU handover completed successfully */
+bool vnet_lu_handover_was_completed(void);
 
 /** @brief Query the persistent SF vhca_id from an offload engine's representor */
 doca_error_t vnet_lu_get_sf_vhca_id(struct doca_devemu_vnet_offload_engine *engine, uint16_t *vhca_id_out);

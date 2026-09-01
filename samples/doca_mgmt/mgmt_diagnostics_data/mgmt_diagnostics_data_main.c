@@ -28,14 +28,16 @@
 #include <string.h>
 
 #include <doca_argp.h>
-#include <doca_dev.h>
 #include <doca_log.h>
+
+#include "mgmt_common.h"
 
 DOCA_LOG_REGISTER(MGMT_DIAGNOSTICS_DATA::MAIN);
 
 /* Configuration struct */
 enum doca_mgmt_diagnostics_data_cmds {
 	DOCA_MGMT_DIAGNOSTICS_DATA_CMD_NONE,
+	DOCA_MGMT_DIAGNOSTICS_DATA_CMD_LIST_TARGETS,
 	DOCA_MGMT_DIAGNOSTICS_DATA_CMD_CAPS,
 	DOCA_MGMT_DIAGNOSTICS_DATA_CMD_GET,
 	DOCA_MGMT_DIAGNOSTICS_DATA_CMD_SET,
@@ -43,54 +45,43 @@ enum doca_mgmt_diagnostics_data_cmds {
 
 struct mgmt_diagnostics_data_config {
 	enum doca_mgmt_diagnostics_data_cmds cmd;
-	struct doca_dev *dev;
+	char target[MGMT_COMMON_TARGET_STR_LEN];
 	bool set_multi_domain_enable;
 };
 
 /* Sample's Logic */
-doca_error_t mgmt_diagnostics_data_supported(struct doca_dev *dev);
-doca_error_t mgmt_diagnostics_data_get(struct doca_dev *dev);
-doca_error_t mgmt_diagnostics_data_set(struct doca_dev *dev, bool multi_domain);
+doca_error_t mgmt_diagnostics_data_supported(const char *target_string);
+doca_error_t mgmt_diagnostics_data_get(const char *target_string);
+doca_error_t mgmt_diagnostics_data_set(const char *target_string, bool multi_domain);
 
 /*
- * ARGP Callback - Handle device parameter
+ * ARGP Callback - Handle target parameter
  */
-static doca_error_t device_callback(void *param, void *config)
+static doca_error_t target_callback(void *param, void *config)
 {
 	struct mgmt_diagnostics_data_config *conf = (struct mgmt_diagnostics_data_config *)config;
-	struct doca_argp_device_ctx *dev_ctx = (struct doca_argp_device_ctx *)param;
 
-	conf->dev = dev_ctx->dev;
+	return mgmt_common_target_string_copy((const char *)param, conf->target);
+}
+
+/*
+ * ARGP Callback - Handle list-targets command
+ */
+static doca_error_t list_targets_callback(void *config)
+{
+	struct mgmt_diagnostics_data_config *conf = (struct mgmt_diagnostics_data_config *)config;
+
+	conf->cmd = DOCA_MGMT_DIAGNOSTICS_DATA_CMD_LIST_TARGETS;
 
 	return DOCA_SUCCESS;
 }
 
 /*
- * Register device parameter for a command
+ * Register device management target parameter for a command
  */
 static doca_error_t register_device_param(struct doca_argp_cmd *cmd)
 {
-	struct doca_argp_param *device_param;
-	doca_error_t result;
-
-	result = doca_argp_param_create(&device_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
-		return result;
-	}
-	doca_argp_param_set_short_name(device_param, "d");
-	doca_argp_param_set_long_name(device_param, "device");
-	doca_argp_param_set_description(device_param, "DOCA device (e.g., pci/0000:08:00.0)");
-	doca_argp_param_set_callback(device_param, device_callback);
-	doca_argp_param_set_type(device_param, DOCA_ARGP_TYPE_DEVICE);
-	doca_argp_param_set_mandatory(device_param);
-	result = doca_argp_cmd_register_param(cmd, device_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	return DOCA_SUCCESS;
+	return mgmt_common_register_target_dev_param(cmd, target_callback, true, NULL);
 }
 
 /*
@@ -262,7 +253,7 @@ static doca_error_t register_set_cmd(void)
 static doca_error_t validate_params(struct mgmt_diagnostics_data_config *conf)
 {
 	if (conf->cmd == DOCA_MGMT_DIAGNOSTICS_DATA_CMD_NONE) {
-		fprintf(stderr, "Either 'caps', 'get' or 'set' command must be specified\n");
+		fprintf(stderr, "A command must be specified: 'list-targets', 'caps', 'get' or 'set'\n");
 		doca_argp_usage();
 		return DOCA_ERROR_INVALID_VALUE;
 	}
@@ -303,9 +294,8 @@ int main(int argc, char **argv)
 		goto sample_exit;
 	}
 
-	conf.cmd = DOCA_MGMT_DIAGNOSTICS_DATA_CMD_NONE;
-	conf.dev = NULL;
-	conf.set_multi_domain_enable = false;
+	/* Initialize configuration */
+	memset(&conf, 0, sizeof(conf));
 
 	result = doca_argp_init(NULL, &conf);
 	if (result != DOCA_SUCCESS) {
@@ -316,6 +306,12 @@ int main(int argc, char **argv)
 	result = register_supported_cmd();
 	if (result != DOCA_SUCCESS) {
 		fprintf(stderr, "Failed to register sample commands: %s\n", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+
+	result = mgmt_common_register_list_targets_cmd(list_targets_callback);
+	if (result != DOCA_SUCCESS) {
+		fprintf(stderr, "Failed to register list-targets command: %s\n", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 
@@ -343,20 +339,26 @@ int main(int argc, char **argv)
 	if (result != DOCA_SUCCESS)
 		goto argp_cleanup;
 
-	if (conf.cmd == DOCA_MGMT_DIAGNOSTICS_DATA_CMD_CAPS) {
-		result = mgmt_diagnostics_data_supported(conf.dev);
+	if (conf.cmd == DOCA_MGMT_DIAGNOSTICS_DATA_CMD_LIST_TARGETS) {
+		result = mgmt_common_list_targets(false);
+		if (result != DOCA_SUCCESS) {
+			fprintf(stderr, "Failed to list management targets: %s\n", doca_error_get_descr(result));
+			goto argp_cleanup;
+		}
+	} else if (conf.cmd == DOCA_MGMT_DIAGNOSTICS_DATA_CMD_CAPS) {
+		result = mgmt_diagnostics_data_supported(conf.target);
 		if (result != DOCA_SUCCESS) {
 			fprintf(stderr, "Diagnostics data supported check failed: %s\n", doca_error_get_descr(result));
 			goto argp_cleanup;
 		}
 	} else if (conf.cmd == DOCA_MGMT_DIAGNOSTICS_DATA_CMD_GET) {
-		result = mgmt_diagnostics_data_get(conf.dev);
+		result = mgmt_diagnostics_data_get(conf.target);
 		if (result != DOCA_SUCCESS) {
 			fprintf(stderr, "Diagnostics data get failed: %s\n", doca_error_get_descr(result));
 			goto argp_cleanup;
 		}
 	} else if (conf.cmd == DOCA_MGMT_DIAGNOSTICS_DATA_CMD_SET) {
-		result = mgmt_diagnostics_data_set(conf.dev, conf.set_multi_domain_enable);
+		result = mgmt_diagnostics_data_set(conf.target, conf.set_multi_domain_enable);
 		if (result != DOCA_SUCCESS) {
 			fprintf(stderr, "Diagnostics data set failed: %s\n", doca_error_get_descr(result));
 			goto argp_cleanup;
@@ -366,9 +368,6 @@ int main(int argc, char **argv)
 	exit_status = EXIT_SUCCESS;
 
 argp_cleanup:
-	if (conf.dev != NULL && doca_dev_close(conf.dev) != DOCA_SUCCESS)
-		DOCA_LOG_WARN("Failed to close DOCA device");
-
 	doca_argp_destroy();
 
 sample_exit:

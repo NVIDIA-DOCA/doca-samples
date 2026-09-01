@@ -118,10 +118,7 @@ doca_error_t register_vuid_param(const char *description, doca_argp_param_cb_t v
 	return DOCA_SUCCESS;
 }
 
-doca_error_t find_supported_device(const char *pci_address,
-				   const struct doca_devemu_pci_type *pci_type,
-				   emulation_supported_cb_t has_support,
-				   struct doca_dev **dev)
+doca_error_t find_generic_hotpluggable_device(const char *pci_address, struct doca_dev **dev)
 {
 	struct doca_devinfo **dev_list;
 	uint32_t nb_devs;
@@ -145,7 +142,7 @@ doca_error_t find_supported_device(const char *pci_address,
 		    is_equal == 0)
 			continue;
 
-		res = has_support(dev_list[i], pci_type, &is_supported);
+		res = doca_devemu_pci_cap_is_hotplug_supported(dev_list[i], &is_supported);
 		if (res != DOCA_SUCCESS)
 			continue;
 

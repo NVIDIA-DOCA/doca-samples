@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -222,4 +222,4 @@ void decrypt_error_callback(struct doca_aes_gcm_task_decrypt *decrypt_task,
 			    union doca_data task_user_data,
 			    union doca_data ctx_user_data);
 
-#endif /* AES-GCM_COMMON_H_ */
+#endif /* AES_GCM_COMMON_H_ */

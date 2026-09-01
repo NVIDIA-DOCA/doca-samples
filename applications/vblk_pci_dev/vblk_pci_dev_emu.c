@@ -70,9 +70,31 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
+	/* Bound the env-var (tainted input) against the known serialized-size cap
+	 * before passing it to the deserializer; without this the parser's
+	 * sscanf-%n-derived offset is operating on unbounded tainted data. */
+	if (strnlen(cfg_str, VBLK_EMU_CONFIG_BUF_LEN) >= VBLK_EMU_CONFIG_BUF_LEN) {
+		fprintf(stderr,
+			"EMU: %s exceeds max serialized size %d (truncated or tampered)\n",
+			VBLK_EMU_CONFIG_ENV,
+			VBLK_EMU_CONFIG_BUF_LEN - 1);
+		return EXIT_FAILURE;
+	}
+
 	struct vblk_pci_dev_config config = {0};
 	if (!vblk_config_deserialize(cfg_str, &config)) {
 		fprintf(stderr, "EMU: failed to parse %s\n", VBLK_EMU_CONFIG_ENV);
+		return EXIT_FAILURE;
+	}
+
+	/* Same invariants the CLI enforced; revalidate here so a tampered or
+	 * truncated env-var value cannot reach the offload engine setup path. */
+	if (vblk_validate_shm_dir_path(config.shm_dir_path) != DOCA_SUCCESS) {
+		fprintf(stderr,
+			"EMU: invalid shm_dir_path '%s' in %s (must be non-empty, absolute, no whitespace, <=%d chars)\n",
+			config.shm_dir_path,
+			VBLK_EMU_CONFIG_ENV,
+			VBLK_SHM_DIR_PATH_LEN - 1);
 		return EXIT_FAILURE;
 	}
 

@@ -89,21 +89,12 @@ void vblk_ho_poll(struct vblk_ho_ctx *ho);
 
 /**
  * Store a copy of an export descriptor blob.
- * The caller is responsible for releasing it via vblk_export_desc_release().
+ * The caller is responsible for freeing it via vblk_export_desc_free().
  */
 doca_error_t vblk_export_desc_store(void **destp, size_t *lenp, const void *src, size_t src_len);
 
 /**
- * Release an export descriptor: unlink the SHM file it describes
- * and free the buffer.  No-op if *destp is NULL.
- * Returns the result of export_release (DOCA_SUCCESS, DOCA_ERROR_NOT_FOUND
- * on harmless race, or another error on real failure).
- */
-doca_error_t vblk_export_desc_release(void **destp, size_t *lenp);
-
-/**
- * Free an export descriptor buffer without unlinking the SHM.
- * Used on the DST side where the SHM is owned by the SRC.
+ * Free an app-side export descriptor buffer copy.
  */
 void vblk_export_desc_free(void **destp, size_t *lenp);
 

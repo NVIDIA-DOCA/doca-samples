@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -99,15 +99,12 @@ static doca_error_t create_aging_pipe(struct doca_flow_port *port,
 {
 	struct doca_flow_match match;
 	struct doca_flow_monitor monitor;
-	struct doca_flow_actions actions;
-	struct doca_flow_actions *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd, fwd_miss;
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
 	memset(&monitor, 0, sizeof(monitor));
-	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&fwd_miss, 0, sizeof(fwd_miss));
 	memset(&pipe_cfg, 0, sizeof(pipe_cfg));
@@ -125,8 +122,6 @@ static doca_error_t create_aging_pipe(struct doca_flow_port *port,
 	match.outer.tcp.l4_port.src_port = 0xffff;
 	match.outer.tcp.l4_port.dst_port = 0xffff;
 
-	actions_arr[0] = &actions;
-
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
@@ -143,16 +138,13 @@ static doca_error_t create_aging_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
 	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	result = doca_flow_pipe_cfg_set_miss_counter(pipe_cfg, true);
 	if (result != DOCA_SUCCESS) {
@@ -245,20 +237,15 @@ static doca_error_t add_aging_pipe_entries(struct doca_flow_pipe *pipe,
 			return result;
 		}
 	}
-	do {
-		result = doca_flow_entries_process(port,
-						   0,
-						   DEFAULT_TIMEOUT_US,
-						   num_of_aging_entries - status->nb_processed);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
-			return result;
-		}
-		if (status->failure) {
-			DOCA_LOG_ERR("Failed to process entries, status is not success");
-			return DOCA_ERROR_BAD_STATE;
-		}
-	} while (status->nb_processed < num_of_aging_entries);
+	result = doca_flow_pipe_queue_drain(port, 0, NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to drain entries: %s", doca_error_get_descr(result));
+		return result;
+	}
+	if (status->failure) {
+		DOCA_LOG_ERR("Failed to process entries, status is not success");
+		return DOCA_ERROR_BAD_STATE;
+	}
 	DOCA_LOG_INFO("Added %d entries to port %d", status->nb_processed, port_id);
 	status->nb_processed = 0;
 
@@ -345,6 +332,7 @@ doca_error_t flow_aging(int nb_queues)
 				   nr_shared_resources,
 				   check_for_valid_entry_aging,
 				   NULL,
+				   NULL,
 				   NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -417,21 +405,16 @@ doca_error_t flow_aging(int nb_queues)
 		}
 	}
 
-	/* most of entries are processed automatically before removing new entries, poll results of remaining entries */
+	/* most of entries are processed automatically before removing new entries, drain remaining entries */
 	for (port_id = 0; port_id < nb_ports; port_id++) {
-		while (status[port_id].nb_processed < num_of_aging_entries) {
-			result = doca_flow_entries_process(ports[port_id],
-							   0,
-							   DEFAULT_TIMEOUT_US,
-							   num_of_aging_entries - status[port_id].nb_processed);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
-				goto entries_cleanup;
-			}
-			if (status[port_id].failure) {
-				DOCA_LOG_ERR("Failed to process entries, status is not success");
-				goto entries_cleanup;
-			}
+		result = doca_flow_pipe_queue_drain(ports[port_id], 0, NULL);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to drain entries: %s", doca_error_get_descr(result));
+			goto entries_cleanup;
+		}
+		if (status[port_id].failure) {
+			DOCA_LOG_ERR("Failed to process entries, status is not success");
+			goto entries_cleanup;
 		}
 		DOCA_LOG_INFO("Completed processing port %d", port_id);
 	}

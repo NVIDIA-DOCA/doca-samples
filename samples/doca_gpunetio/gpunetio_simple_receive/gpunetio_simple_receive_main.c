@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -29,7 +29,7 @@
 DOCA_LOG_REGISTER(GPUNETIO_SIMPLE_RECEIVE::MAIN);
 
 /*
- * ARGP Callback - Set shared QP execution mode (THREAD, WARP or BLOCK)
+ * ARGP Callback - Set receive kernel execution scope (THREAD, WARP or BLOCK)
  *
  * @param [in]: Input parameter
  * @config [in/out]: Program configuration context
@@ -117,7 +117,7 @@ static doca_error_t register_sample_params(void)
 	doca_argp_param_set_short_name(exec_param, "e");
 	doca_argp_param_set_long_name(exec_param, "exec-scope");
 	doca_argp_param_set_description(exec_param,
-					"Shared QP mode to test: per-thread (0) per-warp (1) per-block (2).");
+					"Receive kernel execution scope: per-thread (0) per-warp (1) per-block (2).");
 	doca_argp_param_set_callback(exec_param, exec_scope_callback);
 	doca_argp_param_set_type(exec_param, DOCA_ARGP_TYPE_INT);
 	result = doca_argp_register_param(exec_param);
@@ -224,7 +224,7 @@ int main(int argc, char **argv)
 	 */
 	cuda_ret = cudaFree(0);
 	if (cuda_ret != cudaSuccess) {
-		DOCA_LOG_ERR("CUDA initialization failed: %s\n", cudaGetErrorString(cuda_ret));
+		DOCA_LOG_ERR("CUDA initialization failed: %s", cudaGetErrorString(cuda_ret));
 		goto argp_cleanup;
 	}
 
@@ -237,7 +237,7 @@ int main(int argc, char **argv)
 
 	cudaSetDevice(sample_cfg.cuda_id);
 
-	DOCA_LOG_INFO("Sample configuration:\n\tGPU %s\n\tNIC %s\n\tShared QP exec scope %s\n\t",
+	DOCA_LOG_INFO("Sample configuration:\n\tGPU %s\n\tNIC %s\n\tReceive exec scope %s\n\t",
 		      sample_cfg.gpu_pcie_addr,
 		      sample_cfg.nic_pcie_addr,
 		      ((sample_cfg.exec_scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD) ?

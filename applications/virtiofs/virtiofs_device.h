@@ -64,6 +64,7 @@ struct virtiofs_device_config {
 	char tag[VIRTIOFS_DEVICE_TAG_MAX_LENGTH + 1];	/* Device tag */
 	uint16_t queue_size;				/* Queue size */
 	uint16_t num_request_queues;			/* Number of request queues */
+	bool indirect_enabled;				/* Enable indirect descriptor feature */
 };
 
 /* VirtioFS device io context */
@@ -140,13 +141,17 @@ struct virtiofs_fsdev {
  * @param ctx [in]: VirtioFS resources
  * @param nfs_server [in]: NFS server
  * @param nfs_export [in]: NFS export
- * @param num_request_queues ]in]: Number of request queues
+ * @param num_request_queues [in]: Number of request queues
+ * @param indirect_enabled [in]: Enable indirect descriptor feature
+ * @param emu_manager [in]: Emulation manager ibdev name
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t virtiofs_device_create_static(struct virtiofs_resources *ctx,
 					   char *nfs_server,
 					   char *nfs_export,
-					   uint16_t num_request_queues);
+					   uint16_t num_request_queues,
+					   bool indirect_enabled,
+					   char *emu_manager);
 
 /*
  * Create devices

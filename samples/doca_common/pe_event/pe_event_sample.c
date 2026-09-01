@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -267,6 +267,10 @@ doca_error_t run_for_completion(struct pe_event_sample_state *state)
  */
 void cleanup(struct pe_event_sample_state *state)
 {
+	/* Close the epoll instance created in register_pe_event (epoll_fd is initialized to -1 in run()) */
+	if (state->epoll_fd >= 0)
+		(void)close(state->epoll_fd);
+
 	/* A context must be stopped before it is destroyed */
 	if (state->dma_ctx != NULL)
 		(void)doca_ctx_stop(state->dma_ctx);
@@ -289,6 +293,7 @@ void cleanup(struct pe_event_sample_state *state)
 doca_error_t run(struct pe_event_sample_state *state)
 {
 	memset(state, 0, sizeof(*state));
+	state->epoll_fd = -1;
 
 	state->base.buffer_size = BUFFER_SIZE;
 	state->base.buf_inventory_size = BUF_INVENTORY_SIZE;

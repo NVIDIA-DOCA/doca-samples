@@ -23,6 +23,7 @@
  *
  */
 
+#include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -51,7 +52,7 @@ DOCA_LOG_REGISTER(FLOW_SRV6);
 #define WAIT_SEC (5)
 #define PACKET_BURST (8)
 #define NB_COUNTERS (16)
-#define NB_OL_ENTRIES (2)
+#define NB_OL_ENTRIES (3)
 #define PRIORITY0 (0)
 #define PRIORITY1 (1)
 #define PRIORITY2 (2)
@@ -81,6 +82,7 @@ struct ordered_list_stats_context {
 	int nb_classifier_entries;
 };
 static struct ordered_list_stats_context stats_ctx;
+static bool g_partial_mode;
 struct doca_flow_external_action_srv6_entry *srv6_entry;
 
 static_assert(offsetof(struct srv6_match, base) == 0,
@@ -158,24 +160,29 @@ cleanup:
 }
 
 /*
- * Create ordered list pipe with three lists for SRv6 PUSH & decrement+copy
+ * Create ordered list pipe with three lists for SRv6 PUSH, decrement+copy, and POP
  *
  * @port [in]: port of the pipe
  * @push_action [in]: SRv6 PUSH pipe action handle
+ * @pop_action [in]: SRv6 POP pipe action handle
  * @pipe [out]: created pipe pointer
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 static doca_error_t ordered_list_pipe_create(struct doca_flow_port *port,
 					     void *push_action,
-					     struct doca_flow_pipe **pipe)
+					     void *pop_action,
+					     struct doca_flow_pipe **pipe,
+					     bool partial_mode)
 {
 	struct doca_flow_ordered_list_element elements_list0[3] = {0};
 	struct doca_flow_ordered_list_element elements_list1[4] = {0};
+	struct doca_flow_ordered_list_element elements_list2[2] = {0};
 	struct doca_flow_ordered_list ordered_list0 = {0};
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	struct doca_flow_monitor monitor = {.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED};
 	struct doca_flow_fwd fwd = {0};
 	struct doca_flow_ordered_list ordered_list1 = {0};
+	struct doca_flow_ordered_list ordered_list2 = {0};
 	struct doca_flow_ordered_list *ordered_lists[NB_OL_ENTRIES] = {0};
 
 	struct srv6_actions pipe_actions_add = {
@@ -208,7 +215,7 @@ static doca_error_t ordered_list_pipe_create(struct doca_flow_port *port,
 	uint32_t size;
 	doca_error_t result;
 
-	/* List 0 (PUSH): external SRv6 PUSH + copy SID to IPv6 DIP -> fwd VF1 */
+	/* List 0 (PUSH): external SRv6 PUSH + copy SID to IPv6 DIP (on supported devices) -> fwd VF1 */
 
 	/*
 	 * Copy the active SID to the IPv6 destination address.
@@ -221,14 +228,16 @@ static doca_error_t ordered_list_pipe_create(struct doca_flow_port *port,
 	elements_list0[size++].external_actions = push_action;
 	elements_list0[size].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_MONITOR;
 	elements_list0[size++].monitor = &monitor;
-	elements_list0[size].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
-	elements_list0[size++].action_descs = &descs_list_copy;
+	if (!partial_mode) {
+		elements_list0[size].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
+		elements_list0[size++].action_descs = &descs_list_copy;
+	}
 
 	ordered_list0.idx = 0;
 	ordered_list0.size = size;
 	ordered_list0.elements = elements_list0;
 
-	/* List 1 (DECREMENT + COPY): seg_left-1 + copy SID to IPv6 DIP -> fwd VF2 */
+	/* List 1 (DECREMENT + optional COPY on supported devices): seg_left-1 [+ copy SID to IPv6 DIP] -> fwd VF2 */
 	size = 0;
 	elements_list1[size].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
 	elements_list1[size].actions = &pipe_actions_add.base;
@@ -236,12 +245,25 @@ static doca_error_t ordered_list_pipe_create(struct doca_flow_port *port,
 	elements_list1[size++].action_descs = &descs_list_add;
 	elements_list1[size].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_MONITOR;
 	elements_list1[size++].monitor = &monitor;
-	elements_list1[size].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
-	elements_list1[size++].action_descs = &descs_list_copy;
+	if (!partial_mode) {
+		elements_list1[size].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
+		elements_list1[size++].action_descs = &descs_list_copy;
+	}
 
 	ordered_list1.idx = 1;
 	ordered_list1.size = size;
 	ordered_list1.elements = elements_list1;
+
+	/* List 2 (POP): external SRv6 POP + monitor -> fwd RSS */
+	size = 0;
+	elements_list2[size].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_EXTERNAL_ACTIONS;
+	elements_list2[size++].external_actions = pop_action;
+	elements_list2[size].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_MONITOR;
+	elements_list2[size++].monitor = &monitor;
+
+	ordered_list2.idx = 2;
+	ordered_list2.size = size;
+	ordered_list2.elements = elements_list2;
 
 	/* Create ordered list pipe */
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
@@ -264,6 +286,7 @@ static doca_error_t ordered_list_pipe_create(struct doca_flow_port *port,
 
 	ordered_lists[nb_ordered_lists++] = &ordered_list0;
 	ordered_lists[nb_ordered_lists++] = &ordered_list1;
+	ordered_lists[nb_ordered_lists++] = &ordered_list2;
 	result = doca_flow_pipe_cfg_set_ordered_lists(pipe_cfg, ordered_lists, nb_ordered_lists);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg ordered lists: %s", doca_error_get_descr(result));
@@ -284,10 +307,10 @@ destroy_pipe_cfg:
 
 /*
  * srv6_action_classifier pipe: classifies by the following matches
- * 1. match IPv6 && next_header == 43 && segments_left == 0, forward to RSS
+ * 1. match IPv6 && next_header == 43 && segments_left == 0, forward to ordered list pipe idx 2 (POP)
  * 2. match IPv6 && next_header == 43, forward to ordered list pipe idx 1 (decrement + copy)
  * 3. match IPv6, forward to ordered list pipe idx 0 (PUSH SRH)
- * 5. match all, forward DROP
+ * 4. match all, forward DROP
  *
  * @port [in]: port of the pipe
  * @srv6_action_classifier [in]: control pipe for routing header packets
@@ -333,10 +356,9 @@ static doca_error_t add_srv6_action_classifier_entries(struct doca_flow_pipe *ol
 	struct srv6_match match_mask = {0};
 	struct doca_flow_fwd fwd = {0};
 	struct doca_flow_monitor monitor = {.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED};
-	uint16_t rss_queues[1] = {0};
 	doca_error_t result;
 
-	/* Priority 0: match IPv6 && next_header == 43 && segments_left == 0, forward to RSS */
+	/* Priority 0: match IPv6 && next_header == 43 && segments_left == 0, forward to POP */
 	match.base.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV6;
 	match.base.outer.l3_type = DOCA_FLOW_L3_TYPE_IP6;
 	match.base.outer.ip6.next_proto = NEXT_PROTO_ROUTING_HEADER;
@@ -346,11 +368,9 @@ static doca_error_t add_srv6_action_classifier_entries(struct doca_flow_pipe *ol
 	match_mask.base.outer.ip6.next_proto = 0xff;
 	match_mask.segments_left = UINT8_MAX;
 
-	fwd.type = DOCA_FLOW_FWD_RSS;
-	fwd.rss_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
-	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV6;
-	fwd.rss.queues_array = rss_queues;
-	fwd.rss.nr_queues = 1;
+	fwd.type = DOCA_FLOW_FWD_ORDERED_LIST_PIPE;
+	fwd.ordered_list_pipe.pipe = ol_pipe;
+	fwd.ordered_list_pipe.idx = 2;
 
 	result = doca_flow_pipe_control_add_entry(0,
 						  srv6_action_classifier,
@@ -434,7 +454,7 @@ static doca_error_t add_srv6_action_classifier_entries(struct doca_flow_pipe *ol
 						  status,
 						  &stats_ctx.classifier_entries[stats_ctx.nb_classifier_entries]);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to add entry with priority 0 to srv6_action_classifier pipe: %s",
+		DOCA_LOG_ERR("Failed to add entry with priority 2 to srv6_action_classifier pipe: %s",
 			     doca_error_get_descr(result));
 		return result;
 	}
@@ -480,9 +500,11 @@ static doca_error_t add_ordered_list_entries(struct doca_flow_pipe *ol_pipe, str
 		sizeof(struct doca_flow_external_action_srv6_entry) + NB_SRV6_SIDS * sizeof(struct doca_flow_ipv6_addr);
 	struct doca_flow_ordered_list_element elements_list0[3] = {0};
 	struct doca_flow_ordered_list_element elements_list1[3] = {0};
+	struct doca_flow_ordered_list_element elements_list2[2] = {0};
 	struct doca_flow_ordered_list entry_list = {0};
 	struct doca_flow_fwd fwd = {0};
 	struct doca_flow_header_ipv6_srh *srh;
+	uint16_t rss_queues[1] = {0};
 	uint32_t size;
 	doca_error_t result;
 
@@ -522,7 +544,8 @@ static doca_error_t add_ordered_list_entries(struct doca_flow_pipe *ol_pipe, str
 	elements_list0[size].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_EXTERNAL_ACTIONS;
 	elements_list0[size++].external_actions = srv6_entry;
 	elements_list0[size++].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_MONITOR;
-	elements_list0[size++].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
+	if (!g_partial_mode)
+		elements_list0[size++].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
 
 	entry_list.idx = 0;
 	entry_list.size = size;
@@ -544,11 +567,12 @@ static doca_error_t add_ordered_list_entries(struct doca_flow_pipe *ol_pipe, str
 	}
 	stats_ctx.nb_ol_entries++;
 
-	/* Entry for list idx 1 (decrement segments_left + copy SID to DIP) */
+	/* Entry for list idx 1 (decrement segments_left [+ copy SID to DIP]) */
 	size = 0;
 	elements_list1[size++].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
 	elements_list1[size++].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_MONITOR;
-	elements_list1[size++].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
+	if (!g_partial_mode)
+		elements_list1[size++].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_ACTIONS;
 	entry_list.idx = 1;
 	entry_list.size = size;
 	entry_list.elements = elements_list1;
@@ -564,7 +588,35 @@ static doca_error_t add_ordered_list_entries(struct doca_flow_pipe *ol_pipe, str
 						       status,
 						       &stats_ctx.ol_entries[stats_ctx.nb_ol_entries]);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to add ordered list entry idx 1 (DEC+COPY): %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to add ordered list entry idx 1 (DEC): %s", doca_error_get_descr(result));
+		goto free_srv6_entry;
+	}
+	stats_ctx.nb_ol_entries++;
+
+	/* Entry for list idx 2 (POP SRH -> RSS) */
+	size = 0;
+	elements_list2[size].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_EXTERNAL_ACTIONS;
+	elements_list2[size++].external_actions = NULL;
+	elements_list2[size++].type = DOCA_FLOW_ORDERED_LIST_ELEMENT_MONITOR;
+	entry_list.idx = 2;
+	entry_list.size = size;
+	entry_list.elements = elements_list2;
+	fwd.type = DOCA_FLOW_FWD_RSS;
+	fwd.rss_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
+	fwd.rss.outer_flags = DOCA_FLOW_RSS_IPV6;
+	fwd.rss.queues_array = rss_queues;
+	fwd.rss.nr_queues = 1;
+
+	result = doca_flow_pipe_ordered_list_add_entry(0,
+						       ol_pipe,
+						       2,
+						       &entry_list,
+						       &fwd,
+						       DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
+						       status,
+						       &stats_ctx.ol_entries[stats_ctx.nb_ol_entries]);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add ordered list entry idx 2 (POP): %s", doca_error_get_descr(result));
 		goto free_srv6_entry;
 	}
 	stats_ctx.nb_ol_entries++;
@@ -582,9 +634,14 @@ static void print_ordered_list_stats(void *context)
 {
 	(void)context;
 
+	const char *labels[3];
 	int i;
 	doca_error_t result;
 	struct doca_flow_resource_query query_results[10];
+
+	labels[0] = "Originator (PUSH)";
+	labels[1] = g_partial_mode ? "Intermediate (DEC)" : "Intermediate (DEC+COPY)";
+	labels[2] = "Endpoint (POP)";
 
 	/* Query and print ordered_list entries counters (PUSH) */
 	if (stats_ctx.nb_ol_entries != NB_OL_ENTRIES) {
@@ -594,7 +651,7 @@ static void print_ordered_list_stats(void *context)
 
 	DOCA_LOG_INFO("--------------------------------------------------------------");
 	for (i = 0; i < stats_ctx.nb_ol_entries; i++) {
-		DOCA_LOG_INFO("%s Node", i == 0 ? "Originator" : "Intermediate");
+		DOCA_LOG_INFO("%s", labels[i]);
 		memset(&query_results, 0, sizeof(query_results));
 		result = doca_flow_resource_query_entry(stats_ctx.ol_entries[i], query_results);
 		if (result != DOCA_SUCCESS) {
@@ -634,10 +691,8 @@ static void process_packets(void)
 
 	nb_packets = rte_eth_rx_burst(port_id, queue_index, packets, PACKET_BURST);
 
-	for (i = 0; i < nb_packets; i++) {
-		/* perform POP SRH in software. HW will support POP SRH in next release */
+	for (i = 0; i < nb_packets; i++)
 		rte_pktmbuf_free(packets[i]);
-	}
 }
 
 /*
@@ -648,7 +703,7 @@ static void process_packets(void)
  * @ctx [in]: flow switch context the sample will use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t flow_srv6(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
+doca_error_t flow_srv6(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx, bool partial_mode)
 {
 	struct doca_flow_port *ports[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
@@ -659,9 +714,13 @@ doca_error_t flow_srv6(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 	struct doca_flow_pipe *ol_pipe;
 	struct doca_flow_pipe *srv6_action_classifier;
 	struct doca_flow_external_action_srv6_pipe_action_cfg push_cfg = {0};
+	struct doca_flow_external_action_srv6_pipe_action_cfg pop_cfg = {0};
 	void *push_action = NULL;
+	void *pop_action = NULL;
 	const uint32_t nb_srh = NB_MAX_SRH;
 	doca_error_t result;
+
+	g_partial_mode = partial_mode;
 
 	result = init_doca_flow_with_srv6_defs(nb_queues);
 	if (result != DOCA_SUCCESS) {
@@ -691,8 +750,16 @@ doca_error_t flow_srv6(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 		goto cleanup;
 	}
 
+	pop_cfg.op = DOCA_FLOW_EXT_ACT_SRV6_OP_POP;
+	pop_cfg.srh_size = push_cfg.srh_size;
+	result = doca_flow_external_action_srv6_pipe_action_create(&pop_cfg, &pop_action);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create SRv6 POP pipe action: %s", doca_error_get_descr(result));
+		goto cleanup;
+	}
+
 	/* Create pipes bottom-up: ordered list -> srv6_action_classifier -> IPv6 match */
-	result = ordered_list_pipe_create(ports[0], push_action, &ol_pipe);
+	result = ordered_list_pipe_create(ports[0], push_action, pop_action, &ol_pipe, partial_mode);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ordered list pipe: %s", doca_error_get_descr(result));
 		goto cleanup;
@@ -730,6 +797,8 @@ doca_error_t flow_srv6(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 cleanup:
 	if (srv6_entry)
 		free(srv6_entry);
+	if (pop_action)
+		doca_flow_external_action_srv6_pipe_action_destroy(pop_action);
 	if (push_action)
 		doca_flow_external_action_srv6_pipe_action_destroy(push_action);
 	stop_doca_flow_ports(nb_ports, ports);

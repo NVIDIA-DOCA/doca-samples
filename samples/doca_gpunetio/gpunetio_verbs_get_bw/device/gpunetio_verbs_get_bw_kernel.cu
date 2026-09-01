@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -46,7 +46,6 @@ __global__ void get_bw(struct doca_gpu_dev_verbs_qp *qp,
 				uint32_t dump_flag_mkey)
 {
 	doca_gpu_dev_verbs_ticket_t out_ticket;
-	uint32_t lane_idx = doca_gpu_dev_verbs_get_lane_id();
 	uint32_t tidx = threadIdx.x + (blockIdx.x * blockDim.x);
 
 	for (uint32_t idx = tidx; idx < num_iters; idx += (blockDim.x * gridDim.x)) {
@@ -103,7 +102,7 @@ doca_error_t gpunetio_verbs_get_bw(cudaStream_t stream,
 	/* Check no previous CUDA errors */
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 
@@ -129,10 +128,14 @@ doca_error_t gpunetio_verbs_get_bw(cudaStream_t stream,
 									dst_buf_mkey,
 									dump_flag,
 									dump_flag_mkey);
+	else {
+		DOCA_LOG_ERR("Invalid exec scope %d, must be thread or warp", scope);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 

@@ -63,13 +63,13 @@ struct virtiofs_manager {
 };
 
 /*
- * Get available function
+ * Get available function from a specific manager
  *
- * @param ctx [in]: VirtioFS resources
+ * @param manager [in]: VirtioFS manager to search
  * @param func_out [out]: Function
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t virtiofs_function_get_available(struct virtiofs_resources *ctx, struct virtiofs_function **func_out);
+doca_error_t virtiofs_function_get_available(struct virtiofs_manager *manager, struct virtiofs_function **func_out);
 
 /*
  * Create managers

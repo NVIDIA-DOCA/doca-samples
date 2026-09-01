@@ -1072,8 +1072,7 @@ int main(int argc, char **argv)
 	struct ipsec_security_gw_config app_cfg = {0};
 	struct application_dpdk_config dpdk_config = {
 		.port_config.nb_ports = nb_ports,
-		.port_config.nb_queues = 2, /* This will be updated according to app_cfg.nb_cores in
-					       dpdk_queues_and_ports_init() */
+		.port_config.nb_queues = 0, /* AUTO: set by dpdk_queues_and_ports_init() after EAL */
 		.port_config.enable_mbuf_metadata = true,
 		.reserve_main_thread = true,
 	};

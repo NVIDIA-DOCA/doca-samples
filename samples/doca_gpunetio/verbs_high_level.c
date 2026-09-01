@@ -83,12 +83,12 @@ static uint32_t calc_cq_external_umem_size(uint32_t queue_size)
 	uint32_t cqe_buf_size = 0;
 
 	if (queue_size != 0)
-		cqe_buf_size = (uint32_t)(queue_size * sizeof(struct mlx5_cqe64));
+		cqe_buf_size = (uint32_t)(queue_size * sizeof(struct doca_gpu_dev_verbs_cqe64));
 
 	return common_utils_align_up_uint32(cqe_buf_size + VERBS_TEST_DBR_SIZE, get_page_size());
 }
 
-static void mlx5_init_cqes(struct mlx5_cqe64 *cqes, uint32_t nb_cqes)
+static void mlx5_init_cqes(struct doca_gpu_dev_verbs_cqe64 *cqes, uint32_t nb_cqes)
 {
 	for (uint32_t cqe_idx = 0; cqe_idx < nb_cqes; cqe_idx++)
 		cqes[cqe_idx].op_own = (MLX5_CQE_INVALID << DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT) |
@@ -103,13 +103,14 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 			      void **gpu_umem_dev_ptr,
 			      struct doca_umem **gpu_umem,
 			      struct doca_uar *external_uar,
+			      struct doca_verbs_comp_channel *comp_channel,
 			      struct doca_verbs_cq **verbs_cq)
 {
 	doca_error_t status = DOCA_SUCCESS, tmp_status = DOCA_SUCCESS;
 	cudaError_t status_cuda = cudaSuccess;
 	struct doca_verbs_cq_attr *verbs_cq_attr = NULL;
 	struct doca_verbs_cq *new_cq = NULL;
-	struct mlx5_cqe64 *cq_ring_haddr = NULL;
+	struct doca_gpu_dev_verbs_cqe64 *cq_ring_haddr = NULL;
 	uint32_t external_umem_size = 0;
 
 	status = doca_verbs_cq_attr_create(&verbs_cq_attr);
@@ -141,7 +142,7 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 		goto destroy_resources;
 	}
 
-	cq_ring_haddr = (struct mlx5_cqe64 *)(calloc(external_umem_size, sizeof(uint8_t)));
+	cq_ring_haddr = (struct doca_gpu_dev_verbs_cqe64 *)(calloc(external_umem_size, sizeof(uint8_t)));
 	if (cq_ring_haddr == NULL) {
 		DOCA_LOG_ERR("Failed to allocate cq host ring buffer memory for initialization");
 		status = DOCA_ERROR_NO_MEMORY;
@@ -150,7 +151,7 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 
 	mlx5_init_cqes(cq_ring_haddr, ncqes);
 
-	DOCA_LOG_DBG("Create CQ memcpy cq_ring_haddr %p into gpu_umem_dev_ptr %p size %d\n",
+	DOCA_LOG_DBG("Create CQ memcpy cq_ring_haddr %p into gpu_umem_dev_ptr %p size %d",
 		     (void *)(cq_ring_haddr),
 		     (*gpu_umem_dev_ptr),
 		     external_umem_size);
@@ -210,15 +211,29 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 		}
 	}
 
+	if (comp_channel) {
+		status = doca_verbs_cq_attr_set_comp_channel(verbs_cq_attr, comp_channel);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca verbs cq comp_channel");
+			goto destroy_resources;
+		}
+
+		status = doca_verbs_cq_attr_set_st(verbs_cq_attr, DOCA_VERBS_CQ_ST_NO_ACTION);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set doca verbs cq st");
+			goto destroy_resources;
+		}
+	}
+
 	status = doca_verbs_cq_create(verbs_ctx, verbs_cq_attr, &new_cq);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create doca verbs cq");
+		DOCA_LOG_ERR("Failed to create doca verbs cq: %s", doca_error_get_descr(status));
 		goto destroy_resources;
 	}
 
 	status = doca_verbs_cq_attr_destroy(verbs_cq_attr);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to destroy doca verbs cq attributes");
+		DOCA_LOG_ERR("Failed to destroy doca verbs cq attributes: %s", doca_error_get_descr(status));
 		goto destroy_resources;
 	}
 
@@ -230,19 +245,21 @@ destroy_resources:
 	if (new_cq != NULL) {
 		tmp_status = doca_verbs_cq_destroy(new_cq);
 		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy doca verbs cq");
+			DOCA_LOG_ERR("Failed to destroy doca verbs cq: %s", doca_error_get_descr(tmp_status));
 	}
 
 	if (verbs_cq_attr != NULL) {
 		tmp_status = doca_verbs_cq_attr_destroy(verbs_cq_attr);
 		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy doca verbs cq attributes");
+			DOCA_LOG_ERR("Failed to destroy doca verbs cq attributes: %s",
+				     doca_error_get_descr(tmp_status));
 	}
 
 	if (*gpu_umem != NULL) {
 		tmp_status = doca_umem_destroy(*gpu_umem);
 		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu ring buffer umem");
+			DOCA_LOG_ERR("Failed to destroy gpu ring buffer umem: %s", doca_error_get_descr(tmp_status));
+		*gpu_umem = NULL;
 	}
 
 	if (cq_ring_haddr) {
@@ -252,7 +269,9 @@ destroy_resources:
 	if ((*gpu_umem_dev_ptr) != 0) {
 		tmp_status = doca_gpu_mem_free(gpu_dev, (*gpu_umem_dev_ptr));
 		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu memory of cq umem buffer");
+			DOCA_LOG_ERR("Failed to destroy gpu memory of cq umem buffer: %s",
+				     doca_error_get_descr(tmp_status));
+		*gpu_umem_dev_ptr = 0;
 	}
 
 	return status;
@@ -492,13 +511,13 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 
 	status = doca_verbs_qp_create(verbs_ctx, verbs_qp_init_attr, &new_qp);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create doca verbs QP");
+		DOCA_LOG_ERR("Failed to create doca verbs QP: %s", doca_error_get_descr(status));
 		goto destroy_resources;
 	}
 
 	status = doca_verbs_qp_init_attr_destroy(verbs_qp_init_attr);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to destroy doca verbs QP attributes");
+		DOCA_LOG_ERR("Failed to destroy doca verbs QP attributes: %s", doca_error_get_descr(status));
 		goto destroy_resources;
 	}
 
@@ -513,25 +532,47 @@ destroy_resources:
 	if (new_qp != NULL) {
 		tmp_status = doca_verbs_qp_destroy(new_qp);
 		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy doca verbs QP");
+			DOCA_LOG_ERR("Failed to destroy doca verbs QP: %s", doca_error_get_descr(tmp_status));
 	}
 
 	if (verbs_qp_init_attr != NULL) {
 		tmp_status = doca_verbs_qp_init_attr_destroy(verbs_qp_init_attr);
 		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy doca verbs QP attributes");
+			DOCA_LOG_ERR("Failed to destroy doca verbs QP attributes: %s",
+				     doca_error_get_descr(tmp_status));
 	}
 
 	if (*gpu_umem != NULL) {
 		tmp_status = doca_umem_destroy(*gpu_umem);
 		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu umem");
+			DOCA_LOG_ERR("Failed to destroy gpu umem: %s", doca_error_get_descr(tmp_status));
+		*gpu_umem = NULL;
 	}
 
 	if ((*gpu_umem_dev_ptr) != 0) {
 		tmp_status = doca_gpu_mem_free(gpu_dev, (*gpu_umem_dev_ptr));
 		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu memory of umem");
+			DOCA_LOG_ERR("Failed to destroy gpu memory of umem: %s", doca_error_get_descr(tmp_status));
+		*gpu_umem_dev_ptr = 0;
+	}
+
+	if (*gpu_umem_dbr != NULL) {
+		tmp_status = doca_umem_destroy(*gpu_umem_dbr);
+		if (tmp_status != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy gpu dbr umem: %s", doca_error_get_descr(tmp_status));
+		*gpu_umem_dbr = NULL;
+	}
+
+	if ((*gpu_umem_dbr_dev_ptr) != 0) {
+		if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
+			free(*gpu_umem_dbr_dev_ptr);
+		} else {
+			tmp_status = doca_gpu_mem_free(gpu_dev, (*gpu_umem_dbr_dev_ptr));
+			if (tmp_status != DOCA_SUCCESS)
+				DOCA_LOG_ERR("Failed to destroy gpu memory of dbr umem: %s",
+					     doca_error_get_descr(tmp_status));
+		}
+		*gpu_umem_dbr_dev_ptr = 0;
 	}
 
 	return status;
@@ -575,9 +616,10 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 				   &qp_->cq_sq_umem_gpu_ptr,
 				   &qp_->cq_sq_umem,
 				   NULL,
+				   qp_init_attr->comp_channel,
 				   &qp_->cq_sq);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create doca verbs cq");
+			DOCA_LOG_ERR("Failed to create doca verbs cq: %s", doca_error_get_descr(status));
 			goto exit_error;
 		}
 	}
@@ -592,9 +634,10 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 				   &qp_->cq_rq_umem_gpu_ptr,
 				   &qp_->cq_rq_umem,
 				   NULL,
+				   qp_init_attr->comp_channel,
 				   &qp_->cq_rq);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create doca verbs cq");
+			DOCA_LOG_ERR("Failed to create doca verbs cq: %s", doca_error_get_descr(status));
 			goto exit_error;
 		}
 	}
@@ -625,7 +668,7 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 			   qp_init_attr->recv_inline,
 			   &qp_->qp);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create doca verbs qp");
+		DOCA_LOG_ERR("Failed to create doca verbs qp: %s", doca_error_get_descr(status));
 		goto exit_error;
 	}
 
@@ -638,8 +681,24 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 					  qp_->cq_rq,
 					  &qp_->qp_gverbs);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create GPU verbs QP");
-		return status;
+		DOCA_LOG_ERR("Failed to create GPU verbs QP: %s", doca_error_get_descr(status));
+		goto exit_error;
+	}
+
+	if (qp_init_attr->comp_channel && qp_->cq_sq) {
+		status = doca_verbs_cq_set_cq_context(qp_->cq_sq, qp_->qp_gverbs);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed doca_verbs_cq_set_cq_context with %d", status);
+			goto exit_error;
+		}
+
+		status = doca_gpu_verbs_req_notify_cq(qp_->gpu_dev, qp_->cq_sq);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed doca_gpu_verbs_req_notify_cq with %d", status);
+			goto exit_error;
+		}
+
+		DOCA_LOG_INFO("doca_verbs_cq_set_cq_context set with context %p", (void *)qp_->qp_gverbs);
 	}
 
 	*qp = qp_;
@@ -647,103 +706,251 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 	return DOCA_SUCCESS;
 
 exit_error:
+	if (qp_->qp != NULL) {
+		tmp_status = doca_verbs_qp_destroy(qp_->qp);
+		if (tmp_status != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy doca verbs QP: %s", doca_error_get_descr(tmp_status));
+	}
+
+	if (qp_->qp_umem != NULL) {
+		tmp_status = doca_umem_destroy(qp_->qp_umem);
+		if (tmp_status != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy gpu qp umem: %s", doca_error_get_descr(tmp_status));
+	}
+
+	if (qp_->qp_umem_gpu_ptr != 0) {
+		tmp_status = doca_gpu_mem_free(qp_->gpu_dev, qp_->qp_umem_gpu_ptr);
+		if (tmp_status != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy gpu memory of qp ring buffer: %s",
+				     doca_error_get_descr(tmp_status));
+	}
+
+	if (qp_->qp_umem_dbr != NULL) {
+		tmp_status = doca_umem_destroy(qp_->qp_umem_dbr);
+		if (tmp_status != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy gpu qp dbr umem: %s", doca_error_get_descr(tmp_status));
+	}
+
+	if (qp_->qp_umem_dbr_gpu_ptr != 0) {
+		if (qp_->nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
+			free(qp_->qp_umem_dbr_gpu_ptr);
+		} else {
+			tmp_status = doca_gpu_mem_free(qp_->gpu_dev, qp_->qp_umem_dbr_gpu_ptr);
+			if (tmp_status != DOCA_SUCCESS)
+				DOCA_LOG_ERR("Failed to destroy gpu memory of qp dbr buffer: %s",
+					     doca_error_get_descr(tmp_status));
+		}
+	}
+
 	if (qp_->external_uar != NULL) {
 		tmp_status = doca_uar_destroy(qp_->external_uar);
 		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy doca verbs UAR");
+			DOCA_LOG_ERR("Failed to destroy doca verbs UAR: %s", doca_error_get_descr(tmp_status));
 	}
+
+	if (qp_->cq_rq != NULL) {
+		tmp_status = doca_verbs_cq_destroy(qp_->cq_rq);
+		if (tmp_status != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy doca verbs rq cq: %s", doca_error_get_descr(tmp_status));
+	}
+
+	if (qp_->cq_rq_umem != NULL) {
+		tmp_status = doca_umem_destroy(qp_->cq_rq_umem);
+		if (tmp_status != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy gpu rq cq ring buffer umem: %s",
+				     doca_error_get_descr(tmp_status));
+	}
+
+	if (qp_->cq_rq_umem_gpu_ptr != 0) {
+		tmp_status = doca_gpu_mem_free(qp_->gpu_dev, qp_->cq_rq_umem_gpu_ptr);
+		if (tmp_status != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy gpu memory of rq cq ring buffer: %s",
+				     doca_error_get_descr(tmp_status));
+	}
+
+	if (qp_->cq_sq != NULL) {
+		tmp_status = doca_verbs_cq_destroy(qp_->cq_sq);
+		if (tmp_status != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy doca verbs sq cq: %s", doca_error_get_descr(tmp_status));
+	}
+
+	if (qp_->cq_sq_umem != NULL) {
+		tmp_status = doca_umem_destroy(qp_->cq_sq_umem);
+		if (tmp_status != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy gpu sq cq ring buffer umem: %s",
+				     doca_error_get_descr(tmp_status));
+	}
+
+	if (qp_->cq_sq_umem_gpu_ptr != 0) {
+		tmp_status = doca_gpu_mem_free(qp_->gpu_dev, qp_->cq_sq_umem_gpu_ptr);
+		if (tmp_status != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy gpu memory of sq cq ring buffer: %s",
+				     doca_error_get_descr(tmp_status));
+	}
+
 	free(qp_);
 	return status;
 }
 
 doca_error_t doca_gpu_verbs_destroy_qp_hl(struct doca_gpu_verbs_qp_hl *qp)
 {
+	doca_error_t result = DOCA_SUCCESS;
 	doca_error_t status;
 
 	if (qp == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
 
-	status = doca_gpu_verbs_unexport_qp(qp->gpu_dev, qp->qp_gverbs);
-	if (status != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to destroy doca gpu thread argument cq memory");
+	if (qp->qp_gverbs != NULL) {
+		status = doca_gpu_verbs_unexport_qp(qp->gpu_dev, qp->qp_gverbs);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to unexport GPU verbs QP: %s", doca_error_get_descr(status));
+			DOCA_ERROR_PROPAGATE(result, status);
+		}
+	}
 
-	status = doca_verbs_qp_destroy(qp->qp);
-	if (status != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to destroy doca verbs QP");
+	if (qp->qp != NULL) {
+		status = doca_verbs_qp_destroy(qp->qp);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy doca verbs QP: %s", doca_error_get_descr(status));
+			DOCA_ERROR_PROPAGATE(result, status);
+		}
+	}
 
 	if (qp->qp_umem != NULL) {
 		status = doca_umem_destroy(qp->qp_umem);
-		if (status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu qp umem");
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy gpu qp umem: %s", doca_error_get_descr(status));
+			DOCA_ERROR_PROPAGATE(result, status);
+		}
 	}
 
 	if (qp->qp_umem_gpu_ptr != 0) {
 		status = doca_gpu_mem_free(qp->gpu_dev, qp->qp_umem_gpu_ptr);
-		if (status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu memory of qp ring buffer");
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy gpu memory of qp ring buffer: %s",
+				     doca_error_get_descr(status));
+			DOCA_ERROR_PROPAGATE(result, status);
+		}
+	}
+
+	if (qp->qp_umem_dbr != NULL) {
+		status = doca_umem_destroy(qp->qp_umem_dbr);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy gpu qp dbr umem: %s", doca_error_get_descr(status));
+			DOCA_ERROR_PROPAGATE(result, status);
+		}
+	}
+
+	if (qp->qp_umem_dbr_gpu_ptr != 0) {
+		if (qp->nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
+			free(qp->qp_umem_dbr_gpu_ptr);
+		} else {
+			status = doca_gpu_mem_free(qp->gpu_dev, qp->qp_umem_dbr_gpu_ptr);
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy gpu memory of qp dbr buffer: %s",
+					     doca_error_get_descr(status));
+				DOCA_ERROR_PROPAGATE(result, status);
+			}
+		}
+		qp->qp_umem_dbr_gpu_ptr = 0;
 	}
 
 	if (qp->cq_rq) {
 		status = doca_verbs_cq_destroy(qp->cq_rq);
-		if (status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy doca verbs CQ");
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy doca verbs CQ: %s", doca_error_get_descr(status));
+			DOCA_ERROR_PROPAGATE(result, status);
+		}
 
 		if (qp->cq_rq_umem != NULL) {
 			status = doca_umem_destroy(qp->cq_rq_umem);
-			if (status != DOCA_SUCCESS)
-				DOCA_LOG_ERR("Failed to destroy gpu rq cq ring buffer umem");
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy gpu rq cq ring buffer umem: %s",
+					     doca_error_get_descr(status));
+				DOCA_ERROR_PROPAGATE(result, status);
+			}
 		}
 
 		if (qp->cq_rq_umem_gpu_ptr != 0) {
 			status = doca_gpu_mem_free(qp->gpu_dev, qp->cq_rq_umem_gpu_ptr);
-			if (status != DOCA_SUCCESS)
-				DOCA_LOG_ERR("Failed to destroy gpu memory of rq cq ring buffer");
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy gpu memory of rq cq ring buffer: %s",
+					     doca_error_get_descr(status));
+				DOCA_ERROR_PROPAGATE(result, status);
+			}
 		}
 
 		if (qp->cq_rq_umem_dbr != NULL) {
 			status = doca_umem_destroy(qp->cq_rq_umem_dbr);
-			if (status != DOCA_SUCCESS)
-				DOCA_LOG_ERR("Failed to destroy gpu rq cq ring buffer umem");
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy gpu rq cq umem dbr: %s", doca_error_get_descr(status));
+				DOCA_ERROR_PROPAGATE(result, status);
+			}
 		}
 
 		if (qp->cq_rq_umem_dbr_gpu_ptr != 0) {
 			status = doca_gpu_mem_free(qp->gpu_dev, qp->cq_rq_umem_dbr_gpu_ptr);
-			if (status != DOCA_SUCCESS)
-				DOCA_LOG_ERR("Failed to destroy gpu memory of rq cq umem dbr buffer");
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy gpu memory of rq cq umem dbr buffer: %s",
+					     doca_error_get_descr(status));
+				DOCA_ERROR_PROPAGATE(result, status);
+			}
 		}
 	}
 
 	if (qp->cq_sq) {
 		status = doca_verbs_cq_destroy(qp->cq_sq);
-		if (status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy doca verbs CQ");
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy doca verbs CQ: %s", doca_error_get_descr(status));
+			DOCA_ERROR_PROPAGATE(result, status);
+		}
 
 		if (qp->cq_sq_umem != NULL) {
 			status = doca_umem_destroy(qp->cq_sq_umem);
-			if (status != DOCA_SUCCESS)
-				DOCA_LOG_ERR("Failed to destroy gpu sq cq ring buffer umem");
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy gpu sq cq ring buffer umem: %s",
+					     doca_error_get_descr(status));
+				DOCA_ERROR_PROPAGATE(result, status);
+			}
 		}
 
 		if (qp->cq_sq_umem_gpu_ptr != 0) {
 			status = doca_gpu_mem_free(qp->gpu_dev, qp->cq_sq_umem_gpu_ptr);
-			if (status != DOCA_SUCCESS)
-				DOCA_LOG_ERR("Failed to destroy gpu memory of sq cq ring buffer");
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy gpu memory of sq cq ring buffer: %s",
+					     doca_error_get_descr(status));
+				DOCA_ERROR_PROPAGATE(result, status);
+			}
 		}
 
 		if (qp->cq_sq_umem_dbr != NULL) {
 			status = doca_umem_destroy(qp->cq_sq_umem_dbr);
-			if (status != DOCA_SUCCESS)
-				DOCA_LOG_ERR("Failed to destroy gpu sq cq ring buffer umem");
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy gpu sq cq umem dbr: %s", doca_error_get_descr(status));
+				DOCA_ERROR_PROPAGATE(result, status);
+			}
 		}
 
 		if (qp->cq_sq_umem_dbr_gpu_ptr != 0) {
 			status = doca_gpu_mem_free(qp->gpu_dev, qp->cq_sq_umem_dbr_gpu_ptr);
-			if (status != DOCA_SUCCESS)
-				DOCA_LOG_ERR("Failed to destroy gpu memory of sq cq umem dbr buffer");
+			if (status != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to destroy gpu memory of sq cq umem dbr buffer: %s",
+					     doca_error_get_descr(status));
+				DOCA_ERROR_PROPAGATE(result, status);
+			}
 		}
 	}
 
-	return DOCA_SUCCESS;
+	if (qp->external_uar != NULL) {
+		status = doca_uar_destroy(qp->external_uar);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to destroy doca verbs UAR: %s", doca_error_get_descr(status));
+			DOCA_ERROR_PROPAGATE(result, status);
+		}
+		qp->external_uar = NULL;
+	}
+
+	return result;
 }
 
 doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_attr_hl *qp_init_attr,
@@ -783,7 +990,7 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 
 	status = create_uar(qp_init_attr->dev, qpg_->qp_main.nic_handler, &qpg_->qp_main.external_uar);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create doca verbs uar");
+		DOCA_LOG_ERR("Failed to create doca verbs uar: %s", doca_error_get_descr(status));
 		goto exit_error;
 	}
 
@@ -798,9 +1005,10 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 				   &qpg_->qp_main.cq_sq_umem_gpu_ptr,
 				   &qpg_->qp_main.cq_sq_umem,
 				   qpg_->qp_main.external_uar,
+				   qp_init_attr->comp_channel,
 				   &qpg_->qp_main.cq_sq);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create doca verbs cq");
+			DOCA_LOG_ERR("Failed to create doca verbs cq: %s", doca_error_get_descr(status));
 			goto exit_error;
 		}
 	}
@@ -815,9 +1023,10 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 				   &qpg_->qp_main.cq_rq_umem_gpu_ptr,
 				   &qpg_->qp_main.cq_rq_umem,
 				   qpg_->qp_main.external_uar,
+				   qp_init_attr->comp_channel,
 				   &qpg_->qp_main.cq_rq);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create doca verbs cq");
+			DOCA_LOG_ERR("Failed to create doca verbs cq: %s", doca_error_get_descr(status));
 			goto exit_error;
 		}
 	}
@@ -843,7 +1052,7 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 			   &qpg_->qp_main.qp);
 
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create doca verbs qp");
+		DOCA_LOG_ERR("Failed to create doca verbs qp: %s", doca_error_get_descr(status));
 		goto exit_error;
 	}
 
@@ -856,8 +1065,24 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 					  qpg_->qp_main.cq_rq,
 					  &qpg_->qp_main.qp_gverbs);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create GPU verbs QP");
-		return status;
+		DOCA_LOG_ERR("Failed to create GPU verbs QP: %s", doca_error_get_descr(status));
+		goto exit_error;
+	}
+
+	if (qp_init_attr->comp_channel && qpg_->qp_main.cq_sq) {
+		status = doca_verbs_cq_set_cq_context(qpg_->qp_main.cq_sq, qpg_->qp_main.qp_gverbs);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed doca_verbs_cq_set_cq_context with %d", status);
+			goto exit_error;
+		}
+
+		status = doca_gpu_verbs_req_notify_cq(qpg_->qp_main.gpu_dev, qpg_->qp_main.cq_sq);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed doca_gpu_verbs_req_notify_cq with %d", status);
+			goto exit_error;
+		}
+
+		DOCA_LOG_INFO("doca_verbs_cq_set_cq_context set with context %p\n", (void *)qpg_->qp_main.qp_gverbs);
 	}
 
 	/********** Create companion QP **********/
@@ -876,9 +1101,10 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 				   &qpg_->qp_companion.cq_sq_umem_gpu_ptr,
 				   &qpg_->qp_companion.cq_sq_umem,
 				   qpg_->qp_companion.external_uar,
+				   qp_init_attr->comp_channel,
 				   &qpg_->qp_companion.cq_sq);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create doca verbs cq");
+			DOCA_LOG_ERR("Failed to create doca verbs cq: %s", doca_error_get_descr(status));
 			goto exit_error;
 		}
 	}
@@ -893,9 +1119,10 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 				   &qpg_->qp_companion.cq_rq_umem_gpu_ptr,
 				   &qpg_->qp_companion.cq_rq_umem,
 				   qpg_->qp_companion.external_uar,
+				   qp_init_attr->comp_channel,
 				   &qpg_->qp_companion.cq_rq);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create doca verbs cq");
+			DOCA_LOG_ERR("Failed to create doca verbs cq: %s", doca_error_get_descr(status));
 			goto exit_error;
 		}
 	}
@@ -920,7 +1147,7 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 			   0, // recv_inline does not apply
 			   &qpg_->qp_companion.qp);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create doca verbs qp");
+		DOCA_LOG_ERR("Failed to create doca verbs qp: %s", doca_error_get_descr(status));
 		goto exit_error;
 	}
 
@@ -933,8 +1160,24 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 					  qpg_->qp_companion.cq_rq,
 					  &qpg_->qp_companion.qp_gverbs);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create GPU verbs QP");
-		return status;
+		DOCA_LOG_ERR("Failed to create GPU verbs QP: %s", doca_error_get_descr(status));
+		goto exit_error;
+	}
+
+	if (qp_init_attr->comp_channel && qpg_->qp_companion.cq_sq) {
+		status = doca_verbs_cq_set_cq_context(qpg_->qp_companion.cq_sq, qpg_->qp_companion.qp_gverbs);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed doca_verbs_cq_set_cq_context with %d", status);
+			goto exit_error;
+		}
+
+		status = doca_gpu_verbs_req_notify_cq(qpg_->qp_companion.gpu_dev, qpg_->qp_companion.cq_sq);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed doca_gpu_verbs_req_notify_cq with %d", status);
+			goto exit_error;
+		}
+
+		DOCA_LOG_INFO("doca_verbs_cq_set_cq_context set with context %p", (void *)qpg_->qp_companion.qp_gverbs);
 	}
 
 	*qpg = qpg_;
@@ -947,7 +1190,9 @@ exit_error:
 		if (qpg_->qp_main.external_uar != NULL) {
 			tmp_status = doca_uar_destroy(qpg_->qp_main.external_uar);
 			if (tmp_status != DOCA_SUCCESS)
-				DOCA_LOG_ERR("Failed to destroy doca verbs UAR");
+				DOCA_LOG_ERR("Failed to destroy doca verbs UAR: %s", doca_error_get_descr(tmp_status));
+			qpg_->qp_main.external_uar = NULL;
+			qpg_->qp_companion.external_uar = NULL;
 		}
 
 		doca_gpu_verbs_destroy_qp_group_hl(qpg_);
@@ -959,12 +1204,24 @@ exit_error:
 
 doca_error_t doca_gpu_verbs_destroy_qp_group_hl(struct doca_gpu_verbs_qp_group_hl *qpg)
 {
+	doca_error_t result = DOCA_SUCCESS;
+	doca_error_t status;
+
 	if (qpg == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
 
-	doca_gpu_verbs_destroy_qp_hl(&qpg->qp_main);
-	qpg->qp_companion.external_uar = NULL;
-	doca_gpu_verbs_destroy_qp_hl(&qpg->qp_companion);
+	status = doca_gpu_verbs_destroy_qp_hl(&qpg->qp_main);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to destroy QP group main QP: %s", doca_error_get_descr(status));
+		DOCA_ERROR_PROPAGATE(result, status);
+	}
 
-	return DOCA_SUCCESS;
+	qpg->qp_companion.external_uar = NULL;
+	status = doca_gpu_verbs_destroy_qp_hl(&qpg->qp_companion);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to destroy QP group companion QP: %s", doca_error_get_descr(status));
+		DOCA_ERROR_PROPAGATE(result, status);
+	}
+
+	return result;
 }

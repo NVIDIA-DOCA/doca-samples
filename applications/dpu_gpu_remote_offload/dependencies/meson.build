@@ -25,4 +25,6 @@
 # DOCA SDK dependencies
 app_doca_depends += ['argp']
 app_doca_depends += ['comch']
-app_doca_depends += ['gpunetio']
+if is_host
+	app_doca_depends += ['gpunetio']
+endif

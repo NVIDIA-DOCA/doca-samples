@@ -102,6 +102,27 @@ static doca_error_t nfs_export_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - Handle emu_manager parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t emu_manager_callback(void *param, void *config)
+{
+	struct virtiofs_cfg *conf = (struct virtiofs_cfg *)config;
+	char *emu_manager = (char *)param;
+
+	if (strnlen(emu_manager, VIRTIOFS_EMU_MANAGER_NAME_LENGTH) == VIRTIOFS_EMU_MANAGER_NAME_LENGTH) {
+		DOCA_LOG_ERR("emu_manager name is too long - MAX=%d", VIRTIOFS_EMU_MANAGER_NAME_LENGTH - 1);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	strlcpy(conf->emu_manager, emu_manager, VIRTIOFS_EMU_MANAGER_NAME_LENGTH);
+	return DOCA_SUCCESS;
+}
+
+/*
  * ARGP Callback - Handle num_request_queues parameter
  *
  * @param [in]: Input parameter
@@ -128,6 +149,43 @@ static doca_error_t num_request_queues_callback(void *param, void *config)
 	return DOCA_SUCCESS;
 }
 
+/**
+ * @brief ARGP callback to set data path provider
+ *
+ * Validates and stores the data path provider name provided via command line.
+ *
+ * @param[in] param Input parameter containing provider name string
+ * @param[in,out] config Program configuration context to update
+ * @return DOCA_SUCCESS on success, DOCA_ERROR_INVALID_VALUE if invalid provider name
+ */
+static doca_error_t set_provider_callback(void *param, void *config)
+{
+	bool datapath_on_dpa = true;
+	struct virtiofs_cfg *cfg = (struct virtiofs_cfg *)config;
+	char *provider_name = (char *)param;
+
+	if (provider_name) {
+		if (!strcmp(provider_name, "DPU")) {
+			datapath_on_dpa = false;
+		} else if (strcmp(provider_name, "DPA")) {
+			DOCA_LOG_ERR("Invalid data path provider value:%s", provider_name);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+	}
+
+	cfg->datapath_on_dpa = datapath_on_dpa;
+
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t virtiofs_indirect_callback(void *param, void *config)
+{
+	struct virtiofs_cfg *conf = (struct virtiofs_cfg *)config;
+
+	conf->indirect_enabled = *(bool *)param;
+	return DOCA_SUCCESS;
+}
+
 /*
  * Registers all flags used by the application for DOCA argument parser, so that when parsing
  * it can be parsed accordingly
@@ -137,7 +195,8 @@ static doca_error_t num_request_queues_callback(void *param, void *config)
 static doca_error_t register_virtiofs_params(void)
 {
 	doca_error_t result;
-	struct doca_argp_param *core_mask, *nfs_server, *nfs_export, *num_request_queues;
+	struct doca_argp_param *core_mask, *nfs_server, *nfs_export, *emu_manager, *num_request_queues, *provider,
+		*indirect;
 
 	/* Create and register core mask param */
 	result = doca_argp_param_create(&core_mask);
@@ -193,6 +252,23 @@ static doca_error_t register_virtiofs_params(void)
 		return result;
 	}
 
+	/* Create and register emu_manager param */
+	result = doca_argp_param_create(&emu_manager);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(emu_manager, "emu-manager");
+	doca_argp_param_set_arguments(emu_manager, "<emu_manager>");
+	doca_argp_param_set_description(emu_manager, "Set emulation manager ibdev name.");
+	doca_argp_param_set_callback(emu_manager, emu_manager_callback);
+	doca_argp_param_set_type(emu_manager, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(emu_manager);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
 	/* Create and register num_request_queues param */
 	result = doca_argp_param_create(&num_request_queues);
 	if (result != DOCA_SUCCESS) {
@@ -206,6 +282,39 @@ static doca_error_t register_virtiofs_params(void)
 	doca_argp_param_set_callback(num_request_queues, num_request_queues_callback);
 	doca_argp_param_set_type(num_request_queues, DOCA_ARGP_TYPE_INT);
 	result = doca_argp_register_param(num_request_queues);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* Create and register provider param */
+	result = doca_argp_param_create(&provider);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(provider, "provider");
+	doca_argp_param_set_arguments(provider, "<datapath provider name>");
+	doca_argp_param_set_description(provider, "Set data path provider, {DPA or DPU, default: DPA}");
+	doca_argp_param_set_callback(provider, set_provider_callback);
+	doca_argp_param_set_type(provider, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(provider);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* Create and register indirect descriptor param */
+	result = doca_argp_param_create(&indirect);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(indirect, "indirect");
+	doca_argp_param_set_description(indirect, "Enable indirect descriptor feature, default: disabled.");
+	doca_argp_param_set_callback(indirect, virtiofs_indirect_callback);
+	doca_argp_param_set_type(indirect, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(indirect);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
 		return result;
@@ -278,7 +387,9 @@ int main(int argc, char **argv)
 	struct virtiofs_cfg app_cfg = {.core_mask = VIRTIOFS_CORE_MASK_DEFAULT,
 				       .nfs_server = VIRTIOFS_NFS_SERVER_DEFAULT,
 				       .nfs_export = VIRTIOFS_NFS_EXPORT_DEFAULT,
-				       .num_request_queues = VIRTIOFS_NUM_REQUEST_QUEUES_DEFAULT};
+				       .emu_manager = VIRTIOFS_EMU_MANAGER_DEFAULT,
+				       .num_request_queues = VIRTIOFS_NUM_REQUEST_QUEUES_DEFAULT,
+				       .datapath_on_dpa = true};
 	struct doca_log_backend *sdk_log;
 	doca_error_t result;
 	struct virtiofs_resources *ctx;
@@ -323,7 +434,7 @@ int main(int argc, char **argv)
 		goto destroy_argp;
 	}
 
-	ctx = virtiofs_create((uint32_t)strtol(app_cfg.core_mask, NULL, 16));
+	ctx = virtiofs_create(strtoull(app_cfg.core_mask, NULL, 16), app_cfg.datapath_on_dpa);
 	if (ctx == NULL) {
 		DOCA_LOG_ERR("Failed to create global doca context");
 		exit_status = EXIT_FAILURE;
@@ -339,7 +450,14 @@ int main(int argc, char **argv)
 
 	skip_rw = virtiofs_skip_rw();
 
-	result = virtiofs_device_create_static(ctx, app_cfg.nfs_server, app_cfg.nfs_export, app_cfg.num_request_queues);
+	DOCA_LOG_INFO("Indirect descriptors: %s", app_cfg.indirect_enabled ? "enabled" : "disabled");
+
+	result = virtiofs_device_create_static(ctx,
+					       app_cfg.nfs_server,
+					       app_cfg.nfs_export,
+					       app_cfg.num_request_queues,
+					       app_cfg.indirect_enabled,
+					       app_cfg.emu_manager);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create static devices");
 		exit_status = EXIT_FAILURE;

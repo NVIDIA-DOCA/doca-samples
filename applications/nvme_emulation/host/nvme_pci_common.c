@@ -29,10 +29,7 @@
 
 DOCA_LOG_REGISTER(NVME_PCI_COMMON);
 
-doca_error_t find_supported_device(const char *dev_name,
-				   const struct doca_devemu_pci_type *pci_type,
-				   emulation_supported_cb_t has_support,
-				   struct doca_dev **dev)
+doca_error_t find_supported_device(const char *dev_name, emulation_supported_cb_t has_support, struct doca_dev **dev)
 {
 	struct doca_devinfo **dev_list;
 	uint32_t nb_devs;
@@ -60,7 +57,7 @@ doca_error_t find_supported_device(const char *dev_name,
 		}
 
 		if (strncmp(dev_name, ibdev_name, DOCA_DEVINFO_IBDEV_NAME_SIZE) == 0) {
-			res = has_support(dev_list[i], pci_type, &is_supported);
+			res = has_support(dev_list[i], &is_supported);
 			if (res != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to check the support capability: %s", doca_error_get_descr(res));
 				doca_devinfo_destroy_list(dev_list);
@@ -335,16 +332,15 @@ doca_error_t create_find_start_pci_type(char *dev_name, struct doca_devemu_pci_t
 {
 	doca_error_t ret;
 
-	ret = doca_devemu_pci_type_create(NVME_TYPE_NAME, pci_type);
+	ret = find_supported_device(dev_name, doca_devemu_pci_cap_is_hotplug_supported, dev);
 	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create pci type");
+		DOCA_LOG_ERR("Failed to find supported device");
 		return ret;
 	}
 
-	ret = find_supported_device(dev_name, *pci_type, doca_devemu_pci_cap_type_is_hotplug_supported, dev);
-
+	ret = doca_devemu_pci_type_create(NVME_TYPE_NAME, pci_type);
 	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to find supported device");
+		DOCA_LOG_ERR("Failed to create pci type");
 		cleanup_pci_resources(*pci_type, *dev);
 		return ret;
 	}

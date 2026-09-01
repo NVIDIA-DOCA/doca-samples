@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -68,6 +68,7 @@ uint8_t get_dpdk_nb_ports(void);
  * @ports [in]: array of ports to create
  * @nb_ports [in]: number of ports to create
  * @actions_mem_size[in]: actions memory size
+ * @resources [in]: flow resources configuration
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t init_doca_flow_switch_ports(struct flow_devs_manager devs_manager[],
@@ -76,6 +77,26 @@ doca_error_t init_doca_flow_switch_ports(struct flow_devs_manager devs_manager[]
 					 int nb_ports,
 					 uint32_t actions_mem_size[],
 					 struct flow_resources *resources);
+
+/*
+ * Initialize DOCA Flow ports (internal implementation with optional CT configuration)
+ *
+ * @devs_manager [in]: array of device bundles (doca device and representor devices)
+ * @nb_managers [in]: number of managers to create ports for
+ * @ports [in]: array of ports to create
+ * @nb_ports [in]: number of ports to create
+ * @actions_mem_size[in]: actions memory size
+ * @resources [in]: flow resources configuration
+ * @ct_cfg [in]: CT port configuration (NULL if CT is not used)
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+doca_error_t init_doca_flow_switch_ports_internal(struct flow_devs_manager devs_manager[],
+						  int nb_managers,
+						  struct doca_flow_port *ports[],
+						  int nb_ports,
+						  uint32_t actions_mem_size[],
+						  struct flow_resources *resources,
+						  const struct ct_port_cfg *ct_cfg);
 
 #ifdef __cplusplus
 }

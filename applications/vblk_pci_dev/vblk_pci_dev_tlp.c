@@ -104,9 +104,7 @@ static void tlp_recovery_destroy(struct tlp_recovery *rec)
 {
 	if (rec == NULL)
 		return;
-	doca_error_t err = vblk_export_desc_release(&rec->export_desc, &rec->export_desc_len);
-	if (err != DOCA_SUCCESS && err != DOCA_ERROR_NOT_FOUND)
-		DOCA_LOG_ERR("TLP: failed to release export: %s", doca_error_get_name(err));
+	vblk_export_desc_free(&rec->export_desc, &rec->export_desc_len);
 	free(rec);
 }
 
@@ -190,8 +188,14 @@ static void tlp_cfg_change_cb(struct vblk_pci_virtio_dev *dev, void *arg)
 
 static pid_t spawn_emu(struct vblk_pci_dev_config *cfg, enum vblk_emu_role role)
 {
-	char config_str[256];
-	vblk_config_serialize(cfg, config_str, sizeof(config_str));
+	char config_str[VBLK_EMU_CONFIG_BUF_LEN];
+	int written = vblk_config_serialize(cfg, config_str, sizeof(config_str));
+	if (written < 0 || (size_t)written >= sizeof(config_str)) {
+		DOCA_LOG_ERR("TLP: serialized EMU config truncated (%d >= %zu); raise VBLK_EMU_CONFIG_BUF_LEN",
+			     written,
+			     sizeof(config_str));
+		return -1;
+	}
 	if (setenv(VBLK_EMU_CONFIG_ENV, config_str, 1) != 0)
 		return -1;
 
@@ -217,7 +221,23 @@ static pid_t spawn_emu(struct vblk_pci_dev_config *cfg, enum vblk_emu_role role)
 	const char *role_str = (role == VBLK_EMU_DST) ? "dst" : "src";
 	pid_t pid;
 	char *argv[] = {emu_bin, (char *)role_str, NULL};
-	int rc = posix_spawn(&pid, emu_bin, NULL, NULL, argv, environ);
+
+	/* Put the child in its own process group so terminal-delivered signals
+	 * (e.g. Ctrl-C SIGINT) reach only TLP. TLP orchestrates EMU's lifecycle
+	 * via explicit SIGTERM in tlp_emu_children_stop, which EMU handles
+	 * gracefully (cleanup + SHM unlink). Crash simulation is still possible
+	 * via 'kill -INT <emu_pid>' targeted at a specific PID. */
+	posix_spawnattr_t attr;
+	int rc = posix_spawnattr_init(&attr);
+	if (rc != 0) {
+		DOCA_LOG_ERR("posix_spawnattr_init EMU (%s) failed: %s", role_str, strerror(rc));
+		return -1;
+	}
+	(void)posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+	(void)posix_spawnattr_setpgroup(&attr, 0);
+
+	rc = posix_spawn(&pid, emu_bin, NULL, &attr, argv, environ);
+	(void)posix_spawnattr_destroy(&attr);
 	if (rc != 0) {
 		DOCA_LOG_ERR("posix_spawn EMU (%s) failed: %s", role_str, strerror(rc));
 		return -1;
@@ -293,7 +313,7 @@ static void tlp_poll_ipc_msgs(struct tlp_state *st)
 			struct tlp_recovery *rec = tlp_recovery_create(new_desc, new_len, bin);
 			if (rec == NULL) {
 				DOCA_LOG_ERR("TLP: failed to allocate recovery state");
-				vblk_export_desc_release(&new_desc, &new_len);
+				vblk_export_desc_free(&new_desc, &new_len);
 				break;
 			}
 

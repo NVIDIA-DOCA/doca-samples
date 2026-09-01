@@ -39,7 +39,7 @@
 DOCA_LOG_REGISTER(VBLK_PCI);
 
 static struct doca_devemu_pci_type *vblk_pci_virtio_dev_type;
-struct doca_devemu_pci_tlp_channel *vblk_pci_ev_channel;
+static struct doca_devemu_pci_tlp_channel *vblk_pci_ev_channel;
 
 /**
  * The structs below represent basic PCI bus model
@@ -56,7 +56,7 @@ struct doca_devemu_pci_tlp_channel *vblk_pci_ev_channel;
  *
  * For now we use one g_vblk_pci_virtio_dev endpoint
  */
-struct vblk_pci_virtio_dev *g_vblk_pci_dev;
+static struct vblk_pci_virtio_dev *g_vblk_pci_dev;
 static struct vblk_pci_virtio_dev *vblk_pci_space[256][32][8];
 
 /* VirtIO PCIe device configuration (initialized at runtime by vblk_pci_set_default_values) */
@@ -1159,7 +1159,7 @@ static uint32_t vblk_pci_ext_reg_wr_mask(struct vblk_pci_virtio_dev *virtio_dev,
 		 * 9 - PCI_COMMAND_FAST_BACK
 		 * Its functionality does not apply to PCI Express and the bit must be hardwired to 0b
 		 *
-		 * 10 - PCI_COMMAND_INT_DISABLE
+		 * 10 - PCI_COMMAND_INTX_DISABLE
 		 * For Functions with a Type 0 Configuration Space Header that do not generate INTx interrupts,
 		 * this bit is optional. If not implemented, this bit must be hardwired to 0b
 		 *
@@ -1167,12 +1167,12 @@ static uint32_t vblk_pci_ext_reg_wr_mask(struct vblk_pci_virtio_dev *virtio_dev,
 		 */
 		const uint16_t command_ro_mask = PCI_COMMAND_IO | PCI_COMMAND_SPECIAL | PCI_COMMAND_INVALIDATE |
 						 PCI_COMMAND_VGA_PALETTE | PCI_COMMAND_PARITY | PCI_COMMAND_WAIT |
-						 PCI_COMMAND_SERR | PCI_COMMAND_FAST_BACK | PCI_COMMAND_INT_DISABLE |
+						 PCI_COMMAND_SERR | PCI_COMMAND_FAST_BACK | PCI_COMMAND_INTX_DISABLE |
 						 PCI_COMMAND_RES_BIT_MASK;
 
 		/* Status reg RO and bits that can be assumed RO:
 		 * 7.5.1.1.4 Status Register (Offset 06h)
-		 * 0 - PCI_STATUS_READY
+		 * 0 - PCI_STATUS_IMM_READY
 		 * This optional bit, when Set, indicates the Function is guaranteed to be ready to
 		 * successfully complete valid Configuration Requests at any time.
 		 *

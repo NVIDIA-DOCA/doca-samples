@@ -148,18 +148,18 @@ doca_error_t gpunetio_verbs_write_lat(
     /* Check no previous CUDA errors */
     result = cudaGetLastError();
     if (cudaSuccess != result) {
-        DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__,
+        DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__,
                  cudaGetErrorString(result));
         return DOCA_ERROR_BAD_STATE;
     }
 
-    if (cuda_blocks > 1) {
-        DOCA_LOG_ERR("The kernel supports only 1 CUDA Block\n");
+    if (cuda_blocks != 1) {
+        DOCA_LOG_ERR("The kernel supports only 1 CUDA Block, requested cuda_blocks=%u", cuda_blocks);
         return DOCA_ERROR_BAD_STATE;
     }
 
-    if (cuda_threads > 1) {
-        DOCA_LOG_ERR("The kernel supports only 1 CUDA Thread\n");
+    if (cuda_threads != 1) {
+        DOCA_LOG_ERR("The kernel supports only 1 CUDA Thread, requested cuda_threads=%u", cuda_threads);
         return DOCA_ERROR_BAD_STATE;
     }
 
@@ -189,11 +189,17 @@ doca_error_t gpunetio_verbs_write_lat(
                 <<<cuda_blocks, cuda_threads, 0, stream>>>(qp, num_iters, size, local_poll_buf,
                                                            local_poll_mkey, local_post_buf,
                                                            local_post_mkey, dst_buf, dst_buf_mkey);
-        else
-            write_lat<true, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>
+        else {
+            /*
+             * Should be DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO but this flag is not optimal for latency tests
+             * as it requires some extra logic on the data path. For this reason, in this latency test
+             * AUTO is always translated to the default GPU_SM_DB mode.
+             */
+            write_lat<true, DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_DB>
                 <<<cuda_blocks, cuda_threads, 0, stream>>>(qp, num_iters, size, local_poll_buf,
                                                            local_poll_mkey, local_post_buf,
                                                            local_post_mkey, dst_buf, dst_buf_mkey);
+        }
     } else {
         if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF)
             write_lat<false, DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF>
@@ -220,16 +226,22 @@ doca_error_t gpunetio_verbs_write_lat(
                 <<<cuda_blocks, cuda_threads, 0, stream>>>(qp, num_iters, size, local_poll_buf,
                                                            local_poll_mkey, local_post_buf,
                                                            local_post_mkey, dst_buf, dst_buf_mkey);
-        else
-            write_lat<false, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>
+        else {
+            /*
+             * Should be DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO but this flag is not optimal for latency tests
+             * as it requires some extra logic on the data path. For this reason, in this latency test
+             * AUTO is always translated to the default GPU_SM_DB mode.
+             */
+            write_lat<false, DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_DB>
                 <<<cuda_blocks, cuda_threads, 0, stream>>>(qp, num_iters, size, local_poll_buf,
                                                            local_poll_mkey, local_post_buf,
                                                            local_post_mkey, dst_buf, dst_buf_mkey);
+        }
     }
 
     result = cudaGetLastError();
     if (cudaSuccess != result) {
-        DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__,
+        DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__,
                  cudaGetErrorString(result));
         return DOCA_ERROR_BAD_STATE;
     }

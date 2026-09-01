@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -76,7 +76,6 @@ doca_error_t create_rx_pipe(struct doca_flow_port *port, int port_id, struct doc
 	result = doca_flow_pipe_create(pipe_cfg, NULL, NULL, pipe);
 	if (result != DOCA_SUCCESS)
 		goto destroy_pipe_cfg;
-	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
 	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
 
@@ -84,19 +83,19 @@ doca_error_t create_rx_pipe(struct doca_flow_port *port, int port_id, struct doc
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = port_id ^ 1;
 
-	return doca_flow_pipe_control_add_entry(0,
-						*pipe,
-						&match,
-						NULL,
-						NULL,
-						NULL,
-						NULL,
-						NULL,
-						NULL,
-						0,
-						&fwd,
-						NULL,
-						NULL);
+	result = doca_flow_pipe_control_add_entry(0,
+						  *pipe,
+						  &match,
+						  NULL,
+						  NULL,
+						  NULL,
+						  NULL,
+						  NULL,
+						  NULL,
+						  0,
+						  &fwd,
+						  NULL,
+						  NULL);
 destroy_pipe_cfg:
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 	return result;
@@ -200,7 +199,6 @@ static doca_error_t add_main_pipe_entry(struct doca_flow_pipe *pipe,
 doca_error_t create_acl_pipe(struct doca_flow_port *port, bool is_root, struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_monitor monitor_counter;
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	struct doca_flow_fwd fwd_miss;
@@ -208,7 +206,6 @@ doca_error_t create_acl_pipe(struct doca_flow_port *port, bool is_root, struct d
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&monitor_counter, 0, sizeof(monitor_counter));
 	memset(&fwd_miss, 0, sizeof(fwd_miss));
 
@@ -220,8 +217,6 @@ doca_error_t create_acl_pipe(struct doca_flow_port *port, bool is_root, struct d
 	match.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
 	match.outer.tcp.l4_port.src_port = 0xffff;
 	match.outer.tcp.l4_port.dst_port = 0xffff;
-
-	actions_arr[0] = &actions;
 
 	monitor_counter.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
@@ -253,17 +248,14 @@ doca_error_t create_acl_pipe(struct doca_flow_port *port, bool is_root, struct d
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
 
 	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor_counter);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	result = doca_flow_pipe_create(pipe_cfg, &fwd, &fwd_miss, pipe);
 destroy_pipe_cfg:
@@ -389,87 +381,107 @@ doca_error_t add_acl_pipe_entries(struct doca_flow_pipe *pipe,
 				  struct entries_status *status,
 				  struct doca_flow_pipe_entry **entries)
 {
+	struct acl_entry_params {
+		doca_be32_t src_ip;
+		doca_be32_t dst_ip;
+		doca_be16_t src_port;
+		doca_be16_t dst_port;
+		uint8_t l4_type;
+		doca_be32_t src_ip_mask;
+		doca_be32_t dst_ip_mask;
+		doca_be16_t src_port_mask;
+		doca_be16_t dst_port_mask;
+		uint16_t priority;
+		bool is_allow;
+		uint32_t flag;
+	};
+	static const struct acl_entry_params acl_entries[] = {
+		/* src IP            dst IP               src_port           dst_port           l4        src_mask
+		   dst_mask             sp_mask            dp_mask            prio  allow  flag */
+		{BE_IPV4_ADDR(1, 2, 3, 4),
+		 BE_IPV4_ADDR(8, 8, 8, 8),
+		 DOCA_HTOBE16(1234),
+		 DOCA_HTOBE16(80),
+		 DOCA_FLOW_L4_TYPE_EXT_TCP,
+		 DOCA_HTOBE32(0xffffffff),
+		 DOCA_HTOBE32(0xffffffff),
+		 DOCA_HTOBE16(0x00),
+		 DOCA_HTOBE16(0x0),
+		 10,
+		 false,
+		 DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH},
+		{BE_IPV4_ADDR(172, 20, 1, 4),
+		 BE_IPV4_ADDR(192, 168, 3, 4),
+		 DOCA_HTOBE16(1234),
+		 DOCA_HTOBE16(80),
+		 DOCA_FLOW_L4_TYPE_EXT_UDP,
+		 DOCA_HTOBE32(0xffffffff),
+		 DOCA_HTOBE32(0xffffffff),
+		 DOCA_HTOBE16(0x0),
+		 DOCA_HTOBE16(3000),
+		 50,
+		 true,
+		 DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH},
+		{BE_IPV4_ADDR(172, 20, 1, 4),
+		 BE_IPV4_ADDR(192, 168, 3, 4),
+		 DOCA_HTOBE16(1234),
+		 DOCA_HTOBE16(80),
+		 DOCA_FLOW_L4_TYPE_EXT_TCP,
+		 DOCA_HTOBE32(0xffffffff),
+		 DOCA_HTOBE32(0xffffffff),
+		 DOCA_HTOBE16(1234),
+		 DOCA_HTOBE16(0x0),
+		 40,
+		 true,
+		 DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH},
+		{BE_IPV4_ADDR(1, 2, 3, 5),
+		 BE_IPV4_ADDR(8, 8, 8, 6),
+		 DOCA_HTOBE16(1234),
+		 DOCA_HTOBE16(80),
+		 DOCA_FLOW_L4_TYPE_EXT_TCP,
+		 DOCA_HTOBE32(0xffffff00),
+		 DOCA_HTOBE32(0xffffff00),
+		 DOCA_HTOBE16(0xffff),
+		 DOCA_HTOBE16(80),
+		 20,
+		 true,
+		 DOCA_FLOW_ENTRY_FLAGS_NO_WAIT},
+		{BE_IPV4_ADDR(172, 20, 1, 6),
+		 BE_IPV4_ADDR(192, 168, 3, 7),
+		 DOCA_HTOBE16(1234),
+		 DOCA_HTOBE16(80),
+		 DOCA_FLOW_L4_TYPE_EXT_TCP,
+		 DOCA_HTOBE32(0xffffffff),
+		 DOCA_HTOBE32(0xffffffff),
+		 DOCA_HTOBE16(1234),
+		 DOCA_HTOBE16(0x0),
+		 40,
+		 true,
+		 DOCA_FLOW_ENTRY_FLAGS_NO_WAIT},
+	};
 	doca_error_t result;
 	int i_entry = 0;
 
-	result = add_acl_specific_entry(pipe,
-					port_id,
-					status,
-					BE_IPV4_ADDR(1, 2, 3, 4),
-					BE_IPV4_ADDR(8, 8, 8, 8),
-					DOCA_HTOBE16(1234),
-					DOCA_HTOBE16(80),
-					DOCA_FLOW_L4_TYPE_EXT_TCP,
-					DOCA_HTOBE32(0xffffffff),
-					DOCA_HTOBE32(0xffffffff),
-					DOCA_HTOBE16(0x00),
-					DOCA_HTOBE16(0x0),
-					10,
-					false,
-					DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
-					&entries[i_entry++]);
-	if (result != DOCA_SUCCESS)
-		return result;
-
-	result = add_acl_specific_entry(pipe,
-					port_id,
-					status,
-					BE_IPV4_ADDR(172, 20, 1, 4),
-					BE_IPV4_ADDR(192, 168, 3, 4),
-					DOCA_HTOBE16(1234),
-					DOCA_HTOBE16(80),
-					DOCA_FLOW_L4_TYPE_EXT_UDP,
-					DOCA_HTOBE32(0xffffffff),
-					DOCA_HTOBE32(0xffffffff),
-					DOCA_HTOBE16(0x0),
-					DOCA_HTOBE16(3000),
-					50,
-					true,
-					DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
-					&entries[i_entry++]);
-
-	if (result != DOCA_SUCCESS)
-		return result;
-
-	result = add_acl_specific_entry(pipe,
-					port_id,
-					status,
-					BE_IPV4_ADDR(172, 20, 1, 4),
-					BE_IPV4_ADDR(192, 168, 3, 4),
-					DOCA_HTOBE16(1234),
-					DOCA_HTOBE16(80),
-					DOCA_FLOW_L4_TYPE_EXT_TCP,
-					DOCA_HTOBE32(0xffffffff),
-					DOCA_HTOBE32(0xffffffff),
-					DOCA_HTOBE16(1234),
-					DOCA_HTOBE16(0x0),
-					40,
-					true,
-					DOCA_FLOW_ENTRY_FLAGS_WAIT_FOR_BATCH,
-					&entries[i_entry++]);
-
-	if (result != DOCA_SUCCESS)
-		return result;
-
-	result = add_acl_specific_entry(pipe,
-					port_id,
-					status,
-					BE_IPV4_ADDR(1, 2, 3, 5),
-					BE_IPV4_ADDR(8, 8, 8, 6),
-					DOCA_HTOBE16(1234),
-					DOCA_HTOBE16(80),
-					DOCA_FLOW_L4_TYPE_EXT_TCP,
-					DOCA_HTOBE32(0xffffff00),
-					DOCA_HTOBE32(0xffffff00),
-					DOCA_HTOBE16(0xffff),
-					DOCA_HTOBE16(80),
-					20,
-					true,
-					DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
-					&entries[i_entry++]);
-
-	if (result != DOCA_SUCCESS)
-		return result;
+	for (size_t i = 0; i < sizeof(acl_entries) / sizeof(acl_entries[0]); i++) {
+		result = add_acl_specific_entry(pipe,
+						port_id,
+						status,
+						acl_entries[i].src_ip,
+						acl_entries[i].dst_ip,
+						acl_entries[i].src_port,
+						acl_entries[i].dst_port,
+						acl_entries[i].l4_type,
+						acl_entries[i].src_ip_mask,
+						acl_entries[i].dst_ip_mask,
+						acl_entries[i].src_port_mask,
+						acl_entries[i].dst_port_mask,
+						acl_entries[i].priority,
+						acl_entries[i].is_allow,
+						acl_entries[i].flag,
+						&entries[i_entry++]);
+		if (result != DOCA_SUCCESS)
+			return result;
+	}
 
 	return DOCA_SUCCESS;
 }
@@ -535,8 +547,8 @@ static void print_acl_stats_wrapper(void *context)
 doca_error_t flow_acl(int nb_queues)
 {
 	const int nb_ports = 2;
-	/* 1 entry for main pipe and 4 entries for ACL pipe */
-	const int num_of_entries = 5;
+	/* 1 entry for main pipe and 5 entries for ACL pipe */
+	const int num_of_entries = 6;
 	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT, .nr_counters = num_of_entries};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
@@ -606,19 +618,36 @@ doca_error_t flow_acl(int nb_queues)
 		if (domain == DOCA_FLOW_PIPE_DOMAIN_EGRESS) {
 			result = create_rx_pipe(ports[port_id], port_id, &rx_pipe);
 			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to create main pipe: %s", doca_error_get_descr(result));
+				DOCA_LOG_ERR("Failed to create main rx pipe: %s", doca_error_get_descr(result));
 				stop_doca_flow_ports(nb_ports, ports);
 				doca_flow_destroy();
 				return result;
 			}
 		}
 
-		result = doca_flow_entries_process(ports[port_acl], 0, DEFAULT_TIMEOUT_US, num_of_entries);
+		result = doca_flow_pipe_queue_drain(ports[port_acl], 0, NULL);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed to drain queue on port %d: %s", port_acl, doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
 			doca_flow_destroy();
 			return result;
+		}
+
+		/*
+		 * In EGRESS domain the ACL entries and the main-pipe entry are enqueued on
+		 * different ports (port_acl = port_id ^ 1), so drain the main port too;
+		 * otherwise the main entry stays pending and the count check below fails.
+		 */
+		if (port_acl != port_id) {
+			result = doca_flow_pipe_queue_drain(ports[port_id], 0, NULL);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to drain queue on port %d: %s",
+					     port_id,
+					     doca_error_get_descr(result));
+				stop_doca_flow_ports(nb_ports, ports);
+				doca_flow_destroy();
+				return result;
+			}
 		}
 
 		if (status.nb_processed != num_of_entries || status.failure) {

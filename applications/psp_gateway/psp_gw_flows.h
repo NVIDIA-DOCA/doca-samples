@@ -688,6 +688,8 @@ private:
 	doca_flow_pipe_entry *egress_default_drop{};
 	doca_flow_pipe_entry *egress_root_ipv4_entry{};
 	doca_flow_pipe_entry *egress_root_ipv6_entry{};
+	doca_flow_pipe_entry *egress_root_ipv4_peer_pf_entry{};
+	doca_flow_pipe_entry *egress_root_ipv6_peer_pf_entry{};
 	doca_flow_pipe_entry *egress_reinject_ipv4_entry{};
 	doca_flow_pipe_entry *egress_reinject_ipv6_entry{};
 	doca_flow_pipe_entry *root_default_drop{};

@@ -47,7 +47,7 @@ PSP_GatewayImpl::PSP_GatewayImpl(psp_gw_app_config *config, PSP_GatewayFlows *ps
 {
 }
 
-doca_error_t PSP_GatewayImpl::handle_miss_packet(struct rte_mbuf *packet)
+doca_error_t PSP_GatewayImpl::handle_miss_packet(struct rte_mbuf *packet, uint16_t queue_id)
 {
 	std::string dst_vip;
 	std::string src_vip;
@@ -116,7 +116,7 @@ doca_error_t PSP_GatewayImpl::handle_miss_packet(struct rte_mbuf *packet)
 	}
 
 	// Resubmit the packet now that a matching flow exists.
-	if (!reinject_packet(packet, pf->port_id, config->egress_reinject_meta_indicator)) {
+	if (!reinject_packet(packet, pf->port_id, config->egress_reinject_meta_indicator, queue_id)) {
 		DOCA_LOG_ERR("Failed to resubmit packet from vnet addr %s to %s on port %d",
 			     src_vip.c_str(),
 			     dst_vip.c_str(),

@@ -26,6 +26,9 @@
 #ifndef PCI_SPEC_TLP_H_
 #define PCI_SPEC_TLP_H_
 
+#include <stdint.h>
+#include <linux/pci.h>
+
 #include <doca_devemu_pci_tlp.h>
 #include <doca_bitfield.h>
 #include <stdatomic.h>
@@ -109,11 +112,24 @@ enum tlp_req_type tlp_req_get_type(struct doca_devemu_pci_tlp_channel_req *tlp_r
  *
  * Topology:
  *   USP (idx=0)
- *     ├── DSP[0] (idx=1)   → EP[0]  (idx=num_bridges)
- *     ├── DSP[1] (idx=2)   → EP[1]  (idx=num_bridges+1)
- *     ├── ...
- *     └── DSP[N] (idx=N+1) → EP[N]  (idx=num_bridges+N)
- *   DUMMY (idx=num_bridges+num_ep)
+ *     +-- DSP[0] (idx=1)
+ *     |     +-- PF[0]  (idx=num_bridges)
+ *     |           +-- VF[0][0]
+ *     |           +-- VF[0][1]
+ *     |           +-- ...
+ *     +-- DSP[1] (idx=2)
+ *     |     +-- PF[1]  (idx=num_bridges+1)
+ *     |           +-- VF[1][0]
+ *     |           +-- VF[1][1]
+ *     |           +-- ...
+ *     +-- ...
+ *     +-- DSP[N] (idx=N+1)
+ *           +-- PF[N]  (idx=num_bridges+N)
+ *                 +-- VF[N][0]
+ *                 +-- VF[N][1]
+ *                 +-- ...
+ *   VF entries, when SR-IOV is enabled, follow PF entries.
+ *   DUMMY (idx=num_bridges+num_ep+num_ep*[sriov_total_vfs when SR-IOV is enabled])
  */
 
 #define MAX_NUM_USP 1
@@ -121,14 +137,18 @@ enum tlp_req_type tlp_req_get_type(struct doca_devemu_pci_tlp_channel_req *tlp_r
 #define MAX_NUM_EP 32
 #define MAX_NUM_BRIDGE (MAX_NUM_USP + MAX_NUM_DSP)
 #define DUMMY_DEV_NUM 1
-#define MAX_NUM_PCI_DEVICE (MAX_NUM_BRIDGE + MAX_NUM_EP + DUMMY_DEV_NUM)
 
 #define BDF(bus, device, function) ((((bus)&0xff) << 8) | (((device)&0x1f) << 3) | ((function)&0x7))
 
 #define USP_IDX(tlp_ctx) 0
 #define FIRST_DSP_IDX(tlp_ctx) MAX_NUM_USP
 #define FIRST_PF_IDX(tlp_ctx) ((tlp_ctx)->num_bridges)
-#define DUMMY_DEV_IDX(tlp_ctx) ((tlp_ctx)->num_bridges + (tlp_ctx)->num_ep)
+#define FIRST_VF_IDX(tlp_ctx) (FIRST_PF_IDX(tlp_ctx) + (tlp_ctx)->num_ep)
+#define NUM_SRIOV_VFS(tlp_ctx) \
+	(((tlp_ctx)->sriov_enabled && (tlp_ctx)->sriov_total_vfs != 0) ? \
+		 (tlp_ctx)->num_ep * (tlp_ctx)->sriov_total_vfs : \
+		 0)
+#define DUMMY_DEV_IDX(tlp_ctx) (FIRST_VF_IDX(tlp_ctx) + NUM_SRIOV_VFS(tlp_ctx))
 
 #define BDF_MAP_SIZE 256
 
@@ -181,6 +201,21 @@ enum tlp_req_type tlp_req_get_type(struct doca_devemu_pci_tlp_channel_req *tlp_r
 #define TLP_PCI_CAP_OFFSET_EXPRESS 0x60
 #define TLP_PCI_CAP_OFFSET_MSIX 0x9c
 
+/*
+ * PCIe Express Capabilities Register (PCIe cap + 0x02):
+ *   bits [3:0]  Capability Version
+ *   bits [7:4]  Device/Port Type
+ *   bit  [8]    Slot Implemented (meaningful only on Root/Downstream Ports)
+ */
+#define TLP_PCIE_CAP_VERSION 2u
+#define TLP_PCIE_PORT_TYPE_UPSTREAM 5u
+#define TLP_PCIE_PORT_TYPE_DOWNSTREAM 6u
+#define TLP_PCIE_CAP_SLOT_IMPLEMENTED 0x0100u
+
+#define TLP_PCIE_CAP_REG(port_type, slot_implemented) \
+	((TLP_PCIE_CAP_VERSION & 0xFu) | (((port_type)&0xFu) << 4) | \
+	 ((slot_implemented) ? TLP_PCIE_CAP_SLOT_IMPLEMENTED : 0u))
+
 /* PCIe Express Capability - Slot Control bits */
 #define SLOT_CTRL_ATTN_BTN_PRESSED_EN 0x0001
 #define SLOT_CTRL_PWR_FAULT_DETECT_EN 0x0002
@@ -222,8 +257,42 @@ enum tlp_req_type tlp_req_get_type(struct doca_devemu_pci_tlp_channel_req *tlp_r
 #define SLOT_STS_PRESENCE_DETECT_STATE 0x0040
 #define SLOT_STS_DL_STATE_CHANGED 0x0100
 
-/* PCIe Express Capability - Link Status bits */
+/* PCIe Express Capability - Link Status bits/fields.
+ * LBMS/LABS are W1C from host side; all other LinkSta bits are RO. */
+#define LINK_STS_SPEED_16GT 0x0004	  /* Current Link Speed [3:0] = 16 GT/s (Gen4) */
+#define LINK_STS_WIDTH_X16 0x0100	  /* Negotiated Link Width [9:4] = x16 */
+#define LINK_STS_SLOT_CLOCK_CONFIG 0x1000 /* Slot Clock Configuration [12] */
 #define LINK_STS_DL_ACTIVE 0x2000
+#define LINK_STS_BW_MGMT 0x4000
+#define LINK_STS_AUTO_BW 0x8000
+#define LINK_STS_W1C (LINK_STS_BW_MGMT | LINK_STS_AUTO_BW)
+
+/* Initial Link Status: Gen4 x16, slot clock config set. */
+#define LINK_STS_INIT (LINK_STS_SPEED_16GT | LINK_STS_WIDTH_X16 | LINK_STS_SLOT_CLOCK_CONFIG)
+
+/* Negotiated link parameters reported in Link Status when the link is up.
+ * RO bits must be non-zero (Negotiated Link Width != 0) or the host's pciehp
+ * link check fails with "Cannot train link". Combined with LINK_STS_DL_ACTIVE
+ * on slot power-on to model the link training. */
+#define LINK_STS_TRAINED LINK_STS_INIT
+
+/* PCIe Express Capability - Link Capabilities bits/fields */
+#define LINK_CAP_SPEED_16GT 0x00000004u		  /* Max Link Speed [3:0] = 16 GT/s (Gen4) */
+#define LINK_CAP_WIDTH_X16 0x00000100u		  /* Max Link Width [9:4] = x16 */
+#define LINK_CAP_DLL_ACTIVE_REPORTING 0x00100000u /* DLL Link Active Reporting Capable [20] */
+#define LINK_CAP_ASPM_OPT_COMPLIANCE 0x00400000u  /* ASPM Optionality Compliance [22] */
+#define LINK_CAP_PORT_NUM_SHIFT 24		  /* Port Number [31:24] */
+
+/* Initial Link Capabilities: Gen4 x16, DLL active reporting, ASPM optional, at @port_num. */
+#define LINK_CAP_INIT(port_num) \
+	(LINK_CAP_SPEED_16GT | LINK_CAP_WIDTH_X16 | LINK_CAP_DLL_ACTIVE_REPORTING | LINK_CAP_ASPM_OPT_COMPLIANCE | \
+	 ((uint32_t)(port_num) << LINK_CAP_PORT_NUM_SHIFT))
+
+/* PCIe Express Capability - Device Status W1C bits [3:0] (CED/NFED/FED/URD).
+ * Bit 4 (AUX Power Detected) is RO per PCIe Base Spec, so it must not be in
+ * the W1C mask -- otherwise a host W1C write to bit 4 would clear a hardware
+ * status the host is not allowed to change. */
+#define DEV_STS_W1C_MASK 0x000F
 
 /* Capability lengths in DWORDs */
 #define TLP_CAP_PM_LEN_DW 2
@@ -400,6 +469,9 @@ static const struct tlp_cap_conf tlp_pci_cap_confs[TLP_PCI_CAPS_NUM] = {
 	{TLP_PCI_CAP_ID_PM, TLP_PCI_CAP_OFFSET_PM, TLP_CAP_PM_LEN_DW * 4},
 };
 
+struct vblk_sriov_pf_state;
+struct vblk_sriov_vf_slot;
+
 /* PCI device configuration (bridge or endpoint) in the PCI switch topology */
 struct pci_device_config {
 	union {
@@ -422,8 +494,13 @@ struct pci_device_config {
 	atomic_bool device_present;
 	atomic_bool pending_unplug;
 	atomic_bool host_power_off;
+	atomic_bool host_power_on_done;
+	/* Command Completed MSI deferred due to ACG credit exhaustion; retried on the TLP thread. */
+	atomic_bool cmd_completed_msi_pending;
 	struct doca_dev_rep *rep;
 	struct doca_devemu_pci_tlp_dev *tlp_dev;
+	uint32_t sriov_dynamic_first_vf_idx;
+	bool sriov_dynamic_vf_range_owned;
 
 	uint16_t requester_id;
 	uint16_t completer_id;
@@ -434,6 +511,12 @@ struct pci_device_config {
 	uint8_t cmpl_type;
 	uint16_t cmpl_length;
 	uint8_t cmpl_status;
+
+	/* NULL when SR-IOV is disabled for this endpoint. */
+	struct vblk_sriov_pf_state *sriov;
+
+	/* Valid only for SR-IOV VF entries. */
+	struct vblk_sriov_vf_slot *sriov_vf;
 };
 
 struct vblk_pci_virtio_dev;
@@ -456,11 +539,27 @@ struct vblk_tlp_context {
 	struct vblk_pci_virtio_dev **virtio_devs;
 	struct vblk_ctrl *vblk_ctrls;
 	uint16_t num_queues;
+	bool sriov_enabled;
+	uint16_t sriov_total_vfs;
+	uint16_t sriov_num_vf_msix;
+	uint16_t sriov_num_vf_db;
+	struct {
+		bool dynamic_sriov_supported;
+		uint16_t max_total_vfs;
+		uint16_t dynamic_vf_pool_size;
+		uint16_t max_vf_stride;
+		uint16_t max_first_vf_offset;
+	} sriov_caps;
+	struct {
+		uint16_t pool_size;
+		uint8_t *in_use;
+	} sriov_pool;
 	struct doca_devemu_pci_tlp_channel_req **acg_queue;
 	uint16_t acg_queue_head;
 	uint16_t acg_queue_tail;
 	uint16_t acg_queue_count;
-	uint16_t acg_queue_size;
+	uint16_t acg_queue_size; /* Buffer capacity (over-provisioned, see VBLK_ACG_QUEUE_BUFFER_SIZE) */
+	uint16_t acg_device_max; /* Max outstanding ACGs reported by firmware (cap_get_max_acg) */
 	uint32_t unplug_queue[MAX_NUM_EP];
 	uint32_t unplug_head;
 	uint32_t unplug_tail;

@@ -23,7 +23,9 @@
  *
  */
 
+#include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <doca_argp.h>
 #include <doca_flow.h>
@@ -38,7 +40,51 @@
 DOCA_LOG_REGISTER(FLOW_SRV6_MAIN);
 
 /* Sample's Logic */
-doca_error_t flow_srv6(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx);
+doca_error_t flow_srv6(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx, bool partial_mode);
+
+static bool g_partial_mode;
+
+static doca_error_t srv6_mode_callback(void *param, void *config)
+{
+	const char *mode = (const char *)param;
+
+	(void)config;
+
+	if (strcmp(mode, "partial") == 0)
+		g_partial_mode = true;
+	else if (strcmp(mode, "full") == 0)
+		g_partial_mode = false;
+	else {
+		DOCA_LOG_ERR("Invalid SRv6 mode '%s': expected 'full' or 'partial'", mode);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t register_srv6_params(void)
+{
+	struct doca_argp_param *mode_param;
+	doca_error_t result;
+
+	result = doca_argp_param_create(&mode_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create SRv6 mode ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(mode_param, "s");
+	doca_argp_param_set_long_name(mode_param, "srv6-mode");
+	doca_argp_param_set_arguments(mode_param, "<full|partial>");
+	doca_argp_param_set_description(mode_param,
+					"SRv6 mode: 'full' (default) includes copy SID to DIP, 'partial' omits it");
+	doca_argp_param_set_callback(mode_param, srv6_mode_callback);
+	doca_argp_param_set_type(mode_param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(mode_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register SRv6 mode param: %s", doca_error_get_descr(result));
+		doca_argp_param_destroy(mode_param);
+	}
+	return result;
+}
 
 /*
  * Sample main function
@@ -77,13 +123,6 @@ int main(int argc, char **argv)
 
 	DOCA_LOG_INFO("Starting the sample");
 
-	/* SRv6 external action must be registered before doca_flow_init() */
-	result = doca_flow_external_action_srv6_register();
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register SRv6 external action: %s", doca_error_get_descr(result));
-		goto sample_exit;
-	}
-
 	result = doca_argp_init(NULL, &ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
@@ -94,6 +133,11 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to register flow param: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
+	result = register_srv6_params();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register SRv6 params: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
 
 	doca_argp_set_dpdk_program(flow_init_dpdk);
 	ctx.devs_ctx.default_dev_args = FLOW_SWITCH_DEV_ARGS;
@@ -102,6 +146,13 @@ int main(int argc, char **argv)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(result));
 		goto argp_cleanup;
+	}
+
+	/* SRv6 external action must be registered before doca_flow_init() */
+	result = doca_flow_external_action_srv6_register();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register SRv6 external action: %s", doca_error_get_descr(result));
+		goto dpdk_cleanup;
 	}
 
 	result = init_doca_flow_devs(&ctx.devs_ctx);
@@ -116,7 +167,7 @@ int main(int argc, char **argv)
 		goto dpdk_cleanup;
 	}
 
-	result = flow_srv6(dpdk_config.port_config.nb_queues, dpdk_config.port_config.nb_ports, &ctx);
+	result = flow_srv6(dpdk_config.port_config.nb_queues, dpdk_config.port_config.nb_ports, &ctx, g_partial_mode);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("flow_srv6() encountered an error: %s", doca_error_get_descr(result));
 		goto dpdk_ports_queues_cleanup;

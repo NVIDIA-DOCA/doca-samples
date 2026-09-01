@@ -31,7 +31,8 @@
 #include <string>
 #include <vector>
 #include <cassert>
-#include <iostream>
+#include <cstring>
+#include <doca_log.h>
 
 #define GPM_MAGIC_NUMBER 0x12345678 ///< Magic number for persistent DB validation
 #define GPM_END_OF_LIST -1	    ///< End of list marker
@@ -69,6 +70,12 @@ public:
 	VolatileMap(const VolatileMap &other) = delete;
 	VolatileMap &operator=(const VolatileMap &other) = delete;
 	~VolatileMap() = default;
+
+	void Clear()
+	{
+		m_left_key_map.clear();
+		m_right_key_map.clear();
+	}
 
 	/**
 	 * @brief Insert a new entry.
@@ -146,7 +153,7 @@ public:
 		  m_version(0)
 	{
 		m_right_len = right.length();
-		memcpy(m_right_data, right.data(), m_right_len);
+		std::memcpy(m_right_data, right.data(), m_right_len);
 		m_data[0] = value;
 		m_data[1] = value;
 	}
@@ -158,7 +165,7 @@ public:
 	 */
 	void Update(const T &new_version)
 	{
-		memcpy(&(m_data[(m_version + 1) % 2]), &new_version, sizeof(T));
+		std::memcpy(&(m_data[(m_version + 1) % 2]), &new_version, sizeof(T));
 		asm volatile("" ::: "memory");
 		m_version = (m_version + 1) % 2;
 	}
@@ -227,6 +234,14 @@ private:
 
 		int curr_index = m_raw_persistent_data_base->m_free_list_head;
 		while (curr_index != GPM_END_OF_LIST) {
+			/* Defend against a corrupted persistent DB: an out-of-range index
+			 * would read/write past the mapped region, and a revisited index
+			 * means the free list contains a cycle.
+			 */
+			if (curr_index < 0 || curr_index >= (int)GPM_MAX_SIZE_DB || is_free_arr[curr_index]) {
+				DOCA_LOG_ERR("Corrupted free list (index=%d). Reinitializing DB.", curr_index);
+				goto reinit;
+			}
 			is_free_arr[curr_index] = 1;
 			curr_index = m_raw_persistent_data_base->m_entries[curr_index].GetNext();
 		}
@@ -238,12 +253,22 @@ private:
 
 				bool res = m_volatile_map.Insert(left, right, i);
 				if (!res) {
-					std::cout << "Error in restoring Entry " << i << "left=[" << left << "] right=["
-						  << right << "]" << std::endl;
-					exit(-1);
+					DOCA_LOG_ERR(
+						"Failed to restore entry %zu left=[%lu] right=[%s]. Reinitializing DB.",
+						i,
+						left,
+						right.c_str());
+					goto reinit;
 				}
 			}
 		}
+		return;
+
+reinit:
+		m_volatile_map.Clear();
+		m_raw_persistent_data_base->m_magic = 0;
+		asm volatile("" ::: "memory");
+		Init();
 	}
 
 public:
@@ -271,13 +296,15 @@ public:
 		assert(index1 == index2);
 
 		if (index1 != (int)GPM_INVALID || index2 != (int)GPM_INVALID) {
-			std::cout << "Error: Entry Already in volatile map" << std::endl;
-			std::cout << "index1 = " << index1 << " , index2 = " << index2 << " " << std::endl;
+			DOCA_LOG_ERR("Entry already in volatile map: index1=%d, index2=%d", index1, index2);
 			return false;
 		}
 
 		int free_cell = m_raw_persistent_data_base->m_free_list_head;
-		assert(free_cell != GPM_END_OF_LIST);
+		if (free_cell == GPM_END_OF_LIST) {
+			DOCA_LOG_ERR("Persistent DB is full (capacity=%d), cannot insert new entry", GPM_MAX_SIZE_DB);
+			return false;
+		}
 		int new_head = m_raw_persistent_data_base->m_entries[free_cell].GetNext();
 		m_volatile_map.Insert(left, right, free_cell);
 		new (&m_raw_persistent_data_base->m_entries[free_cell]) Entry<T>(GPM_NA, left, right, entry);

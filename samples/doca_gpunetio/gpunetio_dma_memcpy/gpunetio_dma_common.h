@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -57,7 +57,7 @@ struct gpu_dma_config {
  */
 doca_error_t gpunetio_dma_memcpy(struct gpu_dma_config *gpu_dma_cfg);
 
-#if __cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -77,7 +77,7 @@ doca_error_t gpunetio_dma_memcpy_common_launch_kernel(cudaStream_t stream,
 						      struct doca_gpu_buf_arr *src_gpu_buf_arr,
 						      struct doca_gpu_buf_arr *dst_gpu_buf_arr);
 
-#if __cplusplus
+#ifdef __cplusplus
 }
 #endif
 

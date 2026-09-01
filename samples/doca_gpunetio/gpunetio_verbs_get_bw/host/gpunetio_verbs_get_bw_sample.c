@@ -47,7 +47,7 @@ static void client_validate_test(struct verbs_resources *resources)
 
 	buffer = calloc(resources->cuda_threads, message_size[NUM_MSG_SIZE - 1]);
 	if (buffer == NULL) {
-		DOCA_LOG_ERR("Validation error: can't allocate buffer of %d bytes\n",
+		DOCA_LOG_ERR("Validation error: can't allocate buffer of %d bytes",
 			     resources->cuda_threads * message_size[NUM_MSG_SIZE - 1]);
 		return;
 	}
@@ -67,7 +67,7 @@ static void client_validate_test(struct verbs_resources *resources)
 
 		for (int pos = 0; pos < (int)resources->cuda_threads * message_size[idx]; pos++) {
 			if (buffer[pos] != (idx + 1)) {
-				DOCA_LOG_ERR("Validation error: buffer %d pos %d has invalid data %d\n",
+				DOCA_LOG_ERR("Validation error: buffer %d pos %d has invalid data %d",
 					     idx,
 					     pos,
 					     buffer[pos]);
@@ -158,6 +158,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 		if (resources->cfg->is_server) {
 			resources->data_buf[idx] = (uint8_t *)calloc(size, 1);
 			if (resources->data_buf[idx] == NULL) {
+				status = DOCA_ERROR_NO_MEMORY;
 				DOCA_LOG_ERR("Failed to allocate CPU memory buffer of size = %zd", size);
 				goto exit_error;
 			}
@@ -205,6 +206,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 		}
 
 		if (resources->data_mr[idx] == NULL) {
+			status = DOCA_ERROR_DRIVER;
 			DOCA_LOG_ERR("Failed to create data mr: %s", doca_error_get_descr(status));
 			goto exit_error;
 		}
@@ -249,6 +251,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 		}
 
 		if (resources->dump_flag_mr == NULL) {
+			status = DOCA_ERROR_DRIVER;
 			DOCA_LOG_ERR("Failed to create dump_flag_mr: %s", doca_error_get_descr(status));
 			goto exit_error;
 		}
@@ -479,7 +482,6 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 	cu_result = cuEventCreate(&e_end, CU_EVENT_BLOCKING_SYNC);
 	if (cu_result) {
 		DOCA_LOG_ERR("Function cuEventCreate for e_end %d", cu_result);
-		cuEventDestroy(e_start);
 		status = DOCA_ERROR_DRIVER;
 		goto destroy_events;
 	}
@@ -504,11 +506,17 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 		args.qp_cpu_main = resources.qp->qp_gverbs;
 		args.qp_cpu_companion = NULL;
 		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
-		*(args.exit_flag) = 0;
+		if (args.exit_flag == NULL) {
+			DOCA_LOG_ERR("Failed to allocate CPU proxy exit flag");
+			status = DOCA_ERROR_NO_MEMORY;
+			goto destroy_events;
+		}
 
 		int result = pthread_create(&thread_id, NULL, progress_cpu_proxy, (void *)&args);
 		if (result != 0) {
 			perror("Failed to create thread");
+			free(args.exit_flag);
+			status = DOCA_ERROR_OPERATING_SYSTEM;
 			goto destroy_events;
 		}
 	}
@@ -540,7 +548,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 					       htobe32(resources.dump_flag_mr->lkey),
 					       resources.scope);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_get_bw failed: %s", doca_error_get_descr(status));
 			goto stop_thread;
 		}
 
@@ -567,7 +575,7 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 					       htobe32(resources.dump_flag_mr->lkey),
 					       resources.scope);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Function kernel_write_client failed: %s", doca_error_get_descr(status));
+			DOCA_LOG_ERR("Function gpunetio_verbs_get_bw failed: %s", doca_error_get_descr(status));
 			goto stop_thread;
 		}
 
@@ -608,6 +616,7 @@ stop_thread:
 	    resources.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY_NO_DBR) {
 		WRITE_ONCE_64b(*args.exit_flag, 1);
 		pthread_join(thread_id, NULL);
+		free(args.exit_flag);
 	}
 
 destroy_events:

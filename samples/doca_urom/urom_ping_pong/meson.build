@@ -22,64 +22,51 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-sample_srcs = files([
-	SAMPLE_NAME + '_sample.c',
-])
+project('DOCA_SAMPLE', 'C', 'CPP',
+	# Get version number from file.
+	version: run_command(find_program('cat'),
+		files('../../../VERSION'), check: true).stdout().strip(),
+	license: 'BSD-3',
+	default_options: ['buildtype=debug'],
+	meson_version: '>= 0.61.2'
+)
 
-sample_main_srcs = files([
-	SAMPLE_NAME + '_main.c',
-])
+DOCA_PREFIX = 'doca_'
+SAMPLE_NAME = 'urom_ping_pong'
 
-sample_excludes += [
-	'build_urom_ping_pong.sh',
-	'build_urom_ping_pong.sh.public',
-]
+# Check if mpicc exists
+mpicc = find_program('mpicc')
 
-# install compilation scripts file
-build_script_name = 'build_' + SAMPLE_NAME + '.sh'
-build_script = meson.current_source_dir() / build_script_name
-install_build_script_name = 'build_' + SAMPLE_NAME + '.sh.public'
-install_data(sources : meson.current_source_dir() / install_build_script_name, rename:[build_script_name], install_dir : src_install_dir)
+sample_project_arguments = []
+# Comment this line to restore warnings of experimental DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_EXPERIMENTAL_API']
+# Comment this line to restore warnings of deprecated DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_DEPRECATED_API']
 
-if flag_disable_samples_compilation
-	subdir_done()
+add_project_arguments(sample_project_arguments, language: ['c', 'cpp'])
+
+sample_dependencies = []
+# Required for all DOCA programs
+doca_dep = dependency('doca-common')
+sample_dependencies += doca_dep
+# The DOCA library of the sample itself
+sample_dependencies += dependency('doca-urom')
+# Utility DOCA library for executables
+sample_dependencies += dependency('doca-argp')
+
+debug_mode = 'none'
+if get_option('buildtype') == 'debug' or get_option('buildtype') == 'debugoptimized'
+	debug_mode = 'true'
 endif
-
-# Check if openMPI is enabled
-if not flag_enable_openmpi_support
-	skip_sample_compilation = true
-	subdir_done()
-endif
-
-# Custom target based samples & apps are only supported in amalgamation build
-if not flag_amalgamation_build
-	skip_all_samples_compilation = true
-	subdir_done()
-endif
-
-# Can now safely access the runtime variable
-sample_lib_dependencies = []
-sample_lib_dependencies += doca_urom_runtime_lib
-
-sample_plugin_depends = []
-sample_plugin_depends += sandbox_plugin
 
 address_sanitizer = get_option('b_sanitize')
 
-debug_mode = 'none'
-if build_debug_mode
-	debug_mode = 'true'
-endif
+doca_lib_dir = doca_dep.get_variable(pkgconfig : 'libdir')
+build_script = meson.current_source_dir() / 'build_urom_ping_pong.sh'
 sample_builds = find_program(build_script)
+command = [ sample_builds, meson.project_build_root(), address_sanitizer, doca_lib_dir, debug_mode]
 
-command = [sample_builds, meson.project_source_root(), meson.project_build_root(), doca_version, address_sanitizer, debug_mode]
-
-# Compilation happens by MPI, so here we just tell meson what we need so it won't build it too-early when things are missing
 custom_target(DOCA_PREFIX + SAMPLE_NAME,
-	depends: [sample_lib_dependencies] + [sample_plugin_depends],
-	command: command,
-	output : DOCA_PREFIX + SAMPLE_NAME,
-	build_by_default: true)
-
-# No need to compile again from the main meson
-skip_sample_compilation = true
+		command: command,
+		output : DOCA_PREFIX + SAMPLE_NAME,
+		build_by_default: true)

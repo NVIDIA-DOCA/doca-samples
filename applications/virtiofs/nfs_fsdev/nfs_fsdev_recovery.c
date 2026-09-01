@@ -67,7 +67,6 @@ static inline void nfs_fsdev_restore_recovery(struct nfs_fsdev_recovery *recover
 		entry.ref_count = recovery->queues[index].expected_ref_count;
 		if (!update_entry_by_left(db, &entry, recovery->queues[index].file_inode)) {
 			DOCA_LOG_ERR("Failed at replay of close/open I/O command");
-			// Do not exit here; let the caller handle the error
 		}
 	} else {
 		DOCA_LOG_WARN("Nothing to recover");
@@ -79,14 +78,14 @@ struct nfs_fsdev_recovery *nfs_fsdev_create_recovery(const char *filename, struc
 	int fd = open(filename, O_RDWR | O_CREAT, 0666);
 	if (fd == -1) {
 		DOCA_LOG_ERR("Failed to open recovery file: %s", filename);
-		exit(1);
+		return NULL;
 	}
 
 	size_t full_size = sizeof(struct nfs_fsdev_recovery);
 	if (ftruncate(fd, full_size) == -1) {
 		DOCA_LOG_ERR("Failed to set file size");
 		close(fd);
-		exit(1);
+		return NULL;
 	}
 
 	struct nfs_fsdev_recovery *recovery =
@@ -94,7 +93,7 @@ struct nfs_fsdev_recovery *nfs_fsdev_create_recovery(const char *filename, struc
 	if (recovery == MAP_FAILED) {
 		DOCA_LOG_ERR("Failed to mmap recovery file: %s", filename);
 		close(fd);
-		exit(1);
+		return NULL;
 	}
 
 	if (recovery->magic_number != NFS_FSDEV_RECOVERY_MAGIC_NUM) {

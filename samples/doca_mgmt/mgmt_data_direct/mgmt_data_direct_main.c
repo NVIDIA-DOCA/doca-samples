@@ -24,27 +24,20 @@
  */
 
 #include <ctype.h>
-#include <dirent.h>
-#include <errno.h>
-#include <limits.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-
-#include <sys/types.h>
 
 #include <doca_argp.h>
 #include <doca_dev.h>
 #include <doca_log.h>
 
-#include "common.h"
-
-DOCA_LOG_REGISTER(MGMT_DATA_DIRECT::MAIN);
+#include "mgmt_common.h"
 
 /* Configuration struct */
 enum doca_mgmt_data_direct_cmds {
 	DOCA_MGMT_DATA_DIRECT_CMD_NONE,
+	DOCA_MGMT_DATA_DIRECT_CMD_LIST_TARGETS,
 	DOCA_MGMT_DATA_DIRECT_CMD_GET,
 	DOCA_MGMT_DATA_DIRECT_CMD_SET,
 };
@@ -52,9 +45,8 @@ enum doca_mgmt_data_direct_cmds {
 struct mgmt_data_direct_config {
 	/* Common configuration */
 	enum doca_mgmt_data_direct_cmds cmd;	      /* Command to execute */
-	struct doca_dev *dev;			      /* Device */
-	struct doca_dev_rep *dev_rep;		      /* Device representor */
-	bool rep_set;				      /* Whether representor is set */
+	char rep_target[MGMT_COMMON_TARGET_STR_LEN];  /* Representor management target string */
+	bool rep_target_set;			      /* Whether representor target is set */
 	char vf_pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* VF PCI address */
 	bool vf_pci_addr_set;			      /* Whether VF PCI address is set */
 
@@ -65,36 +57,41 @@ struct mgmt_data_direct_config {
 };
 
 /* Sample's Logic */
-doca_error_t mgmt_data_direct_get(struct doca_dev *dev,
-				  struct doca_dev_rep *dev_rep,
-				  bool have_dev_rep,
-				  const char *vf_pci_addr);
-doca_error_t mgmt_data_direct_set(struct doca_dev *dev,
-				  struct doca_dev_rep *dev_rep,
-				  bool have_dev_rep,
-				  const char *vf_pci_addr,
-				  bool enabled);
+doca_error_t mgmt_data_direct_get(const char *rep_target_string, const char *vf_pci_addr);
+doca_error_t mgmt_data_direct_set(const char *rep_target_string, const char *vf_pci_addr, bool enabled);
 
 /*
- * ARGP Callback - Handle rep parameter
+ * ARGP Callback - Handle rep target parameter
  *
  * @param [in]: Input parameter
  * @config [in/out]: Program configuration context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t rep_callback(void *param, void *config)
+static doca_error_t rep_target_callback(void *param, void *config)
 {
 	struct mgmt_data_direct_config *conf = (struct mgmt_data_direct_config *)config;
-	struct doca_argp_device_rep_ctx *dev_rep_ctx = (struct doca_argp_device_rep_ctx *)param;
+	doca_error_t result;
 
-	if (conf->rep_set) {
-		DOCA_LOG_ERR("Only one representor is allowed to be specified");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
+	result = mgmt_common_target_string_copy((const char *)param, conf->rep_target);
+	if (result != DOCA_SUCCESS)
+		return result;
 
-	conf->dev_rep = dev_rep_ctx->dev_rep;
-	conf->dev = dev_rep_ctx->dev_ctx.dev;
-	conf->rep_set = true;
+	conf->rep_target_set = true;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle list-targets command
+ *
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t list_targets_callback(void *config)
+{
+	struct mgmt_data_direct_config *conf = (struct mgmt_data_direct_config *)config;
+
+	conf->cmd = DOCA_MGMT_DATA_DIRECT_CMD_LIST_TARGETS;
 
 	return DOCA_SUCCESS;
 }
@@ -112,12 +109,14 @@ static doca_error_t vf_pci_addr_callback(void *param, void *config)
 	const char *vf_pci_addr = (char *)param;
 	int vf_pci_addr_len = strlen(vf_pci_addr);
 
-	if (!(vf_pci_addr_len == (DOCA_DEVINFO_REP_PCI_ADDR_SIZE - 1) && isxdigit(vf_pci_addr[0]) &&
-	      isxdigit(vf_pci_addr[1]) && isxdigit(vf_pci_addr[2]) && isxdigit(vf_pci_addr[3]) &&
-	      vf_pci_addr[4] == ':' && isxdigit(vf_pci_addr[5]) && isxdigit(vf_pci_addr[6]) && vf_pci_addr[7] == ':' &&
-	      isxdigit(vf_pci_addr[8]) && isxdigit(vf_pci_addr[9]) && vf_pci_addr[10] == '.' &&
-	      isdigit(vf_pci_addr[11]))) {
-		DOCA_LOG_ERR("Entered VF PCI address is invalid");
+	if (!(vf_pci_addr_len == (DOCA_DEVINFO_REP_PCI_ADDR_SIZE - 1) && isxdigit((unsigned char)vf_pci_addr[0]) &&
+	      isxdigit((unsigned char)vf_pci_addr[1]) && isxdigit((unsigned char)vf_pci_addr[2]) &&
+	      isxdigit((unsigned char)vf_pci_addr[3]) && vf_pci_addr[4] == ':' &&
+	      isxdigit((unsigned char)vf_pci_addr[5]) && isxdigit((unsigned char)vf_pci_addr[6]) &&
+	      vf_pci_addr[7] == ':' && isxdigit((unsigned char)vf_pci_addr[8]) &&
+	      isxdigit((unsigned char)vf_pci_addr[9]) && vf_pci_addr[10] == '.' &&
+	      isdigit((unsigned char)vf_pci_addr[11]))) {
+		fprintf(stderr, "Entered VF PCI address is invalid\n");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -144,7 +143,7 @@ static doca_error_t enabled_callback(void *param, void *config)
 	} else if (strcasecmp(enabled, "false") == 0) {
 		conf->set_params.enabled = false;
 	} else {
-		DOCA_LOG_ERR("Entered enabled value %s is invalid, valid values are 'true' or 'false'", enabled);
+		fprintf(stderr, "Entered enabled value %s is invalid, valid values are 'true' or 'false'\n", enabled);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -160,34 +159,23 @@ static doca_error_t enabled_callback(void *param, void *config)
  */
 static doca_error_t register_mgmt_data_direct_params(struct doca_argp_cmd *cmd, bool is_set)
 {
-	struct doca_argp_param *rep_param;
 	struct doca_argp_param *vf_pci_addr_param;
 	struct doca_argp_param *enabled_param;
 	doca_error_t result;
 
-	/* Create and register device param */
-	result = doca_argp_param_create(&rep_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+	/* Register the representor management target param */
+	result = mgmt_common_register_target_dev_rep_param(
+		cmd,
+		rep_target_callback,
+		false,
+		"DOCA device representor management target string (e.g., pci/0000:08:00.0,c0pf0vf0 for VF), mutually exclusive with 'vf-pci-addr'. Use 'list-targets' to discover available targets");
+	if (result != DOCA_SUCCESS)
 		return result;
-	}
-	doca_argp_param_set_short_name(rep_param, "r");
-	doca_argp_param_set_long_name(rep_param, "rep");
-	doca_argp_param_set_description(
-		rep_param,
-		"Device representor (e.g., pci/0000:08:00.0,pf0vf0 for VF), mutually exclusive with 'vf-pci-addr' parameter");
-	doca_argp_param_set_callback(rep_param, rep_callback);
-	doca_argp_param_set_type(rep_param, DOCA_ARGP_TYPE_DEVICE_REP);
-	result = doca_argp_cmd_register_param(cmd, rep_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
-		return result;
-	}
 
 	/* Create and register VF param */
 	result = doca_argp_param_create(&vf_pci_addr_param);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to create ARGP param: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 	doca_argp_param_set_short_name(vf_pci_addr_param, "v");
@@ -198,7 +186,7 @@ static doca_error_t register_mgmt_data_direct_params(struct doca_argp_cmd *cmd, 
 	doca_argp_param_set_type(vf_pci_addr_param, DOCA_ARGP_TYPE_STRING);
 	result = doca_argp_cmd_register_param(cmd, vf_pci_addr_param);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register program param: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -206,7 +194,7 @@ static doca_error_t register_mgmt_data_direct_params(struct doca_argp_cmd *cmd, 
 		/* Create and register enabled param */
 		result = doca_argp_param_create(&enabled_param);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+			fprintf(stderr, "Failed to create ARGP param: %s\n", doca_error_get_descr(result));
 			return result;
 		}
 		doca_argp_param_set_short_name(enabled_param, "e");
@@ -218,7 +206,7 @@ static doca_error_t register_mgmt_data_direct_params(struct doca_argp_cmd *cmd, 
 		doca_argp_param_set_mandatory(enabled_param);
 		result = doca_argp_cmd_register_param(cmd, enabled_param);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+			fprintf(stderr, "Failed to register program param: %s\n", doca_error_get_descr(result));
 			return result;
 		}
 	}
@@ -254,7 +242,7 @@ static doca_error_t register_mgmt_data_direct_cmd_set(void)
 	/* Create set command */
 	result = doca_argp_cmd_create(&cmd_set);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to create ARGP command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 	doca_argp_cmd_set_name(cmd_set, "set");
@@ -264,14 +252,14 @@ static doca_error_t register_mgmt_data_direct_cmd_set(void)
 	/* Register set command params */
 	result = register_mgmt_data_direct_params(cmd_set, true);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register set command params: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register set command params: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
 	/* Register set command */
 	result = doca_argp_register_cmd(cmd_set);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register ARGP command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register ARGP command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -306,7 +294,7 @@ static doca_error_t register_mgmt_data_direct_cmd_get(void)
 	/* Create get command */
 	result = doca_argp_cmd_create(&cmd_get);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to create ARGP command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 	doca_argp_cmd_set_name(cmd_get, "get");
@@ -316,14 +304,14 @@ static doca_error_t register_mgmt_data_direct_cmd_get(void)
 	/* Register get command params */
 	result = register_mgmt_data_direct_params(cmd_get, false);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register get command params: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register get command params: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
 	/* Register get command */
 	result = doca_argp_register_cmd(cmd_get);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register ARGP command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register ARGP command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -339,66 +327,23 @@ static doca_error_t register_mgmt_data_direct_cmds(void)
 {
 	doca_error_t result;
 
+	result = mgmt_common_register_list_targets_cmd(list_targets_callback);
+	if (result != DOCA_SUCCESS) {
+		fprintf(stderr, "Failed to register list-targets command: %s\n", doca_error_get_descr(result));
+		return result;
+	}
+
 	result = register_mgmt_data_direct_cmd_set();
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register set command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register set command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
 	result = register_mgmt_data_direct_cmd_get();
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register get command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register get command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
-
-	return DOCA_SUCCESS;
-}
-
-/**
- * Get the PF PCI address of the given VF over sysfs
- *
- * @param [in] vf_pci_addr: The PCI address of the VF
- * @param [out] pf_pci_addr: Buffer to store the PF PCI address. Must be at least DOCA_DEVINFO_PCI_ADDR_SIZE bytes long.
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t get_pf_pci_addr(const char *vf_pci_addr, char *pf_pci_addr)
-{
-	char physfn_path[PATH_MAX];
-	char physfn_link[PATH_MAX];
-	char *pf_pci_addr_start;
-	ssize_t rc;
-	int ret;
-	doca_error_t result;
-
-	ret = snprintf(physfn_path, PATH_MAX, "/sys/bus/pci/devices/%s/physfn", vf_pci_addr);
-	if (ret < 0 || ret >= PATH_MAX) {
-		DOCA_LOG_ERR("Failed to get PF PCI address: failed to create physfn path");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-
-	rc = readlink(physfn_path, physfn_link, PATH_MAX);
-	if (rc < 0 || rc == PATH_MAX) {
-		if (rc == PATH_MAX) {
-			ret = EINVAL;
-			result = DOCA_ERROR_INVALID_VALUE;
-		} else {
-			ret = errno;
-			result = DOCA_ERROR_OPERATING_SYSTEM;
-		}
-		DOCA_LOG_ERR("Failed to get PF PCI address: failed to read physfn link, errno: %s (%d)",
-			     strerror(ret),
-			     ret);
-		return result;
-	}
-	physfn_link[rc] = '\0';
-
-	pf_pci_addr_start = strrchr(physfn_link, '/');
-	if (pf_pci_addr_start == NULL) {
-		DOCA_LOG_ERR("Failed to get PF PCI address: failed to parse physfn link %s", physfn_link);
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-	pf_pci_addr_start++;
-	strncpy(pf_pci_addr, pf_pci_addr_start, DOCA_DEVINFO_PCI_ADDR_SIZE);
 
 	return DOCA_SUCCESS;
 }
@@ -412,111 +357,27 @@ static doca_error_t get_pf_pci_addr(const char *vf_pci_addr, char *pf_pci_addr)
 static doca_error_t validate_params(struct mgmt_data_direct_config *conf)
 {
 	if (conf->cmd == DOCA_MGMT_DATA_DIRECT_CMD_NONE) {
-		DOCA_LOG_ERR("Either 'get' or 'set' command must be specified");
+		fprintf(stderr, "A command must be specified: 'list-targets', 'get' or 'set'\n");
 		doca_argp_usage();
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	if (!conf->rep_set && !conf->vf_pci_addr_set) {
-		DOCA_LOG_ERR("Either 'rep' or 'vf-pci-addr' parameters must be specified");
+	/* list-targets does not operate on a specific target, skip following checks */
+	if (conf->cmd == DOCA_MGMT_DATA_DIRECT_CMD_LIST_TARGETS)
+		return DOCA_SUCCESS;
+
+	if (!conf->rep_target_set && !conf->vf_pci_addr_set) {
+		fprintf(stderr, "Either 'rep' or 'vf-pci-addr' parameters must be specified\n");
 		doca_argp_usage();
 		return DOCA_ERROR_INVALID_VALUE;
-	} else if (conf->rep_set && conf->vf_pci_addr_set) {
-		DOCA_LOG_ERR(
-			"'rep' and 'vf-pci-addr' parameters are mutually exclusive and must not be specified together");
+	} else if (conf->rep_target_set && conf->vf_pci_addr_set) {
+		fprintf(stderr,
+			"'rep' and 'vf-pci-addr' parameters are mutually exclusive and must not be specified together\n");
 		doca_argp_usage();
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
 	return DOCA_SUCCESS;
-}
-
-/**
- * Check if the PF's IB device link layer is InfiniBand
- *
- * @param [in] pf_pci_addr: The PCI address of the PF
- * @param [out] is_ib_link_layer: Flag to indicate if the PF's IB device link layer is InfiniBand
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
- */
-static doca_error_t pf_is_ib_link_layer(const char *pf_pci_addr, bool *is_ib_link_layer)
-{
-	char infiniband_path[PATH_MAX];
-	char link_layer_path[PATH_MAX];
-	char link_layer_value[64];
-	DIR *dir;
-	struct dirent *entry;
-	FILE *fp = NULL;
-	size_t len;
-	doca_error_t result;
-	int ret;
-
-	ret = snprintf(infiniband_path, PATH_MAX, "/sys/bus/pci/devices/%s/infiniband", pf_pci_addr);
-	if (ret < 0 || ret >= PATH_MAX) {
-		DOCA_LOG_ERR("Failed to check PF IB link layer: failed to create infiniband path");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-
-	dir = opendir(infiniband_path);
-	if (dir == NULL) {
-		DOCA_LOG_ERR("Failed to check PF IB link layer: failed to open %s directory. errno: %s (%d)",
-			     infiniband_path,
-			     strerror(errno),
-			     errno);
-		return DOCA_ERROR_OPERATING_SYSTEM;
-	}
-
-	while ((entry = readdir(dir)) != NULL) {
-		if (entry->d_name[0] == '.')
-			continue;
-
-		ret = snprintf(link_layer_path, PATH_MAX, "%s/%s/ports/1/link_layer", infiniband_path, entry->d_name);
-		if (ret < 0 || ret >= PATH_MAX) {
-			DOCA_LOG_ERR(
-				"Failed to check PF IB link layer: failed to create link_layer path for IB device %s",
-				entry->d_name);
-			result = DOCA_ERROR_INVALID_VALUE;
-			goto out;
-		}
-
-		fp = fopen(link_layer_path, "r");
-		if (fp == NULL) {
-			DOCA_LOG_ERR("Failed to check PF IB link layer: failed to open file %s. errno: %s (%d)",
-				     link_layer_path,
-				     strerror(errno),
-				     errno);
-			result = DOCA_ERROR_OPERATING_SYSTEM;
-			goto out;
-		}
-
-		if (fgets(link_layer_value, sizeof(link_layer_value), fp) == NULL) {
-			DOCA_LOG_ERR("Failed to check PF IB link layer: failed to read %s file. errno: %s (%d)",
-				     link_layer_path,
-				     strerror(errno),
-				     errno);
-			result = DOCA_ERROR_OPERATING_SYSTEM;
-			goto out_close_fp;
-		}
-
-		/* Remove trailing newline if present */
-		len = strlen(link_layer_value);
-		if (len > 0 && link_layer_value[len - 1] == '\n')
-			link_layer_value[len - 1] = '\0';
-
-		*is_ib_link_layer = strcmp(link_layer_value, "InfiniBand") == 0;
-		result = DOCA_SUCCESS;
-		goto out_close_fp;
-	}
-
-	DOCA_LOG_ERR("Failed to check PF IB link layer: failed to find IB device");
-	result = DOCA_ERROR_INVALID_VALUE;
-
-out_close_fp:
-	if (fp != NULL)
-		(void)fclose(fp);
-
-out:
-	(void)closedir(dir);
-	return result;
 }
 
 /*
@@ -530,45 +391,54 @@ int main(int argc, char **argv)
 {
 	struct doca_log_backend *sdk_log;
 	struct mgmt_data_direct_config conf = {};
-	char pf_pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE];
-	bool have_dev_rep = true;
 	int exit_status = EXIT_FAILURE;
 	doca_error_t result;
 
-	/* Register a logger backend */
+	/* Disable all log messages unless explicitly enabled by user */
+	result = doca_log_level_set_global_lower_limit(DOCA_LOG_LEVEL_DISABLE);
+	if (result != DOCA_SUCCESS) {
+		fprintf(stderr,
+			"Failed to set global lower limit for log messages: %s\n",
+			doca_error_get_descr(result));
+		goto sample_exit;
+	}
+
+	result = doca_log_level_set_global_sdk_limit(DOCA_LOG_LEVEL_ERROR);
+	if (result != DOCA_SUCCESS) {
+		fprintf(stderr, "Failed to set global limit for SDK log messages: %s\n", doca_error_get_descr(result));
+		goto sample_exit;
+	}
+
+	/* Register logger backends */
 	result = doca_log_backend_create_standard();
-	if (result != DOCA_SUCCESS)
+	if (result != DOCA_SUCCESS) {
+		fprintf(stderr, "Failed to create standard logger backend: %s\n", doca_error_get_descr(result));
 		goto sample_exit;
+	}
 
-	/* Register a logger backend for internal SDK errors and warnings */
+	/* Register a logger backend for internal SDK */
 	result = doca_log_backend_create_with_file_sdk(stderr, &sdk_log);
-	if (result != DOCA_SUCCESS)
+	if (result != DOCA_SUCCESS) {
+		fprintf(stderr, "Failed to create SDK logger backend: %s\n", doca_error_get_descr(result));
 		goto sample_exit;
-	result = doca_log_backend_set_sdk_level(sdk_log, DOCA_LOG_LEVEL_WARNING);
-	if (result != DOCA_SUCCESS)
-		goto sample_exit;
+	}
 
-	conf.cmd = DOCA_MGMT_DATA_DIRECT_CMD_NONE;
-	conf.dev_rep = NULL;
-	conf.dev = NULL;
-	conf.rep_set = false;
-	conf.vf_pci_addr[0] = '\0';
-	conf.vf_pci_addr_set = false;
-	conf.set_params.enabled = false;
+	/* Initialize configuration */
+	memset(&conf, 0, sizeof(conf));
 
 	result = doca_argp_init(NULL, &conf);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to init ARGP resources: %s\n", doca_error_get_descr(result));
 		goto sample_exit;
 	}
 	result = register_mgmt_data_direct_cmds();
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register sample commands: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register sample commands: %s\n", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to parse sample input: %s\n", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 
@@ -577,66 +447,25 @@ int main(int argc, char **argv)
 	if (result != DOCA_SUCCESS)
 		goto argp_cleanup;
 
-	/* If VF PCI address parameter is set, open DOCA device and representor of VF if it has one */
-	if (conf.vf_pci_addr_set) {
-		bool is_ib;
-
-		result = get_pf_pci_addr(conf.vf_pci_addr, pf_pci_addr);
+	if (conf.cmd == DOCA_MGMT_DATA_DIRECT_CMD_LIST_TARGETS) {
+		result = mgmt_common_list_targets(true);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to get PF PCI address: %s", doca_error_get_descr(result));
+			fprintf(stderr, "Failed to list management targets: %s\n", doca_error_get_descr(result));
 			goto argp_cleanup;
 		}
-
-		result = open_doca_device_with_pci(pf_pci_addr, NULL, &conf.dev);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to open DOCA device of PF %s: %s",
-				     pf_pci_addr,
-				     doca_error_get_descr(result));
-			goto argp_cleanup;
-		}
-
-		result = pf_is_ib_link_layer(pf_pci_addr, &is_ib);
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to check IB link layer of PF %s: %s",
-				     pf_pci_addr,
-				     doca_error_get_descr(result));
-			goto argp_cleanup;
-		}
-
-		/*
-		 * If the PF's IB device link layer is Infiniband, the VF doesn't have a representor and we will use
-		 * doca_mgmt_dev_rep_ctx_create_by_pci_addr() to create a struct doca_mgmt_dev_rep_ctx for the VF.
-		 * Otherwise, the VF is expected to have a representor, so open it.
-		 */
-		have_dev_rep = !is_ib;
-		if (have_dev_rep) {
-			result = open_doca_device_rep_with_pci(conf.dev,
-							       DOCA_DEVINFO_REP_FILTER_NET,
-							       conf.vf_pci_addr,
-							       &conf.dev_rep);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to open DOCA device representor of VF %s: %s",
-					     conf.vf_pci_addr,
-					     doca_error_get_descr(result));
-				goto argp_cleanup;
-			}
-		}
-	}
-
-	if (conf.cmd == DOCA_MGMT_DATA_DIRECT_CMD_SET) {
-		result = mgmt_data_direct_set(conf.dev,
-					      conf.dev_rep,
-					      have_dev_rep,
-					      conf.vf_pci_addr,
+	} else if (conf.cmd == DOCA_MGMT_DATA_DIRECT_CMD_SET) {
+		result = mgmt_data_direct_set(conf.rep_target_set ? conf.rep_target : NULL,
+					      conf.vf_pci_addr_set ? conf.vf_pci_addr : NULL,
 					      conf.set_params.enabled);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to set data direct: %s", doca_error_get_descr(result));
+			fprintf(stderr, "Failed to set data direct: %s\n", doca_error_get_descr(result));
 			goto argp_cleanup;
 		}
-	} else {
-		result = mgmt_data_direct_get(conf.dev, conf.dev_rep, have_dev_rep, conf.vf_pci_addr);
+	} else if (conf.cmd == DOCA_MGMT_DATA_DIRECT_CMD_GET) {
+		result = mgmt_data_direct_get(conf.rep_target_set ? conf.rep_target : NULL,
+					      conf.vf_pci_addr_set ? conf.vf_pci_addr : NULL);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to get data direct: %s", doca_error_get_descr(result));
+			fprintf(stderr, "Failed to get data direct: %s\n", doca_error_get_descr(result));
 			goto argp_cleanup;
 		}
 	}
@@ -644,14 +473,6 @@ int main(int argc, char **argv)
 	exit_status = EXIT_SUCCESS;
 
 argp_cleanup:
-	if (conf.dev_rep != NULL)
-		if (doca_dev_rep_close(conf.dev_rep) != DOCA_SUCCESS)
-			DOCA_LOG_WARN("Failed to close DOCA device representor");
-	/* Need to close doca_dev only in vf_pci_addr case, where its explicitly opened */
-	if (conf.dev != NULL && conf.vf_pci_addr_set && !conf.rep_set)
-		if (doca_dev_close(conf.dev) != DOCA_SUCCESS)
-			DOCA_LOG_WARN("Failed to close DOCA device");
-
 	doca_argp_destroy();
 
 sample_exit:

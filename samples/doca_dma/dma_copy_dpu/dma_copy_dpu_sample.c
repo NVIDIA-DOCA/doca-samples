@@ -23,6 +23,7 @@
  *
  */
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,7 +77,7 @@ static doca_error_t save_config_info_to_buffers(const char *export_desc_file_pat
 	}
 
 	if (fseek(fp, 0, SEEK_END) != 0) {
-		DOCA_LOG_ERR("Failed to calculate file size");
+		DOCA_LOG_ERR("Failed to seek to end of file");
 		fclose(fp);
 		return DOCA_ERROR_IO_FAILED;
 	}
@@ -88,19 +89,21 @@ static doca_error_t save_config_info_to_buffers(const char *export_desc_file_pat
 		return DOCA_ERROR_IO_FAILED;
 	}
 
-	if (file_size > RECV_BUF_SIZE)
+	if (file_size > RECV_BUF_SIZE) {
+		DOCA_LOG_WARN("Export descriptor file truncated from %ld to %d bytes", file_size, RECV_BUF_SIZE);
 		file_size = RECV_BUF_SIZE;
+	}
 
 	*export_desc_len = file_size;
 
 	if (fseek(fp, 0L, SEEK_SET) != 0) {
-		DOCA_LOG_ERR("Failed to calculate file size");
+		DOCA_LOG_ERR("Failed to seek to beginning of file");
 		fclose(fp);
 		return DOCA_ERROR_IO_FAILED;
 	}
 
 	if (fread(export_desc, 1, file_size, fp) != (size_t)file_size) {
-		DOCA_LOG_ERR("Failed to allocate memory for source buffer");
+		DOCA_LOG_ERR("Failed to read export descriptor from file");
 		fclose(fp);
 		return DOCA_ERROR_IO_FAILED;
 	}
@@ -120,8 +123,10 @@ static doca_error_t save_config_info_to_buffers(const char *export_desc_file_pat
 		fclose(fp);
 		return DOCA_ERROR_IO_FAILED;
 	}
+
+	errno = 0;
 	convert_value = strtoull(buffer, NULL, 0);
-	if (convert_value == ULLONG_MAX) {
+	if (convert_value == ULLONG_MAX && errno == ERANGE) {
 		DOCA_LOG_ERR("Failed to read the source (host) buffer address. Data is corrupted");
 		fclose(fp);
 		return DOCA_ERROR_IO_FAILED;
@@ -136,8 +141,10 @@ static doca_error_t save_config_info_to_buffers(const char *export_desc_file_pat
 		fclose(fp);
 		return DOCA_ERROR_IO_FAILED;
 	}
+
+	errno = 0;
 	convert_value = strtoull(buffer, NULL, 0);
-	if (convert_value == ULLONG_MAX) {
+	if (convert_value == ULLONG_MAX && errno == ERANGE) {
 		DOCA_LOG_ERR("Failed to read the source (host) buffer length. Data is corrupted");
 		fclose(fp);
 		return DOCA_ERROR_IO_FAILED;
@@ -159,8 +166,8 @@ static doca_error_t save_config_info_to_buffers(const char *export_desc_file_pat
  * @num_dst_buf [in]: Number of destination doca_buf to allocate
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t dma_copy_dpu(char *export_desc_file_path,
-			  char *buffer_info_file_path,
+doca_error_t dma_copy_dpu(const char *export_desc_file_path,
+			  const char *buffer_info_file_path,
 			  const char *pcie_addr,
 			  int num_src_buf,
 			  int num_dst_buf)
@@ -185,7 +192,7 @@ doca_error_t dma_copy_dpu(char *export_desc_file_path,
 	doca_error_t result, tmp_result, task_result;
 
 	/* Allocate resources */
-	result = allocate_dma_resources(pcie_addr, num_src_buf + num_dst_buf, &resources);
+	result = allocate_dma_resources(pcie_addr, num_src_buf, num_dst_buf, DEFAULT_NUM_TASKS, &resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to allocate DMA resources: %s", doca_error_get_descr(result));
 		return result;
@@ -357,7 +364,7 @@ destroy_remote_mmap:
 	tmp_result = doca_mmap_destroy(remote_mmap);
 	if (tmp_result != DOCA_SUCCESS) {
 		DOCA_ERROR_PROPAGATE(result, tmp_result);
-		DOCA_LOG_ERR("Failed to decrease remote mmap: %s", doca_error_get_descr(tmp_result));
+		DOCA_LOG_ERR("Failed to destroy remote mmap: %s", doca_error_get_descr(tmp_result));
 	}
 free_dpu_buffer:
 	free(dpu_buffer);

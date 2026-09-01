@@ -245,12 +245,6 @@ static doca_error_t destroy_txq(struct txq_queue *txq)
 		}
 	}
 
-	result = doca_dev_close(txq->ddev);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to destroy Eth dev: %s", doca_error_get_descr(result));
-		return DOCA_ERROR_BAD_STATE;
-	}
-
 	return DOCA_SUCCESS;
 }
 
@@ -489,7 +483,7 @@ static doca_error_t create_txq(struct txq_queue *txq,
 	return DOCA_SUCCESS;
 
 exit_error:
-	destroy_txq(txq);
+	/* Caller owns the cleanup: it always invokes destroy_txq() on its exit path */
 	return DOCA_ERROR_BAD_STATE;
 }
 
@@ -501,20 +495,20 @@ exit_error:
  */
 doca_error_t gpunetio_send_wait_time(struct sample_send_wait_cfg *sample_cfg)
 {
-	doca_error_t result;
+	doca_error_t result, tmp_result;
 	uint64_t *intervals_cpu = NULL;
 	uint64_t *intervals_gpu = NULL;
 	uint64_t time_seed;
 	struct doca_gpu *gpu_dev = NULL;
 	struct doca_dev *ddev = NULL;
 	struct txq_queue txq = {0};
-	cudaStream_t stream;
+	cudaStream_t stream = NULL;
 	cudaError_t res_rt = cudaSuccess;
 
 	result = init_doca_device(sample_cfg->nic_pcie_addr, &ddev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function init_doca_device returned %s", doca_error_get_descr(result));
-		return EXIT_FAILURE;
+		return result;
 	}
 
 	/* Init and start port for eth */
@@ -545,7 +539,8 @@ doca_error_t gpunetio_send_wait_time(struct sample_send_wait_cfg *sample_cfg)
 	res_rt = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
 	if (res_rt != cudaSuccess) {
 		DOCA_LOG_ERR("Function cudaStreamCreateWithFlags error %d", res_rt);
-		return DOCA_ERROR_DRIVER;
+		result = DOCA_ERROR_DRIVER;
+		goto exit;
 	}
 
 	result = doca_gpu_mem_alloc(gpu_dev,
@@ -555,6 +550,8 @@ doca_error_t gpunetio_send_wait_time(struct sample_send_wait_cfg *sample_cfg)
 				    (void **)&intervals_gpu,
 				    (void **)&intervals_cpu);
 	if (result != DOCA_SUCCESS || intervals_gpu == NULL || intervals_cpu == NULL) {
+		if (result == DOCA_SUCCESS)
+			result = DOCA_ERROR_NO_MEMORY;
 		DOCA_LOG_ERR("Failed to allocate gpu memory %s", doca_error_get_descr(result));
 		goto exit;
 	}
@@ -583,16 +580,35 @@ doca_error_t gpunetio_send_wait_time(struct sample_send_wait_cfg *sample_cfg)
 	sleep(10);
 
 exit:
+	if (stream)
+		cudaStreamDestroy(stream);
 	if (intervals_gpu)
 		doca_gpu_mem_free(gpu_dev, intervals_gpu);
 
-	result = destroy_txq(&txq);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Function destroy_txq returned %s", doca_error_get_descr(result));
-		return DOCA_ERROR_BAD_STATE;
+	tmp_result = destroy_txq(&txq);
+	if (tmp_result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Function destroy_txq returned %s", doca_error_get_descr(tmp_result));
+		DOCA_ERROR_PROPAGATE(result, tmp_result);
 	}
 
-	DOCA_LOG_INFO("Sample finished successfully");
+	if (gpu_dev) {
+		tmp_result = doca_gpu_destroy(gpu_dev);
+		if (tmp_result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Function doca_gpu_destroy returned %s", doca_error_get_descr(tmp_result));
+			DOCA_ERROR_PROPAGATE(result, tmp_result);
+		}
+	}
 
-	return DOCA_SUCCESS;
+	if (ddev != NULL) {
+		tmp_result = doca_dev_close(ddev);
+		if (tmp_result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Function doca_dev_close returned %s", doca_error_get_descr(tmp_result));
+			DOCA_ERROR_PROPAGATE(result, tmp_result);
+		}
+	}
+
+	if (result == DOCA_SUCCESS)
+		DOCA_LOG_INFO("Sample finished successfully");
+
+	return result;
 }

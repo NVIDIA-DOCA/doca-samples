@@ -35,6 +35,8 @@
 #include <sys/queue.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <doca_error.h>
+#include <doca_log.h>
 
 #ifdef __cplusplus
 #include <string>
@@ -125,7 +127,7 @@ struct async_context {
 
 struct nfs_fsdev_recovery *nfs_fsdev_create_recovery(const char *filename, struct database *db);
 void nfs_fsdev_destroy_recovery(struct nfs_fsdev_recovery *recovery);
-int priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global);
+doca_error_t priv_nfs_fsdev_init(struct nfs_fsdev *fsdev, struct nfs_fsdev_global *global);
 void priv_nfs_fsdev_deinit(struct nfs_fsdev *fsdev);
 bool nfs_fsdev_db_insert(struct database *db, int state, int ref_count, int inode, struct nfs_fh3 *fh);
 bool nfs_fsdev_db_init_new_root(unsigned long inode, const struct nfs_fh *fh, struct database *db);
@@ -147,7 +149,9 @@ struct nfs_fsdev_global {
 		: server(server),
 		  mount_point(mount_point),
 		  db_name(NFS_FSDEV_DB_PATH),
-		  recovery_file_name(NFS_FSDEV_RECOVERY_PATH)
+		  recovery_file_name(NFS_FSDEV_RECOVERY_PATH),
+		  db(NULL),
+		  recovery(NULL)
 	{
 		pthread_mutexattr_t attr;
 
@@ -156,12 +160,20 @@ struct nfs_fsdev_global {
 		pthread_mutex_init(&lock, &attr);
 
 		db = allocate_and_init_map(db_name);
+		if (db == NULL) {
+			DOCA_LOG_ERR("Failed to initialize persistent DB at '%s'", db_name);
+			return;
+		}
+
 		recovery = nfs_fsdev_create_recovery(recovery_file_name, db);
+		if (recovery == NULL)
+			DOCA_LOG_ERR("Recovery init failed, replay protection is disabled");
 	}
 	~nfs_fsdev_global()
 	{
 		close_map(db);
 		nfs_fsdev_destroy_recovery(recovery);
+		pthread_mutex_destroy(&lock);
 	}
 #endif
 };
@@ -175,14 +187,11 @@ struct nfs_fsdev {
 	struct nfs_context *nfs;	      /**< Pointer to NFS context. */
 	struct async_context *ios_pool;	      /**< Pointer to IO pool. */
 #ifdef __cplusplus
-	nfs_fsdev(struct nfs_fsdev_global *_global) : nfs_global(_global)
+	nfs_fsdev() : nfs_global(nullptr), nfs(nullptr), ios_pool(nullptr)
 	{
-		priv_nfs_fsdev_init(this, nfs_global);
+		SLIST_INIT(&free_ios);
 	}
-	nfs_fsdev()
-	{
-	}
-	int nfs_fsdev_init()
+	doca_error_t nfs_fsdev_init()
 	{
 		return priv_nfs_fsdev_init(this, nfs_global);
 	}

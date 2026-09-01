@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -22,13 +22,56 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-sample_srcs = files([
-	SAMPLE_NAME + '_host_sample.c',
-])
+project('DOCA_SAMPLE', 'C', 'CPP',
+	# Get version number from file.
+	version: run_command(find_program('cat'),
+		files('../../../../VERSION'), check: true).stdout().strip(),
+	license: 'BSD-3',
+	default_options: ['buildtype=debug'],
+	meson_version: '>= 0.61.2'
+)
 
-# Needed because we use common DOCA-Wide utilities in the main
-common_dir_path = '/'.join([meson.project_source_root(), 'common', 'public'])
+SAMPLE_NAME = 'devemu_pci_device_stateful_region_host'
 
-sample_main_srcs = files([
-	SAMPLE_NAME + '_host_main.c',
-])
+sample_project_arguments = []
+# Comment this line to restore warnings of experimental DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_EXPERIMENTAL_API']
+# Comment this line to restore warnings of deprecated DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_DEPRECATED_API']
+
+add_project_arguments(sample_project_arguments, language: ['c', 'cpp'])
+
+sample_dependencies = []
+# Required for all DOCA programs
+sample_dependencies += dependency('doca-common')
+# The DOCA library of the sample itself
+sample_dependencies += dependency('doca-devemu')
+# Utility DOCA library for executables
+sample_dependencies += dependency('doca-argp')
+
+sample_srcs = [
+	# The sample itself
+	SAMPLE_NAME + '_sample.c',
+	# Main function for the sample's executable
+	SAMPLE_NAME + '_main.c',
+	# Common code for the DOCA library samples
+	'../../devemu_pci_host_common.c',
+	# Common code for all DOCA samples
+	'../../../common.c',
+]
+
+sample_inc_dirs  = []
+# Common DOCA library logic
+sample_inc_dirs += include_directories('../..')
+# Common DOCA logic (samples)
+sample_inc_dirs += include_directories('../../..')
+# Common DOCA logic
+sample_inc_dirs += include_directories('../../../..')
+# Common DOCA logic (applications)
+sample_inc_dirs += include_directories('../../../../applications/common/')
+
+executable('doca_' + SAMPLE_NAME, sample_srcs,
+	c_args : '-Wno-missing-braces',
+	dependencies : sample_dependencies,
+	include_directories: sample_inc_dirs,
+	install: false)

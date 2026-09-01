@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -28,8 +28,9 @@
 #include <string.h>
 
 #include <doca_argp.h>
-#include <doca_dev.h>
 #include <doca_log.h>
+
+#include "mgmt_common.h"
 
 DOCA_LOG_REGISTER(MGMT_CC_GLOBAL_STATUS::MAIN);
 
@@ -40,6 +41,7 @@ DOCA_LOG_REGISTER(MGMT_CC_GLOBAL_STATUS::MAIN);
 /* Configuration struct */
 enum doca_mgmt_cc_global_status_cmds {
 	DOCA_MGMT_CC_GLOBAL_STATUS_CMD_NONE,
+	DOCA_MGMT_CC_GLOBAL_STATUS_CMD_LIST_TARGETS,
 	DOCA_MGMT_CC_GLOBAL_STATUS_CMD_GET,
 	DOCA_MGMT_CC_GLOBAL_STATUS_CMD_SET,
 };
@@ -47,7 +49,7 @@ enum doca_mgmt_cc_global_status_cmds {
 struct mgmt_cc_global_status_config {
 	/* Common configuration */
 	enum doca_mgmt_cc_global_status_cmds cmd;	   /* Command to execute */
-	char dev_pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE];	   /* Device PCI address */
+	char target[MGMT_COMMON_TARGET_STR_LEN];	   /* Device management target string */
 	uint8_t priority;				   /* Priority of the congestion control */
 	char protocol[CC_GLOBAL_STATUS_PROTOCOL_MAX_SIZE]; /* Protocol of the congestion control */
 
@@ -58,29 +60,34 @@ struct mgmt_cc_global_status_config {
 };
 
 /* Sample's Logic */
-doca_error_t mgmt_cc_global_status_get(const char *dev_pci_addr, uint8_t priority, char *protocol);
-doca_error_t mgmt_cc_global_status_set(const char *dev_pci_addr, uint8_t priority, char *protocol, bool enabled);
+doca_error_t mgmt_cc_global_status_get(const char *target_string, uint8_t priority, char *protocol);
+doca_error_t mgmt_cc_global_status_set(const char *target_string, uint8_t priority, char *protocol, bool enabled);
 
 /*
- * ARGP Callback - Handle device parameter
+ * ARGP Callback - Handle target parameter
  *
  * @param [in]: Input parameter
  * @config [in/out]: Program configuration context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t dev_pci_addr_callback(void *param, void *config)
+static doca_error_t target_callback(void *param, void *config)
 {
 	struct mgmt_cc_global_status_config *conf = (struct mgmt_cc_global_status_config *)config;
-	const char *dev_pci_addr = (char *)param;
-	int dev_pci_addr_len = strnlen(dev_pci_addr, DOCA_DEVINFO_PCI_ADDR_SIZE);
 
-	if (dev_pci_addr_len >= DOCA_DEVINFO_PCI_ADDR_SIZE) {
-		DOCA_LOG_ERR("Entered device PCI address exceeds the maximum size of %d",
-			     DOCA_DEVINFO_PCI_ADDR_SIZE - 1);
-		return DOCA_ERROR_INVALID_VALUE;
-	}
+	return mgmt_common_target_string_copy((const char *)param, conf->target);
+}
 
-	strncpy(conf->dev_pci_addr, dev_pci_addr, dev_pci_addr_len + 1);
+/*
+ * ARGP Callback - Handle list-targets command
+ *
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t list_targets_callback(void *config)
+{
+	struct mgmt_cc_global_status_config *conf = (struct mgmt_cc_global_status_config *)config;
+
+	conf->cmd = DOCA_MGMT_CC_GLOBAL_STATUS_CMD_LIST_TARGETS;
 
 	return DOCA_SUCCESS;
 }
@@ -98,7 +105,7 @@ static doca_error_t priority_callback(void *param, void *config)
 	const int *priority = (int *)param;
 
 	if (*priority < 0 || *priority > 7) {
-		DOCA_LOG_ERR("Entered priority: %d, valid value must be between 0 and 7", *priority);
+		fprintf(stderr, "Entered priority: %d, valid value must be between 0 and 7\n", *priority);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -121,16 +128,19 @@ static doca_error_t protocol_callback(void *param, void *config)
 	int protocol_len = strnlen(protocol, CC_GLOBAL_STATUS_PROTOCOL_MAX_SIZE);
 
 	if (protocol_len >= CC_GLOBAL_STATUS_PROTOCOL_MAX_SIZE) {
-		DOCA_LOG_ERR("Entered protocol exceeds the maximum size of %d", CC_GLOBAL_STATUS_PROTOCOL_MAX_SIZE - 1);
+		fprintf(stderr,
+			"Entered protocol exceeds the maximum size of %d\n",
+			CC_GLOBAL_STATUS_PROTOCOL_MAX_SIZE - 1);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
 	if (strcmp(protocol, CC_GLOBAL_STATUS_PROTOCOL_RP) != 0 &&
 	    strcmp(protocol, CC_GLOBAL_STATUS_PROTOCOL_NP) != 0) {
-		DOCA_LOG_ERR("Entered protocol: %s, valid values are %s or %s",
-			     protocol,
-			     CC_GLOBAL_STATUS_PROTOCOL_RP,
-			     CC_GLOBAL_STATUS_PROTOCOL_NP);
+		fprintf(stderr,
+			"Entered protocol: %s, valid values are %s or %s\n",
+			protocol,
+			CC_GLOBAL_STATUS_PROTOCOL_RP,
+			CC_GLOBAL_STATUS_PROTOCOL_NP);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -156,7 +166,7 @@ static doca_error_t enabled_callback(void *param, void *config)
 	} else if (strcasecmp(enabled, "false") == 0) {
 		conf->set_params.enabled = false;
 	} else {
-		DOCA_LOG_ERR("Entered enabled value %s is invalid, valid values are 'true' or 'false'", enabled);
+		fprintf(stderr, "Entered enabled value %s is invalid, valid values are 'true' or 'false'\n", enabled);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -172,60 +182,51 @@ static doca_error_t enabled_callback(void *param, void *config)
  */
 static doca_error_t register_mgmt_cc_global_status_cmd_params(struct doca_argp_cmd *cmd, bool is_set)
 {
-	struct doca_argp_param *dev_pci_addr_param;
 	struct doca_argp_param *priority_param;
 	struct doca_argp_param *protocol_param;
 	struct doca_argp_param *enabled_param;
 	doca_error_t result;
 
-	/* Create and register PCI address param */
-	result = doca_argp_param_create(&dev_pci_addr_param);
+	/* Register the device management target param */
+	result = mgmt_common_register_target_dev_param(cmd, target_callback, true, NULL);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
-		return result;
-	}
-	doca_argp_param_set_short_name(dev_pci_addr_param, "d");
-	doca_argp_param_set_long_name(dev_pci_addr_param, "dev-pci-addr");
-	doca_argp_param_set_description(dev_pci_addr_param, "DOCA device PCI device address - default: 08:00.0");
-	doca_argp_param_set_callback(dev_pci_addr_param, dev_pci_addr_callback);
-	doca_argp_param_set_type(dev_pci_addr_param, DOCA_ARGP_TYPE_STRING);
-	result = doca_argp_cmd_register_param(cmd, dev_pci_addr_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register device target param: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
 	/* Create and register priority param */
 	result = doca_argp_param_create(&priority_param);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to create ARGP param: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 	doca_argp_param_set_short_name(priority_param, "p");
 	doca_argp_param_set_long_name(priority_param, "priority");
-	doca_argp_param_set_description(priority_param, "Priority - default: 0");
+	doca_argp_param_set_description(priority_param, "Priority (valid values: 0-7)");
 	doca_argp_param_set_callback(priority_param, priority_callback);
 	doca_argp_param_set_type(priority_param, DOCA_ARGP_TYPE_INT);
+	doca_argp_param_set_mandatory(priority_param);
 	result = doca_argp_cmd_register_param(cmd, priority_param);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register program param: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
 	/* Create and register protocol param */
 	result = doca_argp_param_create(&protocol_param);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to create ARGP param: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 	doca_argp_param_set_short_name(protocol_param, "t");
 	doca_argp_param_set_long_name(protocol_param, "protocol");
-	doca_argp_param_set_description(protocol_param, "Protocol - default: rp");
+	doca_argp_param_set_description(protocol_param, "Protocol (valid values: rp, np)");
 	doca_argp_param_set_callback(protocol_param, protocol_callback);
 	doca_argp_param_set_type(protocol_param, DOCA_ARGP_TYPE_STRING);
+	doca_argp_param_set_mandatory(protocol_param);
 	result = doca_argp_cmd_register_param(cmd, protocol_param);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register program param: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -233,19 +234,19 @@ static doca_error_t register_mgmt_cc_global_status_cmd_params(struct doca_argp_c
 		/* Create and register enabled param */
 		result = doca_argp_param_create(&enabled_param);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+			fprintf(stderr, "Failed to create ARGP param: %s\n", doca_error_get_descr(result));
 			return result;
 		}
 		doca_argp_param_set_short_name(enabled_param, "e");
 		doca_argp_param_set_long_name(enabled_param, "enabled");
-		doca_argp_param_set_description(
-			enabled_param,
-			"Enable or disable congestion control (valid values: true or false) - default: false");
+		doca_argp_param_set_description(enabled_param,
+						"Enable or disable congestion control (valid values: true or false)");
 		doca_argp_param_set_callback(enabled_param, enabled_callback);
 		doca_argp_param_set_type(enabled_param, DOCA_ARGP_TYPE_STRING);
+		doca_argp_param_set_mandatory(enabled_param);
 		result = doca_argp_cmd_register_param(cmd, enabled_param);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+			fprintf(stderr, "Failed to register program param: %s\n", doca_error_get_descr(result));
 			return result;
 		}
 	}
@@ -281,7 +282,7 @@ static doca_error_t register_mgmt_cc_global_status_cmd_set(void)
 	/* Create set command */
 	result = doca_argp_cmd_create(&cmd_set);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to create ARGP command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 	doca_argp_cmd_set_name(cmd_set, "set");
@@ -291,14 +292,14 @@ static doca_error_t register_mgmt_cc_global_status_cmd_set(void)
 	/* Register set command params */
 	result = register_mgmt_cc_global_status_cmd_params(cmd_set, true);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register set command params: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register set command params: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
 	/* Register set command */
 	result = doca_argp_register_cmd(cmd_set);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register ARGP command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register ARGP command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -333,7 +334,7 @@ static doca_error_t register_mgmt_cc_global_status_cmd_get(void)
 	/* Create get command */
 	result = doca_argp_cmd_create(&cmd_get);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to create ARGP command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 	doca_argp_cmd_set_name(cmd_get, "get");
@@ -343,14 +344,14 @@ static doca_error_t register_mgmt_cc_global_status_cmd_get(void)
 	/* Register get command params */
 	result = register_mgmt_cc_global_status_cmd_params(cmd_get, false);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register get command params: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register get command params: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
 	/* Register get command */
 	result = doca_argp_register_cmd(cmd_get);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register ARGP command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register ARGP command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -366,15 +367,21 @@ static doca_error_t register_mgmt_cc_global_status_cmds(void)
 {
 	doca_error_t result;
 
+	result = mgmt_common_register_list_targets_cmd(list_targets_callback);
+	if (result != DOCA_SUCCESS) {
+		fprintf(stderr, "Failed to register list-targets command: %s\n", doca_error_get_descr(result));
+		return result;
+	}
+
 	result = register_mgmt_cc_global_status_cmd_set();
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register set command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register set command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
 	result = register_mgmt_cc_global_status_cmd_get();
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register get command: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register get command: %s\n", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -395,61 +402,76 @@ int main(int argc, char **argv)
 	int exit_status = EXIT_FAILURE;
 	doca_error_t result;
 
-	/* Register a logger backend */
-	result = doca_log_backend_create_standard();
-	if (result != DOCA_SUCCESS)
+	/* Disable all log messages unless explicitly enabled by user */
+	result = doca_log_level_set_global_lower_limit(DOCA_LOG_LEVEL_DISABLE);
+	if (result != DOCA_SUCCESS) {
+		fprintf(stderr,
+			"Failed to set global lower limit for log messages: %s\n",
+			doca_error_get_descr(result));
 		goto sample_exit;
+	}
 
-	/* Register a logger backend for internal SDK errors and warnings */
+	result = doca_log_level_set_global_sdk_limit(DOCA_LOG_LEVEL_ERROR);
+	if (result != DOCA_SUCCESS) {
+		fprintf(stderr, "Failed to set global limit for SDK log messages: %s\n", doca_error_get_descr(result));
+		goto sample_exit;
+	}
+
+	/* Register logger backends */
+	result = doca_log_backend_create_standard();
+	if (result != DOCA_SUCCESS) {
+		fprintf(stderr, "Failed to create standard logger backend: %s\n", doca_error_get_descr(result));
+		goto sample_exit;
+	}
+
+	/* Register a logger backend for internal SDK */
 	result = doca_log_backend_create_with_file_sdk(stderr, &sdk_log);
-	if (result != DOCA_SUCCESS)
+	if (result != DOCA_SUCCESS) {
+		fprintf(stderr, "Failed to create SDK logger backend: %s\n", doca_error_get_descr(result));
 		goto sample_exit;
-	result = doca_log_backend_set_sdk_level(sdk_log, DOCA_LOG_LEVEL_WARNING);
-	if (result != DOCA_SUCCESS)
-		goto sample_exit;
+	}
 
 	DOCA_LOG_INFO("Starting the sample");
 
-	/* Set the default configuration values (Example values) */
-	conf.cmd = DOCA_MGMT_CC_GLOBAL_STATUS_CMD_NONE;
-	strcpy(conf.dev_pci_addr, "08:00.0");
-	conf.priority = 0;
-	strcpy(conf.protocol, CC_GLOBAL_STATUS_PROTOCOL_RP);
-	conf.set_params.enabled = false;
+	/* Initialize configuration */
+	memset(&conf, 0, sizeof(conf));
 
 	result = doca_argp_init(NULL, &conf);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to init ARGP resources: %s\n", doca_error_get_descr(result));
 		goto sample_exit;
 	}
 	result = register_mgmt_cc_global_status_cmds();
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register sample commands: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to register sample commands: %s\n", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(result));
+		fprintf(stderr, "Failed to parse sample input: %s\n", doca_error_get_descr(result));
 		goto argp_cleanup;
 	}
 
-	if (conf.cmd == DOCA_MGMT_CC_GLOBAL_STATUS_CMD_SET) {
-		result = mgmt_cc_global_status_set(conf.dev_pci_addr,
-						   conf.priority,
-						   conf.protocol,
-						   conf.set_params.enabled);
+	if (conf.cmd == DOCA_MGMT_CC_GLOBAL_STATUS_CMD_LIST_TARGETS) {
+		result = mgmt_common_list_targets(false);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to run mgmt_cc_global_status_set: %s", doca_error_get_descr(result));
+			fprintf(stderr, "Failed to list management targets: %s\n", doca_error_get_descr(result));
+			goto argp_cleanup;
+		}
+	} else if (conf.cmd == DOCA_MGMT_CC_GLOBAL_STATUS_CMD_SET) {
+		result = mgmt_cc_global_status_set(conf.target, conf.priority, conf.protocol, conf.set_params.enabled);
+		if (result != DOCA_SUCCESS) {
+			fprintf(stderr, "Failed to run mgmt_cc_global_status_set: %s\n", doca_error_get_descr(result));
 			goto argp_cleanup;
 		}
 	} else if (conf.cmd == DOCA_MGMT_CC_GLOBAL_STATUS_CMD_GET) {
-		result = mgmt_cc_global_status_get(conf.dev_pci_addr, conf.priority, conf.protocol);
+		result = mgmt_cc_global_status_get(conf.target, conf.priority, conf.protocol);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to run mgmt_cc_global_status_get: %s", doca_error_get_descr(result));
+			fprintf(stderr, "Failed to run mgmt_cc_global_status_get: %s\n", doca_error_get_descr(result));
 			goto argp_cleanup;
 		}
 	} else {
-		DOCA_LOG_ERR("Either 'get' or 'set' command must be specified");
+		fprintf(stderr, "A command must be specified: 'list-targets', 'get' or 'set'\n");
 		doca_argp_usage();
 		goto argp_cleanup;
 	}

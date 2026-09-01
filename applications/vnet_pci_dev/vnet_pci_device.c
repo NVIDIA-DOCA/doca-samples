@@ -29,10 +29,12 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <pthread.h>
 #include <sched.h>
 #include <semaphore.h>
@@ -56,6 +58,7 @@
 #include "vnet_pci_device.h"
 #include "vnet_pci_dev_core.h"
 #include "pci_spec_tlp.h"
+#include "vnet_sriov.h"
 #include <doca_devemu_virtio.h>
 
 DOCA_LOG_REGISTER(VNET_PCI_DEVICE);
@@ -66,12 +69,17 @@ DOCA_LOG_REGISTER(VNET_PCI_DEVICE);
 
 #define VNET_TLP_REQ_USER_DATA_SIZE 128 /* Per-request opaque storage for TLP handler callbacks */
 #define PCI_CFG_WORK_POOL_SIZE 1024	/* Pre-allocated work items - avoids malloc in hot path */
+#define RESET_WORKER_WAIT_USEC \
+	20000 /* Bound reset callback wait for same-device worker to 20ms. \
+	       * Must stay below the host PCIe Completion Timeout (~50ms). */
 #define MQ_START_MAX_CONCURRENT \
 	2 /* Max concurrent start_additional_queue_pairs threads. \
 	   * Each MQ start for 127 QPs is very memory-intensive \
 	   * (OOM risk) and saturates firmware command channel \
 	   * (PE1 starvation risk -> host PCIe timeout). \
 	   * Keep low to balance throughput vs. stability. */
+
+static struct pcie_virtio_dev vnet_pci_device_create_virtio_template(void);
 
 /* Work item types */
 enum pci_cfg_work_type {
@@ -86,6 +94,14 @@ enum pci_cfg_work_type {
 	PCI_CFG_WORK_DELAYED_DESTROY,
 	PCI_CFG_WORK_HOTPLUG_EVENT,
 	PCI_CFG_WORK_SPEED_CHANGE,
+	PCI_CFG_WORK_VFE_FAN_OUT_START,
+	PCI_CFG_WORK_VFE_FAN_OUT_STOP,
+	PCI_CFG_WORK_VF_ENGINE_SETUP,
+	PCI_CFG_WORK_VF_VQ_CONFIG,
+	PCI_CFG_WORK_VF_ENGINE_ENABLE,
+	PCI_CFG_WORK_VF_DATAPATH_RESET,
+	PCI_CFG_WORK_VF_FLR_RESET,
+	PCI_CFG_WORK_DUMP_SF_INFO,
 };
 
 /* Work item for PCI config operations */
@@ -135,6 +151,37 @@ struct pci_cfg_work_item {
 			struct vnet_pci_dev_controller *controller;
 			uint32_t new_speed;
 		} speed_change;
+		struct {
+			struct tlp_context *tlp_ctx;
+			struct pci_device_config *pf_endpoint;
+		} vfe_fan_out; /* shared by VFE_FAN_OUT_START and _STOP */
+		struct {
+			struct tlp_context *tlp_ctx;
+			struct pci_device_config *pf_endpoint;
+			uint16_t slot_idx;
+		} vf_engine_setup;
+		struct {
+			struct tlp_context *tlp_ctx;
+			struct pci_device_config *pf_endpoint;
+			uint16_t slot_idx;
+			uint16_t vq_index;
+		} vf_vq_config;
+		struct {
+			struct pci_device_config *pf_endpoint;
+			uint16_t slot_idx;
+		} vf_engine_enable;
+		struct {
+			struct pci_device_config *pf_endpoint;
+			uint16_t slot_idx;
+		} vf_datapath_reset;
+		struct {
+			struct pci_device_config *pf_endpoint;
+			uint16_t slot_idx;
+		} vf_flr_reset;
+		struct {
+			struct tlp_context *tlp_ctx;
+			uint32_t ep_index;
+		} dump_sf_info;
 	} data;
 	struct pci_cfg_work_item *next;
 	uint32_t reset_generation;
@@ -150,6 +197,7 @@ struct pci_cfg_work_pool {
 
 struct mq_start_thread_node {
 	pthread_t thread;
+	bool started;
 	bool completed;
 	struct mq_start_thread_node *next;
 };
@@ -264,22 +312,15 @@ static bool vnet_affinity_init_base_set(void)
 static uint32_t vnet_affinity_get_base_cpus(int *cpus, uint32_t cpus_len)
 {
 	uint32_t count = 0;
-	bool cpu0_allowed = false;
+	bool cpu0_allowed;
 	int cpu;
 
 	if (!vnet_affinity_init_base_set())
 		return 0;
 
-	for (cpu = 0; cpu < CPU_SETSIZE; cpu++) {
-		if (CPU_ISSET(cpu, &vnet_affinity_base_set)) {
-			if (cpu == 0)
-				cpu0_allowed = true;
-		}
-	}
+	cpu0_allowed = CPU_ISSET(0, &vnet_affinity_base_set);
 
-	for (cpu = 0; cpu < CPU_SETSIZE && count < cpus_len; cpu++) {
-		if (cpu == 0)
-			continue;
+	for (cpu = 1; cpu < CPU_SETSIZE && count < cpus_len; cpu++) {
 		if (CPU_ISSET(cpu, &vnet_affinity_base_set)) {
 			cpus[count] = cpu;
 			count++;
@@ -482,6 +523,8 @@ static struct vnet_pci_dev_controller *pci_cfg_workqueue_select_diag_controller(
 			continue;
 		if (!atomic_load(&controller->engine_enabled))
 			continue;
+		if (atomic_load(&controller->deferred_mq.initial_data_qps_deferred))
+			continue;
 		if (atomic_load(&controller->shutting_down) || atomic_load(&controller->stop_stats_collection) ||
 		    atomic_load(&controller->cleanup_running) || atomic_load(&controller->initialization_in_progress) ||
 		    atomic_load(&dev->cancel_in_progress)) {
@@ -524,6 +567,9 @@ static void vnet_pci_device_mmio_write32(struct vnet_pci_device *dev,
 					 const uint32_t val,
 					 const uint32_t wr_mask);
 static void vnet_pci_device_reset(struct vnet_pci_device *dev);
+static void vnet_pci_device_handle_flr(struct vnet_pci_device *dev);
+static void sriov_vf_apply_vq_config(struct vnet_vf_slot *slot, uint16_t vq_index);
+static void vnet_pci_device_handle_vf_flr(struct pci_device_config *pf_endpoint, uint16_t slot_idx);
 
 /************************************************************************
  ******              Workqueue Implementation Functions            ******
@@ -634,6 +680,7 @@ static bool vnet_controller_get_valid_reset_generation(const struct vnet_pci_dev
 		return false;
 	}
 
+	/* This is an enqueue-time snapshot; if reset advances before enqueue, the worker's stale check drops it. */
 	*reset_generation = generation;
 	return true;
 }
@@ -675,6 +722,189 @@ static bool pci_cfg_work_item_is_stale(const struct pci_cfg_work_item *work)
 	return vnet_controller_get_reset_generation(controller) != work->reset_generation;
 }
 
+static doca_error_t vnet_pci_dev_start_offload_engine(struct vnet_pci_dev_controller *ctrl)
+{
+	struct doca_devemu_virtio_offload_engine *virtio_engine;
+	struct vnet_pci_device *dev;
+	doca_error_t result;
+
+	if (!ctrl->offload_engine || atomic_load(&ctrl->cleanup_running)) {
+		DOCA_LOG_WARN("Offload engine destroyed or cleanup in progress"
+			      " - skipping engine start");
+		return DOCA_ERROR_BAD_STATE;
+	}
+
+	virtio_engine = doca_devemu_vnet_offload_engine_as_virtio_offload(ctrl->offload_engine);
+	if (virtio_engine == NULL) {
+		DOCA_LOG_ERR("Engine start: failed to get virtio offload engine - skipping");
+		return DOCA_ERROR_NOT_FOUND;
+	}
+
+	dev = atomic_load(&ctrl->virtio_device);
+	if (dev == NULL) {
+		DOCA_LOG_ERR("Engine start: no active VirtIO device - skipping");
+		return DOCA_ERROR_NOT_FOUND;
+	}
+
+	result = vnet_pci_dev_apply_negotiated_features(virtio_engine, dev);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Engine start: failed to apply negotiated features"
+			     " - skipping engine start: %s",
+			     doca_error_get_name(result));
+		return result;
+	}
+
+	result = doca_devemu_virtio_offload_engine_start(virtio_engine);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to start offload engine: %s", doca_error_get_name(result));
+		return result;
+	}
+
+	atomic_store(&ctrl->offload_engine_started, true);
+	DOCA_LOG_INFO("VNet offload engine started (async)");
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Apply a host VFE transition across all VF slots of a PF. Shared by the
+ * VFE_FAN_OUT_START and _STOP worker cases (start selects direction):
+ *   start=true  : VFE 0->1 - create + start a tlp_dev for every discovered slot.
+ *   start=false : VFE 1->0 - stop + destroy each slot's tlp_dev (the rep stays
+ *                 open so the next 0->1 can reattach).
+ *
+ * Object lifetime only: the cfg-space reset that pairs with the 1->0 case has to
+ * be ordered against the host's re-probe, so it runs on the TLP thread instead -
+ * see vnet_pci_device_reset_vf_shadows().
+ *
+ * Heavy SDK work runs here on the worker so the TLP decoder returns to PE
+ * progress immediately. endpoint_lock pairs with the writer in
+ * vnet_pci_dev_destroy_device() that nulls endpoint->sriov before freeing it.
+ */
+static void vnet_pci_device_vfe_fan_out(struct tlp_context *ctx, struct pci_device_config *pf, bool start)
+{
+	uint16_t total = 0, ok = 0, failed = 0;
+
+	pthread_rwlock_rdlock(&pf->endpoint_lock);
+	if (pf->sriov != NULL && pf->sriov->vf_slots != NULL) {
+		uint16_t i;
+
+		total = pf->sriov->total_vf;
+		for (i = 0; i < total; i++) {
+			struct vnet_vf_slot *vf_slot = &pf->sriov->vf_slots[i];
+			doca_error_t res;
+
+			res = start ? vnet_sriov_start_vf_slot(ctx, vf_slot) : vnet_sriov_stop_vf_slot(vf_slot);
+			if (res != DOCA_SUCCESS) {
+				failed++;
+				continue;
+			}
+			ok++;
+		}
+	}
+	pthread_rwlock_unlock(&pf->endpoint_lock);
+
+	if (start)
+		DOCA_LOG_INFO("SR-IOV VFE 0->1 fan-out: %u/%u slots started (%u failed)", ok, total, failed);
+	else
+		DOCA_LOG_INFO("SR-IOV VFE 1->0 teardown: %u/%u slots stopped (%u failed)", ok, total, failed);
+}
+
+/* PF a queued item acts on, or NULL when the item is not tied to a single PF. */
+static struct pci_device_config *pci_cfg_work_owner_pf(const struct pci_cfg_work_item *work)
+{
+	switch (work->type) {
+	case PCI_CFG_WORK_VFE_FAN_OUT_START:
+	case PCI_CFG_WORK_VFE_FAN_OUT_STOP:
+		return work->data.vfe_fan_out.pf_endpoint;
+	case PCI_CFG_WORK_VF_ENGINE_SETUP:
+		return work->data.vf_engine_setup.pf_endpoint;
+	case PCI_CFG_WORK_VF_VQ_CONFIG:
+		return work->data.vf_vq_config.pf_endpoint;
+	case PCI_CFG_WORK_VF_ENGINE_ENABLE:
+		return work->data.vf_engine_enable.pf_endpoint;
+	case PCI_CFG_WORK_VF_DATAPATH_RESET:
+		return work->data.vf_datapath_reset.pf_endpoint;
+	case PCI_CFG_WORK_VF_FLR_RESET:
+		return work->data.vf_flr_reset.pf_endpoint;
+	default:
+		return NULL;
+	}
+}
+
+/* True when every item in [from, end) belongs to a PF other than pf, so end
+ * may run first. An item that cannot be attributed to a PF blocks promotion. */
+static bool pci_cfg_work_promotable_over(const struct pci_cfg_work_item *from,
+					 const struct pci_cfg_work_item *end,
+					 const struct pci_device_config *pf)
+{
+	const struct pci_cfg_work_item *scan;
+
+	for (scan = from; scan != end; scan = scan->next) {
+		const struct pci_device_config *other = pci_cfg_work_owner_pf(scan);
+
+		if (other == NULL || other == pf)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * Take the next item, letting a VF bring-up overtake work owned by other PFs.
+ *
+ * sriov_numvfs gives the app a bounded window: the host writes VF Enable, waits,
+ * then reads each VF's config space, and a VF that is not answering by then fails
+ * the write with EIO. That window is per-PF, but this queue is shared with
+ * datapath work whose items each run for about a second
+ * (vnet_pci_dev_vf_vqs_destroy), so a bring-up on one PF could otherwise sit
+ * behind several seconds of teardown belonging to an unrelated PF.
+ *
+ * Only other PFs' work is overtaken. Items sharing the bring-up's PF keep their
+ * submission order, which is what holds a pending teardown ahead of a later
+ * bring-up on that PF - the engine must be destroyed before its slot restarts.
+ *
+ * Caller holds wq->mutex.
+ */
+static struct pci_cfg_work_item *pci_cfg_workqueue_dequeue_locked(struct pci_cfg_workqueue *wq)
+{
+	struct pci_cfg_work_item *work = wq->head;
+	struct pci_cfg_work_item *prev = NULL;
+	struct pci_cfg_work_item *scan;
+
+	if (work == NULL)
+		return NULL;
+
+	if (work->type != PCI_CFG_WORK_VFE_FAN_OUT_START) {
+		uint32_t skipped = 0;
+
+		for (scan = work; scan != NULL; prev = scan, scan = scan->next) {
+			if (scan->type == PCI_CFG_WORK_VFE_FAN_OUT_START)
+				break;
+			skipped++;
+		}
+		/* prev is the item before scan, so it is set whenever scan was
+		 * found past the head - which is always, as the head is not a
+		 * bring-up here. Checked anyway to keep the unlink safe. */
+		if (scan != NULL && prev != NULL &&
+		    pci_cfg_work_promotable_over(wq->head, scan, pci_cfg_work_owner_pf(scan))) {
+			DOCA_LOG_DBG("Worker: running SR-IOV bring-up ahead of %u item(s) from other PFs", skipped);
+			prev->next = scan->next;
+			if (scan == wq->tail)
+				wq->tail = prev;
+			work = scan;
+			goto dequeued;
+		}
+	}
+
+	wq->head = work->next;
+	if (wq->head == NULL)
+		wq->tail = NULL;
+
+dequeued:
+	work->next = NULL;
+	wq->pending_work_count--;
+	return work;
+}
+
 /*
  * Worker thread function - processes PCI config operations from the queue
  */
@@ -701,7 +931,9 @@ static void *pci_cfg_worker_thread(void *arg)
 		 * Use timed wait to ensure PE2 gets progressed regularly even when idle.
 		 * This prevents IO context events (CVQ ctrl_req) from stalling. */
 		while (wq->head == NULL && !wq->shutdown) {
-			clock_gettime(CLOCK_REALTIME, &timeout);
+			/* CLOCK_MONOTONIC matches the cond's attr (see pci_cfg_cond_init_monotonic);
+			 * wall-clock jumps must not perturb the 10ms PE-progress cadence. */
+			clock_gettime(CLOCK_MONOTONIC, &timeout);
 			timeout.tv_nsec += 10 * 1000000; /* 10ms timeout */
 			if (timeout.tv_nsec >= 1000000000) {
 				timeout.tv_sec += 1;
@@ -747,17 +979,12 @@ static void *pci_cfg_worker_thread(void *arg)
 		}
 
 		/* Dequeue work item */
-		work = wq->head;
-		if (work != NULL) {
-			wq->head = work->next;
-			if (wq->head == NULL)
-				wq->tail = NULL;
-			wq->pending_work_count--;
+		work = pci_cfg_workqueue_dequeue_locked(wq);
+		if (work != NULL)
 			DOCA_LOG_DBG("Worker: dequeued work type %d (pending=%u, pool_free=%u)",
 				     work->type,
 				     wq->pending_work_count,
 				     wq->pool.free_count);
-		}
 
 		pthread_mutex_unlock(&wq->mutex);
 
@@ -817,31 +1044,10 @@ static void *pci_cfg_worker_thread(void *arg)
 
 			case PCI_CFG_WORK_ENGINE_START:
 				DOCA_LOG_INFO("Executing offload engine start");
-				{
-					struct doca_devemu_virtio_offload_engine *virtio_engine;
-					if (!work->data.engine_start.controller->offload_engine ||
-					    atomic_load(&work->data.engine_start.controller->cleanup_running)) {
-						DOCA_LOG_WARN("Offload engine destroyed or cleanup in progress"
-							      " - skipping engine start");
-						pthread_mutex_lock(&wq->mutex);
-						wq->engine_start_count++;
-						break;
-					}
-					virtio_engine = doca_devemu_vnet_offload_engine_as_virtio_offload(
-						work->data.engine_start.controller->offload_engine);
-					if (virtio_engine) {
-						result = doca_devemu_virtio_offload_engine_start(virtio_engine);
-						if (result == DOCA_SUCCESS) {
-							atomic_store(&work->data.engine_start.controller
-									      ->offload_engine_started,
-								     true);
-							DOCA_LOG_INFO("VNet offload engine started (async)");
-						} else {
-							DOCA_LOG_ERR("Failed to start offload engine: %s",
-								     doca_error_get_name(result));
-						}
-					}
-				}
+				result = vnet_pci_dev_start_offload_engine(work->data.engine_start.controller);
+				if (result != DOCA_SUCCESS)
+					DOCA_LOG_DBG("Offload engine start did not complete: %s",
+						     doca_error_get_name(result));
 				pthread_mutex_lock(&wq->mutex);
 				wq->engine_start_count++;
 				break;
@@ -996,6 +1202,10 @@ static void *pci_cfg_worker_thread(void *arg)
 					/* Swap: get old, publish new */
 					old_ref = atomic_load(&ctrl->stats_ref);
 					atomic_store(&ctrl->stats_ref, new_ref);
+					/* Give backend VQ creation/start extra time before the first debug-state read.
+					 */
+					atomic_store(&ctrl->dbg_state.last_stats_time,
+						     time(NULL) + VNET_STATS_FIRST_COLLECTION_DELAY_SEC);
 
 					pthread_mutex_unlock(&ctrl->stats_ref_mutex);
 
@@ -1092,6 +1302,249 @@ stats_list_done:
 				pthread_mutex_lock(&wq->mutex);
 				break;
 
+			case PCI_CFG_WORK_DUMP_SF_INFO:
+				/* On-demand 'sfinfo' dump: resolves SF representors (blocking
+				 * control-plane calls), so it runs here, off the PE thread. */
+				vnet_dump_sf_info(work->data.dump_sf_info.tlp_ctx, work->data.dump_sf_info.ep_index);
+				pthread_mutex_lock(&wq->mutex);
+				break;
+
+			case PCI_CFG_WORK_VFE_FAN_OUT_START:
+			case PCI_CFG_WORK_VFE_FAN_OUT_STOP:
+				/* Host VFE toggle: 0->1 brings up a tlp_dev for every discovered
+				 * VF slot, 1->0 stops + destroys them; direction comes from the
+				 * work type. See vnet_pci_device_vfe_fan_out(). */
+				vnet_pci_device_vfe_fan_out(work->data.vfe_fan_out.tlp_ctx,
+							    work->data.vfe_fan_out.pf_endpoint,
+							    work->type == PCI_CFG_WORK_VFE_FAN_OUT_START);
+				pthread_mutex_lock(&wq->mutex);
+				break;
+
+			case PCI_CFG_WORK_VF_ENGINE_SETUP:
+				/*
+				 * Lazy per-VF datapath engine bring-up: create and start
+				 * the VF's offload engine when the guest VF driver sets the
+				 * virtio FEATURES_OK status bit. Done here (worker thread)
+				 * rather than on the host's SR-IOV-enable fan-out because the
+				 * engine create is a heavy call; deferring it to each VF's own
+				 * FEATURES_OK keeps it off the latency-sensitive enable path,
+				 * mirroring how the PF starts its engine on FEATURES_OK.
+				 *
+				 * Re-validates the slot under endpoint_lock (sriov/vf_slots can
+				 * be torn down between submit and dispatch) and is a no-op when
+				 * the slot's engine is already started. On any failure after the
+				 * engine is created the partial datapath is rolled back so the
+				 * slot returns to a clean (not-started) state for the next probe.
+				 */
+				{
+					struct tlp_context *ctx = work->data.vf_engine_setup.tlp_ctx;
+					struct pci_device_config *pf = work->data.vf_engine_setup.pf_endpoint;
+					uint16_t slot_idx = work->data.vf_engine_setup.slot_idx;
+					struct vnet_vf_slot *slot = NULL;
+					struct doca_devemu_virtio_offload_engine *ve;
+					doca_error_t r;
+
+					pthread_rwlock_rdlock(&pf->endpoint_lock);
+					if (pf->sriov != NULL && pf->sriov->vf_slots != NULL &&
+					    slot_idx < pf->sriov->total_vf)
+						slot = &pf->sriov->vf_slots[slot_idx];
+					if (slot == NULL || !atomic_load(&slot->active) ||
+					    atomic_load(&slot->engine_started))
+						goto vf_engine_setup_unlock;
+
+					r = vnet_pci_dev_vf_engine_create(ctx, slot);
+					if (r != DOCA_SUCCESS) {
+						/* engine_create self-cleans on failure; nothing to roll back. */
+						DOCA_LOG_ERR("SR-IOV: VF[slot=%u] engine create failed: %s",
+							     slot_idx,
+							     doca_error_get_descr(r));
+						goto vf_engine_setup_unlock;
+					}
+
+					ve = doca_devemu_vnet_offload_engine_as_virtio_offload(slot->offload_engine);
+					if (ve == NULL) {
+						DOCA_LOG_ERR(
+							"SR-IOV: VF[slot=%u, vf_index=%u] no virtio offload engine",
+							slot_idx,
+							slot->vf_index);
+						goto vf_engine_setup_rollback;
+					}
+
+					r = vnet_pci_dev_apply_negotiated_features(ve, slot->vf_dev);
+					if (r != DOCA_SUCCESS) {
+						DOCA_LOG_ERR(
+							"SR-IOV: VF[slot=%u, vf_index=%u] apply features failed: %s",
+							slot_idx,
+							slot->vf_index,
+							doca_error_get_descr(r));
+						goto vf_engine_setup_rollback;
+					}
+
+					r = doca_devemu_virtio_offload_engine_start(ve);
+					if (r != DOCA_SUCCESS) {
+						DOCA_LOG_ERR("SR-IOV: VF[slot=%u, vf_index=%u] engine start failed: %s",
+							     slot_idx,
+							     slot->vf_index,
+							     doca_error_get_descr(r));
+						goto vf_engine_setup_rollback;
+					}
+					atomic_store(&slot->engine_started, true);
+					DOCA_LOG_INFO(
+						"SR-IOV: VF[slot=%u, vf_index=%u] offload engine started (FEATURES_OK)",
+						slot_idx,
+						slot->vf_index);
+
+					/* Create the VF datapath VQ structures now that the engine
+					 * is started, so the guest's per-queue config can apply. */
+					r = vnet_pci_dev_vf_vqs_create(ctx, slot);
+					if (r != DOCA_SUCCESS) {
+						DOCA_LOG_ERR("SR-IOV: VF[slot=%u, vf_index=%u] VQ create failed: %s",
+							     slot_idx,
+							     slot->vf_index,
+							     doca_error_get_descr(r));
+						goto vf_engine_setup_rollback;
+					}
+
+					/* Stand up the per-VF CVQ IO context now (no-op unless the
+					 * guest negotiated F_CTRL_VQ + F_MQ) so the CVQ can be bound
+					 * at DRIVER_OK. */
+					r = vnet_pci_dev_vf_initialize_io_context(ctx, pf, slot);
+					if (r != DOCA_SUCCESS) {
+						DOCA_LOG_ERR("SR-IOV: VF[slot=%u, vf_index=%u] IO ctx init failed: %s",
+							     slot_idx,
+							     slot->vf_index,
+							     doca_error_get_descr(r));
+						goto vf_engine_setup_rollback;
+					}
+					goto vf_engine_setup_unlock;
+
+vf_engine_setup_rollback:
+					/* Tear down the partial datapath (engine + any VQs + IO
+					 * context) and clear engine_started so the next guest probe
+					 * rebuilds from a clean state. */
+					(void)vnet_pci_dev_vf_engine_destroy(slot);
+					atomic_store(&slot->engine_started, false);
+vf_engine_setup_unlock:
+					pthread_rwlock_unlock(&pf->endpoint_lock);
+				}
+				pthread_mutex_lock(&wq->mutex);
+				break;
+
+			case PCI_CFG_WORK_VF_VQ_CONFIG:
+				/*
+				 * Apply one VF virtqueue's configuration (descriptor /
+				 * driver / device addresses) to its backing VQ. Queued from
+				 * the VF MMIO write path on queue_enable; runs here because
+				 * vq_set_conf is a heavy SDK call. Re-validates the slot
+				 * under endpoint_lock (sriov/vf_slots can be torn down
+				 * between submit and dispatch).
+				 */
+				{
+					struct pci_device_config *pf = work->data.vf_vq_config.pf_endpoint;
+					uint16_t slot_idx = work->data.vf_vq_config.slot_idx;
+					uint16_t vq_index = work->data.vf_vq_config.vq_index;
+					struct vnet_vf_slot *slot = NULL;
+
+					pthread_rwlock_rdlock(&pf->endpoint_lock);
+					if (pf->sriov != NULL && pf->sriov->vf_slots != NULL &&
+					    slot_idx < pf->sriov->total_vf)
+						slot = &pf->sriov->vf_slots[slot_idx];
+					if (slot != NULL && atomic_load(&slot->active))
+						sriov_vf_apply_vq_config(slot, vq_index);
+					pthread_rwlock_unlock(&pf->endpoint_lock);
+				}
+				pthread_mutex_lock(&wq->mutex);
+				break;
+
+			case PCI_CFG_WORK_VF_ENGINE_ENABLE:
+				/*
+				 * Start the VF's virtqueues and enable its offload engine on
+				 * the VF's DRIVER_OK transition (the per-VF analog of the PF
+				 * start_and_enable). Heavy SDK calls, hence deferred here.
+				 * Re-validates the slot under endpoint_lock.
+				 */
+				{
+					struct pci_device_config *pf = work->data.vf_engine_enable.pf_endpoint;
+					uint16_t slot_idx = work->data.vf_engine_enable.slot_idx;
+					struct vnet_vf_slot *slot = NULL;
+
+					pthread_rwlock_rdlock(&pf->endpoint_lock);
+					if (pf->sriov != NULL && pf->sriov->vf_slots != NULL &&
+					    slot_idx < pf->sriov->total_vf)
+						slot = &pf->sriov->vf_slots[slot_idx];
+					if (slot != NULL && atomic_load(&slot->active))
+						(void)vnet_pci_dev_vf_start_and_enable(slot);
+					pthread_rwlock_unlock(&pf->endpoint_lock);
+				}
+				pthread_mutex_lock(&wq->mutex);
+				break;
+
+			case PCI_CFG_WORK_VF_DATAPATH_RESET:
+				/*
+				 * Tear down a VF's offload engine + VQs on a guest device
+				 * reset (common-config status -> 0, e.g. driver unbind) that
+				 * is not accompanied by a VFE change. The shadow has already
+				 * been reset inline on the TLP thread; this only does the
+				 * heavy engine teardown so the next FEATURES_OK rebuilds a
+				 * fresh engine. FIFO ordering guarantees this runs before the
+				 * re-probe's engine-setup item.
+				 */
+				{
+					struct pci_device_config *pf = work->data.vf_datapath_reset.pf_endpoint;
+					uint16_t slot_idx = work->data.vf_datapath_reset.slot_idx;
+					struct vnet_vf_slot *slot = NULL;
+
+					pthread_rwlock_rdlock(&pf->endpoint_lock);
+					if (pf->sriov != NULL && pf->sriov->vf_slots != NULL &&
+					    slot_idx < pf->sriov->total_vf)
+						slot = &pf->sriov->vf_slots[slot_idx];
+					if (slot != NULL && atomic_load(&slot->active))
+						(void)vnet_pci_dev_vf_engine_destroy(slot);
+					pthread_rwlock_unlock(&pf->endpoint_lock);
+				}
+				pthread_mutex_lock(&wq->mutex);
+				break;
+
+			case PCI_CFG_WORK_VF_FLR_RESET:
+				/*
+				 * Datapath only. The host may use the function again 100 ms
+				 * after its FLR write, sooner than this item is guaranteed to
+				 * run, so the VF has to keep answering while it is pending.
+				 */
+				{
+					struct pci_device_config *pf = work->data.vf_flr_reset.pf_endpoint;
+					uint16_t slot_idx = work->data.vf_flr_reset.slot_idx;
+					struct vnet_vf_slot *slot = NULL;
+
+					pthread_rwlock_rdlock(&pf->endpoint_lock);
+					if (pf->sriov != NULL && pf->sriov->vf_slots != NULL &&
+					    slot_idx < pf->sriov->total_vf)
+						slot = &pf->sriov->vf_slots[slot_idx];
+					if (slot != NULL) {
+						doca_error_t r = DOCA_SUCCESS;
+
+						if (atomic_load(&slot->active))
+							r = vnet_pci_dev_vf_engine_destroy(slot);
+						if (r != DOCA_SUCCESS)
+							DOCA_LOG_WARN(
+								"SR-IOV: VF[slot=%u, vf_index=%u] FLR datapath reset failed: %s",
+								slot_idx,
+								slot->vf_index,
+								doca_error_get_descr(r));
+						else
+							DOCA_LOG_INFO(
+								"SR-IOV: VF[slot=%u, vf_index=%u] FLR datapath reset complete",
+								slot_idx,
+								slot->vf_index);
+						/* Always clear the in-flight guard so the next host FLR
+						 * write isn't coalesced indefinitely on error. */
+						atomic_store(&slot->flr_in_progress, false);
+					}
+					pthread_rwlock_unlock(&pf->endpoint_lock);
+				}
+				pthread_mutex_lock(&wq->mutex);
+				break;
+
 			default:
 				DOCA_LOG_ERR("Unknown work type: %d", work->type);
 				pthread_mutex_lock(&wq->mutex);
@@ -1154,6 +1607,29 @@ work_done:
 }
 
 /*
+ * Init a condvar that uses CLOCK_MONOTONIC for pthread_cond_timedwait.
+ * Default condvars use CLOCK_REALTIME, which can stretch (or shrink)
+ * timed waits when the wall clock jumps; both PE-progress (10ms) and
+ * the reset barrier (20ms) are PCIe-completion-sensitive.
+ */
+static int pci_cfg_cond_init_monotonic(pthread_cond_t *cond)
+{
+	pthread_condattr_t attr;
+	int ret;
+
+	ret = pthread_condattr_init(&attr);
+	if (ret != 0)
+		return ret;
+
+	ret = pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+	if (ret == 0)
+		ret = pthread_cond_init(cond, &attr);
+
+	pthread_condattr_destroy(&attr);
+	return ret;
+}
+
+/*
  * Initialize the workqueue
  */
 static doca_error_t pci_cfg_workqueue_init(void)
@@ -1181,7 +1657,7 @@ static doca_error_t pci_cfg_workqueue_init(void)
 		return DOCA_ERROR_INITIALIZATION;
 	}
 
-	ret = pthread_cond_init(&pci_cfg_wq->cond, NULL);
+	ret = pci_cfg_cond_init_monotonic(&pci_cfg_wq->cond);
 	if (ret != 0) {
 		DOCA_LOG_ERR("Failed to initialize workqueue condition variable: %d", ret);
 		pthread_mutex_destroy(&pci_cfg_wq->mutex);
@@ -1190,7 +1666,7 @@ static doca_error_t pci_cfg_workqueue_init(void)
 		return DOCA_ERROR_INITIALIZATION;
 	}
 
-	ret = pthread_cond_init(&pci_cfg_wq->reset_cond, NULL);
+	ret = pci_cfg_cond_init_monotonic(&pci_cfg_wq->reset_cond);
 	if (ret != 0) {
 		DOCA_LOG_ERR("Failed to initialize reset condition variable: %d", ret);
 		pthread_cond_destroy(&pci_cfg_wq->cond);
@@ -1275,7 +1751,7 @@ static void pci_cfg_workqueue_reap_completed_mq_threads(struct pci_cfg_workqueue
 	cursor = &wq->mq_threads;
 	while (*cursor != NULL) {
 		node = *cursor;
-		if (!node->completed) {
+		if (!node->started || !node->completed) {
 			cursor = &node->next;
 			continue;
 		}
@@ -1301,16 +1777,26 @@ static void pci_cfg_workqueue_reap_completed_mq_threads(struct pci_cfg_workqueue
 static void pci_cfg_workqueue_join_mq_threads(struct pci_cfg_workqueue *wq)
 {
 	struct mq_start_thread_node *node;
+	struct mq_start_thread_node **cursor;
 	uint32_t joined_count = 0;
 
 	while (true) {
 		pthread_mutex_lock(&wq->mutex);
-		node = wq->mq_threads;
+		cursor = &wq->mq_threads;
+		while (*cursor != NULL && !(*cursor)->started)
+			cursor = &(*cursor)->next;
+		while (*cursor == NULL && wq->mq_threads != NULL) {
+			pthread_cond_wait(&wq->cond, &wq->mutex);
+			cursor = &wq->mq_threads;
+			while (*cursor != NULL && !(*cursor)->started)
+				cursor = &(*cursor)->next;
+		}
+		node = *cursor;
 		if (node == NULL) {
 			pthread_mutex_unlock(&wq->mutex);
 			break;
 		}
-		wq->mq_threads = node->next;
+		*cursor = node->next;
 		wq->mq_thread_count--;
 		pthread_mutex_unlock(&wq->mutex);
 
@@ -1768,23 +2254,188 @@ void pci_cfg_workqueue_submit_speed_change(struct vnet_pci_dev_controller *contr
 	pci_cfg_workqueue_enqueue(work);
 }
 
-/* Thread argument for joinable MQ start thread */
+void pci_cfg_workqueue_submit_dump_sf_info(struct tlp_context *tlp_ctx, uint32_t ep_index)
+{
+	struct pci_cfg_work_item *work;
+
+	work = work_pool_alloc();
+	if (work == NULL) {
+		DOCA_LOG_ERR("Failed to alloc work item for sfinfo dump");
+		return;
+	}
+
+	work->type = PCI_CFG_WORK_DUMP_SF_INFO;
+	work->dev = NULL;
+	work->data.dump_sf_info.tlp_ctx = tlp_ctx;
+	work->data.dump_sf_info.ep_index = ep_index;
+	work->reset_generation = 0; /* diagnostic dump: no reset-generation owner */
+
+	pci_cfg_workqueue_enqueue(work);
+}
+
+/* Queue a VFE fan-out work item (start selects direction): true enqueues
+ * VFE_FAN_OUT_START (host VFE 0->1), false enqueues VFE_FAN_OUT_STOP (1->0). */
+static void pci_cfg_workqueue_submit_vfe_fan_out(struct tlp_context *tlp_ctx,
+						 struct pci_device_config *pf_endpoint,
+						 bool start)
+{
+	struct pci_cfg_work_item *work;
+	const char *what = start ? "0->1 fan-out" : "1->0 teardown";
+
+	if (tlp_ctx == NULL || pf_endpoint == NULL)
+		return;
+
+	work = work_pool_alloc();
+	if (work == NULL) {
+		DOCA_LOG_ERR("Failed to alloc work item for SR-IOV VFE %s", what);
+		return;
+	}
+
+	work->type = start ? PCI_CFG_WORK_VFE_FAN_OUT_START : PCI_CFG_WORK_VFE_FAN_OUT_STOP;
+	work->dev = NULL; /* Not associated with a specific vnet_pci_device */
+	work->data.vfe_fan_out.tlp_ctx = tlp_ctx;
+	work->data.vfe_fan_out.pf_endpoint = pf_endpoint;
+
+	DOCA_LOG_DBG("SR-IOV VFE %s queued (async)", what);
+	pci_cfg_workqueue_enqueue(work);
+}
+
+void pci_cfg_workqueue_submit_vf_engine_setup(struct tlp_context *tlp_ctx,
+					      struct pci_device_config *pf_endpoint,
+					      uint16_t slot_idx)
+{
+	struct pci_cfg_work_item *work;
+
+	if (tlp_ctx == NULL || pf_endpoint == NULL)
+		return;
+
+	work = work_pool_alloc();
+	if (work == NULL) {
+		DOCA_LOG_ERR("Failed to alloc work item for SR-IOV VF engine setup");
+		return;
+	}
+
+	work->type = PCI_CFG_WORK_VF_ENGINE_SETUP;
+	work->dev = NULL; /* Not associated with a specific vnet_pci_device */
+	work->data.vf_engine_setup.tlp_ctx = tlp_ctx;
+	work->data.vf_engine_setup.pf_endpoint = pf_endpoint;
+	work->data.vf_engine_setup.slot_idx = slot_idx;
+
+	DOCA_LOG_DBG("SR-IOV VF engine setup queued (slot=%u, async)", slot_idx);
+	pci_cfg_workqueue_enqueue(work);
+}
+
+void pci_cfg_workqueue_submit_vf_vq_config(struct tlp_context *tlp_ctx,
+					   struct pci_device_config *pf_endpoint,
+					   uint16_t slot_idx,
+					   uint16_t vq_index)
+{
+	struct pci_cfg_work_item *work;
+
+	if (tlp_ctx == NULL || pf_endpoint == NULL)
+		return;
+
+	work = work_pool_alloc();
+	if (work == NULL) {
+		DOCA_LOG_ERR("Failed to alloc work item for SR-IOV VF VQ config");
+		return;
+	}
+
+	work->type = PCI_CFG_WORK_VF_VQ_CONFIG;
+	work->dev = NULL; /* Not associated with a specific vnet_pci_device */
+	work->data.vf_vq_config.tlp_ctx = tlp_ctx;
+	work->data.vf_vq_config.pf_endpoint = pf_endpoint;
+	work->data.vf_vq_config.slot_idx = slot_idx;
+	work->data.vf_vq_config.vq_index = vq_index;
+
+	DOCA_LOG_DBG("SR-IOV VF VQ config queued (slot=%u, vq=%u, async)", slot_idx, vq_index);
+	pci_cfg_workqueue_enqueue(work);
+}
+
+void pci_cfg_workqueue_submit_vf_engine_enable(struct pci_device_config *pf_endpoint, uint16_t slot_idx)
+{
+	struct pci_cfg_work_item *work;
+
+	if (pf_endpoint == NULL)
+		return;
+
+	work = work_pool_alloc();
+	if (work == NULL) {
+		DOCA_LOG_ERR("Failed to alloc work item for SR-IOV VF engine enable");
+		return;
+	}
+
+	work->type = PCI_CFG_WORK_VF_ENGINE_ENABLE;
+	work->dev = NULL; /* Not associated with a specific vnet_pci_device */
+	work->data.vf_engine_enable.pf_endpoint = pf_endpoint;
+	work->data.vf_engine_enable.slot_idx = slot_idx;
+
+	DOCA_LOG_DBG("SR-IOV VF engine enable queued (slot=%u, async)", slot_idx);
+	pci_cfg_workqueue_enqueue(work);
+}
+
+void pci_cfg_workqueue_submit_vf_datapath_reset(struct pci_device_config *pf_endpoint, uint16_t slot_idx)
+{
+	struct pci_cfg_work_item *work;
+
+	if (pf_endpoint == NULL)
+		return;
+
+	work = work_pool_alloc();
+	if (work == NULL) {
+		DOCA_LOG_ERR("Failed to alloc work item for SR-IOV VF datapath reset");
+		return;
+	}
+
+	work->type = PCI_CFG_WORK_VF_DATAPATH_RESET;
+	work->dev = NULL; /* Not associated with a specific vnet_pci_device */
+	work->data.vf_datapath_reset.pf_endpoint = pf_endpoint;
+	work->data.vf_datapath_reset.slot_idx = slot_idx;
+
+	DOCA_LOG_DBG("SR-IOV VF datapath reset queued (slot=%u, async)", slot_idx);
+	pci_cfg_workqueue_enqueue(work);
+}
+
+bool pci_cfg_workqueue_submit_vf_flr_reset(struct pci_device_config *pf_endpoint, uint16_t slot_idx)
+{
+	struct pci_cfg_work_item *work;
+
+	if (pf_endpoint == NULL)
+		return false;
+
+	work = work_pool_alloc();
+	if (work == NULL) {
+		DOCA_LOG_ERR("Failed to alloc work item for SR-IOV per-VF FLR reset");
+		return false;
+	}
+
+	work->type = PCI_CFG_WORK_VF_FLR_RESET;
+	work->dev = NULL; /* Not associated with a specific vnet_pci_device */
+	work->data.vf_flr_reset.pf_endpoint = pf_endpoint;
+	work->data.vf_flr_reset.slot_idx = slot_idx;
+
+	DOCA_LOG_DBG("SR-IOV per-VF FLR reset queued (slot=%u, async)", slot_idx);
+	pci_cfg_workqueue_enqueue(work);
+	return true;
+}
+
+/* Thread argument for joinable MQ resize thread */
 struct mq_start_thread_arg {
 	struct pci_cfg_workqueue *wq;
 	struct vnet_pci_dev_controller *controller;
 	struct mq_start_thread_node *thread_node;
-	uint16_t old_qps;
-	uint16_t new_qps;
+	uint32_t reset_generation;
 };
 
 /*
- * Joinable thread function for MQ start QPs.
+ * Joinable thread function for serialized MQ resize.
  *
- * Each device's start_additional_queue_pairs runs in its own thread so all
- * devices can start their 126 QPs in parallel (~8s each) instead of serially.
+ * Each controller converges to its latest requested queue count in its own
+ * thread, so all devices can start their 126 QPs in parallel (~8s each)
+ * instead of serially.
  *
- * IMPORTANT: The CVQ ctrl_req response has already been sent to the host
- * BEFORE this thread is created. This is the key to unblocking the host:
+ * IMPORTANT: The CVQ ctrl_req response is sent to the host IMMEDIATELY AFTER
+ * this thread is created. This is the key to unblocking the host:
  * the host's virtnet_send_command() was busy-polling waiting for the CVQ
  * response, and now it returns immediately so the host can probe the next
  * device while we start QPs in the background.
@@ -1798,6 +2449,7 @@ static void *mq_start_thread_func(void *arg)
 	struct mq_start_thread_arg *mq_arg = (struct mq_start_thread_arg *)arg;
 	struct pci_cfg_workqueue *wq = mq_arg->wq;
 	bool sem_acquired = false;
+	bool executor_entered = false;
 
 	if (wq == NULL)
 		goto out;
@@ -1808,16 +2460,16 @@ static void *mq_start_thread_func(void *arg)
 	}
 	pthread_mutex_unlock(&wq->mutex);
 
-	vnet_pci_device_pin_current_thread(VNET_THREAD_AFFINITY_MQ, "MQ start");
+	vnet_pci_device_pin_current_thread(VNET_THREAD_AFFINITY_MQ, "MQ resize");
 
 	/* Acquire semaphore slot - blocks if MQ_START_MAX_CONCURRENT threads
 	 * are already running start_additional_queue_pairs. This prevents
 	 * OOM on DPU when many devices start 127 QPs simultaneously. */
-	DOCA_LOG_INFO("MQ start thread waiting for semaphore slot (max %d concurrent)...", MQ_START_MAX_CONCURRENT);
+	DOCA_LOG_INFO("MQ resize thread waiting for semaphore slot (max %d concurrent)...", MQ_START_MAX_CONCURRENT);
 	while (sem_wait(&wq->mq_start_sem) != 0) {
 		if (errno == EINTR)
 			continue;
-		DOCA_LOG_ERR("MQ start thread failed to acquire semaphore: %d", errno);
+		DOCA_LOG_ERR("MQ resize thread failed to acquire semaphore: %d", errno);
 		goto out;
 	}
 	sem_acquired = true;
@@ -1828,11 +2480,14 @@ static void *mq_start_thread_func(void *arg)
 		goto out;
 	}
 	pthread_mutex_unlock(&wq->mutex);
-	DOCA_LOG_INFO("MQ start thread acquired semaphore slot");
+	DOCA_LOG_INFO("MQ resize thread acquired semaphore slot");
 
-	vnet_pci_dev_execute_mq_start_qps(mq_arg->controller, mq_arg->old_qps, mq_arg->new_qps);
+	executor_entered = true;
+	(void)vnet_pci_dev_execute_mq_resize(mq_arg->controller, mq_arg->reset_generation);
 
 out:
+	if (!executor_entered)
+		vnet_pci_dev_mq_resize_worker_stopped(mq_arg->controller);
 	if (sem_acquired)
 		sem_post(&wq->mq_start_sem);
 	if (wq != NULL) {
@@ -1845,25 +2500,26 @@ out:
 	return NULL;
 }
 
-void pci_cfg_workqueue_submit_mq_start_qps(struct vnet_pci_dev_controller *controller,
-					   uint16_t old_qps,
-					   uint16_t new_qps)
+doca_error_t pci_cfg_workqueue_submit_mq_resize(struct vnet_pci_dev_controller *controller)
 {
 	struct mq_start_thread_arg *arg;
 	struct mq_start_thread_node *thread_node;
 	struct pci_cfg_workqueue *wq = pci_cfg_wq;
+	uint32_t reset_generation;
 	pthread_t thread;
 	int ret;
 
 	if (controller == NULL || wq == NULL)
-		return;
+		return DOCA_ERROR_BAD_STATE;
+	if (!vnet_controller_get_valid_reset_generation(controller, "MQ resize", &reset_generation))
+		return DOCA_ERROR_BAD_STATE;
 
 	pci_cfg_workqueue_reap_completed_mq_threads(wq);
 
 	pthread_mutex_lock(&wq->mutex);
 	if (pci_cfg_wq != wq || wq->mq_start_teardown || wq->shutdown) {
 		pthread_mutex_unlock(&wq->mutex);
-		return;
+		return DOCA_ERROR_BAD_STATE;
 	}
 	atomic_fetch_add(&mq_start_threads_active, 1);
 	pthread_mutex_unlock(&wq->mutex);
@@ -1871,30 +2527,30 @@ void pci_cfg_workqueue_submit_mq_start_qps(struct vnet_pci_dev_controller *contr
 	/* Allocate thread argument (freed by thread after completion) */
 	arg = malloc(sizeof(struct mq_start_thread_arg));
 	if (arg == NULL) {
-		DOCA_LOG_ERR("Failed to allocate MQ start thread arg");
+		DOCA_LOG_ERR("Failed to allocate MQ resize thread arg");
 		atomic_fetch_sub(&mq_start_threads_active, 1);
-		return;
+		return DOCA_ERROR_NO_MEMORY;
 	}
 
 	thread_node = malloc(sizeof(*thread_node));
 	if (thread_node == NULL) {
-		DOCA_LOG_ERR("Failed to allocate MQ start thread tracker");
+		DOCA_LOG_ERR("Failed to allocate MQ resize thread tracker");
 		free(arg);
 		atomic_fetch_sub(&mq_start_threads_active, 1);
-		return;
+		return DOCA_ERROR_NO_MEMORY;
 	}
 
 	arg->wq = wq;
 	arg->controller = controller;
 	arg->thread_node = thread_node;
-	arg->old_qps = old_qps;
-	arg->new_qps = new_qps;
+	arg->reset_generation = reset_generation;
 
+	thread_node->started = false;
 	thread_node->completed = false;
 	thread_node->next = NULL;
 
-	/* The CVQ response was already sent to the host, so this can run in
-	 * the background. Track the joinable thread so shutdown can wait for it. */
+	/* Register the tracker before pthread_create() so shutdown cannot miss the
+	 * joinable thread while creation runs outside the mutex. */
 	pthread_mutex_lock(&wq->mutex);
 	if (pci_cfg_wq != wq || wq->mq_start_teardown || wq->shutdown) {
 		wq->dropped_count++;
@@ -1902,27 +2558,43 @@ void pci_cfg_workqueue_submit_mq_start_qps(struct vnet_pci_dev_controller *contr
 		free(thread_node);
 		free(arg);
 		atomic_fetch_sub(&mq_start_threads_active, 1);
-		return;
+		return DOCA_ERROR_BAD_STATE;
 	}
-
-	ret = pthread_create(&thread, NULL, mq_start_thread_func, arg);
-
-	if (ret != 0) {
-		pthread_mutex_unlock(&wq->mutex);
-		DOCA_LOG_ERR("Failed to create MQ start thread: %d", ret);
-		free(thread_node);
-		free(arg);
-		atomic_fetch_sub(&mq_start_threads_active, 1);
-		return;
-	}
-
-	thread_node->thread = thread;
 	thread_node->next = wq->mq_threads;
 	wq->mq_threads = thread_node;
 	wq->mq_thread_count++;
 	pthread_mutex_unlock(&wq->mutex);
 
-	DOCA_LOG_INFO("MQ start QPs %u -> %u spawned as joinable thread (parallel execution)", old_qps, new_qps);
+	ret = pthread_create(&thread, NULL, mq_start_thread_func, arg);
+
+	if (ret != 0) {
+		struct mq_start_thread_node **cursor;
+
+		DOCA_LOG_ERR("Failed to create MQ resize thread: %d", ret);
+		pthread_mutex_lock(&wq->mutex);
+		cursor = &wq->mq_threads;
+		while (*cursor != NULL && *cursor != thread_node)
+			cursor = &(*cursor)->next;
+		if (*cursor == thread_node) {
+			*cursor = thread_node->next;
+			wq->mq_thread_count--;
+		}
+		pthread_cond_broadcast(&wq->cond);
+		pthread_mutex_unlock(&wq->mutex);
+		free(thread_node);
+		free(arg);
+		atomic_fetch_sub(&mq_start_threads_active, 1);
+		return DOCA_ERROR_INITIALIZATION;
+	}
+
+	pthread_mutex_lock(&wq->mutex);
+	thread_node->thread = thread;
+	thread_node->started = true;
+	pthread_cond_broadcast(&wq->cond);
+	pthread_mutex_unlock(&wq->mutex);
+
+	DOCA_LOG_INFO("MQ resize worker spawned as joinable thread (generation=%u)", reset_generation);
+	return DOCA_SUCCESS;
 }
 
 static bool vnet_pci_device_data_vq_is_deferred(struct vnet_pci_device *dev, uint16_t vq_index)
@@ -2065,8 +2737,8 @@ static void vnet_pci_device_setup_pcie_capability(struct pcie_virtio_dev *dev)
 	pcie_cap->cap.next_ptr = offsetof(struct pcie_virtio_dev, cfg.msix_cap);
 
 	/* PCIe capability registers */
-	pcie_cap->pcie_cap = 0x0002;	/* PCIe Version 2, Endpoint Type 0 */
-	pcie_cap->dev_cap = 0x00008001; /* Max Payload Size = 256 bytes */
+	pcie_cap->pcie_cap = (PCIE_TYPE_ENDPOINT << 4) | PCIE_CAP_VERSION_2; /* Endpoint Type 0, Version 2 */
+	pcie_cap->dev_cap = 0x00008001 | PCI_EXP_DEVCAP_FLR;		     /* MPS=256B + FLR Capable (bit 28) */
 	/*
 	 * PCIe Link Capability encoding:
 	 *   Bits [3:0]  = Max Link Speed: 5 = Gen5 (32 GT/s)
@@ -2258,6 +2930,44 @@ static struct pcie_virtio_dev vnet_pci_device_create_virtio_template(void)
 	vnet_pci_device_setup_bar_mapping(&template);
 
 	return template;
+}
+
+static void vnet_pci_device_reset_vf_pci_template(const struct pci_device_config *pf, struct vnet_vf_slot *slot)
+{
+	struct vnet_pci_device *vf;
+
+	if (pf == NULL || pf->sriov == NULL || slot == NULL || slot->vf_dev == NULL)
+		return;
+
+	vf = slot->vf_dev;
+	vf->pcie_dev = vnet_pci_device_create_virtio_template();
+	vf->pcie_dev.cfg.regs.device_id = pf->sriov->vf_device_id;
+	vf->pcie_dev.cfg.regs.subsystem_id = VNET_VIRTIO_NETWORK_DEVICE;
+	vnet_pci_device_reset_vf_shadow(vf);
+}
+
+/*
+ * Return every VF slot of a PF to power-on cfg-space state on a host VFE 1->0.
+ *
+ * Must run inline on the TLP thread, as vnet_pci_device_handle_vf_flr() does:
+ * the reset has to be ordered before the host's following re-probe of the VFs,
+ * or it can clear cfg-space the guest has already written. The host drives the
+ * VFE write and the re-probe on this same thread, so an inline reset is ordered
+ * by construction; a deferred one is not.
+ *
+ * Being on the TLP thread, it must stay free of SDK/FW round-trips. Sweeps
+ * total_vf rather than NumVFs so a slot left by a larger earlier NumVFs is
+ * cleaned too. Caller holds endpoint_lock for read; must not re-acquire it.
+ */
+static void vnet_pci_device_reset_vf_shadows(const struct pci_device_config *pf)
+{
+	uint16_t i;
+
+	if (pf->sriov == NULL || pf->sriov->vf_slots == NULL)
+		return;
+
+	for (i = 0; i < pf->sriov->total_vf; i++)
+		vnet_pci_device_reset_vf_pci_template(pf, &pf->sriov->vf_slots[i]);
 }
 
 /************************************************************************
@@ -2539,6 +3249,15 @@ static uint32_t vnet_pci_dev_build_cfg_write_new_value(struct vnet_pci_device *v
 		final_mask = be_mask & 0xC0000000; /* MSI-X Enable (bit 31) and Function Mask (bit 30) are RW */
 		new_value = (cur_value & ~final_mask) | (dw_input & final_mask);
 		break;
+	case VIRTIO_NET_PCIE_DEV_CTRL_REG_NUM:
+		/* PCIe Express Capability {Device Control[15:0], Device Status[31:16]}.
+		 * Stage 1 FLR support: only the Initiate FLR bit (bit 15) is writable;
+		 * all other bits in this DW (other Device Control bits and Device Status)
+		 * are RO. The FLR bit auto-clears per spec — that auto-clear happens in
+		 * the cfg-write handler after FLR detection, not here. */
+		final_mask = be_mask & PCI_EXP_DEVCTL_BCR_FLR;
+		new_value = (cur_value & ~final_mask) | (dw_input & final_mask);
+		break;
 	default: /* other registers are read-only */
 		break;
 	}
@@ -2593,6 +3312,37 @@ static struct vnet_pci_device *vnet_pci_device_find_by_bar_addr(const uint64_t a
 	return NULL;
 }
 
+void vnet_pci_device_lu_restore_pf_routing(struct tlp_context *tlp_ctx)
+{
+	memset(vnet_pci_dev_space, 0, sizeof(vnet_pci_dev_space));
+	LIST_INIT(&vnet_pci_dev_enumerated_devs);
+
+	for (uint32_t i = 0; i < tlp_ctx->num_ep; i++) {
+		struct pci_device_config *pf = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + i];
+		struct vnet_pci_device *virtio_dev = &tlp_ctx->virtio_dev[i];
+
+		if (!atomic_load(&pf->device_present) || !pf->is_bdf_set) {
+			virtio_dev->is_enumerated = false;
+			continue;
+		}
+
+		virtio_dev->is_enumerated = true;
+		virtio_dev->bus = pf->bus;
+		virtio_dev->device = pf->device;
+		virtio_dev->function = pf->function;
+		virtio_dev->pf_index = (int)i;
+
+		vnet_pci_dev_space[pf->bus][pf->device][pf->function] = virtio_dev;
+		LIST_INSERT_HEAD(&vnet_pci_dev_enumerated_devs, virtio_dev, entry);
+
+		DOCA_LOG_INFO("Channel LU standby: restored PF[%u] routing BDF=%02x:%02x.%x",
+			      i,
+			      pf->bus,
+			      pf->device,
+			      pf->function);
+	}
+}
+
 /*
  * Get PF index for a given endpoint device
  *
@@ -2601,7 +3351,9 @@ static struct vnet_pci_device *vnet_pci_device_find_by_bar_addr(const uint64_t a
  * @pf_index [out]: Pointer to store the PF index
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise
  */
-doca_error_t get_pf_index_for_device(struct tlp_context *tlp_ctx, struct pci_device_config *dev_cfg, uint32_t *pf_index)
+doca_error_t get_pf_index_for_device(struct tlp_context *tlp_ctx,
+				     const struct pci_device_config *dev_cfg,
+				     uint32_t *pf_index)
 {
 	uint32_t i;
 
@@ -2707,6 +3459,15 @@ static struct vnet_pci_device *vnet_pci_device_enumerate(struct tlp_context *tlp
  ******                    TLP Request Handlers                    ******
  ************************************************************************/
 
+/* Forward decl: definition lives near sriov_cap_read() further down. Declared
+ * here because vnet_pci_dev_handle_cfg_write0 (below) calls it to decode host
+ * writes to the SR-IOV PCIe Extended Capability range. */
+static uint32_t sriov_cap_decode_write(struct tlp_context *tlp_ctx,
+				       struct pci_device_config *pf_endpoint,
+				       unsigned cap_offset,
+				       uint32_t cur_value,
+				       uint32_t new_value);
+
 /**
  * @brief Handle PCIe Type 0 Configuration Write TLP
  *
@@ -2755,8 +3516,54 @@ static void vnet_pci_dev_handle_cfg_write0(struct doca_devemu_pci_tlp_channel_re
 	new_value =
 		vnet_pci_dev_build_cfg_write_new_value(virtio_dev, ext_reg_num, tlp_req_data[0], be_mask, cur_value);
 
+	/* SR-IOV cap-write decoding: intercept writes to dw_regs[64..79]
+	 * (byte offset 0x100..0x13F) BEFORE they land.
+	 *
+	 * vnet_pci_dev_build_cfg_write_new_value() above treats any register
+	 * not in its explicit case list (cmd/status, BAR0 low/high, MSI-X,
+	 * Express DevCtl) as fully read-only, returning cur_value. That
+	 * silently collapses every host write to the SR-IOV cap to a no-op,
+	 * which is why we re-do the BE-merge here (host_merged) to recover
+	 * the host's intended value, then hand it to the per-DW decoder for
+	 * spec-correct RW/RO/W1C masking. The decoder also updates the
+	 * shadow so reads and writes stay in lock-step. */
+	if (ep->sriov != NULL && ext_reg_num >= PCIE_EXT_CAP_REG_NUM_SRIOV &&
+	    ext_reg_num < PCIE_EXT_CAP_END_REG_NUM_SRIOV) {
+		unsigned cap_offset = (unsigned)(ext_reg_num - PCIE_EXT_CAP_REG_NUM_SRIOV);
+		uint32_t host_merged = (cur_value & ~be_mask) | (tlp_req_data[0] & be_mask);
+
+		new_value = sriov_cap_decode_write(tlp_ctx, ep, cap_offset, cur_value, host_merged);
+		DOCA_LOG_DBG(
+			"SR-IOV cap write: cap_offset=%u be=0x%x data=0x%08x cur=0x%08x host_merged=0x%08x committed=0x%08x",
+			cap_offset,
+			GET_TLP_REQ_FIRST_DW_BE(tlp_req_header),
+			tlp_req_data[0],
+			cur_value,
+			host_merged,
+			new_value);
+	}
+
+	/* FLR detection: if host wrote the Initiate FLR bit (PCIe Device Control
+	 * register, bit 15), kick off the FLR sync portion. Auto-clear the FLR
+	 * bit per PCIe spec (host reads back 0). The async cleanup tail runs
+	 * via the existing controller cleanup workqueue path; final host-visible
+	 * device_status NEEDS_RESET -> 0 transition is driven by the existing
+	 * apply_reset_status_release path on the next TLP cfg-write.
+	 *
+	 * IMPORTANT: We complete the TLP with SC immediately after the sync
+	 * portion so the host's FLR write returns promptly; the heavy cleanup
+	 * happens on the workqueue. */
+	bool fire_flr = false;
+	if (ext_reg_num == VIRTIO_NET_PCIE_DEV_CTRL_REG_NUM && (new_value & PCI_EXP_DEVCTL_BCR_FLR)) {
+		new_value &= ~PCI_EXP_DEVCTL_BCR_FLR;
+		fire_flr = true;
+	}
+
 	if (new_value != cur_value)
 		VIRTIO_DEV_CONFIG_WRITE(virtio_dev, ext_reg_num, new_value);
+
+	if (fire_flr)
+		vnet_pci_device_handle_flr(virtio_dev);
 
 	vnet_pci_dev_tlp_cfg_cpl_prep(tlp_req, TLP_FMT_3DW_NODATA, TLP_CPL_STATUS_SC, 0, 4);
 	doca_devemu_pci_tlp_channel_req_complete_tlp(tlp_req, 1, ep->tlp_dev);
@@ -3219,7 +4026,7 @@ static struct pci_device_config *find_device_by_bdf(struct tlp_context *tlp_ctx,
 				tlp_ctx->devs_config[FIRST_DSP_IDX(tlp_ctx) + i].cfg_space_hdr.type1.secondary_bus;
 			if (dsp_sec_bus != 0 && bus == dsp_sec_bus && device == 0 && function == 0 &&
 			    atomic_load(&ep_cfg->device_present)) {
-				DOCA_LOG_INFO("find_device_by_bdf: matched EP[%u] for bus 0x%02x", i, bus);
+				DOCA_LOG_DBG("find_device_by_bdf: matched EP[%u] for bus 0x%02x", i, bus);
 				update_bdf_map(tlp_ctx, key, ep_cfg);
 				return ep_cfg;
 			}
@@ -4382,6 +5189,526 @@ static inline uint32_t handle_config_space_caps_read(uint32_t reg_num,
 	return cfg_read_data;
 }
 
+/*
+ * Synthesize one DW of the SR-IOV PCIe Extended Capability from the shadow
+ * vnet_sriov_pf_state. See struct sriov_ext_cap_layout in vnet_pcie_defs.h for
+ * the on-wire DW layout (PCIe Base Spec §9.3.3).
+ *
+ * Constraints reflected in the synthesized DWs: VF Migration not supported
+ * (Capabilities reg = 0 for that bit), ARI Capable Hierarchy Preserved,
+ * FirstVFOffset = 1, VFStride = 1. The cap chains to the ARI cap.
+ *
+ * @param[in] cap_offset DW-indexed offset within the SR-IOV cap (0..15)
+ * @param[in] s SR-IOV per-PF shadow state (must be non-NULL)
+ * @return DW value to return on host cfg-read at this offset
+ */
+static inline uint32_t sriov_cap_read(unsigned cap_offset, const struct vnet_sriov_pf_state *s)
+{
+	switch (cap_offset) {
+	case 0:
+		/* DW0: cap_header
+		 *   bits [15:0]  cap_id
+		 *   bits [19:16] cap_version
+		 *   bits [31:20] next_cap_offset (chains to the ARI cap) */
+		return (uint32_t)PCIE_EXT_CAP_ID_SRIOV | ((uint32_t)PCIE_EXT_CAP_VERSION_SRIOV << 16) |
+		       ((uint32_t)PCIE_EXT_CAP_OFFSET_ARI << 20);
+	case 1:
+		/* DW1: SR-IOV Capabilities. Advertise ARI Capable Hierarchy
+		 * Preserved so the host can place VFs as ARI functions (Device=0,
+		 * 8-bit Function) and enable more than 7 VFs on one bus. No VF
+		 * migration / extended-tag / interrupt-message-number support. */
+		return SRIOV_CAP_ARI_HIERARCHY_PRESERVED;
+	case 2:
+		/* DW2: Control[15:0] | Status[31:16] */
+		return ((uint32_t)s->control_shadow) | ((uint32_t)s->status_shadow << 16);
+	case 3:
+		/* DW3: InitialVFs[15:0] | TotalVFs[31:16]. Per spec, InitialVFs
+		 * and TotalVFs are typically equal for static SR-IOV. */
+		return ((uint32_t)s->total_vf) | ((uint32_t)s->total_vf << 16);
+	case 4:
+		/* DW4: NumVFs[15:0] | FunctionDepLink[23:16] */
+		return (uint32_t)s->num_vfs_shadow;
+	case 5:
+		/* DW5: FirstVFOffset[15:0] | VFStride[31:16] */
+		return ((uint32_t)s->first_vf_offset) | ((uint32_t)s->vf_stride << 16);
+	case 6:
+		/* DW6: reserved[15:0] | VFDeviceID[31:16] */
+		return ((uint32_t)s->vf_device_id) << 16;
+	case 7:
+		/* DW7: Supported Page Sizes (RO). Per spec §9.3.3.10, bit N set
+		 * indicates host may use page size 4 KB * 2^N. The constant
+		 * lives in vnet_pcie_defs.h (= 0x553, bits 0,1,4,6,8,10 set
+		 * -> {4 KB, 8 KB, 64 KB, 256 KB, 1 MB, 4 MB}) so the
+		 * SystemPageSize write-side validator (sriov_cap_decode_write
+		 * DW8) sees the same value. */
+		return PCIE_SRIOV_SUPPORTED_PAGE_SIZES;
+	case 8:
+		/* DW8: System Page Size. Host-writable. */
+		return s->system_pg_size;
+	case 9 ... 14:
+		/* DW9..14: VF BARs */
+		return s->vf_bar[cap_offset - 9];
+	case 15:
+		/* DW15: VF Migration State Array Offset. No migration support. */
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+/*
+ * Synthesize one DW of the ARI PCIe Extended Capability (PCIe Base Spec §7.8.8).
+ * Two DW, chained after the SR-IOV cap. The ARI cap carries no state for a
+ * single-function PF: Next Function Number = 0, no MFVC/ACS function groups,
+ * ARI Control = 0. Its mere presence (plus ARI Forwarding on the parent
+ * Downstream Port) lets the host address VFs at functions > 7.
+ */
+static inline uint32_t ari_cap_read(unsigned cap_offset)
+{
+	switch (cap_offset) {
+	case 0:
+		/* DW0: cap_header (cap_id | version | next_cap_offset -> ACS) */
+		return (uint32_t)PCIE_EXT_CAP_ID_ARI | ((uint32_t)PCIE_EXT_CAP_VERSION_ARI << 16) |
+		       ((uint32_t)PCIE_EXT_CAP_OFFSET_ACS_EP << 20);
+	case 1:
+		/* DW1: ARI Capability[15:0] | ARI Control[31:16]. Next Function
+		 * Number = 0, no function groups, control = 0. */
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+/*
+ * Synthesize one DW of the ACS PCIe Extended Capability (PCIe Base Spec §7.7.7).
+ * DW0 is the cap header (@next_off chains to the next ext cap, 0 = end). DW1
+ * (Capability | Control) is left 0: a SW bridge has no peer-to-peer path, so
+ * Linux treats the absent ACS features as hard-wired isolated and still places
+ * each VF in its own IOMMU group.
+ */
+static inline uint32_t acs_cap_read(unsigned cap_offset, uint16_t next_off)
+{
+	switch (cap_offset) {
+	case 0:
+		return (uint32_t)PCIE_EXT_CAP_ID_ACS | ((uint32_t)PCIE_EXT_CAP_VERSION_ACS << 16) |
+		       ((uint32_t)next_off << 20);
+	case 1: /* Capability | Control = 0 (hard-wired isolated) */
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+/**
+ * Decode and apply a host write to the SR-IOV PCIe Extended Capability range,
+ * mutating the per-PF shadow as needed.
+ *
+ * Called from vnet_pci_dev_handle_cfg_write0() AFTER the host's BE-merged
+ * new_value has been computed but BEFORE it is committed to dw_regs[]. The
+ * return value replaces new_value, so the dw_regs[] commit and subsequent
+ * host reads stay consistent with the shadow.
+ *
+ * Per-DW semantics (PCIe Base Spec §9.3.3):
+ *   - DW 0,1,3,5,6,7,15 — fully read-only; return cur_value (discard write).
+ *   - DW 2 (Control[15:0] | Status[31:16]):
+ *       Control: only PCIE_SRIOV_CTRL_RW_MASK bits are writable; preserve
+ *                reserved bits from the existing shadow. VFE transitions are
+ *                logged; **no VF instantiation happens at this stage** — that
+ *                lands in a later commit once the SDK dynamic-SR-IOV API
+ *                wiring is in place.
+ *       Status:  PCIE_SRIOV_STATUS_W1C_MASK is W1C (writing 1 clears a set
+ *                bit); other bits are RO. No status bits ever get set yet,
+ *                so the clear is effectively a no-op, but the semantics are
+ *                wired so we don't have to revisit later.
+ *   - DW 4 (NumVFs[15:0] | FunctionDepLink[23:16]):
+ *       NumVFs is RW, clamped to [0, TotalVFs]. FunctionDepLink is RO (=0).
+ *       Note: per spec the host is supposed to write NumVFs only when VFE=0;
+ *       we don't enforce that (Linux's sysfs pci layer always does), but we
+ *       do log a warning if it happens so debug stays sane.
+ *   - DW 8 (SystemPageSize):
+ *       Must be a single bit set that intersects SupportedPageSizes; invalid
+ *       writes are silently rejected (cur_value preserved). The default in
+ *       the shadow is 0x1 (4 KB).
+ *   - DW 9..14 (VF BARs): VF BARs are left RO=0 here. Real VF BAR semantics
+ *       (size-probe, BAR layout) are wired up in a later commit, once VFs
+ *       are actually allocated. Treating them as RO here keeps host reads consistent
+ *       with "no VFs are usable yet".
+ *
+ * @param[in] virtio_dev Per-PF VirtIO device (for diagnostic logging)
+ * @param[in,out] sriov Per-PF SR-IOV shadow state (must be non-NULL)
+ * @param[in] cap_offset DW-indexed offset within the SR-IOV cap (0..15)
+ * @param[in] cur_value Existing dw_regs[] value (already host-visible)
+ * @param[in] new_value Host-proposed value after BE-merge with cur_value
+ * @return Final value to commit to dw_regs[]
+ */
+static uint32_t sriov_cap_decode_write(struct tlp_context *tlp_ctx,
+				       struct pci_device_config *pf_endpoint,
+				       unsigned cap_offset,
+				       uint32_t cur_value,
+				       uint32_t new_value)
+{
+	struct vnet_sriov_pf_state *sriov = pf_endpoint->sriov;
+
+	switch (cap_offset) {
+	case 0:	 /* DW0:  cap header              — RO */
+	case 1:	 /* DW1:  SR-IOV Capabilities     — RO */
+	case 3:	 /* DW3:  InitialVFs / TotalVFs   — RO (HwInit) */
+	case 5:	 /* DW5:  FirstVFOffset / VFStride — RO */
+	case 6:	 /* DW6:  VFDeviceID              — RO */
+	case 7:	 /* DW7:  Supported Page Sizes    — RO */
+	case 15: /* DW15: VF Migration State Array Offset — RO */
+		return cur_value;
+
+	case 2: { /* DW2: Control[15:0] | Status[31:16] */
+		uint16_t new_ctrl = (uint16_t)(new_value & 0xFFFFu);
+		uint16_t new_status = (uint16_t)((new_value >> 16) & 0xFFFFu);
+		uint16_t old_ctrl = sriov->control_shadow;
+		uint16_t merged_ctrl =
+			(uint16_t)((old_ctrl & ~PCIE_SRIOV_CTRL_RW_MASK) | (new_ctrl & PCIE_SRIOV_CTRL_RW_MASK));
+
+		/* VFE transitions: log it, reset the VF cfg-space inline, and queue
+		 * the async fan-out - 0->1 brings up a tlp_dev for every VF slot,
+		 * 1->0 stops them. merged_ctrl is committed below so the host sees
+		 * the new state immediately; the per-VF tlp_dev create/start/stop
+		 * (50-200ms each) run on the worker so they never block the TLP thread. */
+		if ((old_ctrl ^ merged_ctrl) & SRIOV_CTRL_VFE) {
+			bool enabling = !!(merged_ctrl & SRIOV_CTRL_VFE);
+
+			DOCA_LOG_INFO("SR-IOV VFE: %u -> %u (NumVFs=%u, TotalVFs=%u)",
+				      !!(old_ctrl & SRIOV_CTRL_VFE),
+				      enabling,
+				      sriov->num_vfs_shadow,
+				      sriov->total_vf);
+			/* Inline, ahead of the host's re-probe; see vnet_pci_device_reset_vf_shadows(). */
+			if (!enabling)
+				vnet_pci_device_reset_vf_shadows(pf_endpoint);
+			pci_cfg_workqueue_submit_vfe_fan_out(tlp_ctx, pf_endpoint, enabling);
+		}
+		if ((old_ctrl ^ merged_ctrl) & SRIOV_CTRL_VF_MSE) {
+			DOCA_LOG_INFO("SR-IOV VF MSE: %u -> %u",
+				      !!(old_ctrl & SRIOV_CTRL_VF_MSE),
+				      !!(merged_ctrl & SRIOV_CTRL_VF_MSE));
+		}
+		sriov->control_shadow = merged_ctrl;
+
+		/* Status W1C: bits set in BOTH new_status and current shadow
+		 * AND in the W1C mask get cleared. RO bits (everything else)
+		 * are preserved from the shadow. */
+		uint16_t w1c_clear = (uint16_t)(new_status & sriov->status_shadow & PCIE_SRIOV_STATUS_W1C_MASK);
+		sriov->status_shadow = (uint16_t)(sriov->status_shadow & ~w1c_clear);
+
+		return ((uint32_t)merged_ctrl) | ((uint32_t)sriov->status_shadow << 16);
+	}
+
+	case 4: { /* DW4: NumVFs[15:0] | FunctionDepLink[23:16] */
+		uint16_t requested = (uint16_t)(new_value & 0xFFFFu);
+		uint16_t clamped = (requested > sriov->total_vf) ? sriov->total_vf : requested;
+
+		if (clamped != requested) {
+			DOCA_LOG_INFO("SR-IOV NumVFs: requested %u clamped to %u (TotalVFs=%u)",
+				      requested,
+				      clamped,
+				      sriov->total_vf);
+		}
+		if (sriov->control_shadow & SRIOV_CTRL_VFE) {
+			DOCA_LOG_WARN(
+				"SR-IOV NumVFs written (%u -> %u) while VFE=1; spec disallows this. Accepting anyway.",
+				sriov->num_vfs_shadow,
+				clamped);
+		}
+		sriov->num_vfs_shadow = clamped;
+		/* FunctionDepLink RO = 0 (no inter-function dependencies modeled). */
+		return (uint32_t)clamped;
+	}
+
+	case 8: { /* DW8: System Page Size */
+		uint32_t requested = new_value;
+
+		/* Per spec: exactly one bit set AND that bit must be supported. */
+		bool single_bit = (requested != 0) && ((requested & (requested - 1u)) == 0u);
+		bool supported = (requested & PCIE_SRIOV_SUPPORTED_PAGE_SIZES) != 0u;
+
+		if (!single_bit || !supported) {
+			DOCA_LOG_WARN(
+				"SR-IOV SystemPageSize: rejected write 0x%08x (single-bit=%d, supported=%d, current=0x%08x)",
+				requested,
+				single_bit,
+				supported,
+				sriov->system_pg_size);
+			return cur_value;
+		}
+		if (requested != sriov->system_pg_size) {
+			DOCA_LOG_INFO("SR-IOV SystemPageSize: 0x%08x -> 0x%08x", sriov->system_pg_size, requested);
+		}
+		sriov->system_pg_size = requested;
+		return requested;
+	}
+
+	case 9 ... 14: {
+		/* VF BARs follow the standard BAR size-probe protocol so the host can
+		 * size per-VF MMIO at PF enumeration. VF BAR0 (DW9) is a 64-bit
+		 * prefetchable memory BAR of BAR_SIZE_32K (same layout as the PF BAR0);
+		 * its upper half is VF BAR1 (DW10). The rest are unused and read 0. On
+		 * an all-ones probe we return the size mask; on a normal write we latch
+		 * the assigned base (preserving the RO type bits of the low half). */
+		unsigned bar_idx = cap_offset - 9;
+
+		if (bar_idx == 0) {
+			if (new_value == 0xFFFFFFFFu)
+				sriov->vf_bar[0] = (uint32_t)(~(BAR_SIZE_32K - 1) & 0xFFFFFFFF) |
+						   BAR_ENCODING_MEM_SPACE | BAR_MEM_TYPE_64_BIT | BAR_MEM_PREFETCHABLE;
+			else
+				sriov->vf_bar[0] = (new_value & ~0xFu) | BAR_ENCODING_MEM_SPACE | BAR_MEM_TYPE_64_BIT |
+						   BAR_MEM_PREFETCHABLE;
+			return sriov->vf_bar[0];
+		}
+		if (bar_idx == 1) {
+			if (new_value == 0xFFFFFFFFu)
+				sriov->vf_bar[1] = (uint32_t)(((uint64_t) ~(BAR_SIZE_32K - 1) >> 32) & 0xFFFFFFFF);
+			else
+				sriov->vf_bar[1] = new_value;
+			return sriov->vf_bar[1];
+		}
+		/* DW11..14: unused VF BARs, hardwired 0. */
+		return 0;
+	}
+
+	default:
+		return cur_value;
+	}
+}
+
+/**
+ * Populate the per-PF VirtIO device's raw cfg-space (dw_regs[64..79]) with the
+ * synthesized SR-IOV PCIe Extended Capability values from the shadow.
+ *
+ * Why this exists: endpoint cfg-reads in vnet_pci_dev_handle_cfg_read0() use
+ * VIRTIO_DEV_CONFIG_READ() to read dw_regs[] directly, BYPASSING the
+ * handle_config_space_ext_caps_read() dispatcher (which only runs for the
+ * non-endpoint/bridge switch path in handle_tlp_req_read_type_0). Without
+ * pre-populating dw_regs[], host reads at byte offset 0x100+ return 0 even
+ * when the SR-IOV cap is registered with the SDK via
+ * doca_devemu_pci_tlp_type_set_pcie_cap_conf().
+ *
+ * Called once per PF at create_device time after endpoint->sriov is populated.
+ *
+ * This commit only fills the read path. Host cap-writes (e.g. setpci to the
+ * Control register's NumVFs/VF Enable fields) currently fall through to
+ * vnet_pci_dev_handle_cfg_write0 which writes dw_regs[] directly — they
+ * don't propagate back to the shadow, and there are no VF Enable side-
+ * effects. Cap-write decoding (sync shadow ↔ dw_regs, handle VF Enable)
+ * lands in the next commit.
+ *
+ * @param[in] virtio_dev Per-PF VirtIO device (host-visible cfg-space owner)
+ * @param[in] sriov Per-PF SR-IOV shadow state (static + host-writable fields)
+ */
+void vnet_pci_device_sriov_populate_cfg(struct vnet_pci_device *virtio_dev, const struct vnet_sriov_pf_state *sriov)
+{
+	unsigned i;
+
+	if (virtio_dev == NULL || sriov == NULL)
+		return;
+
+	for (i = 0; i < PCIE_EXT_CAP_LEN_SRIOV_DW; i++) {
+		uint32_t dw = sriov_cap_read(i, sriov);
+		VIRTIO_DEV_CONFIG_WRITE(virtio_dev, PCIE_EXT_CAP_REG_NUM_SRIOV + i, dw);
+	}
+
+	/* The SR-IOV cap chains to the ARI cap; populate it too so the host sees
+	 * the ARI cap when it walks the chain from the SR-IOV next-cap pointer. */
+	for (i = 0; i < PCIE_EXT_CAP_LEN_ARI_DW; i++)
+		VIRTIO_DEV_CONFIG_WRITE(virtio_dev, PCIE_EXT_CAP_REG_NUM_ARI + i, ari_cap_read(i));
+
+	/* ARI chains to the ACS cap so the PF advertises ACS for VF IOMMU isolation. */
+	for (i = 0; i < PCIE_EXT_CAP_LEN_ACS_DW; i++)
+		VIRTIO_DEV_CONFIG_WRITE(virtio_dev, PCIE_EXT_CAP_REG_NUM_ACS_EP + i, acs_cap_read(i, 0));
+}
+
+doca_error_t vnet_pci_device_init_vf(struct tlp_context *tlp_ctx,
+				     const struct pci_device_config *pf_endpoint,
+				     uint32_t vf_index,
+				     struct vnet_pci_device **out_vf_dev)
+{
+	struct vnet_pci_device *vf;
+	uint16_t vf_num_queues;
+	doca_error_t result;
+	uint32_t pf_index;
+	int rc;
+
+	if (tlp_ctx == NULL || pf_endpoint == NULL || pf_endpoint->sriov == NULL || out_vf_dev == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	/* Needed for the link properties seeded below; resolve before allocating. */
+	result = get_pf_index_for_device(tlp_ctx, pf_endpoint, &pf_index);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("VF init: failed to resolve owning PF index: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	vf = calloc(1, sizeof(*vf));
+	if (vf == NULL) {
+		DOCA_LOG_ERR("VF init: failed to allocate vnet_pci_device");
+		return DOCA_ERROR_NO_MEMORY;
+	}
+
+	/* Sentinel: VFs are not entries in tlp_ctx->virtio_dev[] / vnet_controller[].
+	 * Downstream code checks pf_index >= 0 before doing PF-array lookups, so
+	 * -1 keeps a VF-typed device out of the PF dispatch paths. */
+	vf->pf_index = -1;
+
+	/* Build the same PCIe + VirtIO cfg-space template the PF uses, then stamp
+	 * the VF Device ID from the SR-IOV shadow (class_code / subclass are already
+	 * set by the shared template's setup_pci_header). */
+	vf->pcie_dev = vnet_pci_device_create_virtio_template();
+	vf->pcie_dev.cfg.regs.device_id = pf_endpoint->sriov->vf_device_id;
+	vf->pcie_dev.cfg.regs.subsystem_id = VNET_VIRTIO_NETWORK_DEVICE;
+
+	/* A VF mirrors the PF queue geometry: up to max_queue_pairs data pairs
+	 * plus a control VQ. */
+	vf_num_queues = VNET_TOTAL_VQS(tlp_ctx->max_queue_pairs);
+
+	/* VirtIO common config. */
+	memset(&vf->pci_cfg, 0, sizeof(vf->pci_cfg));
+	vf->pci_cfg.num_queues = vf_num_queues;
+	vf->pci_cfg.config_generation = 1;
+	vf->pci_cfg.config_msix_vector = VIRTIO_MSI_NO_VECTOR;
+	vf->pci_cfg.device_status = VNET_VIRTIO_DEVICE_STATUS_NEEDS_RESET;
+
+	/* VF feature set: baseline (see VNET_PCI_DEV_VF_DEFAULT_FEATURES) plus the
+	 * CLI optional bits. */
+	vf->device_features = VNET_PCI_DEV_VF_DEFAULT_FEATURES | tlp_ctx->opt_features;
+	vf->pci_cfg.device_feature = vf->device_features & 0xFFFFFFFF;
+
+	/* Network config inherits MTU / link from the PF base; MAC differentiates
+	 * per-VF via the shared derivation (same value the VF offload engine uses,
+	 * so host-visible and engine MACs match). For the supported ceiling
+	 * (<=256 VFs total + num_ep PFs) the low-16 offset is a few hundred, so it
+	 * only wraps if the base MAC's low 16 bits are >= ~0xFEF0 -- use a base MAC
+	 * with headroom in the low bytes. */
+	memset(&vf->vnet_cfg, 0, sizeof(vf->vnet_cfg));
+	vnet_sriov_derive_vf_mac(tlp_ctx->mac_bytes_base, tlp_ctx->num_ep, vf_index, vf->vnet_cfg.mac);
+	vf->vnet_cfg.status = VIRTIO_NET_S_LINK_UP;
+	vf->vnet_cfg.max_virtqueue_pairs = tlp_ctx->max_queue_pairs;
+	vf->vnet_cfg.mtu = tlp_ctx->mtu;
+	/* Sourced from the PF's live config rather than the CLI value so a VF
+	 * created after a runtime speed change matches its PF. */
+	vf->vnet_cfg.speed = tlp_ctx->virtio_dev[pf_index].vnet_cfg.speed;
+	vf->vnet_cfg.duplex = tlp_ctx->virtio_dev[pf_index].vnet_cfg.duplex;
+
+	/* Allocate the VQ shadow array; mutex lifetime is paired with it (mirror of
+	 * vnet_pci_device_init_internal). vnet_pci_device_destroy_vf() destroys the
+	 * mutex before free()ing the shadow. */
+	vf->vqs_count = vf_num_queues;
+	vf->queue_size = (tlp_ctx->queue_size != 0) ? tlp_ctx->queue_size : VNET_DEFAULT_QUEUE_SIZE;
+	vf->vqs = calloc(vf->vqs_count, sizeof(*vf->vqs));
+	if (vf->vqs == NULL) {
+		DOCA_LOG_ERR("VF[vf_index=%u] init: failed to allocate VQ shadow array (%u queues)",
+			     vf_index,
+			     vf->vqs_count);
+		result = DOCA_ERROR_NO_MEMORY;
+		goto err_free_vf;
+	}
+	rc = pthread_mutex_init(&vf->vqs_mutex, NULL);
+	if (rc != 0) {
+		DOCA_LOG_ERR("VF[vf_index=%u] init: failed to initialize VQ mutex (errno=%d)", vf_index, rc);
+		result = DOCA_ERROR_INITIALIZATION;
+		goto err_free_vqs;
+	}
+
+	/* Seed the per-queue shadow exactly as the PF does (reuse queue_init so the
+	 * seeding lives in one place); a zero queue_size would stall the guest's
+	 * find_vqs() right after FEATURES_OK. */
+	vnet_pci_device_queue_init(vf);
+
+	/* Per-device runtime state, matching vnet_pci_device_init_internal(): set
+	 * after the cfg-space/queues are built. The VF datapath does not read these
+	 * yet, but keeping parity leaves the struct well-defined. */
+	vf->prev_status = 0xFF;
+	atomic_init(&vf->reset_generation, 1);
+	atomic_init(&vf->cancel_in_progress, false);
+	atomic_init(&vf->flr_in_progress, false);
+
+	*out_vf_dev = vf;
+	DOCA_LOG_DBG("VF[vf_index=%u] template initialized: DID=0x%04x, queues=%u, queue_size=%u, "
+		     "features=0x%" PRIx64 " (opt 0x%" PRIx64 "), "
+		     "MAC=%02x:%02x:%02x:%02x:%02x:%02x",
+		     vf_index,
+		     vf->pcie_dev.cfg.regs.device_id,
+		     vf->vqs_count,
+		     vf->queue_size,
+		     vf->device_features,
+		     tlp_ctx->opt_features,
+		     vf->vnet_cfg.mac[0],
+		     vf->vnet_cfg.mac[1],
+		     vf->vnet_cfg.mac[2],
+		     vf->vnet_cfg.mac[3],
+		     vf->vnet_cfg.mac[4],
+		     vf->vnet_cfg.mac[5]);
+	return DOCA_SUCCESS;
+
+err_free_vqs:
+	free(vf->vqs);
+err_free_vf:
+	free(vf);
+	return result;
+}
+
+void vnet_pci_device_destroy_vf(struct vnet_pci_device *vf_dev)
+{
+	if (vf_dev == NULL)
+		return;
+	vnet_pci_device_destroy(vf_dev); /* destroys mutex + frees vqs */
+	free(vf_dev);
+}
+
+/**
+ * Handle PCIe Extended Capability cfg-space read request (reg_num 64..1023, byte
+ * offset 0x100..0xFFF).
+ *
+ * SR-IOV is the first (and currently only) PCIe extended capability
+ * registered. Reg numbers outside the SR-IOV range, or for EPs that have
+ * SR-IOV disabled (dev_cfg->sriov == NULL), return 0 with cap_id = 0 —
+ * terminating the ext-cap chain as far as the host can see.
+ *
+ * NOTE: This dispatcher only fires for non-endpoint (bridge) cfg paths. For
+ * endpoints, vnet_pci_dev_handle_cfg_read0() reads dw_regs[] directly via
+ * VIRTIO_DEV_CONFIG_READ — SR-IOV cap visibility on endpoints relies on
+ * vnet_pci_device_sriov_populate_cfg() pre-populating dw_regs[64..79].
+ *
+ * @param[in] reg_num Register number to read (DW-indexed, range 64..1023)
+ * @param[in] dev_cfg Device configuration
+ * @param[out] cap_id PCIe extended capability ID matched (0 if none)
+ * @return Register data value with 1 dword size; 0 if no ext cap claims this reg
+ */
+static inline uint32_t handle_config_space_ext_caps_read(uint32_t reg_num,
+							 struct pci_device_config *dev_cfg,
+							 uint16_t *cap_id)
+{
+	if (dev_cfg->sriov != NULL && reg_num >= PCIE_EXT_CAP_REG_NUM_SRIOV &&
+	    reg_num < PCIE_EXT_CAP_END_REG_NUM_SRIOV) {
+		*cap_id = PCIE_EXT_CAP_ID_SRIOV;
+		return sriov_cap_read(reg_num - PCIE_EXT_CAP_REG_NUM_SRIOV, dev_cfg->sriov);
+	}
+
+	/* ARI cap chained after SR-IOV (present only when SR-IOV is enabled). */
+	if (dev_cfg->sriov != NULL && reg_num >= PCIE_EXT_CAP_REG_NUM_ARI && reg_num < PCIE_EXT_CAP_END_REG_NUM_ARI) {
+		*cap_id = PCIE_EXT_CAP_ID_ARI;
+		return ari_cap_read(reg_num - PCIE_EXT_CAP_REG_NUM_ARI);
+	}
+
+	/* Downstream Port exposes ACS (at 0x100) to isolate the VFs below it into
+	 * their own IOMMU groups. Endpoints serve ACS from dw_regs[], not here. */
+	if (((dev_cfg->caps.express.pcie_cap_register >> 4) & 0xF) == PCIE_TYPE_DOWNSTREAM_PORT &&
+	    reg_num >= PCIE_EXT_CAP_REG_NUM_ACS_DSP && reg_num < PCIE_EXT_CAP_END_REG_NUM_ACS_DSP) {
+		*cap_id = PCIE_EXT_CAP_ID_ACS;
+		return acs_cap_read(reg_num - PCIE_EXT_CAP_REG_NUM_ACS_DSP, 0);
+	}
+
+	/* No registered ext cap claims this register — terminate the chain. */
+	*cap_id = 0;
+	return 0;
+}
+
 /**
  * Set TLP request completion header context
  *
@@ -4508,6 +5835,15 @@ static inline void handle_tlp_req_read_type_0(struct doca_devemu_pci_tlp_channel
 		*is_cap_id_valid = true;
 		*is_pcie_cap = false;
 		break;
+	case 64 ... 1023:
+		/* PCIe Extended Capability region (byte offset 0x100..0xFFF). Routed
+		 * through the generic ext-cap dispatcher; if no ext cap claims this
+		 * register the dispatcher returns 0 with cap_id=0, matching the
+		 * pre-existing cfg-read default-arm behavior. */
+		cfg_read_data = handle_config_space_ext_caps_read(ext_reg_num, dev_cfg, cap_id);
+		*is_cap_id_valid = (*cap_id != 0);
+		*is_pcie_cap = true;
+		break;
 	default:
 		DOCA_LOG_DBG("Invalid read ext_reg_num %d", ext_reg_num);
 		break;
@@ -4585,6 +5921,15 @@ static inline void handle_tlp_req_read_type_1(struct doca_devemu_pci_tlp_channel
 		cfg_read_data = handle_config_space_caps_read(ext_reg_num, dev_cfg, cap_id);
 		*is_cap_id_valid = true;
 		*is_pcie_cap = false;
+		break;
+	case 64 ... 1023:
+		/* PCIe Extended Capability region (byte offset 0x100..0xFFF). Routed
+		 * through the generic ext-cap dispatcher; if no ext cap claims this
+		 * register the dispatcher returns 0 with cap_id=0, matching the
+		 * pre-existing cfg-read default-arm behavior. */
+		cfg_read_data = handle_config_space_ext_caps_read(ext_reg_num, dev_cfg, cap_id);
+		*is_cap_id_valid = (*cap_id != 0);
+		*is_pcie_cap = true;
 		break;
 	default:
 		DOCA_LOG_DBG("Invalid read ext_reg_num %d", ext_reg_num);
@@ -4764,8 +6109,9 @@ static inline void config_space_cap_msi_write(uint32_t cap_offset,
  */
 static doca_error_t trigger_command_completed(struct tlp_context *tlp_ctx, struct pci_device_config *dsp)
 {
-	/* Set Command Completed status bit */
-	dsp->caps.express.slot_status |= SLOT_STS_CMD_COMPLETED;
+	/* Set Command Completed status bit (atomic RMW: slot_status is shared with
+	 * the worker thread's update_dsp_slot_status()). */
+	__atomic_fetch_or(&dsp->caps.express.slot_status, SLOT_STS_CMD_COMPLETED, __ATOMIC_RELEASE);
 
 	DOCA_LOG_DBG("Command Completed: control=0x%04X, status=0x%04X",
 		     dsp->caps.express.slot_control,
@@ -4880,8 +6226,9 @@ static inline bool config_space_cap_pcie_write(uint32_t cap_offset,
 		/* Handle Slot Status (upper 16 bits) - Write-1-to-Clear bits */
 		if (be_mask & 0xFFFF0000) {
 			uint16_t status_w1c = (write_data >> 16) & 0xFFFF;
-			/* Clear bits that are written as 1 (W1C behavior) */
-			dev_cfg->caps.express.slot_status &= ~status_w1c;
+			/* Clear W1C bits atomically - slot_status is shared with the worker
+			 * thread's update_dsp_slot_status(). */
+			__atomic_fetch_and(&dev_cfg->caps.express.slot_status, (uint16_t)~status_w1c, __ATOMIC_RELEASE);
 			DOCA_LOG_DBG("Slot Status W1C: cleared bits 0x%04X, new status=0x%04X",
 				     status_w1c,
 				     dev_cfg->caps.express.slot_status);
@@ -4904,6 +6251,20 @@ static inline bool config_space_cap_pcie_write(uint32_t cap_offset,
 			DOCA_LOG_DBG("Link Control write: 0x%04X", dev_cfg->caps.express.link_control);
 		}
 		/* Link Status (upper 16 bits) is mostly RO */
+		break;
+
+	case 10: /* Device Control 2 + Device Status 2 */
+		/* Store Device Control 2 (lower 16 bits). The bit that matters is ARI
+		 * Forwarding Enable on a Downstream Port: the host sets it so the port
+		 * forwards 8-bit Function Numbers below. The TLP router already resolves
+		 * the full 8-bit VF Routing ID, so storing the bit for read-back is all
+		 * that is required. Device Status 2 (upper 16 bits) is RO. */
+		if (be_mask & 0x0000FFFF) {
+			dev_cfg->caps.express.dev_control2 = write_data & 0xFFFF;
+			DOCA_LOG_DBG("Device Control 2 write: 0x%04X (ARI Forwarding Enable=%d)",
+				     dev_cfg->caps.express.dev_control2,
+				     !!(dev_cfg->caps.express.dev_control2 & PCIE_DEVCTL2_ARI_FORWARDING));
+		}
 		break;
 
 	default:
@@ -4964,6 +6325,45 @@ static inline bool handle_config_space_caps_write(uint32_t reg_num,
 }
 
 /*
+ * Handle PCIe Extended Capability cfg-space write request (reg_num 64..1023, byte
+ * offset 0x100..0xFFF).
+ *
+ * @reg_num         [in]:  Register number to write (DW-indexed, range 64..1023)
+ * @cfg_write_data  [in]:  Data to write
+ * @be_mask         [in]:  Byte enable mask
+ * @dev_cfg         [in]:  Device configuration
+ * @tlp_ctx         [in]:  TLP context (passed through to ext-cap writers)
+ * @cap_id          [out]: PCIe extended capability ID matched (0 if none)
+ * @return:                True if Command Completed should be triggered, false otherwise
+ *
+ * Generic dispatch entry point for PCIe extended capability writes.
+ * Specific ext caps register themselves here by adding a range check +
+ * writer, mirroring the structure of handle_config_space_caps_write().
+ * When no ext cap claims the requested register, the write is silently
+ * dropped (matching the pre-existing cfg-write default-arm behavior).
+ *
+ * Future ext caps register their range + writer here, mirroring
+ * handle_config_space_caps_write().
+ */
+static inline bool handle_config_space_ext_caps_write(uint32_t reg_num,
+						      uint32_t cfg_write_data,
+						      uint32_t be_mask,
+						      struct pci_device_config *dev_cfg,
+						      struct tlp_context *tlp_ctx,
+						      uint16_t *cap_id)
+{
+	(void)reg_num;
+	(void)cfg_write_data;
+	(void)be_mask;
+	(void)dev_cfg;
+	(void)tlp_ctx;
+
+	/* No PCIe ext caps registered yet — drop the write. */
+	*cap_id = 0;
+	return false;
+}
+
+/*
  * Handle TLP request write type_0
  *
  * @tlp_req [in]: Pointer to TLP request
@@ -5015,6 +6415,16 @@ static inline void handle_tlp_req_write_type_0(struct doca_devemu_pci_tlp_channe
 								       cap_id,
 								       is_pcie_cap);
 		*is_cap_id_valid = true;
+		break;
+	case 64 ... 1023:
+		/* PCIe Extended Capability region (byte offset 0x100..0xFFF). Routed
+		 * through the generic ext-cap dispatcher; if no ext cap claims this
+		 * register the write is silently dropped, matching the pre-existing
+		 * cfg-write default-arm behavior. */
+		trigger_cmd_completed =
+			handle_config_space_ext_caps_write(ext_reg_num, write_data, be_mask, dev_cfg, tlp_ctx, cap_id);
+		*is_cap_id_valid = (*cap_id != 0);
+		*is_pcie_cap = true;
 		break;
 	default:
 		DOCA_LOG_DBG("Invalid write ext_reg_num %d", ext_reg_num);
@@ -5120,6 +6530,16 @@ static inline void handle_tlp_req_write_type_1(struct doca_devemu_pci_tlp_channe
 								       cap_id,
 								       is_pcie_cap);
 		*is_cap_id_valid = true;
+		break;
+	case 64 ... 1023:
+		/* PCIe Extended Capability region (byte offset 0x100..0xFFF). Routed
+		 * through the generic ext-cap dispatcher; if no ext cap claims this
+		 * register the write is silently dropped, matching the pre-existing
+		 * cfg-write default-arm behavior. */
+		trigger_cmd_completed =
+			handle_config_space_ext_caps_write(ext_reg_num, write_data, be_mask, dev_cfg, tlp_ctx, cap_id);
+		*is_cap_id_valid = (*cap_id != 0);
+		*is_pcie_cap = true;
 		break;
 	default:
 		DOCA_LOG_DBG("Invalid write ext_reg_num %d", ext_reg_num);
@@ -5459,6 +6879,683 @@ static inline void return_unsupported_request(struct doca_devemu_pci_tlp_channel
 }
 
 /*
+ * Return Configuration Request Retry Status (CRS) for a config read addressed to
+ * an SR-IOV VF whose tlp_dev is not live yet (the VFE 0->1 fan-out is still
+ * bringing the slot up). The host root complex re-issues the read until the VF
+ * responds, so a large VF fan-out comes up without the host aborting
+ * sriov_enable with EIO -- and with no host-side settle delay. Only valid for
+ * config requests, which is the sole caller. Completer ID is extracted from the
+ * request header (DW2), matching return_unsupported_request().
+ */
+static inline void return_config_request_retry(struct doca_devemu_pci_tlp_channel_req *tlp_req)
+{
+	void *cpl_header = doca_devemu_pci_tlp_channel_req_get_tlp_cpl_header(tlp_req);
+
+	set_tlp_req_completion_header(cpl_header, tlp_req, TLP_FMT_CPL_NODATA, TLP_CPL_STATUS_CRS, 0, BYTES_IN_DWORD, 0);
+	doca_devemu_pci_tlp_channel_req_complete_tlp(tlp_req, 1, NULL);
+}
+
+/*
+ * Find the SR-IOV VF slot for a given config-TLP Routing ID. VFs are not
+ * function-0 endpoints, so find_device_by_bdf() resolves VF RIDs to the dummy
+ * device; this walks each PF's reserved VF range (pf->bdf + first_vf_offset +
+ * slot * vf_stride) and returns the matching slot, or NULL when no PF owns the
+ * RID or the slot is out of range.
+ *
+ * Each PF is probed under its endpoint_lock read lock so the destroy path (which
+ * clears pf->sriov / vf_slots under the write lock) cannot free them mid-lookup.
+ * On a match the owning PF's read lock is kept held and *ep_lock_held is set; the
+ * caller MUST release it (pthread_rwlock_unlock(&(*out_pf_endpoint)->endpoint_lock))
+ * once the VF TLP has been served.
+ */
+static struct vnet_vf_slot *find_vf_slot_by_bdf(struct tlp_context *tlp_ctx,
+						uint8_t bus,
+						uint8_t device,
+						uint8_t function,
+						struct pci_device_config **out_pf_endpoint,
+						uint16_t *out_slot_idx,
+						bool *ep_lock_held)
+{
+	uint16_t target_rid = (uint16_t)((bus << 8) | (device << 3) | (function & 0x7));
+	uint32_t i;
+
+	*ep_lock_held = false;
+	if (out_pf_endpoint != NULL)
+		*out_pf_endpoint = NULL;
+	if (out_slot_idx != NULL)
+		*out_slot_idx = 0;
+
+	for (i = 0; i < tlp_ctx->num_ep; i++) {
+		struct pci_device_config *pf = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + i];
+		struct vnet_sriov_pf_state *sriov;
+		uint16_t first_vf_rid;
+		uint16_t end_vf_rid;
+		uint16_t offset_within_range;
+		uint16_t slot_idx;
+
+		pthread_rwlock_rdlock(&pf->endpoint_lock);
+		if (!atomic_load(&pf->device_present) || !pf->is_bdf_set) {
+			pthread_rwlock_unlock(&pf->endpoint_lock);
+			continue;
+		}
+		sriov = pf->sriov;
+		if (sriov == NULL || sriov->vf_slots == NULL || sriov->total_vf == 0) {
+			pthread_rwlock_unlock(&pf->endpoint_lock);
+			continue;
+		}
+
+		first_vf_rid = (uint16_t)(pf->bdf + sriov->first_vf_offset);
+		end_vf_rid = (uint16_t)(first_vf_rid + sriov->total_vf * sriov->vf_stride);
+		if (sriov->vf_stride == 0 || target_rid < first_vf_rid || target_rid >= end_vf_rid) {
+			pthread_rwlock_unlock(&pf->endpoint_lock);
+			continue;
+		}
+		offset_within_range = (uint16_t)(target_rid - first_vf_rid);
+		if (offset_within_range % sriov->vf_stride != 0) {
+			pthread_rwlock_unlock(&pf->endpoint_lock);
+			continue;
+		}
+		slot_idx = (uint16_t)(offset_within_range / sriov->vf_stride);
+		if (slot_idx >= sriov->total_vf) {
+			pthread_rwlock_unlock(&pf->endpoint_lock);
+			continue;
+		}
+
+		if (out_pf_endpoint != NULL)
+			*out_pf_endpoint = pf;
+		if (out_slot_idx != NULL)
+			*out_slot_idx = slot_idx;
+		*ep_lock_held = true;
+		return &sriov->vf_slots[slot_idx];
+	}
+	return NULL;
+}
+
+/*
+ * Serve a host config-space READ addressed to an SR-IOV VF function. The VF
+ * presents its own emulated cfg-space image (vf_dev, built by
+ * vnet_pci_device_init_vf); the read is served from that image and the
+ * completion routed on the VF's started tlp_dev.
+ */
+static inline void handle_vf_cfg_read_type_0(struct doca_devemu_pci_tlp_channel_req *tlp_req,
+					     struct vnet_vf_slot *vf_slot)
+{
+	const void *req_header = doca_devemu_pci_tlp_channel_req_get_tlp_header(tlp_req);
+	uint32_t ext_reg_num = GET_TLP_REQ_EXT_REG_NUM(req_header);
+	void *tlp_cpl_data = doca_devemu_pci_tlp_channel_req_get_tlp_cpl_data(tlp_req);
+	uint32_t dw_mask = map_dw_be_to_mask(GET_TLP_REQ_FIRST_DW_BE(req_header));
+	uint32_t raw = VIRTIO_DEV_CONFIG_READ(vf_slot->vf_dev, ext_reg_num);
+	uint32_t completion_data;
+
+	/* VF config-space BAR0 (DW4/DW5) is RO-zero per the SR-IOV spec: the VF's
+	 * MMIO window lives in the PF SR-IOV VF BAR aperture, and dw_regs[4/5] is
+	 * reused only as internal MMIO-offset scratch, so it must not leak to the
+	 * host. (DW6-DW9 are already zero in the template.) */
+	if (ext_reg_num == 4 || ext_reg_num == 5)
+		raw = 0;
+	completion_data = raw & dw_mask;
+
+	vnet_pci_dev_tlp_cfg_cpl_prep(tlp_req, TLP_FMT_3DW_W_DATA, TLP_CPL_STATUS_SC, 1, 4);
+	memcpy(tlp_cpl_data, &completion_data, sizeof(completion_data));
+	doca_devemu_pci_tlp_channel_req_complete_tlp(tlp_req, 1, vf_slot->tlp_dev);
+}
+
+/*
+ * Serve a host config-space WRITE addressed to an SR-IOV VF function. Writes
+ * land in the VF's own cfg-space image so subsequent reads stay consistent.
+ * Per the SR-IOV spec a VF has no config-space BARs of its own (RO-zero, served
+ * by the read handler), so only the Command register (DW1, spec-writable bits)
+ * and the MSI-X message control (Enable / Function-Mask) are modeled; everything
+ * else is a no-op Successful Completion. The completion is routed on the VF's
+ * started tlp_dev.
+ */
+static inline void handle_vf_cfg_write_type_0(struct tlp_context *tlp_ctx,
+					      struct pci_device_config *vf_pf,
+					      uint16_t slot_idx,
+					      struct vnet_vf_slot *vf_slot,
+					      struct doca_devemu_pci_tlp_channel_req *tlp_req)
+{
+	const void *req_header = doca_devemu_pci_tlp_channel_req_get_tlp_header(tlp_req);
+	uint32_t ext_reg_num = GET_TLP_REQ_EXT_REG_NUM(req_header);
+	unsigned be_mask = map_first_dw_be_to_mask(GET_TLP_REQ_FIRST_DW_BE(req_header));
+	const uint32_t *cfg_write_data = doca_devemu_pci_tlp_channel_req_get_tlp_data(tlp_req);
+	uint32_t write_data = (cfg_write_data != NULL) ? cfg_write_data[0] : 0;
+	struct vnet_pci_device *vf = vf_slot->vf_dev;
+
+	switch (ext_reg_num) {
+	case 1: { /* Command/Status: latch only the spec-writable Command bits (VF
+		   * config BARs are RO-zero per SR-IOV spec, so DW4/DW5 are no-ops). */
+		uint32_t rw_mask = be_mask &
+				   (uint32_t)(COMMAND_RW_MEM_SPACE_ENABLE | COMMAND_RW_BUS_MASTER_ENABLE |
+					      COMMAND_RW_PERR_ENABLE | COMMAND_RW_SERR_ENABLE | COMMAND_RW_INT_DISABLE);
+		uint32_t cur = VIRTIO_DEV_CONFIG_READ(vf, 1);
+
+		VIRTIO_DEV_CONFIG_WRITE(vf, 1, (cur & ~rw_mask) | (write_data & rw_mask));
+		break;
+	}
+	case VIRTIO_NET_MSI_X_REGISTER_NUM: { /* MSI-X msgctl: only Enable (bit 31) + Function Mask (bit 30) RW */
+		/* Commit the MSI-X Enable bit; without it the guest cannot turn MSI-X
+		 * on for the VF, so no interrupts are delivered (RX reaches the engine
+		 * but the VF netdev's input counter stays 0). Mirrors the PF path. */
+		uint32_t cur = VIRTIO_DEV_CONFIG_READ(vf, VIRTIO_NET_MSI_X_REGISTER_NUM);
+		uint32_t rw_mask = be_mask & 0xC0000000;
+
+		VIRTIO_DEV_CONFIG_WRITE(vf, VIRTIO_NET_MSI_X_REGISTER_NUM, (cur & ~rw_mask) | (write_data & rw_mask));
+		break;
+	}
+	case VIRTIO_NET_PCIE_DEV_CTRL_REG_NUM: /* PCIe Device Control: Initiate FLR bit drives per-VF reset */
+		if (write_data & be_mask & PCI_EXP_DEVCTL_BCR_FLR)
+			vnet_pci_device_handle_vf_flr(vf_pf, slot_idx);
+		break;
+	default:
+		break;
+	}
+
+	vnet_pci_dev_tlp_cfg_cpl_prep(tlp_req, TLP_FMT_3DW_NODATA, TLP_CPL_STATUS_SC, 0, 4);
+	doca_devemu_pci_tlp_channel_req_complete_tlp(tlp_req, 1, vf_slot->tlp_dev);
+}
+
+/*
+ * Look up the active SR-IOV VF slot whose BAR0 MMIO window contains 'addr'.
+ * NOTE: this is not a pure lookup -- on a match it also mutates the matched VF's
+ * emulated image (stamps the resolved BAR0 window base and the VF Routing ID
+ * into vf_dev), so the shared offset/read helpers and MMIO completions work.
+ *
+ * VF MMIO is addressed out of the PF's SR-IOV VF BAR aperture (latched into
+ * sriov->vf_bar by the cap-write handler), not the VF's own config-space BARs
+ * (which are RO-zero per the SR-IOV spec). VF[i] occupies aperture_base +
+ * i * BAR_SIZE_32K. VF memory TLPs resolve to the dummy device (VFs are not
+ * function-0 endpoints), so handle_tlp_req() consults this on the dummy path.
+ * On a match the resolved window base is stamped into the VF image's BAR0 (so
+ * the shared offset/read helpers work) and the VF Routing ID into
+ * vf_dev->{bus,device,function} (so MMIO completions carry the correct
+ * completer ID). Returns NULL when no active VF owns the address.
+ *
+ * Each PF is probed under its endpoint_lock read lock so the destroy path (which
+ * clears pf->sriov / vf_slots under the write lock) cannot free them mid-lookup.
+ * On a match the owning PF's read lock is kept held and *ep_lock_held is set; the
+ * caller MUST release it (pthread_rwlock_unlock(&(*out_pf)->endpoint_lock)) once
+ * the VF MMIO TLP has been served.
+ */
+static struct vnet_vf_slot *find_vf_slot_by_mmio_addr(struct tlp_context *tlp_ctx,
+						      uint64_t addr,
+						      struct pci_device_config **out_pf,
+						      uint16_t *out_slot_idx,
+						      bool *ep_lock_held)
+{
+	uint32_t i;
+
+	*ep_lock_held = false;
+	for (i = 0; i < tlp_ctx->num_ep; i++) {
+		struct pci_device_config *pf = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + i];
+		struct vnet_sriov_pf_state *sriov;
+		uint16_t s;
+
+		pthread_rwlock_rdlock(&pf->endpoint_lock);
+		if (!atomic_load(&pf->device_present) || !pf->is_bdf_set) {
+			pthread_rwlock_unlock(&pf->endpoint_lock);
+			continue;
+		}
+		sriov = pf->sriov;
+		if (sriov == NULL || sriov->vf_slots == NULL || sriov->total_vf == 0) {
+			pthread_rwlock_unlock(&pf->endpoint_lock);
+			continue;
+		}
+
+		/* Per the SR-IOV spec a VF has no config-space BARs of its own; its
+		 * MMIO lives in the PF's SR-IOV VF BAR aperture (latched into
+		 * sriov->vf_bar by the cap-write handler). VF[i] occupies
+		 * aperture_base + i * per-VF-size. */
+		uint64_t aperture_base = ((uint64_t)(sriov->vf_bar[0] & ~0xFu)) | ((uint64_t)sriov->vf_bar[1] << 32);
+
+		if (aperture_base == 0) {
+			pthread_rwlock_unlock(&pf->endpoint_lock);
+			continue;
+		}
+
+		for (s = 0; s < sriov->total_vf; s++) {
+			struct vnet_vf_slot *slot = &sriov->vf_slots[s];
+			struct vnet_pci_device *vf = slot->vf_dev;
+			uint64_t window = aperture_base + (uint64_t)s * BAR_SIZE_32K;
+
+			if (vf == NULL || !atomic_load(&slot->active))
+				continue;
+			if (addr < window || addr >= window + BAR_SIZE_32K)
+				continue;
+
+			/* Stamp the resolved per-VF window base into the VF image's
+			 * BAR0 so the shared vnet_pci_dev_bar_offset()/mmio helpers
+			 * compute the correct in-BAR offset (the VF's own config-space
+			 * BAR0 is RO-zero for SR-IOV and cannot be used), and stamp the
+			 * VF Routing ID so the MMIO completion's completer ID matches
+			 * the VF (PF RID + first_vf_offset + i*stride). */
+			vf->pcie_dev.dw_regs[4] = (uint32_t)(window & 0xFFFFFFF0u) | BAR_ENCODING_MEM_SPACE |
+						  BAR_MEM_TYPE_64_BIT | BAR_MEM_PREFETCHABLE;
+			vf->pcie_dev.dw_regs[5] = (uint32_t)(window >> 32);
+			{
+				/* Stamp the VF's BDF for the MMIO completion completer-ID.
+				 * The RID low byte is split into the classic 5-bit Device +
+				 * 3-bit Function fields; completer-ID builders recombine them
+				 * as (device << 3) | function, which reproduces the full 8-bit
+				 * value. So this is correct for ARI functions > 7 too (the
+				 * upper Function bits live in the Device field on the wire). */
+				uint16_t vf_rid = (uint16_t)(pf->bdf + sriov->first_vf_offset + s * sriov->vf_stride);
+				vf->bus = (uint8_t)(vf_rid >> 8);
+				vf->device = (uint8_t)((vf_rid >> 3) & 0x1f);
+				vf->function = (uint8_t)(vf_rid & 0x7);
+			}
+			if (out_pf != NULL)
+				*out_pf = pf;
+			if (out_slot_idx != NULL)
+				*out_slot_idx = s;
+			*ep_lock_held = true;
+			return slot;
+		}
+		/* No VF in this PF owns the address; drop its lock and continue. */
+		pthread_rwlock_unlock(&pf->endpoint_lock);
+	}
+	return NULL;
+}
+
+/*
+ * Engine-free VF MMIO common-config store.
+ *
+ * Keeps the VF's virtio common-config image coherent (feature-select windows,
+ * negotiated driver features, status, queue shadow) so the guest virtio driver
+ * can complete probe and reset cleanly. Unlike the PF path
+ * (vnet_pci_device_pci_cfg_write32) it intentionally does NOT submit VQ config
+ * or drive an offload engine; those datapath transitions are detected by the
+ * caller (handle_vf_mmio_write). Writes outside the common-config region
+ * (device-config, doorbell/notify) are dropped here.
+ */
+static void vf_mmio_cfg_store(struct vnet_pci_device *vf, uint64_t addr, uint32_t val, uint32_t wr_mask)
+{
+	uint64_t off = vnet_pci_dev_bar_offset(vf, addr);
+	struct vnet_virtio_common_config *cfg = &vf->pci_cfg;
+	uint8_t prev_dfs, prev_drvfs;
+	uint32_t prev_drvf, oldv, newv;
+
+	if (off + sizeof(uint32_t) > sizeof(*cfg))
+		return;
+
+	prev_dfs = cfg->device_feature_select;
+	prev_drvfs = cfg->driver_feature_select;
+	prev_drvf = cfg->driver_feature;
+
+	memcpy(&oldv, (uint8_t *)cfg + off, sizeof(oldv));
+	newv = (oldv & ~wr_mask) | (val & wr_mask);
+	memcpy((uint8_t *)cfg + off, &newv, sizeof(newv));
+
+	/* Present the requested 32-bit device-feature window on the next read. */
+	if (prev_dfs != cfg->device_feature_select)
+		cfg->device_feature = vnet_pci_dev_feature_select(cfg->device_feature_select, vf->device_features);
+
+	/* Capture negotiated driver features per the select window. */
+	if (prev_drvfs != cfg->driver_feature_select) {
+		uint32_t *p = (uint32_t *)&vf->driver_features;
+
+		if (prev_drvfs <= 1)
+			p[prev_drvfs] = prev_drvf;
+		cfg->driver_feature = vnet_pci_dev_feature_select(cfg->driver_feature_select, vf->driver_features);
+	} else if (prev_drvf != cfg->driver_feature) {
+		uint32_t *p = (uint32_t *)&vf->driver_features;
+
+		if (cfg->driver_feature_select <= 1)
+			p[cfg->driver_feature_select] = cfg->driver_feature;
+	}
+}
+
+/*
+ * Worker-side application of one VF virtqueue's configuration. Runs on the
+ * pci_cfg worker thread (queued from the VF MMIO write path) with the slot
+ * validated and pinned under the PF endpoint_lock. Mirrors the PF VQ-config
+ * worker for the multi-queue VF geometry: vq_index / 2 -> queue pair, even
+ * index -> RX VQ, odd index -> TX VQ; the control VQ (index max_qp*2) is
+ * applied at DRIVER_OK.
+ */
+static void sriov_vf_apply_vq_config(struct vnet_vf_slot *slot, uint16_t vq_index)
+{
+	struct vnet_virtio_queue_config snap;
+	struct doca_devemu_virtio_vq *vq_handle;
+	doca_error_t result;
+	uint16_t qp_idx;
+
+	if (slot == NULL || !atomic_load(&slot->vqs_created))
+		return;
+	/* Once the engine is enabled the VQs are configured and started; a late
+	 * queue_enable re-trigger must not re-apply set_conf to a running VQ. */
+	if (atomic_load(&slot->engine_enabled))
+		return;
+
+	qp_idx = vq_index / 2;
+	if (qp_idx >= slot->max_queue_pairs) {
+		/* The control VQ (index max_qp*2) is configured + started + bound at
+		 * DRIVER_OK in vnet_pci_dev_vf_start_and_enable(); its shadow is kept
+		 * by sriov_vf_queue_cfg_window(), so there is nothing to apply here. */
+		if (slot->mq_feature_negotiated && vq_index == VNET_CVQ_INDEX(slot->max_queue_pairs)) {
+			DOCA_LOG_DBG("SR-IOV: VF[vf_index=%u] CVQ (VQ%u) shadowed; applied at DRIVER_OK",
+				     slot->vf_index,
+				     vq_index);
+			return;
+		}
+		DOCA_LOG_ERR("SR-IOV: VF[vf_index=%u] invalid VQ index %u (max_qp=%u)",
+			     slot->vf_index,
+			     vq_index,
+			     slot->max_queue_pairs);
+		return;
+	}
+
+	result = vnet_pci_dev_vf_set_conf_data_vq(slot, vq_index, &vq_handle, &snap);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("SR-IOV: VF[vf_index=%u] VQ%u set_conf failed: %s",
+			     slot->vf_index,
+			     vq_index,
+			     doca_error_get_descr(result));
+		return;
+	}
+	if (vq_handle == NULL) {
+		DOCA_LOG_DBG("SR-IOV: VF[vf_index=%u] VQ%u not fully configured yet", slot->vf_index, vq_index);
+		return;
+	}
+
+	DOCA_LOG_INFO(
+		"SR-IOV: VF[vf_index=%u] VQ%u configured: size=%u, msix=%u, desc=0x%lx, driver=0x%lx, device=0x%lx",
+		slot->vf_index,
+		vq_index,
+		snap.queue_size,
+		snap.queue_msix_vector,
+		snap.queue_desc,
+		snap.queue_driver,
+		snap.queue_device);
+}
+
+/*
+ * VF queue-config window, mirroring the PF common-config write logic for a VF's
+ * emulated registers. On a queue_select change it latches the outgoing queue
+ * window into the per-queue shadow (vf->vqs[]) and loads the newly selected
+ * queue; on a queue_enable 0->1 transition (or when an enabled queue's
+ * addresses become complete) it queues the VQ configuration to the worker.
+ *
+ * prev_qsel is the queue_select value captured before the current MMIO write
+ * was applied. tlp_ctx / vf_pf identify the slot for the deferred worker; when
+ * NULL the shadow is still latched but no work is queued.
+ */
+static void sriov_vf_queue_cfg_window(struct tlp_context *tlp_ctx,
+				      struct pci_device_config *vf_pf,
+				      uint16_t slot_idx,
+				      struct vnet_pci_device *vf,
+				      uint16_t prev_qsel)
+{
+	struct vnet_virtio_common_config *cfg = &vf->pci_cfg;
+	uint16_t qsel = cfg->queue_select;
+	struct vnet_virtio_queue_config *shadow;
+	bool prev_enabled, curr_enabled;
+
+	if (vf->vqs == NULL || cfg->num_queues == 0)
+		return;
+
+	/* queue_select change: save the outgoing window, load the incoming one
+	 * (present zeros for an out-of-range selection, per the VirtIO spec). */
+	if (prev_qsel != qsel) {
+		if (prev_qsel < cfg->num_queues && prev_qsel < vf->vqs_count)
+			memcpy(&vf->vqs[prev_qsel], &cfg->vq, sizeof(cfg->vq));
+		if (qsel < cfg->num_queues && qsel < vf->vqs_count)
+			memcpy(&cfg->vq, &vf->vqs[qsel], sizeof(cfg->vq));
+		else
+			memset(&cfg->vq, 0, sizeof(cfg->vq));
+	}
+
+	if (qsel >= cfg->num_queues || qsel >= vf->vqs_count)
+		return;
+
+	/* Use the shadow (authoritative per-queue state) for the previous value;
+	 * the window may belong to a different queue if queue_select just moved. */
+	shadow = &vf->vqs[qsel];
+	prev_enabled = shadow->queue_enable;
+	curr_enabled = cfg->vq.queue_enable;
+
+	if (!prev_enabled && curr_enabled) {
+		memcpy(shadow, &cfg->vq, sizeof(cfg->vq));
+		if (tlp_ctx != NULL && vf_pf != NULL)
+			pci_cfg_workqueue_submit_vf_vq_config(tlp_ctx, vf_pf, slot_idx, qsel);
+	} else if (curr_enabled) {
+		bool was_incomplete =
+			(shadow->queue_desc == 0 || shadow->queue_driver == 0 || shadow->queue_device == 0);
+		bool is_complete = (cfg->vq.queue_desc != 0 && cfg->vq.queue_driver != 0 && cfg->vq.queue_device != 0);
+
+		memcpy(shadow, &cfg->vq, sizeof(cfg->vq));
+		if (was_incomplete && is_complete && tlp_ctx != NULL && vf_pf != NULL)
+			pci_cfg_workqueue_submit_vf_vq_config(tlp_ctx, vf_pf, slot_idx, qsel);
+	}
+}
+
+/*
+ * Reset a VF's emulated common-config shadow to power-on defaults.
+ *
+ * Called when the VF datapath is torn down (guest device reset, app exit).
+ * Without this, stale shadow state — most importantly per-queue queue_enable
+ * left at 1 — makes a subsequent guest re-probe's queue_enable 0->1 transition
+ * look already-enabled, so the VQ configuration is never re-applied and the
+ * second bring-up runs on stale addresses. Returning the status / feature-select
+ * / per-queue shadow to reset defaults makes every re-probe start from a clean
+ * handshake.
+ */
+void vnet_pci_device_reset_vf_shadow(struct vnet_pci_device *vf)
+{
+	if (vf == NULL)
+		return;
+
+	pthread_mutex_lock(&vf->vqs_mutex);
+
+	vf->pci_cfg.device_status = 0;
+	vf->pci_cfg.device_feature_select = 0;
+	/* Present the low (select 0) device-feature window so a re-probe reads the
+	 * offered features from the start; leaving the stale high-dword value here
+	 * would make the guest mis-read the low feature bits on the first read. */
+	vf->pci_cfg.device_feature = (uint32_t)(vf->device_features & 0xFFFFFFFF);
+	vf->pci_cfg.driver_feature_select = 0;
+	vf->pci_cfg.driver_feature = 0;
+	vf->pci_cfg.queue_select = 0;
+	vf->pci_cfg.config_msix_vector = VIRTIO_MSI_NO_VECTOR;
+	vf->driver_features = 0;
+
+	if (vf->vqs != NULL) {
+		uint16_t qi;
+
+		for (qi = 0; qi < vf->vqs_count; qi++) {
+			memset(&vf->vqs[qi], 0, sizeof(vf->vqs[qi]));
+			vf->vqs[qi].queue_size = vf->queue_size;
+			vf->vqs[qi].queue_msix_vector = VIRTIO_MSI_NO_VECTOR;
+			vf->vqs[qi].queue_notify_off = qi;
+		}
+		memcpy(&vf->pci_cfg.vq, &vf->vqs[0], sizeof(vf->pci_cfg.vq));
+	} else {
+		memset(&vf->pci_cfg.vq, 0, sizeof(vf->pci_cfg.vq));
+	}
+
+	pthread_mutex_unlock(&vf->vqs_mutex);
+}
+
+/*
+ * Host-initiated per-VF Function Level Reset.
+ *
+ * The shadow is reset here rather than in the deferred teardown because the
+ * post-FLR re-probe arrives on this same thread; a later wipe would erase that
+ * handshake and leave the VF with a half-configured datapath.
+ */
+static void vnet_pci_device_handle_vf_flr(struct pci_device_config *pf_endpoint, uint16_t slot_idx)
+{
+	/* The caller (handle_vf_cfg_write_type_0 via find_vf_slot_by_bdf) has
+	 * already validated sriov / vf_slots / slot_idx under endpoint_lock. */
+	struct vnet_vf_slot *slot = &pf_endpoint->sriov->vf_slots[slot_idx];
+	bool expected = false;
+
+	if (!atomic_compare_exchange_strong(&slot->flr_in_progress, &expected, true)) {
+		DOCA_LOG_WARN("SR-IOV: VF[slot=%u, vf_index=%u] FLR coalesced (prior FLR still in progress)",
+			      slot_idx,
+			      slot->vf_index);
+		return;
+	}
+
+	DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] FLR initiated by host", slot_idx, slot->vf_index);
+
+	vnet_pci_device_reset_vf_shadow(slot->vf_dev);
+
+	/* Without this a failed submit would coalesce every later FLR forever. */
+	if (!pci_cfg_workqueue_submit_vf_flr_reset(pf_endpoint, slot_idx))
+		atomic_store(&slot->flr_in_progress, false);
+}
+
+/* Serve a host MMIO read to a VF BAR from the VF's emulated register image. */
+static inline void handle_vf_mmio_read(struct doca_devemu_pci_tlp_channel_req *tlp_req, struct vnet_vf_slot *vf_slot)
+{
+	const void *req_header = doca_devemu_pci_tlp_channel_req_get_tlp_header(tlp_req);
+	uint32_t *tlp_cpl_data = doca_devemu_pci_tlp_channel_req_get_tlp_cpl_data(tlp_req);
+	const uint8_t length = GET_TLP_REQ_LENGTH(req_header);
+	const uint8_t fmt = GET_TLP_REQ_FMT(req_header);
+	const uint32_t *dwh = (const uint32_t *)req_header;
+	struct vnet_pci_device *vf = vf_slot->vf_dev;
+	uint8_t byte_count = (uint8_t)(length * sizeof(uint32_t));
+	uint32_t dw_mask;
+	uint64_t addr;
+
+	if (fmt == TLP_FMT_4DW_NODATA || fmt == TLP_FMT_4DW_W_DATA)
+		addr = ((uint64_t)be32toh(dwh[2]) << 32) | (be32toh(dwh[3]) & ~0x3ULL);
+	else
+		addr = be32toh(dwh[2]) & ~0x3ULL;
+
+	if (length == 0 || length > 2) {
+		vnet_pci_dev_tlp_mmio_cpl_prep(vf, tlp_req, TLP_FMT_3DW_NODATA, TLP_CPL_STATUS_UR, 0, 4);
+		doca_devemu_pci_tlp_channel_req_complete_tlp(tlp_req, 1, vf_slot->tlp_dev);
+		return;
+	}
+
+	dw_mask = map_dw_be_to_mask(GET_TLP_REQ_FIRST_DW_BE(req_header));
+	byte_count -= (uint8_t)(sizeof(uint32_t) - __builtin_popcount(GET_TLP_REQ_FIRST_DW_BE(req_header)));
+	tlp_cpl_data[0] = vnet_pci_device_mmio_read32(vf, addr) & dw_mask;
+	if (length == 2) {
+		dw_mask = map_dw_be_to_mask(GET_TLP_REQ_LAST_DW_BE(req_header));
+		byte_count -= (uint8_t)(sizeof(uint32_t) - __builtin_popcount(GET_TLP_REQ_LAST_DW_BE(req_header)));
+		tlp_cpl_data[1] = vnet_pci_device_mmio_read32(vf, addr + 4) & dw_mask;
+	}
+
+	vnet_pci_dev_tlp_mmio_cpl_prep(vf, tlp_req, TLP_FMT_3DW_W_DATA, TLP_CPL_STATUS_SC, length, byte_count);
+	doca_devemu_pci_tlp_channel_req_complete_tlp(tlp_req, 1, vf_slot->tlp_dev);
+}
+
+/* Serve a host MMIO write to a VF BAR (posted, no completion).
+ *
+ * After applying the common-config write, detect the guest VF driver's virtio
+ * status transitions and drive the per-VF datapath: bring the offload engine up
+ * on FEATURES_OK, start + enable it on DRIVER_OK, and tear it down on a guest
+ * device reset (status -> 0). The heavy bring-up/teardown is queued on the
+ * workqueue worker thread so engine creation stays off the host's
+ * latency-sensitive path. tlp_ctx / pf / slot_idx identify the slot for the
+ * deferred worker; they may be NULL/0 when the caller could not resolve them, in
+ * which case the engine triggers are skipped (the MMIO store still happens). */
+static inline void handle_vf_mmio_write(struct tlp_context *tlp_ctx,
+					struct pci_device_config *vf_pf,
+					uint16_t slot_idx,
+					struct vnet_vf_slot *vf_slot,
+					struct doca_devemu_pci_tlp_channel_req *tlp_req)
+{
+	const void *req_header = doca_devemu_pci_tlp_channel_req_get_tlp_header(tlp_req);
+	const uint8_t length = GET_TLP_REQ_LENGTH(req_header);
+	const uint8_t fmt = GET_TLP_REQ_FMT(req_header);
+	const uint32_t *dwh = (const uint32_t *)req_header;
+	struct vnet_pci_device *vf = vf_slot->vf_dev;
+	uint8_t prev_status = vf->pci_cfg.device_status;
+	uint16_t prev_qsel = vf->pci_cfg.queue_select;
+	uint8_t new_status;
+	uint8_t data_off;
+	uint64_t addr;
+
+	if (fmt == TLP_FMT_4DW_W_DATA) {
+		addr = ((uint64_t)be32toh(dwh[2]) << 32) | (be32toh(dwh[3]) & ~0x3ULL);
+		data_off = 4;
+	} else {
+		addr = be32toh(dwh[2]) & ~0x3ULL;
+		data_off = 3;
+	}
+
+	if (length >= 1 && length <= 2) {
+		vf_mmio_cfg_store(vf, addr, dwh[data_off], map_dw_be_to_mask(GET_TLP_REQ_FIRST_DW_BE(req_header)));
+		if (length == 2)
+			vf_mmio_cfg_store(vf,
+					  addr + 4,
+					  dwh[data_off + 1],
+					  map_dw_be_to_mask(GET_TLP_REQ_LAST_DW_BE(req_header)));
+	}
+
+	/* Latch the per-queue shadow and, on queue_enable, queue the VQ config to
+	 * the worker (mirrors the PF common-config write path). */
+	sriov_vf_queue_cfg_window(tlp_ctx, vf_pf, slot_idx, vf, prev_qsel);
+
+	new_status = vf->pci_cfg.device_status;
+
+	/* On a guest device reset (status -> 0), e.g. a driver unbind, tear down
+	 * this VF's datapath so the next probe rebuilds it cleanly. The shadow is
+	 * reset inline here (race-free on the TLP thread) so the re-probe's
+	 * queue_enable 0->1 transitions re-fire; the heavy engine teardown is
+	 * deferred to the worker, where FIFO ordering places it before the
+	 * re-probe's engine-setup item. */
+	if (vf_pf != NULL && prev_status != 0 && new_status == 0) {
+		bool engine_up = atomic_load(&vf_slot->engine_started) || atomic_load(&vf_slot->engine_enabled);
+
+		vnet_pci_device_reset_vf_shadow(vf);
+		if (engine_up) {
+			DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] device reset - queueing datapath teardown",
+				      slot_idx,
+				      vf_slot->vf_index);
+			pci_cfg_workqueue_submit_vf_datapath_reset(vf_pf, slot_idx);
+		}
+	}
+
+	/* On the 0->1 FEATURES_OK transition, bring up this VF's datapath engine
+	 * (heavy; queued to the worker). The worker is idempotent on an already
+	 * started engine, so repeated status writes are harmless. */
+	if (tlp_ctx != NULL && vf_pf != NULL && !(prev_status & VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK) &&
+	    (new_status & VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK)) {
+		bool features_accepted;
+
+		vnet_pci_dev_validate_features(vf, &features_accepted);
+		if (!features_accepted) {
+			DOCA_LOG_ERR(
+				"SR-IOV: VF[slot=%u, vf_index=%u] FEATURES_OK refused: negotiated features rejected",
+				slot_idx,
+				vf_slot->vf_index);
+			vf->pci_cfg.device_status &= ~VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK;
+		} else {
+			/* Latch whether the guest negotiated a control VQ + multi-queue, so
+			 * the engine-setup worker creates the per-VF CVQ + IO context (mirror
+			 * of the PF mq_feature_negotiated derivation). */
+			bool has_cvq = !!(vf->driver_features & (1ULL << VIRTIO_NET_F_CTRL_VQ));
+			bool has_mq = !!(vf->driver_features & (1ULL << VIRTIO_NET_F_MQ));
+
+			vf_slot->mq_feature_negotiated = (has_cvq && has_mq);
+			DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] FEATURES_OK - queueing engine bring-up (mq=%d)",
+				      slot_idx,
+				      vf_slot->vf_index,
+				      vf_slot->mq_feature_negotiated);
+			pci_cfg_workqueue_submit_vf_engine_setup(tlp_ctx, vf_pf, slot_idx);
+		}
+	}
+
+	/* On the 0->1 DRIVER_OK transition, start the VF's VQs and enable its
+	 * offload engine (heavy; queued to the worker). The worker is idempotent
+	 * on an already-enabled engine, so repeated status writes are harmless. */
+	if (vf_pf != NULL && !(prev_status & VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK) &&
+	    (new_status & VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK)) {
+		DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] DRIVER_OK - queueing engine enable",
+			      slot_idx,
+			      vf_slot->vf_index);
+		pci_cfg_workqueue_submit_vf_engine_enable(vf_pf, slot_idx);
+	}
+
+	doca_devemu_pci_tlp_channel_req_complete_tlp(tlp_req, 0, vf_slot->tlp_dev);
+}
+
+/*
  * Handle TLP request for bridge topology (unified entry point)
  * Follows tlp_handler sample style with clear structure
  *
@@ -5483,8 +7580,87 @@ static inline void handle_tlp_req(struct doca_devemu_pci_tlp_channel_req *tlp_re
 	 * or extracted from tlp_req inside that function. This prevents race conditions with
 	 * concurrent TLP requests from different devices - no shared state is used. */
 
-	/* Handle Dummy device - return UR */
+	/* Handle Dummy device.
+	 *
+	 * VFs are not function-0 endpoints, so find_device_by_bdf() resolves VF
+	 * Routing IDs to the dummy device. Route a config TLP that lands in a PF's
+	 * reserved VF range to the VF cfg-space handlers (served from the VF's own
+	 * emulated image, completed on the VF's started tlp_dev) before falling back
+	 * to UR. The host reaches VFs with Type 0 or Type 1 config TLPs; a config
+	 * completion is a CplD regardless, so the same handlers serve both. */
 	if (dev_cfg->is_dummy) {
+		bool is_cfg_read =
+			(tlp_type == TLP_REQ_TYPE_CONFIG_READ_TYPE_0 || tlp_type == TLP_REQ_TYPE_CONFIG_READ_TYPE_1);
+		bool is_cfg_write =
+			(tlp_type == TLP_REQ_TYPE_CONFIG_WRITE_TYPE_0 || tlp_type == TLP_REQ_TYPE_CONFIG_WRITE_TYPE_1);
+
+		if (is_cfg_read || is_cfg_write) {
+			uint8_t bus = GET_TLP_REQ_BUS(req_header);
+			uint8_t device = GET_TLP_REQ_DEVICE(req_header);
+			uint8_t function = GET_TLP_REQ_FUNCTION(req_header);
+			struct pci_device_config *vf_pf = NULL;
+			uint16_t slot_idx = 0;
+			bool vf_lock_held = false;
+			struct vnet_vf_slot *vf_slot =
+				find_vf_slot_by_bdf(tlp_ctx, bus, device, function, &vf_pf, &slot_idx, &vf_lock_held);
+			bool vf_slot_found = (vf_slot != NULL);
+			/* CRS is gated on VFE=1; capture the PF's VFE state under the lock. */
+			bool vf_sriov_enabled = (vf_slot != NULL && vf_pf->sriov != NULL &&
+						 (vf_pf->sriov->control_shadow & SRIOV_CTRL_VFE));
+
+			/* vf_pf->endpoint_lock is held (vf_lock_held) on a match; keep the
+			 * slot/vf_dev alive while we serve, then release before returning. */
+			if (vf_slot != NULL && vf_slot->vf_dev != NULL && atomic_load(&vf_slot->active)) {
+				if (is_cfg_read)
+					handle_vf_cfg_read_type_0(tlp_req, vf_slot);
+				else
+					handle_vf_cfg_write_type_0(tlp_ctx, vf_pf, slot_idx, vf_slot, tlp_req);
+				if (vf_lock_held)
+					pthread_rwlock_unlock(&vf_pf->endpoint_lock);
+				return;
+			}
+			if (vf_lock_held)
+				pthread_rwlock_unlock(&vf_pf->endpoint_lock);
+
+			/* Not-live slot under a VFE-enabled PF (fan-out in flight): CRS so the
+			 * host retries instead of reading an invalid header (EIO). VFE=0 falls
+			 * through to UR so boot/reboot VF-range probes stay fast. */
+			if (vf_slot_found && vf_sriov_enabled && is_cfg_read) {
+				return_config_request_retry(tlp_req);
+				return;
+			}
+		}
+
+		/* SR-IOV VF MMIO: memory TLPs targeting a VF BAR also resolve to the
+		 * dummy device. Route them to the VF's emulated register image when
+		 * they land in an active VF's BAR window. */
+		if (tlp_type == TLP_REQ_TYPE_MEMORY_READ || tlp_type == TLP_REQ_TYPE_MEMORY_WRITE) {
+			const uint32_t *dwh = (const uint32_t *)req_header;
+			uint8_t fmt = GET_TLP_REQ_FMT(req_header);
+			uint64_t addr;
+			struct vnet_vf_slot *vf_slot;
+			struct pci_device_config *vf_pf = NULL;
+			uint16_t vf_slot_idx = 0;
+			bool vf_lock_held = false;
+
+			if (fmt == TLP_FMT_4DW_NODATA || fmt == TLP_FMT_4DW_W_DATA)
+				addr = ((uint64_t)be32toh(dwh[2]) << 32) | (be32toh(dwh[3]) & ~0x3ULL);
+			else
+				addr = be32toh(dwh[2]) & ~0x3ULL;
+
+			/* vf_pf->endpoint_lock is held (vf_lock_held) on a match; keep the
+			 * slot/vf_dev alive while we serve, then release before returning. */
+			vf_slot = find_vf_slot_by_mmio_addr(tlp_ctx, addr, &vf_pf, &vf_slot_idx, &vf_lock_held);
+			if (vf_slot != NULL) {
+				if (tlp_type == TLP_REQ_TYPE_MEMORY_READ)
+					handle_vf_mmio_read(tlp_req, vf_slot);
+				else
+					handle_vf_mmio_write(tlp_ctx, vf_pf, vf_slot_idx, vf_slot, tlp_req);
+				if (vf_lock_held)
+					pthread_rwlock_unlock(&vf_pf->endpoint_lock);
+				return;
+			}
+		}
 		return_unsupported_request(tlp_req, dev_cfg, tlp_type);
 		return;
 	}
@@ -5599,14 +7775,16 @@ static void vnet_pci_dev_event_cb(struct doca_devemu_pci_tlp_channel *channel,
 	if (opcode == DOCA_DEVEMU_PCI_TLP_CHANNEL_REQ_OPCODE_ACG) {
 		DOCA_LOG_DBG("Received ACG credit from FW");
 		doca_error_t ret = acg_queue_push(tlp_ctx, tlp_req);
-		if (ret == DOCA_ERROR_NO_MEMORY) {
-			if (tlp_ctx->acg_queue == NULL) {
+		if (ret != DOCA_SUCCESS) {
+			if (ret == DOCA_ERROR_SHUTDOWN) {
 				DOCA_LOG_DBG("ACG queue unavailable (cleanup in progress), discarding credit");
-			} else {
+			} else if (ret == DOCA_ERROR_FULL) {
 				uint16_t count, size;
 
 				acg_queue_stats_get(tlp_ctx, &count, &size);
 				DOCA_LOG_DBG("ACG queue full (%u/%u), discarding new credit", count, size);
+			} else {
+				DOCA_LOG_ERR("Failed to queue ACG credit: %s", doca_error_get_descr(ret));
 			}
 			doca_devemu_pci_tlp_channel_req_complete_acg(
 				tlp_req,
@@ -5717,8 +7895,9 @@ error_rollback:
 	for (uint32_t j = 0; j < i; j++) {
 		struct vnet_pci_device *dev = &tlp_ctx->virtio_dev[j];
 
-		/* Free VQ array if allocated */
+		/* Free VQ array if allocated; mutex lifetime is paired with it. */
 		if (dev->vqs) {
+			pthread_mutex_destroy(&dev->vqs_mutex);
 			free(dev->vqs);
 			dev->vqs = NULL;
 		}
@@ -5743,6 +7922,8 @@ static doca_error_t vnet_pci_device_init_internal(struct vnet_pci_device *dev,
 						  uint32_t index,
 						  const struct vnet_pci_device_attrs *attr)
 {
+	const uint16_t total_vq_slots = (uint16_t)(attr->num_queues + attr->admin_queue_num);
+
 	/* Set PF index for this device */
 	dev->pf_index = index;
 
@@ -5764,7 +7945,9 @@ static doca_error_t vnet_pci_device_init_internal(struct vnet_pci_device *dev,
 	/* Initialize PCI Common Configuration */
 	struct vnet_virtio_common_config *pci_cfg = &dev->pci_cfg;
 	memset(pci_cfg, 0, sizeof(*pci_cfg));
-	pci_cfg->num_queues = attr->num_queues;
+	pci_cfg->num_queues = total_vq_slots;
+	pci_cfg->admin_queue_index = attr->admin_queue_num ? attr->num_queues : 0;
+	pci_cfg->admin_queue_num = attr->admin_queue_num;
 	pci_cfg->config_generation = 1;
 	pci_cfg->config_msix_vector = VIRTIO_MSI_NO_VECTOR;
 
@@ -5772,12 +7955,14 @@ static doca_error_t vnet_pci_device_init_internal(struct vnet_pci_device *dev,
 	dev->device_features = attr->device_features | (1ULL << VNET_VIRTIO_F_VERSION_1) |
 			       (1ULL << VNET_VIRTIO_F_ACCESS_PLATFORM) | (1ULL << VIRTIO_NET_F_CTRL_VQ) |
 			       (1ULL << VIRTIO_NET_F_MQ);
+	if (attr->admin_queue_num > 0)
+		dev->device_features |= (1ULL << VNET_VIRTIO_F_ADMIN_VQ);
 
 	/* Initialize PCI config registers */
 	pci_cfg->device_feature = dev->device_features & 0xFFFFFFFF; /* Lower 32 bits initially */
 	pci_cfg->device_status = VNET_VIRTIO_DEVICE_STATUS_NEEDS_RESET;
-	if (attr->num_queues > 0)
-		pci_cfg->num_queues = attr->num_queues;
+	if (total_vq_slots > 0)
+		pci_cfg->num_queues = total_vq_slots;
 
 	/* Initialize network device configuration */
 	struct vnet_virtio_net_config *net_cfg = &dev->vnet_cfg;
@@ -5801,14 +7986,24 @@ static doca_error_t vnet_pci_device_init_internal(struct vnet_pci_device *dev,
 		DOCA_LOG_INFO("Using default device configuration");
 	}
 
-	/* Allocate VQ shadow array dynamically based on actual num_queues */
-	dev->vqs_count = attr->num_queues;
+	/* Allocate VQ shadow array dynamically based on all queue slots, including admin VQs. */
+	dev->vqs_count = total_vq_slots;
 	dev->queue_size = attr->queue_size ? attr->queue_size : VNET_DEFAULT_QUEUE_SIZE; /* Set default if not specified
 											  */
 	dev->vqs = calloc(dev->vqs_count, sizeof(struct vnet_virtio_queue_config));
 	if (!dev->vqs) {
 		DOCA_LOG_ERR("Failed to allocate VQ shadow array for %d queues", dev->vqs_count);
 		return DOCA_ERROR_NO_MEMORY;
+	}
+	/* Pair the mutex lifetime with the shadow array. Both teardown paths
+	 * (error_rollback, vnet_pci_device_destroy) unconditionally destroy the
+	 * mutex before free()ing dev->vqs. */
+	if (pthread_mutex_init(&dev->vqs_mutex, NULL) != 0) {
+		DOCA_LOG_ERR("Failed to initialize VQ shadow mutex");
+		free(dev->vqs);
+		dev->vqs = NULL;
+		dev->vqs_count = 0;
+		return DOCA_ERROR_INITIALIZATION;
 	}
 	DOCA_LOG_DBG("Allocated VQ shadow array for %d queues (%zu bytes), queue_size=%u",
 		     dev->vqs_count,
@@ -5826,6 +8021,7 @@ static doca_error_t vnet_pci_device_init_internal(struct vnet_pci_device *dev,
 	dev->prev_status = 0xFF;
 	atomic_init(&dev->reset_generation, 1);
 	atomic_init(&dev->cancel_in_progress, false);
+	atomic_init(&dev->flr_in_progress, false);
 
 	DOCA_LOG_DBG("VNet device initialized with:");
 	DOCA_LOG_DBG("  - num_queues=%d, features=0x%lx", attr->num_queues, dev->device_features);
@@ -5841,8 +8037,9 @@ void vnet_pci_device_destroy(struct vnet_pci_device *dev)
 	if (!dev)
 		return;
 
-	/* Free dynamically allocated VQ shadow array */
+	/* Free dynamically allocated VQ shadow array; mutex lifetime is paired with it. */
 	if (dev->vqs) {
+		pthread_mutex_destroy(&dev->vqs_mutex);
 		free(dev->vqs);
 		dev->vqs = NULL;
 		dev->vqs_count = 0;
@@ -6166,6 +8363,54 @@ doca_error_t vnet_pci_device_init(struct tlp_context *tlp_ctx)
 		goto error;
 	}
 
+	/* Configure SR-IOV PCIe extended capability when enabled by CLI.
+	 * The cap is exposed at byte offset PCIE_EXT_CAP_OFFSET_SRIOV (0x100),
+	 * the first valid PCIe ext-cap offset, chained to the ARI cap. Reads
+	 * are routed through handle_config_space_ext_caps_read() to
+	 * sriov_cap_read() based on the matching reg_num range. The write side is
+	 * still the dispatcher stub (no-op); cap-write handling lands in the next
+	 * commit. */
+	if (tlp_ctx->sriov_enabled) {
+		err = doca_devemu_pci_tlp_type_set_pcie_cap_conf(tlp_ctx->pci_type,
+								 PCIE_EXT_CAP_ID_SRIOV,
+								 PCIE_EXT_CAP_OFFSET_SRIOV,
+								 PCIE_EXT_CAP_LEN_SRIOV_DW * sizeof(uint32_t));
+		if (err != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to declare SR-IOV PCIe ext cap: %s", doca_error_get_descr(err));
+			goto error;
+		}
+		DOCA_LOG_INFO("SR-IOV PCIe ext cap declared at byte offset 0x%x (len %u DW)",
+			      PCIE_EXT_CAP_OFFSET_SRIOV,
+			      PCIE_EXT_CAP_LEN_SRIOV_DW);
+
+		/* ARI ext cap, chained after SR-IOV, so the host can enable ARI
+		 * forwarding and place VFs as functions > 7 on a single bus. */
+		err = doca_devemu_pci_tlp_type_set_pcie_cap_conf(tlp_ctx->pci_type,
+								 PCIE_EXT_CAP_ID_ARI,
+								 PCIE_EXT_CAP_OFFSET_ARI,
+								 PCIE_EXT_CAP_LEN_ARI_DW * sizeof(uint32_t));
+		if (err != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to declare ARI PCIe ext cap: %s", doca_error_get_descr(err));
+			goto error;
+		}
+		DOCA_LOG_INFO("ARI PCIe ext cap declared at byte offset 0x%x (len %u DW)",
+			      PCIE_EXT_CAP_OFFSET_ARI,
+			      PCIE_EXT_CAP_LEN_ARI_DW);
+
+		/* ACS ext cap (chained after ARI) for per-VF IOMMU isolation. */
+		err = doca_devemu_pci_tlp_type_set_pcie_cap_conf(tlp_ctx->pci_type,
+								 PCIE_EXT_CAP_ID_ACS,
+								 PCIE_EXT_CAP_OFFSET_ACS_EP,
+								 PCIE_EXT_CAP_LEN_ACS_DW * sizeof(uint32_t));
+		if (err != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to declare ACS PCIe ext cap: %s", doca_error_get_descr(err));
+			goto error;
+		}
+		DOCA_LOG_INFO("ACS PCIe ext cap declared at byte offset 0x%x (len %u DW)",
+			      PCIE_EXT_CAP_OFFSET_ACS_EP,
+			      PCIE_EXT_CAP_LEN_ACS_DW);
+	}
+
 	/* Start the PCI type so we can create device representors */
 	err = doca_devemu_pci_type_start(tlp_ctx->pci_type);
 	if (err != DOCA_SUCCESS) {
@@ -6279,13 +8524,7 @@ doca_error_t vnet_pci_dev_start_from_export(struct tlp_context *tlp_ctx,
 		goto cleanup;
 	}
 
-	if (tlp_ctx->hotplug_mode) {
-		err = doca_devemu_pci_tlp_channel_set_acg_enabled(tlp_ctx->tlp_channel, true);
-		if (err != DOCA_SUCCESS) {
-			DOCA_LOG_WARN("ACG not available: %s. Hotplug MSI disabled, host will poll",
-				      doca_error_get_descr(err));
-		}
-	}
+	/* ACG configuration for an imported channel is derived from the exported channel. */
 
 	DOCA_LOG_INFO("VNet PCI device TLP channel created from export (secondary)");
 	return DOCA_SUCCESS;
@@ -6357,6 +8596,36 @@ const struct vnet_virtio_queue_config *vnet_pci_device_get_virtq_pci_cfg(struct 
 	return dev->vqs;
 }
 
+void vnet_pci_device_snapshot_vqs(struct vnet_pci_device *dev, struct vnet_virtio_queue_config *dst)
+{
+	if (dev == NULL || dst == NULL)
+		return;
+
+	pthread_mutex_lock(&dev->vqs_mutex);
+	if (dev->vqs != NULL && dev->vqs_count > 0)
+		memcpy(dst, dev->vqs, (size_t)dev->vqs_count * sizeof(*dst));
+	pthread_mutex_unlock(&dev->vqs_mutex);
+}
+
+bool vnet_pci_device_snapshot_vq(struct vnet_pci_device *dev, uint16_t vq_index, struct vnet_virtio_queue_config *dst)
+{
+	bool in_range = false;
+
+	if (dev == NULL || dst == NULL)
+		return false;
+
+	pthread_mutex_lock(&dev->vqs_mutex);
+	if (dev->vqs != NULL && vq_index < dev->vqs_count) {
+		*dst = dev->vqs[vq_index];
+		in_range = true;
+	} else {
+		memset(dst, 0, sizeof(*dst));
+	}
+	pthread_mutex_unlock(&dev->vqs_mutex);
+
+	return in_range;
+}
+
 /*
  * Get VirtIO network device configuration
  */
@@ -6368,6 +8637,26 @@ const struct vnet_virtio_net_config *vnet_pci_device_get_vnet_dev_cfg(struct vne
 /************************************************************************
 ******                 VirtIO Spec Compliance Functions           ******
 ************************************************************************/
+
+static struct doca_devemu_virtio_vq *vnet_pci_device_get_admin_vq_handle(struct vnet_pci_dev_controller *controller,
+									 uint16_t vq_index)
+{
+	struct doca_devemu_virtio_vq *vq_handle;
+
+	if (!controller->admin_vq) {
+		DOCA_LOG_ERR("Admin VQ not created but VQ%d configuration received", vq_index);
+		return NULL;
+	}
+
+	vq_handle = doca_devemu_virtio_admin_vq_as_vq(controller->admin_vq);
+	if (!vq_handle) {
+		DOCA_LOG_ERR("Failed to get Admin VQ handle");
+		return NULL;
+	}
+
+	DOCA_LOG_DBG("Configuring Admin VQ at index %d", vq_index);
+	return vq_handle;
+}
 
 void vnet_pci_device_vq_config(struct vnet_pci_device *dev, uint16_t vq_index)
 {
@@ -6415,9 +8704,16 @@ void vnet_pci_device_vq_config(struct vnet_pci_device *dev, uint16_t vq_index)
 		return;
 	}
 
-	/* Check if VQ is fully configured by host - use vqs_count for bounds check */
-	if (vq_index >= dev->vqs_count || !dev->vqs[vq_index].queue_enable || dev->vqs[vq_index].queue_desc == 0 ||
-	    dev->vqs[vq_index].queue_driver == 0 || dev->vqs[vq_index].queue_device == 0) {
+	/* Snapshot the VQ entry once under vqs_mutex; subsequent reads are
+	 * race-free copies (see struct vnet_pci_device::vqs comment for the
+	 * exact race the lock prevents). */
+	struct vnet_virtio_queue_config vq_snap;
+	if (!vnet_pci_device_snapshot_vq(dev, vq_index, &vq_snap)) {
+		DOCA_LOG_DBG("VQ%d index out of range (vqs_count=%d)", vq_index, dev->vqs_count);
+		return;
+	}
+	if (!vq_snap.queue_enable || vq_snap.queue_desc == 0 || vq_snap.queue_driver == 0 ||
+	    vq_snap.queue_device == 0) {
 		DOCA_LOG_DBG("VQ%d not fully configured yet (vqs_count=%d)", vq_index, dev->vqs_count);
 		return;
 	}
@@ -6437,6 +8733,10 @@ void vnet_pci_device_vq_config(struct vnet_pci_device *dev, uint16_t vq_index)
 			return;
 		}
 		DOCA_LOG_DBG("Configuring CVQ at index %d", cvq_index);
+	} else if (controller->admin_vq_negotiated && vq_index == controller->admin_queue_index) {
+		vq_handle = vnet_pci_device_get_admin_vq_handle(controller, vq_index);
+		if (!vq_handle)
+			return;
 	} else if (vq_index % 2 == 0 && vq_index < cvq_index) {
 		/* Even index = RX VQ - Calculate QP index */
 		qp_idx = vq_index / 2;
@@ -6497,14 +8797,14 @@ void vnet_pci_device_vq_config(struct vnet_pci_device *dev, uint16_t vq_index)
 		return;
 	}
 
-	/* Apply VQ configuration to hardware */
+	/* Apply VQ configuration to hardware - using the snapshot taken above. */
 	result = doca_devemu_virtio_vq_set_conf(vq_handle,
 						vq_index,
-						dev->vqs[vq_index].queue_size,
-						dev->vqs[vq_index].queue_msix_vector,
-						dev->vqs[vq_index].queue_desc,
-						dev->vqs[vq_index].queue_driver,
-						dev->vqs[vq_index].queue_device);
+						vq_snap.queue_size,
+						vq_snap.queue_msix_vector,
+						vq_snap.queue_desc,
+						vq_snap.queue_driver,
+						vq_snap.queue_device);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to apply VQ%d configuration: %s", vq_index, doca_error_get_descr(result));
 		return;
@@ -6512,11 +8812,11 @@ void vnet_pci_device_vq_config(struct vnet_pci_device *dev, uint16_t vq_index)
 
 	DOCA_LOG_INFO("VQ%d configured: size=%u, msix=%u, desc=0x%lx, driver=0x%lx, device=0x%lx",
 		      vq_index,
-		      dev->vqs[vq_index].queue_size,
-		      dev->vqs[vq_index].queue_msix_vector,
-		      dev->vqs[vq_index].queue_desc,
-		      dev->vqs[vq_index].queue_driver,
-		      dev->vqs[vq_index].queue_device);
+		      vq_snap.queue_size,
+		      vq_snap.queue_msix_vector,
+		      vq_snap.queue_desc,
+		      vq_snap.queue_driver,
+		      vq_snap.queue_device);
 
 	common_cfg = vnet_pci_device_get_pci_cfg(dev);
 	if (!atomic_load(&controller->engine_enabled) && common_cfg != NULL &&
@@ -6530,7 +8830,15 @@ void vnet_pci_device_vq_config(struct vnet_pci_device *dev, uint16_t vq_index)
 ************************************************************************/
 
 /*
- * Initialize VirtIO queues
+ * Initialize VirtIO queues.
+ * Held under dev->vqs_mutex - this is the ONE writer of dev->vqs[] that can
+ * race with worker readers (called from the reset path on the main TLP thread
+ * after the 20 ms timed wait expires; workers reach dev->vqs[] from start_vqs /
+ * start_and_enable / start_additional_queue_pairs / vq_config). All other
+ * dev->vqs[] writers in vnet_pci_device_pci_cfg_write32 (queue_select handler,
+ * shadow update handler, DRIVER_OK save) execute on the same TLP main thread
+ * as the reset path itself and so are mutually serialised by the single TLP
+ * execution context - no lock needed there.
  */
 static void vnet_pci_device_queue_init(struct vnet_pci_device *dev)
 {
@@ -6538,6 +8846,8 @@ static void vnet_pci_device_queue_init(struct vnet_pci_device *dev)
 	int i;
 
 	pci_cfg->queue_select = 0;
+
+	pthread_mutex_lock(&dev->vqs_mutex);
 
 	/* Initialize all allocated VQ entries */
 	memset(dev->vqs, 0, dev->vqs_count * sizeof(struct vnet_virtio_queue_config));
@@ -6551,6 +8861,8 @@ static void vnet_pci_device_queue_init(struct vnet_pci_device *dev)
 	/* Copy current queue to PCI config */
 	if (dev->vqs_count > 0)
 		memcpy(&pci_cfg->vq, &dev->vqs[0], sizeof(pci_cfg->vq));
+
+	pthread_mutex_unlock(&dev->vqs_mutex);
 }
 
 /*
@@ -6577,6 +8889,76 @@ static void vnet_pci_device_reset(struct vnet_pci_device *dev)
 }
 
 /*
+ * Sync portion of host-initiated PCIe Function Level Reset (FLR).
+ *
+ * Runs on the TLP thread inside the PCIe Device Control register cfg-write
+ * path. The TLP request is completed (SC) immediately after this returns;
+ * heavy cleanup (engine disable/stop, VQ teardown) runs asynchronously on
+ * the existing controller-cleanup workqueue.
+ *
+ * Design: rather than introducing a parallel post-FLR finalization path,
+ * we force-trigger the standard virtio reset state machine by setting
+ * device_status=0 and invoking pci_cfg_change_cb. The existing path then:
+ *   1. detects the reset, queues async controller cleanup
+ *   2. holds device_status at NEEDS_RESET until cleanup completes
+ *      (reset_status_state HELD)
+ *   3. flips reset_status_state HELD -> RELEASE_PENDING when cleanup is
+ *      done (vnet_controller_cleanup) and clears flr_in_progress there
+ *   4. apply_reset_status_release on the next TLP cfg-write transitions
+ *      the host-visible device_status NEEDS_RESET -> 0
+ *   5. host driver does the standard ACK -> DRIVER -> FEATURES_OK -> DRIVER_OK
+ *      sequence; FEATURES_OK rebinds the engine through the usual path
+ *
+ * Invariants:
+ *  - flr_in_progress is the single-shot guard. Back-to-back FLR within
+ *    the same window coalesce into the in-flight one.
+ *  - MMIO writes that arrive during the cleanup window are handled
+ *    safely by the existing reset_status_state HELD machinery (see
+ *    virtio_net_ctrl_change_cb's HELD re-assert and
+ *    apply_reset_status_release); no extra gating here is needed.
+ */
+static void vnet_pci_device_handle_flr(struct vnet_pci_device *dev)
+{
+	bool expected = false;
+
+	if (!atomic_compare_exchange_strong(&dev->flr_in_progress, &expected, true)) {
+		DOCA_LOG_WARN("EP[%d]: FLR coalesced (prior FLR still in progress)", dev->pf_index);
+		return;
+	}
+
+	DOCA_LOG_INFO("EP[%d]: FLR initiated by host PCIe Device Control register", dev->pf_index);
+
+	/* Cancel any long-running worker operation on this device and invalidate
+	 * pending workqueue items so they bail out instead of acting on stale state. */
+	atomic_store(&dev->cancel_in_progress, true);
+	atomic_fetch_add(&dev->reset_generation, 1);
+
+	/* Sentinel: virtio_net_ctrl_change_cb's reset-detection branch
+	 * (vnet_pci_dev_core.c:3034) requires prev_status != 0 && prev_status != 0xFF
+	 * to fire. This fails for back-to-back FLR (prev_status was zeroed at the
+	 * end of the previous FLR's reset branch) and for FLR before the host
+	 * driver has ever reached a non-zero device_status. Force a non-zero
+	 * sentinel so the cleanup path always runs for FLR. */
+	if (dev->prev_status == 0 || dev->prev_status == 0xFF)
+		dev->prev_status = VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK;
+
+	/* Force the existing virtio reset path: set device_status=0 so the
+	 * downstream pci_cfg_change_cb treats this as a host-initiated reset
+	 * and submits the controller cleanup to the workqueue. */
+	dev->pci_cfg.device_status = 0;
+
+	/* Reset PCI cfg shadow state (driver_features, vqs, etc.) synchronously,
+	 * before the host can read back any stale values. */
+	vnet_pci_device_reset(dev);
+
+	/* Notify controller layer to begin async cleanup. The callback returns
+	 * immediately; cleanup runs on workqueue. The callback will set
+	 * device_status to NEEDS_RESET as part of its HELD-state handling. */
+	if (dev->pci_cfg_change_cb)
+		dev->pci_cfg_change_cb(dev, dev->cb_arg);
+}
+
+/*
  * Simple feature selection helper
  */
 static uint32_t vnet_pci_dev_feature_select(const int n, const uint64_t ftr)
@@ -6585,6 +8967,24 @@ static uint32_t vnet_pci_dev_feature_select(const int n, const uint64_t ftr)
 		return 0;
 
 	return n ? ftr >> 32 : ftr & 0xFFFFFFFF;
+}
+
+static void vnet_pci_dev_driver_feature_word_set(struct vnet_pci_device *dev, uint32_t select, uint32_t feature_word)
+{
+	uint64_t driver_features;
+
+	if (select > 1) {
+		DOCA_LOG_WARN("EP[%d]: Out-of-range driver_feature_select write (select=%u)", dev->pf_index, select);
+		return;
+	}
+
+	driver_features = dev->driver_features;
+	if (select == 0)
+		driver_features = (driver_features & 0xFFFFFFFF00000000ULL) | (uint64_t)feature_word;
+	else
+		driver_features = ((uint64_t)feature_word << 32) | (driver_features & 0x00000000FFFFFFFFULL);
+
+	dev->driver_features = driver_features;
 }
 
 /*
@@ -6647,9 +9047,7 @@ static void vnet_pci_device_pci_cfg_write32(struct vnet_pci_device *dev,
 		DOCA_LOG_DBG("DRIVER FEATURE SELECT: %d -> %d",
 			     prev_cfg.driver_feature_select,
 			     pci_cfg->driver_feature_select);
-		uint32_t *p = (uint32_t *)&dev->driver_features;
-		if (prev_cfg.driver_feature_select <= 1)
-			p[prev_cfg.driver_feature_select] = pci_cfg->driver_feature;
+		vnet_pci_dev_driver_feature_word_set(dev, prev_cfg.driver_feature_select, pci_cfg->driver_feature);
 
 		pci_cfg->driver_feature =
 			vnet_pci_dev_feature_select(pci_cfg->driver_feature_select, dev->driver_features);
@@ -6661,6 +9059,7 @@ static void vnet_pci_device_pci_cfg_write32(struct vnet_pci_device *dev,
 
 	/* Handle driver feature writes (feature negotiation) */
 	if (prev_cfg.driver_feature != pci_cfg->driver_feature) {
+		vnet_pci_dev_driver_feature_word_set(dev, pci_cfg->driver_feature_select, pci_cfg->driver_feature);
 		DOCA_LOG_DBG("FEATURE NEGOTIATION: driver_feature[%d] = 0x%08x",
 			     pci_cfg->driver_feature_select,
 			     pci_cfg->driver_feature);
@@ -6670,11 +9069,11 @@ static void vnet_pci_device_pci_cfg_write32(struct vnet_pci_device *dev,
 	if (prev_cfg.queue_select != pci_cfg->queue_select) {
 		DOCA_LOG_DBG("queue select: %d -> %d", prev_cfg.queue_select, pci_cfg->queue_select);
 
-		if (prev_cfg.queue_select < pci_cfg->num_queues)
+		if (prev_cfg.queue_select < dev->vqs_count)
 			memcpy(&dev->vqs[prev_cfg.queue_select], &pci_cfg->vq, sizeof(pci_cfg->vq));
 
 		/* Device Requirements: present 0 in queue_size if virtqueue unavailable */
-		if (pci_cfg->queue_select < pci_cfg->num_queues)
+		if (pci_cfg->queue_select < dev->vqs_count)
 			memcpy(&pci_cfg->vq, &dev->vqs[pci_cfg->queue_select], sizeof(pci_cfg->vq));
 		else
 			memset(&pci_cfg->vq, 0, sizeof(pci_cfg->vq));
@@ -6687,7 +9086,7 @@ static void vnet_pci_device_pci_cfg_write32(struct vnet_pci_device *dev,
 	 * prev_cfg.vq reflects the previously *selected* queue's snapshot, which may be
 	 * different from pci_cfg->queue_select if queue_select changed in this write.
 	 * The shadow array contains the authoritative last known state for each queue. */
-	if (pci_cfg->queue_select < pci_cfg->num_queues) {
+	if (pci_cfg->queue_select < dev->vqs_count) {
 		uint16_t vq_idx = pci_cfg->queue_select;
 		struct vnet_virtio_queue_config *shadow_vq = &dev->vqs[vq_idx];
 		bool prev_enabled = shadow_vq->queue_enable;
@@ -6762,10 +9161,31 @@ static void vnet_pci_device_pci_cfg_write32(struct vnet_pci_device *dev,
 			if (pci_cfg_wq != NULL) {
 				pthread_mutex_lock(&pci_cfg_wq->mutex);
 				pci_cfg_wq->reset_in_progress = true;
-				/* Wait only if worker is busy with the SAME device */
+				/* Wait only briefly if worker is busy with the SAME device.
+				 * This callback runs on the TLP progress path; an unbounded wait
+				 * starves the DOCA PE that the worker may itself be waiting on
+				 * (e.g. a long FW round-trip in start_and_enable), wedging both
+				 * host and DPU. The 20ms cap stays well below host PCIe CTO. */
 				while (pci_cfg_wq->worker_busy && pci_cfg_wq->worker_current_dev == dev) {
-					DOCA_LOG_DBG("Reset waiting for worker to finish same-device work");
-					pthread_cond_wait(&pci_cfg_wq->reset_cond, &pci_cfg_wq->mutex);
+					struct timespec timeout;
+					int wait_result;
+
+					clock_gettime(CLOCK_MONOTONIC, &timeout);
+					timeout.tv_nsec += RESET_WORKER_WAIT_USEC * 1000;
+					if (timeout.tv_nsec >= 1000000000) {
+						timeout.tv_sec += 1;
+						timeout.tv_nsec -= 1000000000;
+					}
+
+					DOCA_LOG_DBG("Reset waiting briefly for same-device worker");
+					wait_result = pthread_cond_timedwait(&pci_cfg_wq->reset_cond,
+									     &pci_cfg_wq->mutex,
+									     &timeout);
+					if (wait_result == ETIMEDOUT) {
+						DOCA_LOG_WARN("Reset continuing while same-device worker is busy "
+							      "(stale generation will cancel it)");
+						break;
+					}
 				}
 				pthread_mutex_unlock(&pci_cfg_wq->mutex);
 			}
@@ -6797,7 +9217,7 @@ static void vnet_pci_device_pci_cfg_write32(struct vnet_pci_device *dev,
 				DOCA_LOG_DBG("VirtIO Spec Compliant: Hardware was prepared during FEATURES_OK phase");
 
 				/* Save the currently selected VQ configuration for completeness */
-				if (pci_cfg->queue_select < pci_cfg->num_queues) {
+				if (pci_cfg->queue_select < dev->vqs_count) {
 					memcpy(&dev->vqs[pci_cfg->queue_select], &pci_cfg->vq, sizeof(pci_cfg->vq));
 					DOCA_LOG_DBG("Saved final VQ%d config: enable=%d, size=%d, desc=0x%lx",
 						     pci_cfg->queue_select,
@@ -6819,6 +9239,13 @@ static void vnet_pci_device_pci_cfg_write32(struct vnet_pci_device *dev,
 				break;
 			case VNET_VIRTIO_DEVICE_STATUS_FAILED:
 				DOCA_LOG_ERR("VirtIO Driver: FAILED - driver encountered an error");
+				DOCA_LOG_ERR("FAILED context: features=0x%llx, num_queues=%u, admin_queue_index=%u, "
+					     "admin_queue_num=%u, queue_select=%u",
+					     (unsigned long long)dev->driver_features,
+					     pci_cfg->num_queues,
+					     pci_cfg->admin_queue_index,
+					     pci_cfg->admin_queue_num,
+					     pci_cfg->queue_select);
 				break;
 			default:
 				DOCA_LOG_DBG("??? unknown device status: 0x%02x", status & ~prev_status);

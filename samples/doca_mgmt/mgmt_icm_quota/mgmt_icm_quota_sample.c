@@ -127,41 +127,38 @@ static doca_error_t print_icm_quota_config(struct doca_mgmt_icm_quota *icm_quota
 
 /*
  * Get the ICM quota configuration for a device or device representor.
- * If a device representor is provided, ICM quota configuration for the device representor will be retrieved.
+ * If a representor target string is provided, ICM quota configuration for the device representor will be retrieved.
  * Otherwise, ICM quota configuration for the device will be retrieved.
  *
- * @dev [in]: The device to get its ICM quota configuration
- * @dev_rep [in]: The device representor to get its ICM quota configuration. This parameter is optional and can be NULL.
+ * @target_string [in]: The device management target string.  Used when @rep_target_string is NULL.
+ * @rep_target_string [in]: The representor management target string.  Optional; when not NULL it is used instead of
+ * @target_string.
  * @get_limit [in]: Whether to get the ICM quota limit
  * @get_cur_alloc [in]: Whether to get the current allocated ICM quota
  * @get_max_reached [in]: Whether to get the max reached ICM quota
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t mgmt_icm_quota_get(struct doca_dev *dev,
-				struct doca_dev_rep *dev_rep,
+doca_error_t mgmt_icm_quota_get(const char *target_string,
+				const char *rep_target_string,
 				bool get_limit,
 				bool get_cur_alloc,
 				bool get_max_reached)
 {
-	struct doca_mgmt_dev_ctx *dev_ctx;
+	struct doca_mgmt_dev_ctx *dev_ctx = NULL;
 	struct doca_mgmt_dev_rep_ctx *dev_rep_ctx = NULL;
 	struct doca_mgmt_icm_quota *icm_quota;
 	doca_error_t result;
 
-	/* Create the DOCA management device context */
-	result = doca_mgmt_dev_ctx_create(dev, &dev_ctx);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create DOCA management device context: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	if (dev_rep != NULL) {
-		/* Create the DOCA management device representor context */
-		result = doca_mgmt_dev_rep_ctx_create(dev_ctx, dev_rep, &dev_rep_ctx);
+	if (rep_target_string != NULL) {
+		/*
+		 * Create the DOCA management device representor context from the target string.  It owns the underlying
+		 * device context, so only the representor context must be destroyed.
+		 */
+		result = doca_mgmt_dev_rep_ctx_create_from_target_string(rep_target_string, &dev_rep_ctx);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create DOCA management device representor context: %s",
 				     doca_error_get_descr(result));
-			goto out_dev_ctx_destroy;
+			return result;
 		}
 
 		/* Create the ICM quota handle for device representor */
@@ -169,14 +166,22 @@ doca_error_t mgmt_icm_quota_get(struct doca_dev *dev,
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create ICM quota handle for device representor: %s",
 				     doca_error_get_descr(result));
-			goto out_dev_rep_ctx_destroy;
+			goto out_ctx_destroy;
 		}
 	} else {
+		/* Create the DOCA management device context from the target string */
+		result = doca_mgmt_dev_ctx_create_from_target_string(target_string, &dev_ctx);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create DOCA management device context: %s",
+				     doca_error_get_descr(result));
+			return result;
+		}
+
 		/* Create the ICM quota handle for device */
 		result = doca_mgmt_icm_quota_create_for_dev(dev_ctx, &icm_quota);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create ICM quota handle for device: %s", doca_error_get_descr(result));
-			goto out_dev_ctx_destroy;
+			goto out_ctx_destroy;
 		}
 	}
 
@@ -194,13 +199,14 @@ out_icm_quota_destroy:
 	if (doca_mgmt_icm_quota_destroy(icm_quota) != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to destroy ICM quota handle");
 
-out_dev_rep_ctx_destroy:
-	if (dev_rep_ctx != NULL && doca_mgmt_dev_rep_ctx_destroy(dev_rep_ctx) != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to destroy DOCA management device representor context");
-
-out_dev_ctx_destroy:
-	if (doca_mgmt_dev_ctx_destroy(dev_ctx) != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to destroy DOCA management device context");
+out_ctx_destroy:
+	if (dev_rep_ctx != NULL) {
+		if (doca_mgmt_dev_rep_ctx_destroy(dev_rep_ctx) != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy DOCA management device representor context");
+	} else {
+		if (doca_mgmt_dev_ctx_destroy(dev_ctx) != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy DOCA management device context");
+	}
 
 	return result;
 }
@@ -221,42 +227,39 @@ static uint32_t mgmt_icm_quota_bytes_to_4k(uint64_t value)
 
 /*
  * Set the ICM quota configuration for a device or device representor.
- * If a device representor is provided, ICM quota configuration for the device representor will be set.
+ * If a representor target string is provided, ICM quota configuration for the device representor will be set.
  * Otherwise, ICM quota configuration for the device will be set.
  *
- * @dev [in]: The device to set its ICM quota configuration
- * @dev_rep [in]: The device representor to set its ICM quota configuration. This parameter is optional and can be NULL.
+ * @target_string [in]: The device management target string.  Used when @rep_target_string is NULL.
+ * @rep_target_string [in]: The representor management target string.  Optional; when not NULL it is used instead of
+ * @target_string.
  * @limit_set [in]: Whether to set the ICM quota limit
  * @limit [in]: The ICM quota limit value
  * @reset_max_reached [in]: Whether to reset the max reached ICM quota
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t mgmt_icm_quota_set(struct doca_dev *dev,
-				struct doca_dev_rep *dev_rep,
+doca_error_t mgmt_icm_quota_set(const char *target_string,
+				const char *rep_target_string,
 				bool limit_set,
 				uint64_t limit,
 				bool reset_max_reached)
 {
-	struct doca_mgmt_dev_ctx *dev_ctx;
+	struct doca_mgmt_dev_ctx *dev_ctx = NULL;
 	struct doca_mgmt_dev_rep_ctx *dev_rep_ctx = NULL;
 	struct doca_mgmt_icm_quota *icm_quota;
 	uint32_t limit_4k;
 	doca_error_t result;
 
-	/* Create the DOCA management device context */
-	result = doca_mgmt_dev_ctx_create(dev, &dev_ctx);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create DOCA management device context: %s", doca_error_get_descr(result));
-		return result;
-	}
-
-	if (dev_rep != NULL) {
-		/* Create the DOCA management device representor context */
-		result = doca_mgmt_dev_rep_ctx_create(dev_ctx, dev_rep, &dev_rep_ctx);
+	if (rep_target_string != NULL) {
+		/*
+		 * Create the DOCA management device representor context from the target string.  It owns the underlying
+		 * device context, so only the representor context must be destroyed.
+		 */
+		result = doca_mgmt_dev_rep_ctx_create_from_target_string(rep_target_string, &dev_rep_ctx);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create DOCA management device representor context: %s",
 				     doca_error_get_descr(result));
-			goto out_dev_ctx_destroy;
+			return result;
 		}
 
 		/* Create the ICM quota handle for device representor */
@@ -264,14 +267,22 @@ doca_error_t mgmt_icm_quota_set(struct doca_dev *dev,
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create ICM quota handle for device representor: %s",
 				     doca_error_get_descr(result));
-			goto out_dev_rep_ctx_destroy;
+			goto out_ctx_destroy;
 		}
 	} else {
+		/* Create the DOCA management device context from the target string */
+		result = doca_mgmt_dev_ctx_create_from_target_string(target_string, &dev_ctx);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create DOCA management device context: %s",
+				     doca_error_get_descr(result));
+			return result;
+		}
+
 		/* Create the ICM quota handle for device */
 		result = doca_mgmt_icm_quota_create_for_dev(dev_ctx, &icm_quota);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create ICM quota handle for device: %s", doca_error_get_descr(result));
-			goto out_dev_ctx_destroy;
+			goto out_ctx_destroy;
 		}
 	}
 
@@ -302,13 +313,14 @@ out_icm_quota_destroy:
 	if (doca_mgmt_icm_quota_destroy(icm_quota) != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to destroy ICM quota handle");
 
-out_dev_rep_ctx_destroy:
-	if (dev_rep_ctx != NULL && doca_mgmt_dev_rep_ctx_destroy(dev_rep_ctx) != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to destroy DOCA management device representor context");
-
-out_dev_ctx_destroy:
-	if (doca_mgmt_dev_ctx_destroy(dev_ctx) != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to destroy DOCA management device context");
+out_ctx_destroy:
+	if (dev_rep_ctx != NULL) {
+		if (doca_mgmt_dev_rep_ctx_destroy(dev_rep_ctx) != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy DOCA management device representor context");
+	} else {
+		if (doca_mgmt_dev_ctx_destroy(dev_ctx) != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy DOCA management device context");
+	}
 
 	return result;
 }
@@ -316,18 +328,18 @@ out_dev_ctx_destroy:
 /*
  * Get the ICM quota capabilities for a device.
  *
- * @dev [in]: The device to get its ICM quota capabilities
+ * @target_string [in]: The device management target string to get its ICM quota capabilities
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t mgmt_icm_quota_caps(struct doca_dev *dev)
+doca_error_t mgmt_icm_quota_caps(const char *target_string)
 {
 	struct doca_mgmt_dev_ctx *dev_ctx;
 	uint32_t max_limit;
 	char size_str[64];
 	doca_error_t result;
 
-	/* Create the DOCA management device context */
-	result = doca_mgmt_dev_ctx_create(dev, &dev_ctx);
+	/* Create the DOCA management device context from the target string */
+	result = doca_mgmt_dev_ctx_create_from_target_string(target_string, &dev_ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create DOCA management device context: %s", doca_error_get_descr(result));
 		return result;

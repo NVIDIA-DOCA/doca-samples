@@ -29,6 +29,7 @@
 #include <sys/queue.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 
 #include <doca_error.h>
 #include <doca_dev.h>
@@ -37,8 +38,18 @@
 #include "vblk_pci_types.h"
 #include "pci_spec_tlp.h"
 
+struct vblk_pci_init_cfg {
+	struct doca_dev *dev;
+	uint32_t num_ep;
+	bool hotplug_mode;
+	bool sriov_enabled;
+	uint16_t sriov_total_vfs;
+	uint16_t sriov_num_vf_msix;
+	uint16_t sriov_num_vf_db;
+};
+
 /* consider add device change cb */
-doca_error_t vblk_pci_init(struct doca_dev *dev, uint32_t num_ep, bool hotplug_mode);
+doca_error_t vblk_pci_init(const struct vblk_pci_init_cfg *cfg);
 void vblk_pci_reset(void);
 
 doca_error_t vblk_pci_tlp_start(void);
@@ -103,10 +114,19 @@ struct vblk_pci_virtio_dev {
 	uint8_t function;
 	uint32_t ep_index;
 
+	/* flr_in_progress: true while FLR is in progress (TLP thread sets true
+	 * on FLR write; OE thread sets false after post-FLR cleanup chain */
+	_Atomic bool flr_in_progress;
+
+	/* flr_kickoff: one-shot signal raised by TLP/OE thread once all VQs
+	 * are destroyed during an FLR window, telling the OE thread to start
+	 * the post-FLR cleanup chain (fan out to per-io_ctx need_flr_teardown). */
+	_Atomic bool flr_kickoff;
+
 	/* emulated device */
 	struct pcie_virtio_dev pcie_dev;
 
-	pci_cfg_change_cb_t pci_cfg_change_cb;
+	_Atomic(pci_cfg_change_cb_t) pci_cfg_change_cb;
 	pci_tlp_poll_cb_t tlp_poll_cb;
 	void *cb_arg;
 
@@ -130,6 +150,101 @@ struct vblk_pci_virtio_dev {
 
 /* consider: inheritance from the base ep */
 LIST_HEAD(vblk_pci_dev_list, vblk_pci_virtio_dev);
+
+/* Opaque: the per-VF datapath controller is owned and managed by the OE thread
+ * (upper layer, vblk_ctrl.c); the slot only holds a back-pointer to it. */
+struct vblk_ctrl;
+
+/*
+ * VF datapath state machine. The OE thread owns state transitions; IO
+ * threads only observe FLR_TEARDOWN/FLR_REBUILD to destroy or recreate
+ * their per-thread VF io_ctx for a VF FLR.
+ *
+ * Normal VFE path:
+ *
+ *   DOWN -- VFE=1 / enable OE --> UP
+ *    ^                            |
+ *    +--- VFE=0 / disable OE -----+
+ *
+ * VF FLR datapath recycle:
+ *
+ *   DOWN or UP
+ *      |
+ *      | VF FLR
+ *      v
+ *   FLR_TEARDOWN -- all io_ctxs destroyed, OE recycled --> FLR_REBUILD
+ *      ^                                                   |
+ *      | new VF FLR while rebuilding                       |
+ *      +---------------------------------------------------+
+ *                                                          |
+ *                  all io_ctxs rebuilt                     |
+ *                  +-- dp_want_up=true  --> UP             |
+ *                  +-- dp_want_up=false --> DOWN           |
+ *
+ * DOWN: VF ctrl exists, VF offload engine is disabled.
+ * UP: VF ctrl exists, VF offload engine is enabled.
+ * FLR_TEARDOWN: OE waits for each IO thread to destroy its VF io_ctx.
+ * FLR_REBUILD: OE waits for each IO thread to recreate its VF io_ctx.
+ */
+enum vblk_sriov_vf_dp_state {
+	VBLK_SRIOV_VF_DP_DOWN = 0,
+	VBLK_SRIOV_VF_DP_UP,
+	VBLK_SRIOV_VF_DP_FLR_TEARDOWN,
+	VBLK_SRIOV_VF_DP_FLR_REBUILD,
+};
+
+/*
+ * One SR-IOV VF: its representor, init-time VF TLP device, VF virtio template,
+ * and optional per-VF datapath. The TLP thread owns cfg/pcie_dev/vf_dev/rep.
+ * Final PF teardown stops the VF TLP device before the OE thread frees vf_ctrl.
+ * The OE thread owns vf_ctrl and uses dp_want_up to enable or disable the VF
+ * offload engine.
+ */
+struct vblk_sriov_vf_slot {
+	struct pci_device_config *cfg;
+	struct pcie_virtio_dev pcie_dev;
+	struct vblk_pci_virtio_dev *vf_dev;
+	struct doca_dev_rep *rep;
+	uint32_t dynamic_vf_index;
+	bool tlp_started;
+
+	/* Per-VF datapath (offload engine + io_ctx + vqs), built and torn down
+	 * on the OE thread. vf_ctrl is OE-owned; the TLP thread only reaches it
+	 * through the stable VF config callback/cb_arg installed at build time.
+	 * Zero-initialized when the slot array is calloc'd. */
+	struct vblk_ctrl *vf_ctrl; /* OE-owned; NULL until built or after final teardown */
+	_Atomic uint8_t dp_state;  /* OE -> IO: enum vblk_sriov_vf_dp_state */
+	_Atomic bool dp_want_up;   /* TLP -> OE: VF offload engine should be enabled */
+
+	/* VF-local datapath recycle progress. OE owns dp_state phase transitions; IO
+	 * threads report completion for their ctx_id here. */
+	_Atomic uint8_t flr_io_ctx_done;
+};
+
+/*
+ * Per-PF SR-IOV runtime state (up to 7 VFs, no ARI).
+ *
+ * Allocated when SR-IOV is enabled for an endpoint. NULL when SR-IOV is
+ * disabled for that endpoint.
+ */
+struct vblk_sriov_pf_state {
+	/* Static config from CLI. */
+	uint16_t total_vfs;	  /* TotalVFs / InitialVFs: 1..7 without ARI */
+	uint16_t first_vf_offset; /* First VF immediately follows the PF without ARI */
+	uint16_t vf_stride;	  /* Consecutive VF function numbers without ARI */
+	uint16_t vf_device_id;
+	uint16_t vf_num_msix;
+	uint16_t vf_num_db;
+
+	/* SR-IOV cap shadows updated by the PF extended-capability write path. */
+	uint16_t control_shadow; /* VFE/MSE are writable; ARI remains clear without ARI */
+	uint16_t num_vfs_shadow; /* Host-selected NumVFs */
+	uint32_t system_pg_size; /* PCI_SRIOV_SYS_PGSIZE bitmap; only bit 0 is accepted */
+	uint32_t vf_bar[PCI_SRIOV_NUM_BARS];
+
+	/* TLP-side VF config entries; visibility follows VF Enable and NumVFs. */
+	struct vblk_sriov_vf_slot *vf_slots;
+};
 
 /* Virtio device ids as specified in the spec: "5 Device Types" */
 enum vblk_pci_virtio_subsystem_device_type {
@@ -157,9 +272,30 @@ struct vblk_pci_virtio_attrs {
 struct vblk_pci_virtio_dev *vblk_pci_virtio_dev_create(const struct vblk_pci_virtio_attrs *attr);
 void vblk_pci_virtio_dev_destroy(struct vblk_pci_virtio_dev *dev);
 void vblk_pci_virtio_dev_reset(struct vblk_pci_virtio_dev *dev);
+void vblk_pci_virtio_cfg_change_set(struct vblk_pci_virtio_dev *dev, pci_cfg_change_cb_t cb, void *arg);
+bool vblk_pci_virtio_cfg_change_notify(struct vblk_pci_virtio_dev *dev);
+doca_error_t vblk_pci_sriov_vf_tlp_dev_stop(struct vblk_sriov_vf_slot *slot);
+doca_error_t vblk_pci_sriov_vf_tlp_dev_start(struct vblk_sriov_vf_slot *slot);
+doca_error_t vblk_pci_sriov_vf_tlp_dev_suspend(struct vblk_sriov_vf_slot *slot);
+doca_error_t vblk_pci_sriov_vf_tlp_dev_resume(struct vblk_sriov_vf_slot *slot);
+doca_error_t vblk_pci_pf_tlp_dev_suspend(struct vblk_pci_virtio_dev *dev);
+doca_error_t vblk_pci_pf_tlp_dev_resume(struct vblk_pci_virtio_dev *dev);
 
 /* Called on TLP thread main loop; invokes tlp_poll_cb for all devices */
 void vblk_pci_tlp_poll(void);
+
+/* Retry Command Completed MSIs deferred due to ACG credit exhaustion (TLP thread). */
+void vblk_pci_retry_cmd_completed_msi(void);
+
+/*
+ * Consume hotplug plug/unplug MSI requests queued by the OE thread and send
+ * the corresponding Memory-Write TLPs on the TLP thread. See vblk_pci.c for
+ * the rationale on why every complete_acg() must originate from the TLP
+ * thread (doca ctx is thread-unsafe and lib req_pool acquire()/release() is
+ * not serialized across threads).
+ */
+struct vblk_ep_hotplug_state;
+void vblk_pci_retry_hotplug_msi(struct vblk_ep_hotplug_state *hp, uint32_t num_ep);
 
 /* Called on TLP thread main loop when block device capacity changes; invokes MSIX interrupt to driver */
 void vblk_pci_notify_host(void);
@@ -168,6 +304,7 @@ void vblk_pci_notify_host(void);
 doca_error_t vblk_pci_create_device(uint32_t ep_index);
 void vblk_pci_destroy_device(uint32_t ep_index);
 doca_error_t vblk_pci_trigger_hotplug(uint32_t dsp_index, bool plug);
+void vblk_pci_ack_host_reset(uint32_t ep_index);
 
 /* rw pointer to the current pci configuration */
 struct vblk_pci_virtio_pci_common_cfg *vblk_pci_virtio_get_pci_cfg(struct vblk_pci_virtio_dev *dev);

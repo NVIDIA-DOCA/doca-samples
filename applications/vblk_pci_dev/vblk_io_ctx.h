@@ -60,6 +60,7 @@ struct vblk_io_ctx_cfg {
 	uint16_t num_queues;
 	uint16_t seg_max;
 	bool indirect_enabled;
+	bool sriov_enabled;
 	bool hotplug_mode;
 	uint32_t stats_ios_period;
 	struct vblk_mpool_set *shared_mpool;

@@ -35,15 +35,15 @@ DOCA_LOG_REGISTER(MGMT_DIAGNOSTICS_DATA::SAMPLE);
 /**
  * Check if the device supports diagnostics data and print the result.
  *
- * @param dev [in]: DOCA device to check
+ * @param target_string [in]: Device management target string to check
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t mgmt_diagnostics_data_supported(struct doca_dev *dev)
+doca_error_t mgmt_diagnostics_data_supported(const char *target_string)
 {
 	struct doca_mgmt_dev_ctx *dev_ctx;
 	doca_error_t result;
 
-	result = doca_mgmt_dev_ctx_create(dev, &dev_ctx);
+	result = doca_mgmt_dev_ctx_create_from_target_string(target_string, &dev_ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create DOCA management device context: %s", doca_error_get_descr(result));
 		return result;
@@ -68,17 +68,17 @@ doca_error_t mgmt_diagnostics_data_supported(struct doca_dev *dev)
 /**
  * Get diagnostics data configuration
  *
- * @param dev [in]: DOCA device
+ * @param target_string [in]: Device management target string
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t mgmt_diagnostics_data_get(struct doca_dev *dev)
+doca_error_t mgmt_diagnostics_data_get(const char *target_string)
 {
 	struct doca_mgmt_dev_ctx *dev_ctx;
 	struct doca_mgmt_diagnostics_data *dd_handle;
 	uint8_t multi_domain;
 	doca_error_t result;
 
-	result = doca_mgmt_dev_ctx_create(dev, &dev_ctx);
+	result = doca_mgmt_dev_ctx_create_from_target_string(target_string, &dev_ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create DOCA management device context: %s", doca_error_get_descr(result));
 		return result;
@@ -119,17 +119,17 @@ destroy_dev_ctx:
 /**
  * Set diagnostics data configuration for the device
  *
- * @param dev [in]: DOCA device
+ * @param target_string [in]: Device management target string
  * @param multi_domain [in]: Value to write for multi_domain (true = enable, false = disable)
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t mgmt_diagnostics_data_set(struct doca_dev *dev, bool multi_domain)
+doca_error_t mgmt_diagnostics_data_set(const char *target_string, bool multi_domain)
 {
 	struct doca_mgmt_dev_ctx *dev_ctx;
 	struct doca_mgmt_diagnostics_data *dd_handle;
 	doca_error_t result;
 
-	result = doca_mgmt_dev_ctx_create(dev, &dev_ctx);
+	result = doca_mgmt_dev_ctx_create_from_target_string(target_string, &dev_ctx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create DOCA management device context: %s", doca_error_get_descr(result));
 		return result;

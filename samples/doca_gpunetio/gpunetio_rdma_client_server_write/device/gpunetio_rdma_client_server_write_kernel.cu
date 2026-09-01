@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -335,7 +335,7 @@ doca_error_t kernel_write_client(cudaStream_t stream,
 	cudaError_t result = cudaSuccess;
 
 	if (rdma_gpu == NULL || client_local_buf_arr_B == NULL || client_local_buf_arr_C == NULL ||
-	    client_local_buf_arr_F == NULL || client_remote_buf_arr_A == NULL) {
+	    client_local_buf_arr_F == NULL || client_remote_buf_arr_A == NULL || exit_flag == NULL) {
 		DOCA_LOG_ERR("kernel_write_client invalid input values");
 		return DOCA_ERROR_INVALID_VALUE;
 	}

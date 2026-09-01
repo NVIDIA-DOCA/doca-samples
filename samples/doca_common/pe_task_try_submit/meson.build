@@ -22,10 +22,58 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-sample_srcs = files([
-	SAMPLE_NAME + '_sample.c',
-])
+project('DOCA_SAMPLE', 'C', 'CPP',
+	# Get version number from file.
+	version: run_command(find_program('cat'),
+		files('../../../VERSION'), check: true).stdout().strip(),
+	license: 'BSD-3',
+	default_options: ['buildtype=debug'],
+	meson_version: '>= 0.61.2'
+)
 
-sample_main_srcs = files([
+SAMPLE_NAME = 'pe_task_try_submit'
+
+sample_project_arguments = []
+# Comment this line to restore warnings of experimental DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_EXPERIMENTAL_API']
+# Comment this line to restore warnings of deprecated DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_DEPRECATED_API']
+
+add_project_arguments(sample_project_arguments, language: ['c', 'cpp'])
+
+sample_dependencies = []
+# The DOCA library of the sample itself (Required for all DOCA programs)
+sample_dependencies += dependency('doca-common')
+# Additional DOCA library that is relevant for this sample
+sample_dependencies += dependency('doca-dma')
+# Utility DOCA library for executables
+sample_dependencies += dependency('doca-argp')
+
+sample_srcs = [
+	# The sample itself
+	SAMPLE_NAME + '_sample.c',
+	# Main function for the sample's executable
 	SAMPLE_NAME + '_main.c',
-])
+	# Common code for the DOCA library samples
+	'../pe_common.c',
+	# Common code for all DOCA samples
+	'../../common.c',
+	# Common code for all DOCA applications
+	'../../../applications/common/utils.c',
+]
+
+sample_inc_dirs  = []
+# Common DOCA library logic
+sample_inc_dirs += include_directories('..')
+# Common DOCA logic (samples)
+sample_inc_dirs += include_directories('../..')
+# Common DOCA logic
+sample_inc_dirs += include_directories('../../..')
+# Common DOCA logic (applications)
+sample_inc_dirs += include_directories('../../../applications/common/')
+
+executable('doca_' + SAMPLE_NAME, sample_srcs,
+	c_args : '-Wno-missing-braces',
+	dependencies : sample_dependencies,
+	include_directories: sample_inc_dirs,
+	install: false)

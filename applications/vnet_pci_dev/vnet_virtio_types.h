@@ -44,6 +44,8 @@
 
 #define VNET_VIRTIO_F_VERSION_1 32
 #define VNET_VIRTIO_F_ACCESS_PLATFORM 33
+#define VNET_VIRTIO_F_SR_IOV 37
+#define VNET_VIRTIO_F_ADMIN_VQ 41
 
 #define VNET_VIRTIO_DEVICE_STATUS_ACK 1
 #define VNET_VIRTIO_DEVICE_STATUS_DRIVER 2
@@ -62,7 +64,7 @@ struct vnet_virtio_queue_config {
 	uint64_t queue_device;		  /* read-write */
 	uint16_t queue_notif_config_data; /* read-only for driver */
 	uint16_t queue_reset;		  /* read-write */
-};
+} __attribute__((packed));
 
 struct vnet_virtio_common_config {
 	/* About the whole device. */
@@ -84,6 +86,16 @@ struct vnet_virtio_common_config {
 	uint16_t admin_queue_index; /* read-only for driver */
 	uint16_t admin_queue_num;   /* read-only for driver */
 } __attribute__((packed));
+
+/* Lock down PCI common-config offsets to match the virtio 1.3 spec; mismatches will cause
+ * host drivers to read garbage (e.g. wrong admin_queue_index/num leading to probe -EINVAL).
+ */
+_Static_assert(sizeof(struct vnet_virtio_queue_config) == 36, "vnet_virtio_queue_config must be 36 bytes");
+_Static_assert(offsetof(struct vnet_virtio_common_config, queue_select) == 22, "queue_select offset");
+_Static_assert(offsetof(struct vnet_virtio_common_config, vq) == 24, "vq offset");
+_Static_assert(offsetof(struct vnet_virtio_common_config, admin_queue_index) == 60, "admin_queue_index offset");
+_Static_assert(offsetof(struct vnet_virtio_common_config, admin_queue_num) == 62, "admin_queue_num offset");
+_Static_assert(sizeof(struct vnet_virtio_common_config) == 64, "vnet_virtio_common_config must be 64 bytes");
 
 /* VirtIO Network Device Configuration */
 struct vnet_virtio_net_config {
@@ -115,6 +127,23 @@ struct vnet_virtio_net_config {
 #define VIRTIO_NET_OK 0	 /* Command succeeded */
 #define VIRTIO_NET_ERR 1 /* Command failed */
 
+/* VirtIO Admin Command Opcodes */
+#define VIRTIO_ADMIN_CMD_LIST_QUERY 0
+#define VIRTIO_ADMIN_CMD_LIST_USE 1
+
+/* VirtIO Admin Command Group Types */
+#define VIRTIO_ADMIN_GROUP_TYPE_SELF 0
+
+/* VirtIO Admin Command Status */
+#define VIRTIO_ADMIN_STATUS_OK 0
+#define VIRTIO_ADMIN_STATUS_ERR 1
+#define VIRTIO_ADMIN_STATUS_Q_OK 0
+#define VIRTIO_ADMIN_STATUS_Q_INVALID_COMMAND 1
+#define VIRTIO_ADMIN_STATUS_Q_INVALID_OPCODE 2
+#define VIRTIO_ADMIN_STATUS_Q_INVALID_FIELD 3
+#define VIRTIO_ADMIN_STATUS_Q_INVALID_GROUP 4
+#define VIRTIO_ADMIN_STATUS_Q_INVALID_MEMBER 5
+
 /* VirtIO Network Feature Bits */
 #define VIRTIO_NET_F_CSUM 0		   /* Host handles pkts w/ partial csum */
 #define VIRTIO_NET_F_GUEST_CSUM 1	   /* Guest handles pkts w/ partial csum */
@@ -143,6 +172,9 @@ struct vnet_virtio_net_config {
 
 /* MSI-X Register Numbers */
 #define VIRTIO_NET_MSI_X_REGISTER_NUM (offsetof(struct pcie_virtio_dev, cfg.msix_cap) / sizeof(uint32_t))
+
+/* PCIe Express Capability — DW index of the {Device Control, Device Status} register */
+#define VIRTIO_NET_PCIE_DEV_CTRL_REG_NUM (offsetof(struct pcie_virtio_dev, cfg.pcie_cap.dev_ctrl) / sizeof(uint32_t))
 
 /* Complete VirtIO Device Structure (Framework-specific combination of PCIe + VirtIO) */
 struct pcie_virtio_dev {

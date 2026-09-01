@@ -136,15 +136,21 @@ doca_error_t kernel_receive_packets(cudaStream_t stream, struct rxq_queue *rxq, 
 {
 	cudaError_t result = cudaSuccess;
 
-	if (rxq == NULL || gpu_exit_condition == NULL) {
-		DOCA_LOG_ERR("kernel_receive_icmp invalid input values");
+	if (rxq == NULL || gpu_exit_condition == NULL || tot_pkts == NULL) {
+		DOCA_LOG_ERR("kernel_receive_packets invalid input values");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD && exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP &&
+	    exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK) {
+		DOCA_LOG_ERR("Invalid exec scope %d, must be thread, warp or block", exec_scope);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
 	/* Check no previous CUDA errors */
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 
@@ -158,7 +164,7 @@ doca_error_t kernel_receive_packets(cudaStream_t stream, struct rxq_queue *rxq, 
 
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 

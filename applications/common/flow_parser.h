@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -45,14 +45,6 @@ doca_error_t parse_ipv4_str(const char *str_ip, doca_be32_t *ipv4_addr);
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t parse_protocol_string(const char *protocol_str, enum doca_flow_l4_type_ext *protocol);
-
-/*
- * Set match l4 protocol
- *
- * @format [in]: outer or inner match format
- * @protocol [in]: protocol
- */
-void set_match_l4_protocol(struct doca_flow_header_format *format, uint8_t protocol);
 
 /*
  * Set the function to be called once pipe create command is entered

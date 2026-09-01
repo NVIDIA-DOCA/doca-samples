@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -50,20 +50,16 @@ static doca_error_t create_match_meta_pipe(struct doca_flow_port *port, int port
 {
 	struct doca_flow_match match;
 	struct doca_flow_match match_mask;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	doca_error_t result;
 
 	memset(&match_mask, 0, sizeof(match_mask));
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
 
 	/* set match_mask on meta */
 	match_mask.meta.u32[0] = UINT32_MAX;
-
-	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -81,11 +77,8 @@ static doca_error_t create_match_meta_pipe(struct doca_flow_port *port, int port
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	/* forwarding traffic to other port */
 	fwd.type = DOCA_FLOW_FWD_PORT;
@@ -147,6 +140,8 @@ static doca_error_t create_match_comparison_pipe(struct doca_flow_port *port, st
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	result = doca_flow_pipe_create(pipe_cfg, NULL, NULL, pipe);
 destroy_pipe_cfg:
@@ -214,8 +209,6 @@ static doca_error_t create_sum_to_meta_pipe(struct doca_flow_port *port,
 					    struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions;
-	struct doca_flow_actions *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	struct doca_flow_action_descs descs;
@@ -224,11 +217,9 @@ static doca_error_t create_sum_to_meta_pipe(struct doca_flow_port *port,
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&descs, 0, sizeof(descs));
 
-	actions_arr[0] = &actions;
 	descs_arr[0] = &descs;
 	descs.nb_action_desc = NB_ACTION_DESC;
 	descs.desc_array = desc_array;
@@ -283,7 +274,7 @@ static doca_error_t create_sum_to_meta_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, descs_arr, NB_ACTIONS_ARR);
+	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, NULL, NULL, descs_arr, NB_ACTIONS_ARR);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -418,7 +409,7 @@ doca_error_t flow_match_comparison(int nb_queues)
 			return result;
 		}
 
-		result = doca_flow_entries_process(ports[port_id], 0, DEFAULT_TIMEOUT_US, num_of_entries);
+		result = doca_flow_pipe_queue_drain(ports[port_id], 0, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);

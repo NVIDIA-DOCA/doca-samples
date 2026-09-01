@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -285,9 +285,8 @@ doca_error_t devemu_vfs_device_create(const char *pci_address)
 	}
 
 	/* Check if hotplug supported */
-	result = doca_devemu_pci_cap_type_is_hotplug_supported(doca_dev_as_devinfo(state.dev),
-							       doca_devemu_vfs_type_as_pci_type(state.vfs_type),
-							       &is_supported);
+	result = doca_devemu_vfs_cap_is_default_vfs_type_hotplug_supported(doca_dev_as_devinfo(state.dev),
+									   &is_supported);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to check hotplug support: %s", doca_error_get_descr(result));
 		state_cleanup(&state);

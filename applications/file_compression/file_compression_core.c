@@ -552,7 +552,7 @@ doca_error_t file_compression_client(struct comch_cfg *comch_cfg,
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	file_data = mmap(NULL, statbuf.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	file_data = mmap(NULL, statbuf.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
 	if (file_data == MAP_FAILED) {
 		DOCA_LOG_ERR("Unable to map file content: %s", strerror(errno));
 		close(fd);

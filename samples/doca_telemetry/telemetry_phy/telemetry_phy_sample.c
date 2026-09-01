@@ -63,6 +63,9 @@ struct telemetry_phy_sample_objects {
 												  Digital Diagnostic
 												  Monitoring (DDM) info
 												*/
+	struct doca_telemetry_phy_system_temp_and_pwr_info *system_temp_and_pwr_info_struct; /* Structure that represent
+												the system temperature
+												and power info */
 };
 
 /*
@@ -2321,6 +2324,26 @@ static void telemetry_phy_print_management_cable_ddm_info(
 }
 
 /*
+ * Print system temperature and power info
+ *
+ * Print the contents of the extracted system temperature and power info.
+ *
+ * @system_temp_and_pwr_info_struct [in]: Extracted system_temp_and_pwr_info_struct to print
+ */
+static void telemetry_phy_print_system_temp_and_pwr_info(
+	struct doca_telemetry_phy_system_temp_and_pwr_info *system_temp_and_pwr_info_struct)
+{
+	printf("System Temperature and Power Info\n");
+	printf("---------------------------------\n");
+
+	printf("Temperature: %.3fC\n", (double)system_temp_and_pwr_info_struct->temperature);
+	printf("Max Temperature: %.3fC\n", (double)system_temp_and_pwr_info_struct->max_temperature);
+	printf("Temperature Sensor Name: %s\n", system_temp_and_pwr_info_struct->temperature_sensor_name);
+	printf("Power: %.3fW\n", (double)system_temp_and_pwr_info_struct->power);
+	printf("Power Sensor Name: %s\n", system_temp_and_pwr_info_struct->power_sensor_name);
+}
+
+/*
  * Clean sample objects
  *
  * Closes and frees sample resources.
@@ -2387,6 +2410,13 @@ static doca_error_t telemetry_phy_sample_cleanup(struct telemetry_phy_sample_obj
 			      sample_objects->management_cable_ddm_info_struct);
 		free(sample_objects->management_cable_ddm_info_struct);
 		sample_objects->management_cable_ddm_info_struct = NULL;
+	}
+
+	if (sample_objects->system_temp_and_pwr_info_struct) {
+		DOCA_LOG_INFO("system_temp_and_pwr_info_struct %p: system_temp_and_pwr_info_struct was destroyed",
+			      sample_objects->system_temp_and_pwr_info_struct);
+		free(sample_objects->system_temp_and_pwr_info_struct);
+		sample_objects->system_temp_and_pwr_info_struct = NULL;
 	}
 
 	if (sample_objects->telemetry_phy_obj != NULL) {
@@ -2501,6 +2531,17 @@ static doca_error_t doca_telemetry_phy_sample_allocate_output_objects(
 		if (sample_objects->management_cable_ddm_info_struct == NULL) {
 			DOCA_LOG_ERR(
 				"Failed to allocate output objects: failed to allocate memory for management cable DDM info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_system_temp_and_pwr_info) {
+		sample_objects->system_temp_and_pwr_info_struct =
+			(struct doca_telemetry_phy_system_temp_and_pwr_info *)malloc(
+				sizeof(struct doca_telemetry_phy_system_temp_and_pwr_info));
+		if (sample_objects->system_temp_and_pwr_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for system temperature and power info");
 			return DOCA_ERROR_NO_MEMORY;
 		}
 	}
@@ -2620,6 +2661,19 @@ static doca_error_t telemetry_phy_sample_context_init(const struct telemetry_phy
 		}
 	}
 
+	if (cfg->get_system_temp_and_pwr_info) {
+		result = doca_telemetry_phy_cap_system_temp_and_pwr_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy system temperature and power info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: failed to query capability for system temperature and power info");
+			return result;
+		}
+	}
+
 	/* Create context and set properties */
 	result = doca_telemetry_phy_create(sample_objects->dev, &sample_objects->telemetry_phy_obj);
 	if (result != DOCA_SUCCESS) {
@@ -2677,6 +2731,9 @@ doca_error_t telemetry_phy_sample_run(const struct telemetry_phy_sample_cfg *cfg
 	}
 	if (cfg->get_management_cable_ddm_info) {
 		DOCA_LOG_INFO("	Retrieve management cable DDM info");
+	}
+	if (cfg->get_system_temp_and_pwr_info) {
+		DOCA_LOG_INFO("	Retrieve system temperature and power info");
 	}
 
 	/* Open DOCA device based on the given PCI address */
@@ -2796,6 +2853,18 @@ doca_error_t telemetry_phy_sample_run(const struct telemetry_phy_sample_cfg *cfg
 		}
 
 		telemetry_phy_print_management_cable_ddm_info(sample_objects.management_cable_ddm_info_struct);
+	}
+
+	if (cfg->get_system_temp_and_pwr_info) {
+		result =
+			doca_telemetry_phy_get_system_temp_and_pwr_info(sample_objects.telemetry_phy_obj,
+									sample_objects.system_temp_and_pwr_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read system temperature and power info with error=%s",
+				     doca_error_get_name(result));
+			goto teardown;
+		}
+		telemetry_phy_print_system_temp_and_pwr_info(sample_objects.system_temp_and_pwr_info_struct);
 	}
 
 teardown:

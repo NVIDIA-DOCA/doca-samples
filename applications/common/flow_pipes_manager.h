@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -49,14 +49,14 @@ struct flow_pipes_manager {
  * @pipes_manager [out]: Pointer to the newly created pipes manager
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t create_pipes_manager(struct flow_pipes_manager **pipes_manager);
+doca_error_t pipes_manager_create(struct flow_pipes_manager **pipes_manager);
 
 /*
  * Destroy flow pipe manager
  *
  * @manager [in]: Pipes manager to destroy
  */
-void destroy_pipes_manager(struct flow_pipes_manager *manager);
+void pipes_manager_destroy(struct flow_pipes_manager *manager);
 
 /*
  * Save the given DOCA Flow pipe and generate an ID for it

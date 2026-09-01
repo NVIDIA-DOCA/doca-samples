@@ -36,6 +36,7 @@
 DOCA_LOG_REGISTER(GPU_VERBS_SAMPLE::CUDA_KERNEL);
 
 #define ENABLE_DEBUG 0
+#define ENABLE_CQE_ERROR_FOR_COMP_CHANNEL 0
 
 __global__ void write_bw(struct doca_gpu_dev_verbs_qp *qp,
 			 uint32_t num_iters,
@@ -52,6 +53,15 @@ __global__ void write_bw(struct doca_gpu_dev_verbs_qp *qp,
 
 	for (uint32_t idx = threadIdx.x; idx < num_iters; idx += blockDim.x) {
 		wqe_ptr = doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
+
+#if ENABLE_CQE_ERROR_FOR_COMP_CHANNEL == 1
+		/*
+		 * To test event-based CQ comp channel feature,
+		 * cause a CQE error on purpose for last WQE message size 64B.
+		 */
+        if (wqe_idx == (num_iters * 4) - 1)
+			dst_buf_mkey = 0;
+#endif
 
 		doca_gpu_dev_verbs_wqe_prepare_write(qp,
 							  wqe_ptr,
@@ -78,9 +88,9 @@ __global__ void write_bw(struct doca_gpu_dev_verbs_qp *qp,
 	// Assumption: QP is long enough to hold all the WQEs posted in the loop.
 	// Application needs to poll only the last CQE corresponding to the last posted WQE.
 	if (threadIdx.x == (blockDim.x - 1)) {
-		if (doca_gpu_dev_verbs_poll_cq_at(doca_gpu_dev_verbs_qp_get_cq_sq(qp), (wqe_idx - blockDim.x)) != 0) {
+		if (doca_gpu_dev_verbs_poll_cq_at(qp, (wqe_idx - blockDim.x)) != 0) {
 			#if ENABLE_DEBUG == 1
-				printf("Error CQE!\n");
+				printf("Error CQE at wqe %ld\n", wqe_idx - blockDim.x);
 			#endif
 		}
 	}
@@ -105,12 +115,12 @@ doca_error_t gpunetio_verbs_write_bw(cudaStream_t stream,
 	/* Check no previous CUDA errors */
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	if (cuda_blocks > 1) {
-		DOCA_LOG_ERR("The kernel supports only 1 CUDA Block\n");
+	if (cuda_blocks != 1) {
+		DOCA_LOG_ERR("The kernel supports only 1 CUDA Block, requested cuda_blocks=%u", cuda_blocks);
 		return DOCA_ERROR_BAD_STATE;
 	}
 
@@ -124,7 +134,7 @@ doca_error_t gpunetio_verbs_write_bw(cudaStream_t stream,
 
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 

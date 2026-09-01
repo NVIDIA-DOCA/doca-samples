@@ -46,6 +46,7 @@ struct telemetry_phy_sample_cfg {
 	uint8_t get_management_cable_dump_info;	       /**< Retrieve management cable dump info */
 	uint8_t get_management_cable_ddm_info; /**< Retrieve management cable Digital Diagnostic Monitoring (DDM) info
 						*/
+	uint8_t get_system_temp_and_pwr_info;  /**< Retrieve system temperature and power info */
 };
 
 /*

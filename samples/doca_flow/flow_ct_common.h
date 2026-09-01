@@ -49,32 +49,26 @@ extern "C" {
 doca_error_t flow_ct_register_params(void);
 
 /*
- * Initialize DOCA Flow CT library
+ * Initialize DOCA Flow switch ports with CT configuration
  *
- * @flags [in]: Flow CT flags
- * @nb_arm_queues [in]: Number of threads the sample will use
- * @nb_ctrl_queues [in]: Number of control queues
- * @actions_mem_size [in]: Size of the actions memory
- * @entry_finalize_cb [in]: Entry finalize callback
- * @o_match_inner [in]: Origin match inner
- * @o_zone_mask [in]: Origin zone mask
- * @o_modify_mask [in]: Origin modify mask
- * @r_match_inner [in]: Reply match inner
- * @r_zone_mask [in]: Reply zone mask
- * @r_modify_mask [in]: Reply modify mask
+ * This is a wrapper for CT samples that need to pass CT configuration to port initialization.
+ *
+ * @devs_manager [in]: array of device bundles (doca device and representor devices)
+ * @nb_managers [in]: number of managers to create ports for
+ * @ports [in]: array of ports to create
+ * @nb_ports [in]: number of ports to create
+ * @actions_mem_size[in]: actions memory size
+ * @resources [in]: flow resources configuration
+ * @ct_cfg [in]: CT port configuration
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
-doca_error_t init_doca_flow_ct(uint32_t flags,
-			       uint32_t nb_arm_queues,
-			       uint32_t nb_ctrl_queues,
-			       uint32_t actions_mem_size,
-			       doca_flow_ct_entry_finalize_cb entry_finalize_cb,
-			       bool o_match_inner,
-			       struct doca_flow_meta *o_zone_mask,
-			       struct doca_flow_ct_meta *o_modify_mask,
-			       bool r_match_inner,
-			       struct doca_flow_meta *r_zone_mask,
-			       struct doca_flow_ct_meta *r_modify_mask);
+doca_error_t init_doca_flow_switch_ports_with_ct(struct flow_devs_manager devs_manager[],
+						 int nb_managers,
+						 struct doca_flow_port *ports[],
+						 int nb_ports,
+						 uint32_t actions_mem_size[],
+						 struct flow_resources *resources,
+						 const struct ct_port_cfg *ct_cfg);
 
 /*
  * Verify if DOCA device is ECPF by checking all supported capabilities

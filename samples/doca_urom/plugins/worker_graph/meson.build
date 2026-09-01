@@ -22,29 +22,41 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+project('urom_graph_worker_plugin',
+	'C', 'CPP',
+	license: 'BSD-3',
+	default_options: ['buildtype=debug'],
+	meson_version: '>= 0.61.2'
+)
+
 PLUGIN_NAME = 'worker_graph'
+lib_prefix = ''
 
-plugin_src = []
-plugin_hrd = []
-plugin_common_src = []
-plugin_common_hdr = []
-plugin_common_includes = []
+sample_project_arguments = []
+# Comment this line to restore warnings of experimental DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_EXPERIMENTAL_API']
+# Comment this line to restore warnings of deprecated DOCA features
+sample_project_arguments += ['-DDOCA_ALLOW_DEPRECATED_API']
 
-subdir('common')
+add_project_arguments(sample_project_arguments, language: ['c', 'cpp'])
 
-if is_dpu
-	subdir('dpu')
-else
-	subdir('host')
-endif
+languages = ['c', 'cpp']
 
-plugins_install_dir = '/'.join([sample_lib_install_dir, 'plugins'])
-plugin_dir = plugins_install_dir + '/' + PLUGIN_NAME
+plugin_dependencies = []
+# Required for all DOCA programs
+plugin_dependencies += dependency('doca-common')
+# The DOCA library of the sample itself
+plugin_dependencies += dependency('doca-urom')
+# Required DOCA Driver
+plugin_dependencies += dependency('ucx')
 
-meson_public_path = meson.current_source_dir() + '/' + 'meson.build.public'
+plugin_srcs = [
+	PLUGIN_NAME + '.c',
+]
 
-install_data(sources : plugin_src, install_dir : plugin_dir)
-install_data(sources : plugin_hdr, install_dir : plugin_dir)
-install_data(sources : plugin_common_src, install_dir : plugin_dir)
-install_data(sources : plugin_common_hdr, install_dir : plugin_dir)
-install_data(sources : meson_public_path, rename: ['meson.build'], install_dir : plugin_dir)
+plugin_inc_dirs  = []
+
+graph_plugin = shared_library(PLUGIN_NAME, plugin_srcs,
+	name_prefix: lib_prefix,
+	dependencies : plugin_dependencies,
+	install: false)

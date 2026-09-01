@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -255,7 +255,7 @@ static void reset_doca_flow_structs(void)
 
 doca_error_t parse_ipv4_str(const char *str_ip, doca_be32_t *ipv4_addr)
 {
-	char *ptr;
+	const char *ptr;
 	int i;
 	uint32_t ips[4];
 
@@ -988,13 +988,13 @@ static doca_error_t parse_match_field(char *field_name, char *value, void *struc
 		if (result != DOCA_SUCCESS)
 			return result;
 	} else if (strcmp(field_name, "inner.tcp_src_port") == 0) {
-		match->outer.tcp.l4_port.src_port = rte_cpu_to_be_16(strtol(value, NULL, 0));
+		match->inner.tcp.l4_port.src_port = rte_cpu_to_be_16(strtol(value, NULL, 0));
 	} else if (strcmp(field_name, "inner.tcp_dst_port") == 0) {
-		match->outer.tcp.l4_port.dst_port = rte_cpu_to_be_16(strtol(value, NULL, 0));
+		match->inner.tcp.l4_port.dst_port = rte_cpu_to_be_16(strtol(value, NULL, 0));
 	} else if (strcmp(field_name, "inner.udp_src_port") == 0) {
-		match->outer.udp.l4_port.src_port = rte_cpu_to_be_16(strtol(value, NULL, 0));
+		match->inner.udp.l4_port.src_port = rte_cpu_to_be_16(strtol(value, NULL, 0));
 	} else if (strcmp(field_name, "inner.udp_dst_port") == 0) {
-		match->outer.udp.l4_port.dst_port = rte_cpu_to_be_16(strtol(value, NULL, 0));
+		match->inner.udp.l4_port.dst_port = rte_cpu_to_be_16(strtol(value, NULL, 0));
 	} else {
 		DOCA_LOG_ERR("The %s is not supported field in match", field_name);
 		return DOCA_ERROR_INVALID_VALUE;
@@ -1244,7 +1244,7 @@ static doca_error_t parse_create_pipe_params(char *params_str,
 
 	if (!has_port_id) {
 		DOCA_LOG_ERR("The param port_id is a mandatory input and was not given");
-		return result;
+		return DOCA_ERROR_INVALID_VALUE;
 	}
 	return DOCA_SUCCESS;
 }

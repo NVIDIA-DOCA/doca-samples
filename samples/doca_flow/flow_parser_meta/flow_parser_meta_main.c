@@ -53,7 +53,7 @@ int main(int argc, char **argv)
 	struct flow_dev_ctx flow_dev_ctx = {};
 	struct application_dpdk_config dpdk_config = {
 		.port_config.nb_ports = 2,
-		.port_config.nb_queues = 1,
+		.port_config.nb_queues = 2,
 	};
 
 	/* Register a logger backend */

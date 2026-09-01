@@ -188,7 +188,7 @@ int main(int argc, char **argv)
 
 	DOCA_LOG_INFO("Starting the sample");
 
-	status = doca_argp_init("gpunetio_verbs_put_signal_lat", &cfg);
+	status = doca_argp_init("doca_gpunetio_verbs_put_counter_lat", &cfg);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(status));
 		goto sample_exit;

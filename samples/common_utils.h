@@ -26,18 +26,23 @@
 #ifndef COMMON_UTILS_H
 #define COMMON_UTILS_H
 
+#include <assert.h>
 #include <stdint.h>
 
 /**
  * This method aligns a uint64 value up
  *
  * @value [in]: value to align up
- * @alignment [in]: alignment value
+ * @alignment [in]: alignment value, must not be 0
  * @return: aligned value
  */
 static inline uint64_t common_utils_align_up_uint64(uint64_t value, uint64_t alignment)
 {
-	uint64_t remainder = (value % alignment);
+	uint64_t remainder;
+
+	assert(alignment != 0);
+
+	remainder = (value % alignment);
 
 	if (remainder == 0)
 		return value;
@@ -49,12 +54,16 @@ static inline uint64_t common_utils_align_up_uint64(uint64_t value, uint64_t ali
  * This method aligns a uint32 value up
  *
  * @value [in]: value to align up
- * @alignment [in]: alignment value
+ * @alignment [in]: alignment value, must not be 0
  * @return: aligned value
  */
 static inline uint32_t common_utils_align_up_uint32(uint32_t value, uint32_t alignment)
 {
-	uint64_t remainder = (value % alignment);
+	uint64_t remainder;
+
+	assert(alignment != 0);
+
+	remainder = (value % alignment);
 	if (remainder == 0)
 		return value;
 	return (uint32_t)(value + (alignment - remainder));
@@ -63,11 +72,13 @@ static inline uint32_t common_utils_align_up_uint32(uint32_t value, uint32_t ali
 /**
  * This method returns the next power of two of a uint64 value
  *
- * @x [in]: value to get the next power of two
+ * @x [in]: value to get the next power of two, must not be 0
  * @return: next power of two
  */
 static inline uint64_t common_utils_next_power_of_two(uint64_t x)
 {
+	assert(x != 0);
+
 	x--;
 	x |= x >> 1;
 	x |= x >> 2;

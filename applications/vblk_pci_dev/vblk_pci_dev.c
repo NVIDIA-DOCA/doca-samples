@@ -245,6 +245,21 @@ static doca_error_t hotplug_mode_callback(void *param, void *config)
 	return DOCA_SUCCESS;
 }
 
+static doca_error_t sriov_total_vfs_callback(void *param, void *config)
+{
+	struct vblk_pci_dev_config *cfg = (struct vblk_pci_dev_config *)config;
+	int value = *(int *)param;
+
+	if (value < 1 || value > PCI_FUNC(UINT8_MAX)) {
+		DOCA_LOG_ERR("Invalid --total-vfs value: %d. Supported range is 1..%u VFs (no ARI)",
+			     value,
+			     PCI_FUNC(UINT8_MAX));
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	cfg->sriov_total_vfs = (uint16_t)value;
+	return DOCA_SUCCESS;
+}
+
 /**
  * @brief ARGP callback to set data path provider
  *
@@ -256,20 +271,45 @@ static doca_error_t hotplug_mode_callback(void *param, void *config)
  */
 static doca_error_t set_provider_callback(void *param, void *config)
 {
-	bool datapath_on_dpa = true;
+	bool datapath_on_dpa = false;
 	struct vblk_pci_dev_config *cfg = (struct vblk_pci_dev_config *)config;
 	char *provider_name = (char *)param;
 
 	if (provider_name) {
-		if (!strcmp(provider_name, "DPU")) {
-			datapath_on_dpa = false;
-		} else if (strcmp(provider_name, "DPA")) {
+		if (!strcmp(provider_name, "DPA")) {
+			datapath_on_dpa = true;
+		} else if (strcmp(provider_name, "DPU")) {
 			DOCA_LOG_ERR("Invalid data path provider value:%s", provider_name);
 			return DOCA_ERROR_INVALID_VALUE;
 		}
 	}
 
 	cfg->datapath_on_dpa = datapath_on_dpa;
+
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t register_sriov_param(void)
+{
+	struct doca_argp_param *param;
+	doca_error_t result;
+
+	result = doca_argp_param_create(&param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(param, "total-vfs");
+	doca_argp_param_set_description(param,
+					"SR-IOV TotalVFs per PF (1..7, no ARI). Any value >= 1 enables SR-IOV; "
+					"omit to disable. Per-VF MSI-X/doorbells are derived from the queue count");
+	doca_argp_param_set_callback(param, sriov_total_vfs_callback);
+	doca_argp_param_set_type(param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register --total-vfs: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	return DOCA_SUCCESS;
 }
@@ -476,6 +516,12 @@ static doca_error_t register_vblk_pci_dev_params(void)
 		return result;
 	}
 
+	result = register_sriov_param();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register SR-IOV params: %s", doca_error_get_descr(result));
+		return result;
+	}
+
 	/* Data Path Provider */
 	result = doca_argp_param_create(&param);
 	if (result != DOCA_SUCCESS) {
@@ -484,7 +530,7 @@ static doca_error_t register_vblk_pci_dev_params(void)
 	}
 	doca_argp_param_set_long_name(param, "provider");
 	doca_argp_param_set_arguments(param, "<datapath provider name>");
-	doca_argp_param_set_description(param, "Set data path provider, {DPA or DPU, default: DPA}");
+	doca_argp_param_set_description(param, "Set data path provider, {DPA or DPU, default: DPU}");
 	doca_argp_param_set_callback(param, set_provider_callback);
 	doca_argp_param_set_type(param, DOCA_ARGP_TYPE_STRING);
 	result = doca_argp_register_param(param);
@@ -516,8 +562,15 @@ int main(int argc, char **argv)
 		.tlp_core_idx = VBLK_PCI_DEV_DEFAULT_TLP_CORE_IDX,
 		.offload_engine_core_idx = VBLK_PCI_DEV_DEFAULT_OFFLOAD_ENGINE_CORE_IDX,
 		.stats_ios_period = 0,
-		.datapath_on_dpa = true,
+		.datapath_on_dpa = false,
 		.hotplug_mode = true,
+		/* SR-IOV is off unless --total-vfs >= 1 is given; sriov_enabled and the
+		 * per-VF MSI-X/doorbell counts are derived from --total-vfs / --num-queues
+		 * after argument parsing (see below). */
+		.sriov_enabled = false,
+		.sriov_total_vfs = 0,
+		.sriov_num_vf_msix = 0,
+		.sriov_num_vf_db = 0,
 	};
 	struct doca_log_backend *sdk_log;
 	int exit_status = EXIT_FAILURE;
@@ -557,6 +610,16 @@ int main(int argc, char **argv)
 		goto destroy_argp;
 	}
 
+	/* Derive SR-IOV config from the single --total-vfs knob: any value >= 1
+	 * enables SR-IOV, and the per-VF MSI-X / doorbell counts follow the queue
+	 * count the same way the PF does - one MSI-X vector per queue plus one for
+	 * config changes, and one doorbell per queue. */
+	config.sriov_enabled = (config.sriov_total_vfs >= 1);
+	if (config.sriov_enabled) {
+		config.sriov_num_vf_msix = (uint16_t)(config.num_queues + 1);
+		config.sriov_num_vf_db = config.num_queues;
+	}
+
 	/* Setup signal handlers for graceful termination */
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
@@ -569,9 +632,17 @@ int main(int argc, char **argv)
 	DOCA_LOG_INFO("  IO Context Mask: 0x%lx", config.io_ctx_mask);
 	DOCA_LOG_INFO("  TLP Core: %u", config.tlp_core_idx);
 	DOCA_LOG_INFO("  Offload Engine Core: %u", config.offload_engine_core_idx);
+	if (config.sriov_enabled)
+		DOCA_LOG_INFO("  SR-IOV: enabled (total_vfs=%u, vf_msix=%u, vf_db=%u)",
+			      config.sriov_total_vfs,
+			      config.sriov_num_vf_msix,
+			      config.sriov_num_vf_db);
+	else
+		DOCA_LOG_INFO("  SR-IOV: disabled");
 	DOCA_LOG_INFO("Runtime commands (enter via stdin):");
 	DOCA_LOG_INFO("  cap <GB>  - Set block device capacity in GB (e.g. cap 1)");
 	DOCA_LOG_INFO(" Datapath Provider: %s", config.datapath_on_dpa ? "DPA" : "DPU");
+	DOCA_LOG_INFO("  Indirect Descriptors: %s", config.indirect_enabled ? "enabled" : "disabled");
 
 	/* Run the core VirtIO Block PCI device logic */
 	result = vblk_pci_dev_run(&config);

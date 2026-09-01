@@ -30,6 +30,7 @@
 #include <unordered_map>
 #include <tuple>
 #include <utility>
+#include <doca_error.h>
 
 /**
  * @brief IoDevice provides per-thread storage for device data.
@@ -53,7 +54,7 @@ public:
 
 	/**
 	 * @brief Get or create per-thread data for this device.
-	 * @return Reference to the per-thread data.
+	 * @return Pointer to the per-thread data, or nullptr if per-thread initialization fails.
 	 */
 	T2 *getPerThreadData()
 	{
@@ -61,10 +62,10 @@ public:
 		if (it == threadLocalVars.end()) {
 			auto res = threadLocalVars.emplace(std::piecewise_construct,
 							   std::forward_as_tuple((char *)this),
-							   std::forward_as_tuple(&global_data));
-
-			int rc = res.first->second.nfs_fsdev_init();
-			if (rc) {
+							   std::forward_as_tuple());
+			res.first->second.nfs_global = &global_data;
+			doca_error_t rc = res.first->second.nfs_fsdev_init();
+			if (DOCA_IS_ERROR(rc)) {
 				threadLocalVars.erase(res.first);
 				return nullptr;
 			}

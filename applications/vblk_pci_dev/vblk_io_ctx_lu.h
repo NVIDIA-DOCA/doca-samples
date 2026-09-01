@@ -59,6 +59,7 @@ struct vblk_io_ctx_cfg {
 	uint16_t seg_max;
 	bool indirect_enabled;
 	uint32_t stats_ios_period;
+	const char *shm_dir_path;
 	const struct vblk_io_ctx_app_ops *ops;
 	void (*ipc_poll)(void *arg); /* OE thread: drain IPC messages */
 	void *ipc_poll_arg;

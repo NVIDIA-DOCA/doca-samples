@@ -122,7 +122,7 @@ doca_error_t open_doca_device_with_sf_index(uint32_t sf_index, tasks_check func,
 /*
  * Open a DOCA device with a custom set of capabilities
  *
- * @func [in]: pointer to a function that checks if the device have some task capabilities
+ * @func [in]: pointer to a function that checks if the device have some task capabilities (Ignored if set to NULL)
  * @retval [out]: pointer to doca_dev struct, NULL if not found
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -133,7 +133,7 @@ doca_error_t open_doca_device_with_capabilities(tasks_check func, struct doca_de
  *
  * @local [in]: queries representors of the given local doca device
  * @filter [in]: bitflags filter to narrow the representors in the search
- * @value [in]: IB device name
+ * @value [in]: VUID string
  * @val_size [in]: input length, in bytes
  * @retval [out]: pointer to doca_dev_rep struct, NULL if not found
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -145,7 +145,7 @@ doca_error_t open_doca_device_rep_with_vuid(struct doca_dev *local,
 					    struct doca_dev_rep **retval);
 
 /*
- * Open a DOCA device according to a given PCI address
+ * Open a DOCA device representor according to a given PCI address
  *
  * @local [in]: queries representors of the given local doca device
  * @filter [in]: bitflags filter to narrow the representors in the search
@@ -161,14 +161,15 @@ doca_error_t open_doca_device_rep_with_pci(struct doca_dev *local,
 /*
  * Initialize a series of DOCA Core objects needed for the program's execution
  *
- * @state [in]: struct containing the set of initialized DOCA Core objects
- * @max_bufs [in]: maximum number of buffers for DOCA Inventory
+ * @state [in/out]: struct in which the created DOCA Core objects are stored, state->dev must already hold an opened
+ * device
+ * @max_bufs [in]: maximum number of buffers for DOCA Inventory (0 to skip buffer inventory creation)
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t create_core_objects(struct program_core_objects *state, uint32_t max_bufs);
 
 /*
- * Request to stop context
+ * Stop a context, blocking while polling the progress engine until the context reaches idle state
  *
  * @pe [in]: DOCA progress engine
  * @ctx [in]: DOCA context added to the progress engine

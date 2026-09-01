@@ -445,7 +445,8 @@ doca_error_t sync_event_start_async(const struct sync_event_config *se_cfg,
 
 	se_rt_objs->se_ctx = doca_sync_event_as_ctx(se_rt_objs->se);
 	if (se_rt_objs->se_ctx == NULL) {
-		DOCA_LOG_ERR("Failed to convert sync event to ctx");
+		result = DOCA_ERROR_UNEXPECTED;
+		DOCA_LOG_ERR("Failed to convert sync event to ctx: %s", doca_error_get_name(result));
 		return result;
 	}
 
@@ -880,7 +881,7 @@ doca_error_t sync_event_async_task_submit(struct sync_event_runtime_objects *se_
 	if (se_rt_objs->se_task_result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to execute set task for sync event: %s",
 			     doca_error_get_descr(se_rt_objs->se_task_result));
-		return result;
+		return se_rt_objs->se_task_result;
 	}
 
 	return DOCA_SUCCESS;

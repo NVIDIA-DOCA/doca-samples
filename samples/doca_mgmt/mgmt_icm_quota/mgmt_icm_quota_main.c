@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -31,9 +31,10 @@
 #include <string.h>
 
 #include <doca_argp.h>
-#include <doca_dev.h>
 #include <doca_log.h>
 #include <doca_mgmt_icm_quota.h>
+
+#include "mgmt_common.h"
 
 DOCA_LOG_REGISTER(MGMT_ICM_QUOTA::MAIN);
 
@@ -44,6 +45,7 @@ DOCA_LOG_REGISTER(MGMT_ICM_QUOTA::MAIN);
 /* Configuration struct */
 enum doca_mgmt_quota_icm_cmds {
 	DOCA_MGMT_ICM_QUOTA_CMD_NONE,
+	DOCA_MGMT_ICM_QUOTA_CMD_LIST_TARGETS,
 	DOCA_MGMT_ICM_QUOTA_CMD_GET,
 	DOCA_MGMT_ICM_QUOTA_CMD_SET,
 	DOCA_MGMT_ICM_QUOTA_CMD_CAPS,
@@ -51,11 +53,11 @@ enum doca_mgmt_quota_icm_cmds {
 
 struct mgmt_icm_quota_config {
 	/* Common configuration */
-	enum doca_mgmt_quota_icm_cmds cmd; /* Command to execute */
-	struct doca_dev *dev;		   /* Device */
-	struct doca_dev_rep *dev_rep;	   /* Device representor */
-	bool dev_set;			   /* Whether device is set */
-	bool rep_set;			   /* Whether representor is set */
+	enum doca_mgmt_quota_icm_cmds cmd;	     /* Command to execute */
+	char target[MGMT_COMMON_TARGET_STR_LEN];     /* Device management target string */
+	char rep_target[MGMT_COMMON_TARGET_STR_LEN]; /* Representor management target string */
+	bool target_set;			     /* Whether device target is set */
+	bool rep_target_set;			     /* Whether representor target is set */
 
 	/* Get command configuration */
 	struct {
@@ -73,17 +75,17 @@ struct mgmt_icm_quota_config {
 };
 
 /* Sample's Logic */
-doca_error_t mgmt_icm_quota_get(struct doca_dev *dev,
-				struct doca_dev_rep *dev_rep,
+doca_error_t mgmt_icm_quota_get(const char *target_string,
+				const char *rep_target_string,
 				bool get_limit,
 				bool get_cur_alloc,
 				bool get_max_reached);
-doca_error_t mgmt_icm_quota_set(struct doca_dev *dev,
-				struct doca_dev_rep *dev_rep,
+doca_error_t mgmt_icm_quota_set(const char *target_string,
+				const char *rep_target_string,
 				bool limit_set,
 				uint64_t limit,
 				bool reset_max_reached);
-doca_error_t mgmt_icm_quota_caps(struct doca_dev *dev);
+doca_error_t mgmt_icm_quota_caps(const char *target_string);
 
 /*
  * Parse size string with unit suffix (K, M, G, T)
@@ -158,58 +160,68 @@ static doca_error_t parse_limit_string(const char *str, uint64_t *value)
 }
 
 /*
- * ARGP Callback - Handle device parameter
+ * ARGP Callback - Handle device target parameter
  *
  * @param [in]: Input parameter
  * @config [in/out]: Program configuration context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t device_callback(void *param, void *config)
+static doca_error_t target_callback(void *param, void *config)
 {
 	struct mgmt_icm_quota_config *conf = (struct mgmt_icm_quota_config *)config;
-	struct doca_argp_device_ctx *dev_ctx = (struct doca_argp_device_ctx *)param;
+	doca_error_t result;
 
-	if (conf->dev_set) {
-		fprintf(stderr, "Only one device is allowed to be specified\n");
+	if (conf->rep_target_set) {
+		fprintf(stderr, "Device target and representor target cannot be specified together\n");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	if (conf->rep_set) {
-		fprintf(stderr, "Device and representor cannot be specified together\n");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
+	result = mgmt_common_target_string_copy((const char *)param, conf->target);
+	if (result != DOCA_SUCCESS)
+		return result;
 
-	conf->dev = dev_ctx->dev;
-	conf->dev_set = true;
+	conf->target_set = true;
 
 	return DOCA_SUCCESS;
 }
 
 /*
- * ARGP Callback - Handle representor parameter
+ * ARGP Callback - Handle representor target parameter
  *
  * @param [in]: Input parameter
  * @config [in/out]: Program configuration context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-static doca_error_t rep_callback(void *param, void *config)
+static doca_error_t rep_target_callback(void *param, void *config)
 {
 	struct mgmt_icm_quota_config *conf = (struct mgmt_icm_quota_config *)config;
-	struct doca_argp_device_rep_ctx *dev_rep_ctx = (struct doca_argp_device_rep_ctx *)param;
+	doca_error_t result;
 
-	if (conf->rep_set) {
-		fprintf(stderr, "Only one representor is allowed to be specified\n");
+	if (conf->target_set) {
+		fprintf(stderr, "Device target and representor target cannot be specified together\n");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	if (conf->dev_set) {
-		fprintf(stderr, "Device and representor cannot be specified together\n");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
+	result = mgmt_common_target_string_copy((const char *)param, conf->rep_target);
+	if (result != DOCA_SUCCESS)
+		return result;
 
-	conf->dev_rep = dev_rep_ctx->dev_rep;
-	conf->dev = dev_rep_ctx->dev_ctx.dev;
-	conf->rep_set = true;
+	conf->rep_target_set = true;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle list-targets command
+ *
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t list_targets_callback(void *config)
+{
+	struct mgmt_icm_quota_config *conf = (struct mgmt_icm_quota_config *)config;
+
+	conf->cmd = DOCA_MGMT_ICM_QUOTA_CMD_LIST_TARGETS;
 
 	return DOCA_SUCCESS;
 }
@@ -324,46 +336,23 @@ static doca_error_t set_reset_max_reached_callback(void *param, void *config)
  */
 static doca_error_t register_device_rep_params(struct doca_argp_cmd *cmd)
 {
-	struct doca_argp_param *device_param, *rep_param;
 	doca_error_t result;
 
-	/* Create and register device param */
-	result = doca_argp_param_create(&device_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+	result = mgmt_common_register_target_dev_param(
+		cmd,
+		target_callback,
+		false,
+		"DOCA device management target string (e.g., pci/0000:08:00.0), mutually exclusive with 'rep'. Use 'list-targets' to discover available targets");
+	if (result != DOCA_SUCCESS)
 		return result;
-	}
-	doca_argp_param_set_short_name(device_param, "d");
-	doca_argp_param_set_long_name(device_param, "device");
-	doca_argp_param_set_description(
-		device_param,
-		"DOCA device (e.g., pci/0000:08:00.0), mutually exclusive with 'rep' parameter");
-	doca_argp_param_set_callback(device_param, device_callback);
-	doca_argp_param_set_type(device_param, DOCA_ARGP_TYPE_DEVICE);
-	result = doca_argp_cmd_register_param(cmd, device_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
-		return result;
-	}
 
-	/* Create and register representor param */
-	result = doca_argp_param_create(&rep_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+	result = mgmt_common_register_target_dev_rep_param(
+		cmd,
+		rep_target_callback,
+		false,
+		"DOCA device representor management target string (e.g., pci/0000:08:00.0,c0pf0vf0), mutually exclusive with 'device'. Use 'list-targets' to discover available targets");
+	if (result != DOCA_SUCCESS)
 		return result;
-	}
-	doca_argp_param_set_short_name(rep_param, "r");
-	doca_argp_param_set_long_name(rep_param, "rep");
-	doca_argp_param_set_description(
-		rep_param,
-		"Device representor (e.g., pci/0000:08:00.0,pf0vf0), mutually exclusive with 'device' parameter");
-	doca_argp_param_set_callback(rep_param, rep_callback);
-	doca_argp_param_set_type(rep_param, DOCA_ARGP_TYPE_DEVICE_REP);
-	result = doca_argp_cmd_register_param(cmd, rep_param);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
-		return result;
-	}
 
 	return DOCA_SUCCESS;
 }
@@ -623,8 +612,8 @@ static doca_error_t register_mgmt_icm_quota_cmd_caps(void)
 	doca_argp_cmd_set_description(cmd_caps, "Get ICM quota capabilities");
 	doca_argp_cmd_set_callback(cmd_caps, caps_callback);
 
-	/* Register common device and representor params */
-	result = register_device_rep_params(cmd_caps);
+	/* The 'caps' command operates on a device target only */
+	result = mgmt_common_register_target_dev_param(cmd_caps, target_callback, true, NULL);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -646,6 +635,12 @@ static doca_error_t register_mgmt_icm_quota_cmd_caps(void)
 static doca_error_t register_mgmt_icm_quota_cmds(void)
 {
 	doca_error_t result;
+
+	result = mgmt_common_register_list_targets_cmd(list_targets_callback);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register list-targets command: %s", doca_error_get_descr(result));
+		return result;
+	}
 
 	result = register_mgmt_icm_quota_cmd_get();
 	if (result != DOCA_SUCCESS) {
@@ -677,13 +672,17 @@ static doca_error_t register_mgmt_icm_quota_cmds(void)
 static doca_error_t validate_params(struct mgmt_icm_quota_config *conf)
 {
 	if (conf->cmd == DOCA_MGMT_ICM_QUOTA_CMD_NONE) {
-		fprintf(stderr, "Either 'get', 'set' or 'caps' command must be specified\n");
+		fprintf(stderr, "A command must be specified: 'list-targets', 'get', 'set' or 'caps'\n");
 		doca_argp_usage();
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	if (!conf->dev_set && !conf->rep_set) {
-		fprintf(stderr, "Either 'device' or 'rep' parameter must be specified\n");
+	/* list-targets does not operate on a specific target */
+	if (conf->cmd == DOCA_MGMT_ICM_QUOTA_CMD_LIST_TARGETS)
+		return DOCA_SUCCESS;
+
+	if (!conf->target_set && !conf->rep_target_set) {
+		fprintf(stderr, "Either 'device' or 'rep' target must be specified\n");
 		doca_argp_usage();
 		return DOCA_ERROR_INVALID_VALUE;
 	}
@@ -744,17 +743,7 @@ int main(int argc, char **argv)
 	}
 
 	/* Initialize configuration */
-	conf.cmd = DOCA_MGMT_ICM_QUOTA_CMD_NONE;
-	conf.dev = NULL;
-	conf.dev_rep = NULL;
-	conf.dev_set = false;
-	conf.rep_set = false;
-	conf.get_params.limit = false;
-	conf.get_params.cur_alloc = false;
-	conf.get_params.max_reached = false;
-	conf.set_params.limit_set = false;
-	conf.set_params.limit = 0;
-	conf.set_params.reset_max_reached = false;
+	memset(&conf, 0, sizeof(conf));
 
 	result = doca_argp_init(NULL, &conf);
 	if (result != DOCA_SUCCESS) {
@@ -781,12 +770,18 @@ int main(int argc, char **argv)
 	if (result != DOCA_SUCCESS)
 		goto argp_cleanup;
 
-	if (conf.cmd == DOCA_MGMT_ICM_QUOTA_CMD_GET) {
+	if (conf.cmd == DOCA_MGMT_ICM_QUOTA_CMD_LIST_TARGETS) {
+		result = mgmt_common_list_targets(true);
+		if (result != DOCA_SUCCESS) {
+			fprintf(stderr, "Failed to list management targets: %s\n", doca_error_get_descr(result));
+			goto argp_cleanup;
+		}
+	} else if (conf.cmd == DOCA_MGMT_ICM_QUOTA_CMD_GET) {
 		/* If no specific get params are set, get all */
 		bool get_all = !conf.get_params.limit && !conf.get_params.cur_alloc && !conf.get_params.max_reached;
 
-		result = mgmt_icm_quota_get(conf.dev,
-					    conf.dev_rep,
+		result = mgmt_icm_quota_get(conf.target_set ? conf.target : NULL,
+					    conf.rep_target_set ? conf.rep_target : NULL,
 					    get_all || conf.get_params.limit,
 					    get_all || conf.get_params.cur_alloc,
 					    get_all || conf.get_params.max_reached);
@@ -795,8 +790,8 @@ int main(int argc, char **argv)
 			goto argp_cleanup;
 		}
 	} else if (conf.cmd == DOCA_MGMT_ICM_QUOTA_CMD_SET) {
-		result = mgmt_icm_quota_set(conf.dev,
-					    conf.dev_rep,
+		result = mgmt_icm_quota_set(conf.target_set ? conf.target : NULL,
+					    conf.rep_target_set ? conf.rep_target : NULL,
 					    conf.set_params.limit_set,
 					    conf.set_params.limit,
 					    conf.set_params.reset_max_reached);
@@ -805,7 +800,7 @@ int main(int argc, char **argv)
 			goto argp_cleanup;
 		}
 	} else if (conf.cmd == DOCA_MGMT_ICM_QUOTA_CMD_CAPS) {
-		result = mgmt_icm_quota_caps(conf.dev);
+		result = mgmt_icm_quota_caps(conf.target);
 		if (result != DOCA_SUCCESS) {
 			fprintf(stderr, "Failed to get ICM quota capabilities: %s\n", doca_error_get_descr(result));
 			goto argp_cleanup;
@@ -815,14 +810,6 @@ int main(int argc, char **argv)
 	exit_status = EXIT_SUCCESS;
 
 argp_cleanup:
-	if (conf.dev_rep != NULL)
-		if (doca_dev_rep_close(conf.dev_rep) != DOCA_SUCCESS)
-			DOCA_LOG_WARN("Failed to close DOCA device representor");
-	/* Only close device if it was opened directly (not through rep) */
-	if (conf.dev != NULL && conf.dev_set)
-		if (doca_dev_close(conf.dev) != DOCA_SUCCESS)
-			DOCA_LOG_WARN("Failed to close DOCA device");
-
 	doca_argp_destroy();
 
 sample_exit:

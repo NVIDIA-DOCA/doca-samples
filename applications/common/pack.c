@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -149,11 +149,11 @@ uint64_t unpack_uint64(uint8_t **buffer)
 	return value;
 }
 
-void unpack_blob(uint8_t **buffer, size_t length, uint8_t *output)
+void unpack_blob(uint8_t **buffer, size_t length, uint8_t *object)
 {
 	uint8_t *read_head = *buffer;
 
-	memcpy(output, read_head, length);
+	memcpy(object, read_head, length);
 	read_head += length;
 	*buffer = read_head;
 }

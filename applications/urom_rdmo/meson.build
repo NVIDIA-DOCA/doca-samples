@@ -35,11 +35,3 @@ if is_dpu
 else
 	subdir('host')
 endif
-
-# Handle the meson vs meson.build.public of the internal dirs
-foreach internal_dir : ['dpu', 'host']
-	public_meson_path = '/'.join([absolute_path, internal_dir, public_meson_file_name])
-	install_data(sources : public_meson_path, rename : [regular_meson_file_name], install_dir : '/'.join(app_install_dir, internal_dir))
-	app_install_excludes += '/'.join([internal_dir, public_meson_file_name])
-	app_install_excludes += '/'.join([internal_dir, regular_meson_file_name])
-endforeach

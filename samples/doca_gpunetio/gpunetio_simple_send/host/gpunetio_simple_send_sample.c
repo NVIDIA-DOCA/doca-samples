@@ -245,12 +245,6 @@ static doca_error_t destroy_txq(struct txq_queue *txq)
 		}
 	}
 
-	result = doca_dev_close(txq->ddev);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to destroy Eth dev: %s", doca_error_get_descr(result));
-		return DOCA_ERROR_BAD_STATE;
-	}
-
 	return DOCA_SUCCESS;
 }
 
@@ -467,7 +461,7 @@ static doca_error_t create_txq(struct txq_queue *txq,
 	return DOCA_SUCCESS;
 
 exit_error:
-	destroy_txq(txq);
+	/* Caller owns the cleanup: it always invokes destroy_txq() on its exit path */
 	return DOCA_ERROR_BAD_STATE;
 }
 
@@ -498,21 +492,21 @@ static void *progress_cpu_proxy(void *args_)
  */
 doca_error_t gpunetio_simple_send(struct sample_simple_send_cfg *sample_cfg)
 {
-	doca_error_t result;
+	doca_error_t result, tmp_result;
 	struct doca_gpu *gpu_dev = NULL;
 	struct doca_dev *ddev = NULL;
 	struct txq_queue txq = {0};
-	cudaStream_t stream;
+	cudaStream_t stream = NULL;
 	cudaError_t res_rt = cudaSuccess;
 	uint32_t *cpu_exit_condition;
-	uint32_t *gpu_exit_condition;
+	uint32_t *gpu_exit_condition = NULL;
 	struct cpu_proxy_args args;
 	pthread_t thread_id;
 
 	result = init_doca_device(sample_cfg->nic_pcie_addr, &ddev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function init_doca_device returned %s", doca_error_get_descr(result));
-		return EXIT_FAILURE;
+		return result;
 	}
 
 	result = init_doca_flow();
@@ -552,6 +546,7 @@ doca_error_t gpunetio_simple_send(struct sample_simple_send_cfg *sample_cfg)
 	res_rt = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
 	if (res_rt != cudaSuccess) {
 		DOCA_LOG_ERR("Function cudaStreamCreateWithFlags error %d", res_rt);
+		result = DOCA_ERROR_DRIVER;
 		goto exit;
 	}
 
@@ -562,6 +557,8 @@ doca_error_t gpunetio_simple_send(struct sample_simple_send_cfg *sample_cfg)
 				    (void **)&gpu_exit_condition,
 				    (void **)&cpu_exit_condition);
 	if (result != DOCA_SUCCESS || gpu_exit_condition == NULL || cpu_exit_condition == NULL) {
+		if (result == DOCA_SUCCESS)
+			result = DOCA_ERROR_NO_MEMORY;
 		DOCA_LOG_ERR("Function doca_gpu_mem_alloc returned %s", doca_error_get_descr(result));
 		goto exit;
 	}
@@ -570,11 +567,17 @@ doca_error_t gpunetio_simple_send(struct sample_simple_send_cfg *sample_cfg)
 	if (sample_cfg->nic_handler == DOCA_GPUNETIO_ETH_NIC_HANDLER_CPU_PROXY) {
 		args.txq = txq.eth_txq_cpu;
 		args.exit_flag = (uint64_t *)calloc(1, sizeof(uint64_t));
-		*(args.exit_flag) = 0;
+		if (args.exit_flag == NULL) {
+			DOCA_LOG_ERR("Failed to allocate CPU proxy exit flag");
+			result = DOCA_ERROR_NO_MEMORY;
+			goto exit;
+		}
 
-		int result = pthread_create(&thread_id, NULL, progress_cpu_proxy, (void *)&args);
-		if (result != 0) {
+		int ret = pthread_create(&thread_id, NULL, progress_cpu_proxy, (void *)&args);
+		if (ret != 0) {
 			perror("Failed to create thread");
+			free(args.exit_flag);
+			result = DOCA_ERROR_OPERATING_SYSTEM;
 			goto exit;
 		}
 	}
@@ -596,6 +599,7 @@ doca_error_t gpunetio_simple_send(struct sample_simple_send_cfg *sample_cfg)
 	if (sample_cfg->nic_handler == DOCA_GPUNETIO_ETH_NIC_HANDLER_CPU_PROXY) {
 		WRITE_ONCE_64b(*args.exit_flag, 1);
 		pthread_join(thread_id, NULL);
+		free(args.exit_flag);
 	}
 
 exit:
@@ -605,13 +609,30 @@ exit:
 	if (gpu_exit_condition)
 		doca_gpu_mem_free(gpu_dev, gpu_exit_condition);
 
-	result = destroy_txq(&txq);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Function destroy_txq returned %s", doca_error_get_descr(result));
-		return DOCA_ERROR_BAD_STATE;
+	tmp_result = destroy_txq(&txq);
+	if (tmp_result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Function destroy_txq returned %s", doca_error_get_descr(tmp_result));
+		DOCA_ERROR_PROPAGATE(result, tmp_result);
 	}
 
-	DOCA_LOG_INFO("Sample finished successfully");
+	if (gpu_dev) {
+		tmp_result = doca_gpu_destroy(gpu_dev);
+		if (tmp_result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Function doca_gpu_destroy returned %s", doca_error_get_descr(tmp_result));
+			DOCA_ERROR_PROPAGATE(result, tmp_result);
+		}
+	}
 
-	return DOCA_SUCCESS;
+	if (ddev != NULL) {
+		tmp_result = doca_dev_close(ddev);
+		if (tmp_result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Function doca_dev_close returned %s", doca_error_get_descr(tmp_result));
+			DOCA_ERROR_PROPAGATE(result, tmp_result);
+		}
+	}
+
+	if (result == DOCA_SUCCESS)
+		DOCA_LOG_INFO("Sample finished successfully");
+
+	return result;
 }

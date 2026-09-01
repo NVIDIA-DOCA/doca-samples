@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -125,7 +125,7 @@ struct buf_arr_obj {
  *
  * @oob_sock_fd [out]: Socket FD
  * @oob_client_sock [out]: Client socket FD
- * @return: positive integer on success and -1 otherwise
+ * @return: 0 on success and -1 otherwise
  */
 int oob_connection_server_setup(int *oob_sock_fd, int *oob_client_sock);
 
@@ -142,7 +142,7 @@ void oob_connection_server_close(int oob_sock_fd, int oob_client_sock);
  *
  * @server_ip [in]: Server IP address to connect
  * @oob_sock_fd [out]: Socket FD
- * @return: positive integer on success and -1 otherwise
+ * @return: 0 on success and -1 otherwise
  */
 int oob_connection_client_setup(const char *server_ip, int *oob_sock_fd);
 
@@ -214,7 +214,7 @@ doca_error_t rdma_write_server(struct rdma_config *cfg);
  */
 doca_error_t rdma_write_client(struct rdma_config *cfg);
 
-#if __cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -227,6 +227,8 @@ extern "C" {
  * @client_local_buf_arr_C [in]: GPU buffer with local data C
  * @client_local_buf_arr_F [in]: GPU buffer with local data F
  * @client_remote_buf_arr_A [in]: GPU buffer on remote server with data A
+ * @connection_index [in]: RDMA connection index to use
+ * @exit_flag [in]: GPU memory flag polled by the kernel to know when to exit
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t kernel_write_client(cudaStream_t stream,
@@ -245,6 +247,7 @@ doca_error_t kernel_write_client(cudaStream_t stream,
  * @rdma_gpu [in]: RDMA GPU object
  * @server_local_buf_arr_A [in]: GPU buffer with local data A
  * @server_remote_buf_arr_F [in]: GPU buffer on remote server with data F
+ * @connection_index [in]: RDMA connection index to use
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t kernel_write_server(cudaStream_t stream,
@@ -275,7 +278,7 @@ doca_error_t gpunetio_rdma_write_bw(cudaStream_t stream,
 				    struct doca_gpu_buf_arr *server_local_buf_arr,
 				    struct doca_gpu_buf_arr *server_remote_buf_arr);
 
-#if __cplusplus
+#ifdef __cplusplus
 }
 #endif
 

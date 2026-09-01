@@ -82,12 +82,13 @@ doca_error_t register_doca_flow_switch_params(void)
 	return DOCA_SUCCESS;
 }
 
-doca_error_t init_doca_flow_switch_ports(struct flow_devs_manager devs_manager[],
-					 int nb_managers,
-					 struct doca_flow_port *ports[],
-					 int nb_ports,
-					 uint32_t actions_mem_size[],
-					 struct flow_resources *resources)
+doca_error_t init_doca_flow_switch_ports_internal(struct flow_devs_manager devs_manager[],
+						  int nb_managers,
+						  struct doca_flow_port *ports[],
+						  int nb_ports,
+						  uint32_t actions_mem_size[],
+						  struct flow_resources *resources,
+						  const struct ct_port_cfg *ct_cfg)
 {
 	struct doca_dev *dev_arr[FLOW_COMMON_DEV_MAX];
 	struct doca_dev_rep *dev_rep_arr[FLOW_COMMON_REPS_MAX];
@@ -124,7 +125,24 @@ doca_error_t init_doca_flow_switch_ports(struct flow_devs_manager devs_manager[]
 						       NULL /* port_rep_cb */,
 						       NULL /* config_cb_ctx */,
 						       actions_mem_size,
-						       resources);
+						       resources,
+						       ct_cfg);
+}
+
+doca_error_t init_doca_flow_switch_ports(struct flow_devs_manager devs_manager[],
+					 int nb_managers,
+					 struct doca_flow_port *ports[],
+					 int nb_ports,
+					 uint32_t actions_mem_size[],
+					 struct flow_resources *resources)
+{
+	return init_doca_flow_switch_ports_internal(devs_manager,
+						    nb_managers,
+						    ports,
+						    nb_ports,
+						    actions_mem_size,
+						    resources,
+						    NULL /* ct_cfg */);
 }
 
 uint8_t get_dpdk_nb_ports(void)

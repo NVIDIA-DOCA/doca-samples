@@ -51,19 +51,15 @@ static doca_error_t create_port_fwd_pipe(struct doca_flow_port *port, int port_i
 {
 	struct doca_flow_match match;
 	struct doca_flow_monitor monitor;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
 	memset(&monitor, 0, sizeof(monitor));
-	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
 
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
-
-	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -81,16 +77,13 @@ static doca_error_t create_port_fwd_pipe(struct doca_flow_port *port, int port_i
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
 	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	/* forwarding traffic to other port */
 	fwd.type = DOCA_FLOW_FWD_PORT;
@@ -116,7 +109,6 @@ static doca_error_t create_classifier_pipe(struct doca_flow_port *port,
 					   struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_monitor monitor;
 	struct doca_flow_fwd fwd;
 	struct doca_flow_fwd fwd_miss;
@@ -124,7 +116,6 @@ static doca_error_t create_classifier_pipe(struct doca_flow_port *port,
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&monitor, 0, sizeof(monitor));
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&fwd_miss, 0, sizeof(fwd_miss));
@@ -134,8 +125,6 @@ static doca_error_t create_classifier_pipe(struct doca_flow_port *port,
 	match.parser_meta.outer_l4_type = DOCA_FLOW_L4_META_TCP;
 
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
-
-	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -153,16 +142,13 @@ static doca_error_t create_classifier_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
 	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = drop_pipe;
@@ -211,7 +197,6 @@ static doca_error_t create_drop_pipe(struct doca_flow_port *port,
 				     struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_monitor monitor;
 	struct doca_flow_fwd fwd;
 	struct doca_flow_fwd fwd_miss;
@@ -220,7 +205,6 @@ static doca_error_t create_drop_pipe(struct doca_flow_port *port,
 	const char *label = "Matches IPv4 TCP packets with changeable source and destination IP addresses and ports";
 
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&monitor, 0, sizeof(monitor));
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&fwd_miss, 0, sizeof(fwd_miss));
@@ -240,8 +224,6 @@ static doca_error_t create_drop_pipe(struct doca_flow_port *port,
 	match.outer.tcp.l4_port.dst_port = 0xffff;
 
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
-
-	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -264,16 +246,13 @@ static doca_error_t create_drop_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
 	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	fwd.type = DOCA_FLOW_FWD_DROP;
 
@@ -484,7 +463,7 @@ doca_error_t flow_drop(int nb_queues)
 			return result;
 		}
 
-		result = doca_flow_entries_process(ports[port_id], 0, DEFAULT_TIMEOUT_US, nb_entries);
+		result = doca_flow_pipe_queue_drain(ports[port_id], 0, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);

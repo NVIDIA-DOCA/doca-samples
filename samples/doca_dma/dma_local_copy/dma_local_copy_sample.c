@@ -83,52 +83,165 @@ static doca_error_t register_memory_range_and_start_mmap(struct doca_mmap *mmap,
 }
 
 /*
+ * Free DOCA buffer array
+ *
+ * @doca_buf [in]: DOCA buffer array
+ * @num_buf [in]: Number of DOCA buffer
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t free_doca_buf_array(struct doca_buf *doca_buf[], int num_buf)
+{
+	doca_error_t result = DOCA_SUCCESS;
+	doca_error_t tmp_result;
+
+	for (int i = 0; i < num_buf; i++) {
+		if (doca_buf[i] == NULL)
+			continue;
+		tmp_result = doca_buf_dec_refcount(doca_buf[i], NULL);
+		if (tmp_result != DOCA_SUCCESS) {
+			DOCA_ERROR_PROPAGATE(result, tmp_result);
+			DOCA_LOG_ERR("Failed to decrease DOCA buffer reference count: %s",
+				     doca_error_get_descr(tmp_result));
+		}
+		doca_buf[i] = NULL;
+	}
+	return result;
+}
+
+/*
+ * Allocate DOCA buffer for task
+ *
+ * @doca_buf [in]: DOCA buffer array
+ * @dma_conf [in]: DMA configuration
+ * @state [in]: Program core objects
+ * @buffer [in]: Buffer start address
+ * @length [in]: Single allocated DOCA buffer's size
+ * @is_source [in]: True if source buffer, false if destination buffer
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t allocate_doca_buf_for_task(struct doca_buf *doca_buf[],
+					       const struct dma_config *dma_conf,
+					       struct program_core_objects *state,
+					       char *buffer,
+					       size_t length,
+					       bool is_source)
+{
+	doca_error_t result = DOCA_SUCCESS;
+	doca_error_t tmp_result;
+	struct doca_mmap *mmap = is_source ? state->src_mmap : state->dst_mmap;
+	int num_buf_elem = is_source ? dma_conf->num_src_buf : dma_conf->num_dst_buf;
+	int num_tasks = dma_conf->num_tasks;
+
+	for (int i = 0; i < num_tasks; i++) {
+		result = allocate_doca_buf_list(state->buf_inv,
+						mmap,
+						buffer + i * length,
+						length,
+						num_buf_elem,
+						is_source,
+						&doca_buf[i]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Unable to acquire DOCA buffer representing %s buffer %d: %s",
+				     is_source ? "source" : "destination",
+				     i,
+				     doca_error_get_descr(result));
+			tmp_result = free_doca_buf_array(doca_buf, i);
+			if (tmp_result != DOCA_SUCCESS) {
+				DOCA_ERROR_PROPAGATE(result, tmp_result);
+				DOCA_LOG_ERR(
+					"Failed to decrease DOCA buffer reference count representing %d %s buffers: %s",
+					i,
+					is_source ? "source" : "destination",
+					doca_error_get_descr(tmp_result));
+			}
+			break;
+		}
+	}
+
+	return result;
+}
+
+static inline void free_dma_tasks(struct doca_dma_task_memcpy *dma_tasks[], int start_index, int end_index)
+{
+	for (int i = start_index; i < end_index; i++) {
+		if (dma_tasks[i] == NULL)
+			continue;
+		doca_task_free(doca_dma_task_memcpy_as_task(dma_tasks[i]));
+		dma_tasks[i] = NULL;
+	}
+}
+
+/*
  * Run DOCA DMA local copy sample
  *
- * @pcie_addr [in]: Device PCI address
+ * @dma_conf [in]: DMA sample configuration
  * @dst_buffer [in]: Destination buffer
  * @src_buffer [in]: Source buffer to copy
  * @length [in]: Buffer's size
- * @num_src_buf [in]: Number of source doca_buf to allocate
- * @num_dst_buf [in]: Number of destination doca_buf to allocate
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t dma_local_copy(const char *pcie_addr,
-			    char *dst_buffer,
-			    char *src_buffer,
-			    size_t length,
-			    int num_src_buf,
-			    int num_dst_buf)
+doca_error_t dma_local_copy(const struct dma_config *dma_conf, char *dst_buffer, char *src_buffer, size_t length)
 {
 	struct dma_resources resources;
 	struct program_core_objects *state = &resources.state;
-	struct doca_dma_task_memcpy *dma_task = NULL;
-	struct doca_task *task = NULL;
-	union doca_data task_user_data = {0};
-	struct doca_buf *src_doca_buf = NULL;
-	struct doca_buf *dst_doca_buf = NULL;
+	struct doca_dma_task_memcpy *dma_tasks[MAX_NUM_TASKS] = {NULL};
+	struct doca_task *tasks = NULL;
+	union doca_data task_user_data[MAX_NUM_TASKS] = {0};
+	struct doca_buf *src_doca_buf[MAX_NUM_TASKS] = {NULL};
+	struct doca_buf *dst_doca_buf[MAX_NUM_TASKS] = {NULL};
 	struct timespec ts = {
 		.tv_sec = 0,
 		.tv_nsec = SLEEP_IN_NANOS,
 	};
-	doca_error_t result, tmp_result, task_result;
+	doca_error_t result;
+	doca_error_t tmp_result;
+	doca_error_t task_results[MAX_NUM_TASKS] = {DOCA_SUCCESS};
+	int i = 0;
+	int num_submitted = 0;
+	int num_tasks = dma_conf->num_tasks;
+	size_t total_length = length * num_tasks;
+	int max_num_range_profiling_displayed = dma_conf->max_num_range_profiling_displayed;
 
 	if (dst_buffer == NULL || src_buffer == NULL || length == 0) {
 		DOCA_LOG_ERR("Invalid input values, addresses and sizes must not be 0");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	result = memory_ranges_overlap(dst_buffer, src_buffer, length);
+	result = memory_ranges_overlap(dst_buffer, src_buffer, total_length);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Memory ranges must not overlap");
 		return result;
 	}
 
 	/* Allocate resources */
-	result = allocate_dma_resources(pcie_addr, num_src_buf + num_dst_buf, &resources);
+	result = allocate_dma_resources(dma_conf->pci_address,
+					dma_conf->num_src_buf,
+					dma_conf->num_dst_buf,
+					num_tasks,
+					&resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to allocate DMA resources: %s", doca_error_get_descr(result));
 		return result;
+	}
+
+	/*
+	 * Set maximum number of NVTX ranges that can be displayed in parallel.
+	 * If max_num_range_profiling_displayed is set to 0 , NVTX trace collecting is disabled.
+	 */
+	if (max_num_range_profiling_displayed > 0) {
+		result = doca_ctx_profiler_set_max_nranges(state->ctx, max_num_range_profiling_displayed);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_WARN(
+				"Failed to set maximum number of NVTX ranges due to NVTX profiling is not supported: %s",
+				doca_error_get_descr(result));
+		} else {
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR(
+					"Failed to set maximum number of NVTX ranges that can be displayed in parallel: %s",
+					doca_error_get_descr(result));
+				goto destroy_resources;
+			}
+		}
 	}
 
 	/* Connect context to progress engine */
@@ -144,71 +257,82 @@ doca_error_t dma_local_copy(const char *pcie_addr,
 		goto destroy_resources;
 	}
 
-	result = register_memory_range_and_start_mmap(state->dst_mmap, dst_buffer, length);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create and start source mmap: %s", doca_error_get_descr(result));
-		goto stop_dma;
-	}
-
-	result = register_memory_range_and_start_mmap(state->src_mmap, src_buffer, length);
+	result = register_memory_range_and_start_mmap(state->dst_mmap, dst_buffer, total_length);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create and start destination mmap: %s", doca_error_get_descr(result));
 		goto stop_dma;
 	}
 
+	result = register_memory_range_and_start_mmap(state->src_mmap, src_buffer, total_length);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create and start source mmap: %s", doca_error_get_descr(result));
+		goto stop_dma;
+	}
+
 	/* Clear destination memory buffer */
-	memset(dst_buffer, 0, length);
+	memset(dst_buffer, 0, total_length);
 
 	/* Construct DOCA buffer for each address range */
-	result = allocate_doca_buf_list(state->buf_inv,
-					state->src_mmap,
-					src_buffer,
-					length,
-					num_src_buf,
-					true,
-					&src_doca_buf);
+	result = allocate_doca_buf_for_task(src_doca_buf, dma_conf, state, src_buffer, length, true);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Unable to acquire DOCA buffer representing source buffer: %s",
-			     doca_error_get_descr(result));
 		goto stop_dma;
 	}
 
 	/* Construct DOCA buffer for each address range */
-	result = allocate_doca_buf_list(state->buf_inv,
-					state->dst_mmap,
-					dst_buffer,
-					length,
-					num_dst_buf,
-					false,
-					&dst_doca_buf);
+	result = allocate_doca_buf_for_task(dst_doca_buf, dma_conf, state, dst_buffer, length, false);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Unable to acquire DOCA buffer representing destination buffer: %s",
-			     doca_error_get_descr(result));
 		goto destroy_src_buf;
 	}
 
-	/* Include result in user data of task to be used in the callbacks */
-	task_user_data.ptr = &task_result;
-	/* Allocate and construct DMA task */
-	result = doca_dma_task_memcpy_alloc_init(resources.dma_ctx,
-						 src_doca_buf,
-						 dst_doca_buf,
-						 task_user_data,
-						 &dma_task);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to allocate DMA memcpy task: %s", doca_error_get_descr(result));
-		goto destroy_dst_buf;
+	for (i = 0; i < num_tasks; i++) {
+		/* Include result in user data of task to be used in the callbacks */
+		task_user_data[i].ptr = &task_results[i];
+		/* Allocate and construct DMA task */
+		result = doca_dma_task_memcpy_alloc_init(resources.dma_ctx,
+							 src_doca_buf[i],
+							 dst_doca_buf[i],
+							 task_user_data[i],
+							 &dma_tasks[i]);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to allocate DMA memcpy task %d: %s", i, doca_error_get_descr(result));
+			/* Free all tasks allocated until now */
+			free_dma_tasks(dma_tasks, 0, i);
+			goto destroy_dst_buf;
+		}
 	}
+
 	/* Number of tasks submitted to progress engine */
-	resources.num_remaining_tasks = 1;
+	resources.num_remaining_tasks = 0;
+	num_submitted = 0;
 
-	task = doca_dma_task_memcpy_as_task(dma_task);
+	for (i = 0; i < num_tasks; i++) {
+		tasks = doca_dma_task_memcpy_as_task(dma_tasks[i]);
 
-	/* Submit DMA task */
-	result = doca_task_submit(task);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to submit DMA task: %s", doca_error_get_descr(result));
-		doca_task_free(task);
+		/* Submit DMA task */
+		if (max_num_range_profiling_displayed == 0) {
+			/* Without task range profiling requirement, submit it with default flag
+			 * (DOCA_TASK_SUBMIT_FLAG_FLUSH) */
+			result = doca_task_submit(tasks);
+		} else {
+			/* With task range profiling requirement, submit it with range profiling requested flag
+			 * (DOCA_TASK_SUBMIT_FLAG_RANGE_PROFILING_REQUESTED) */
+			result = doca_task_submit_ex(tasks,
+						     DOCA_TASK_SUBMIT_FLAG_FLUSH |
+							     DOCA_TASK_SUBMIT_FLAG_RANGE_PROFILING_REQUESTED);
+		}
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to submit DMA task %d: %s", i, doca_error_get_descr(result));
+			/* Free all not submitted but allocated tasks */
+			free_dma_tasks(dma_tasks, i, num_tasks);
+			/* Go to progress_pe to process all submitted but not completed tasks */
+			break;
+		}
+
+		num_submitted++;
+		(resources.num_remaining_tasks)++;
+	}
+	if (num_submitted == 0) {
+		DOCA_LOG_ERR("No tasks submitted successfully");
 		goto destroy_dst_buf;
 	}
 
@@ -220,27 +344,32 @@ doca_error_t dma_local_copy(const char *pcie_addr,
 			nanosleep(&ts, &ts);
 	}
 
-	/* Check result of task according to the result we update in the callbacks */
-	if (task_result == DOCA_SUCCESS)
-		DOCA_LOG_INFO("Success, memory copied and verified as correct");
-	else
-		DOCA_LOG_ERR("DMA memcpy task failed: %s", doca_error_get_descr(task_result));
+	/* If any task submission fails, do not check the results of the submitted tasks, just return the error */
+	if (result != DOCA_SUCCESS) {
+		goto destroy_dst_buf;
+	}
 
-	result = task_result;
+	for (i = 0; i < num_submitted; i++) {
+		/* Check result of task according to the result we update in the callbacks */
+		if (task_results[i] == DOCA_SUCCESS) {
+			DOCA_LOG_INFO("Success, DMA memory task %d copied and verified as correct", i);
+		} else {
+			DOCA_LOG_ERR("DMA memcpy task %d failed: %s", i, doca_error_get_descr(task_results[i]));
+			DOCA_ERROR_PROPAGATE(result, task_results[i]);
+		}
+	}
 
 destroy_dst_buf:
-	tmp_result = doca_buf_dec_refcount(dst_doca_buf, NULL);
+	tmp_result = free_doca_buf_array(dst_doca_buf, num_tasks);
 	if (tmp_result != DOCA_SUCCESS) {
 		DOCA_ERROR_PROPAGATE(result, tmp_result);
-		DOCA_LOG_ERR("Failed to decrease DOCA destination buffer reference count: %s",
-			     doca_error_get_descr(tmp_result));
+		DOCA_LOG_ERR("Failed to free DOCA destination buffer array: %s", doca_error_get_descr(tmp_result));
 	}
 destroy_src_buf:
-	tmp_result = doca_buf_dec_refcount(src_doca_buf, NULL);
+	tmp_result = free_doca_buf_array(src_doca_buf, num_tasks);
 	if (tmp_result != DOCA_SUCCESS) {
 		DOCA_ERROR_PROPAGATE(result, tmp_result);
-		DOCA_LOG_ERR("Failed to decrease DOCA source buffer reference count: %s",
-			     doca_error_get_descr(tmp_result));
+		DOCA_LOG_ERR("Failed to free DOCA source buffer array: %s", doca_error_get_descr(tmp_result));
 	}
 stop_dma:
 	tmp_result = doca_ctx_stop(state->ctx);

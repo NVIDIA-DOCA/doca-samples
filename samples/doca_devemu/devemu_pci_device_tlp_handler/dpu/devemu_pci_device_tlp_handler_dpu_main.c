@@ -38,17 +38,22 @@ DOCA_LOG_REGISTER(DEVEMU_PCI_DEVICE_TLP_HANDLER_DPU::MAIN);
 /* Max length (including null terminator) for the shared memory directory path */
 #define TLP_CHANNEL_SHM_DIR_PATH_MAX 256
 
+/* Max number of SR-IOV VFs supported by the sample */
+#define TLP_MAX_TOTAL_VFS 7
+
 /* Configuration struct */
 struct devemu_pci_cfg {
 	char pci_address[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* device PCI address */
 	bool is_handover_destination; /* true if this instance is the destination in a TLP channel handover */
 	char shm_dir_path[TLP_CHANNEL_SHM_DIR_PATH_MAX]; /* shared memory directory path; empty = standalone */
+	uint16_t total_vfs; /* number of SR-IOV VFs to expose. 0 means SR-IOV is disabled */
 };
 
 /* Sample's Logic */
 doca_error_t devemu_pci_device_tlp_handler_dpu(const char *pci_address,
 					       bool is_handover_destination,
-					       const char *shm_dir_path);
+					       const char *shm_dir_path,
+					       uint16_t total_vfs);
 
 #ifdef DOCA_ARCH_DPU
 
@@ -112,6 +117,28 @@ static doca_error_t shm_dir_path_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - Handle SR-IOV total VFs parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t total_vfs_callback(void *param, void *config)
+{
+	struct devemu_pci_cfg *conf = (struct devemu_pci_cfg *)config;
+	int total_vfs = *(int *)param;
+
+	if (total_vfs < 0 || total_vfs > TLP_MAX_TOTAL_VFS) {
+		DOCA_LOG_ERR("total-vfs must be in the range [0, %d]", TLP_MAX_TOTAL_VFS);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	conf->total_vfs = (uint16_t)total_vfs;
+
+	return DOCA_SUCCESS;
+}
+
+/*
  * Register the command line parameters for the sample
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -121,6 +148,7 @@ static doca_error_t register_devemu_pci_params(void)
 	doca_error_t result;
 	struct doca_argp_param *handover_destination_param;
 	struct doca_argp_param *shm_dir_path_param;
+	struct doca_argp_param *total_vfs_param;
 
 	result = register_pci_address_param(pci_callback);
 	if (result != DOCA_SUCCESS)
@@ -160,6 +188,22 @@ static doca_error_t register_devemu_pci_params(void)
 		return result;
 	}
 
+	result = doca_argp_param_create(&total_vfs_param);
+	if (result != DOCA_SUCCESS)
+		return result;
+	doca_argp_param_set_short_name(total_vfs_param, "tv");
+	doca_argp_param_set_long_name(total_vfs_param, "total-vfs");
+	doca_argp_param_set_description(
+		total_vfs_param,
+		"Number of SR-IOV VFs to expose on the emulated PF. 0 (default) disables SR-IOV.");
+	doca_argp_param_set_callback(total_vfs_param, total_vfs_callback);
+	doca_argp_param_set_type(total_vfs_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(total_vfs_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
 	return DOCA_SUCCESS;
 }
 
@@ -183,6 +227,7 @@ int main(int argc, char **argv)
 	strncpy(devemu_pci_cfg.pci_address, "0000:03:00.0", sizeof(devemu_pci_cfg.pci_address));
 	devemu_pci_cfg.is_handover_destination = false;
 	*devemu_pci_cfg.shm_dir_path = '\0';
+	devemu_pci_cfg.total_vfs = 0;
 
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
@@ -224,7 +269,8 @@ int main(int argc, char **argv)
 	/* Run sample logic */
 	result = devemu_pci_device_tlp_handler_dpu(devemu_pci_cfg.pci_address,
 						   devemu_pci_cfg.is_handover_destination,
-						   devemu_pci_cfg.shm_dir_path);
+						   devemu_pci_cfg.shm_dir_path,
+						   devemu_pci_cfg.total_vfs);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("devemu_pci_device_tlp_handler_dpu() encountered an error: %s",
 			     doca_error_get_descr(result));

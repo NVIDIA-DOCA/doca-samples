@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -85,14 +85,14 @@ doca_error_t kernel_send_wait_on_time(cudaStream_t stream, struct txq_queue *txq
 	cudaError_t result = cudaSuccess;
 
 	if (txq == NULL || intervals_gpu == NULL) {
-		DOCA_LOG_ERR("kernel_receive_icmp invalid input values");
+		DOCA_LOG_ERR("kernel_send_wait_on_time invalid input values");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
 	/* Check no previous CUDA errors */
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 
@@ -104,7 +104,7 @@ doca_error_t kernel_send_wait_on_time(cudaStream_t stream, struct txq_queue *txq
 								 intervals_gpu);
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 

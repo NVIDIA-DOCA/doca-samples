@@ -30,6 +30,9 @@
 #include <doca_devemu_vfs.h>
 #include <doca_devemu_vfs_dev.h>
 #include <doca_devemu_vfs_io.h>
+#include <doca_devemu_vfs_type.h>
+#include <doca_devemu_virtio.h>
+#include <linux/virtio_ring.h>
 
 #include <virtiofs_core.h>
 #include <virtiofs_request.h>
@@ -203,6 +206,72 @@ out:
 	return err;
 }
 
+static doca_error_t virtiofs_set_max_queue_size(const struct doca_devinfo *devinfo,
+						struct doca_devemu_virtio_dev *virtio_dev,
+						uint16_t queue_size)
+{
+	doca_error_t err;
+	uint16_t supported_max_queue_size;
+
+	err = doca_devemu_vfs_cap_get_max_queue_size(devinfo, &supported_max_queue_size);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get max queue size capability, err:%s", doca_error_get_name(err));
+		return err;
+	}
+
+	if (queue_size > supported_max_queue_size) {
+		DOCA_LOG_ERR("Error: configured queue_size:%d > supported queue_size:%d",
+			     queue_size,
+			     supported_max_queue_size);
+		return DOCA_ERROR_NOT_SUPPORTED;
+	}
+
+	err = doca_devemu_virtio_dev_set_queue_size(virtio_dev, queue_size);
+	return err;
+}
+
+static doca_error_t virtiofs_device_set_indirect_desc(struct virtiofs_device *dev)
+{
+	doca_error_t err;
+	struct doca_devemu_virtio_dev *virtio_dev = doca_devemu_vfs_dev_as_virtio_dev(dev->vfs_dev);
+	uint64_t features = 0;
+	uint8_t indirect_supported = 0;
+
+	if (!dev->config.indirect_enabled)
+		return DOCA_SUCCESS;
+
+	err = doca_devemu_vfs_cap_is_indir_descs_supported(doca_dev_as_devinfo(dev->manager->dev), &indirect_supported);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("[%s] Failed to query indirect feature capability, err: %s",
+			     dev->config.name,
+			     doca_error_get_name(err));
+		return err;
+	}
+	if (indirect_supported == 0) {
+		DOCA_LOG_WARN("[%s] Indirect descriptor feature not supported by HW", dev->config.name);
+		return DOCA_ERROR_NOT_SUPPORTED;
+	}
+
+	err = doca_devemu_virtio_dev_get_device_features_63_0(virtio_dev, &features);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("[%s] Failed to get device features, err: [%s]",
+			     dev->config.name,
+			     doca_error_get_name(err));
+		return err;
+	}
+
+	features |= (1ULL << VIRTIO_RING_F_INDIRECT_DESC);
+	err = doca_devemu_virtio_dev_set_device_features_63_0(virtio_dev, features);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("[%s] Failed to set indirect desc feature, err: [%s]",
+			     dev->config.name,
+			     doca_error_get_name(err));
+		return err;
+	}
+
+	return DOCA_SUCCESS;
+}
+
 static doca_error_t virtiofs_device_attributes_modify(struct virtiofs_device *dev)
 {
 	doca_error_t err = DOCA_SUCCESS;
@@ -237,8 +306,9 @@ static doca_error_t virtiofs_device_attributes_modify(struct virtiofs_device *de
 	}
 
 	if (dev->config.queue_size) {
-		err = doca_devemu_virtio_dev_set_queue_size(doca_devemu_vfs_dev_as_virtio_dev(dev->vfs_dev),
-							    dev->config.queue_size);
+		err = virtiofs_set_max_queue_size(doca_dev_as_devinfo(dev->manager->dev),
+						  doca_devemu_vfs_dev_as_virtio_dev(dev->vfs_dev),
+						  dev->config.queue_size);
 		if (err != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to modify queue_size for: [%s], err: [%s]\n",
 				     dev->config.name,
@@ -246,6 +316,10 @@ static doca_error_t virtiofs_device_attributes_modify(struct virtiofs_device *de
 			return err;
 		}
 	}
+
+	err = virtiofs_device_set_indirect_desc(dev);
+	if (err != DOCA_SUCCESS)
+		return err;
 
 	return DOCA_SUCCESS;
 }
@@ -1006,10 +1080,10 @@ doca_error_t virtiofs_fsdev_init(struct virtiofs_resources *ctx,
 				 char *name,
 				 struct virtiofs_fsdev_ops *ops)
 {
-	int name_len = strnlen(name, VIRTIOFS_FSDEV_NAME_LENGTH + 1);
+	int name_len = strnlen(name, VIRTIOFS_FSDEV_NAME_LENGTH);
 
-	if (name_len > VIRTIOFS_FSDEV_NAME_LENGTH) {
-		DOCA_LOG_ERR("Failed to create fsdev- name is too long (max is %d)", VIRTIOFS_FSDEV_NAME_LENGTH);
+	if (name_len >= VIRTIOFS_FSDEV_NAME_LENGTH) {
+		DOCA_LOG_ERR("Failed to create fsdev- name is too long (max is %d)", VIRTIOFS_FSDEV_NAME_LENGTH - 1);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -1017,7 +1091,8 @@ doca_error_t virtiofs_fsdev_init(struct virtiofs_resources *ctx,
 	fsdev->ops = ops;
 	pthread_mutex_init(&fsdev->lock, NULL);
 	SLIST_INIT(&fsdev->thread_ctxs);
-	strncpy(fsdev->name, name, name_len);
+	memcpy(fsdev->name, name, name_len);
+	fsdev->name[name_len] = '\0';
 
 	SLIST_INSERT_HEAD(&ctx->fsdevs, fsdev, entry);
 
@@ -1114,25 +1189,31 @@ static struct virtiofs_fsdev_thread_ctx *virtiofs_nfs_fsdev_thread_ctx_get(struc
 	err = virtiofs_fsdev_thread_ctx_init(fsdev, &tctx->base);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init nfs thread ctx");
-		free(tctx);
-		return NULL;
+		goto err_free;
 	}
 
 	tctx->nfs_fsdev_priv = nfs_fsdev_get(nfs_fsdev->nfs_fsdev);
 	if (tctx->nfs_fsdev_priv == NULL) {
 		DOCA_LOG_ERR("Failed to get nfs private");
-		free(tctx);
-		return NULL;
+		goto err_destroy_ctx;
 	}
 
 	err = virtiofs_thread_poller_add(virtiofs_thread_get(fsdev->ctx), virtiofs_nfs_fsdev_progress, tctx);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add thread poller, err: %s", doca_error_get_name(err));
-		free(tctx);
-		return NULL;
+		goto err_deinit_priv;
 	}
 
 	return &tctx->base;
+
+err_deinit_priv:
+	priv_nfs_fsdev_deinit(tctx->nfs_fsdev_priv);
+err_destroy_ctx:
+	/* coverity[check_return] */
+	virtiofs_fsdev_thread_ctx_destroy(&tctx->base);
+err_free:
+	free(tctx);
+	return NULL;
 }
 
 static doca_error_t virtiofs_nfs_fsdev_thread_ctx_put(struct virtiofs_fsdev_thread_ctx *tctx)
@@ -1204,6 +1285,8 @@ doca_error_t virtiofs_nfs_fsdev_create(struct virtiofs_resources *ctx, char *nam
 	fsdev->nfs_fsdev = nfs_fsdev_create(server, mount_point);
 	if (fsdev->nfs_fsdev == NULL) {
 		DOCA_LOG_ERR("Failed to allocate doca fsdev");
+		/* coverity[check_return] */
+		virtiofs_fsdev_destroy(&fsdev->base);
 		free(fsdev);
 		return DOCA_ERROR_NO_MEMORY;
 	}

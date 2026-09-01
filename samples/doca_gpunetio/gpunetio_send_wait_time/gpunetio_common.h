@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -45,10 +45,8 @@
 
 #include "common.h"
 
-#define MAX_PCI_ADDRESS_LEN 32U
 #define ETHER_ADDR_LEN 6
 #define MAX_SQ_DESCR_NUM 8192
-#define SHARED_QP_BLOCKS 2
 #define NUM_BURST_SEND 8
 #define NUM_PACKETS_X_BURST DOCA_GPUNETIO_ETH_WARP_SIZE
 #define PACKET_SIZE 1024
@@ -59,7 +57,6 @@ struct sample_send_wait_cfg {
 	char gpu_pcie_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* GPU PCIe address */
 	char nic_pcie_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* Network card PCIe address */
 	uint32_t time_interval_ns;			/* Nanoseconds between sends */
-	uint32_t exec_scope;				/* If shared QP mode is enabled, define the exec scope */
 };
 
 /* Send queues objects */
@@ -94,7 +91,7 @@ struct ether_hdr {
  */
 doca_error_t gpunetio_send_wait_time(struct sample_send_wait_cfg *sample_cfg);
 
-#if __cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -108,7 +105,7 @@ extern "C" {
  */
 doca_error_t kernel_send_wait_on_time(cudaStream_t stream, struct txq_queue *txq, uint64_t *intervals_gpu);
 
-#if __cplusplus
+#ifdef __cplusplus
 }
 #endif
 #endif

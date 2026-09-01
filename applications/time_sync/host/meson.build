@@ -22,9 +22,13 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-app_srcs += files([
-	APP_NAME + '_host.c',
-	APP_NAME + '_host_core.c',
-])
+app_srcs += [
+
+]
+
+vanilla_app_srcs += [
+	'./host/' + APP_NAME + '_host.c',
+	'./host/' + APP_NAME + '_host_core.c',
+]
 
 app_inc_dirs += include_directories('.')

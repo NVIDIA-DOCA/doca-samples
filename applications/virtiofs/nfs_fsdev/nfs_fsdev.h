@@ -59,9 +59,10 @@ struct nfs_fsdev_context *nfs_fsdev_create(char *server, char *mount_point);
 void nfs_fsdev_destroy(struct nfs_fsdev_context *ctx);
 
 /**
- * @brief Get the NFS fsdev handle from a context pointer.
+ * @brief Get the per-thread NFS fsdev handle from a context pointer.
+ *        Lazily initializes per-thread state on first call from each thread.
  * @param [in] fsdev Context pointer.
- * @return Pointer to the NFS fsdev handle.
+ * @return Pointer to the per-thread NFS fsdev handle, or NULL if per-thread initialization fails.
  */
 struct nfs_fsdev *nfs_fsdev_get(struct nfs_fsdev_context *fsdev_context);
 

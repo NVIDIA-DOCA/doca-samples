@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -45,6 +45,7 @@ use_cases:
               - Ether()/IP(src='172.20.1.4', dst='192.168.3.4')/TCP(sport=1234, dport=801)/Raw(load='Sent to port 0, forwarded from port 1')
               - Ether()/IP(src='1.2.3.5', dst='8.8.8.6')/TCP(sport=1237, dport=80)/Raw(load='Sent to port 0, forwarded from port 1')
               - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load='Sent to port 0, dropped')
+              - Ether()/IP(src='172.20.1.6', dst='192.168.3.7')/TCP(sport=1234, dport=801)/Raw(load='Sent to port 0, forwarded from port 1')
           - receiving_port: 1
             packets:
               - Ether()/IP(src='172.20.1.4', dst='192.168.3.4')/UDP(sport=1234, dport=80)/Raw(load='Sent to port 1, forwarded from port 0')
@@ -53,6 +54,7 @@ use_cases:
               - Ether()/IP(src='172.20.1.4', dst='192.168.3.4')/TCP(sport=1234, dport=801)/Raw(load='Sent to port 1, forwarded from port 0')
               - Ether()/IP(src='1.2.3.5', dst='8.8.8.6')/TCP(sport=1237, dport=80)/Raw(load='Sent to port 1, forwarded from port 0')
               - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load='Sent to port 1, dropped')
+              - Ether()/IP(src='172.20.1.6', dst='192.168.3.7')/TCP(sport=1234, dport=801)/Raw(load='Sent to port 1, forwarded from port 0')
         validation:
           - type: packet
             expected_packets:
@@ -62,9 +64,11 @@ use_cases:
                   - Ether()/IP(src='172.20.1.4', dst='192.168.3.4')/UDP(sport=1234, dport=2999)/Raw(load='Sent to port 1, forwarded from port 0')
                   - Ether()/IP(src='172.20.1.4', dst='192.168.3.4')/TCP(sport=1234, dport=801)/Raw(load='Sent to port 1, forwarded from port 0')
                   - Ether()/IP(src='1.2.3.5', dst='8.8.8.6')/TCP(sport=1237, dport=80)/Raw(load='Sent to port 1, forwarded from port 0')
+                  - Ether()/IP(src='172.20.1.6', dst='192.168.3.7')/TCP(sport=1234, dport=801)/Raw(load='Sent to port 1, forwarded from port 0')
               - forwarding_port: 1
                 packets:
                   - Ether()/IP(src='172.20.1.4', dst='192.168.3.4')/UDP(sport=1234, dport=80)/Raw(load='Sent to port 0, forwarded from port 1')
                   - Ether()/IP(src='172.20.1.4', dst='192.168.3.4')/UDP(sport=1234, dport=2999)/Raw(load='Sent to port 0, forwarded from port 1')
                   - Ether()/IP(src='172.20.1.4', dst='192.168.3.4')/TCP(sport=1234, dport=801)/Raw(load='Sent to port 0, forwarded from port 1')
                   - Ether()/IP(src='1.2.3.5', dst='8.8.8.6')/TCP(sport=1237, dport=80)/Raw(load='Sent to port 0, forwarded from port 1')
+                  - Ether()/IP(src='172.20.1.6', dst='192.168.3.7')/TCP(sport=1234, dport=801)/Raw(load='Sent to port 0, forwarded from port 1')

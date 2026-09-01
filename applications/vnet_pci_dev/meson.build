@@ -22,35 +22,15 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-if flag_disable_applications_compilation
-	subdir_done()
-endif
-
-samples_dir_path_aux = '../../samples'
-common_dir_path_aux = '../common'
-
 app_srcs += files([
 	APP_NAME + '.c',
 	APP_NAME + '_core.c',
 	APP_NAME + 'ice.c',
 	APP_NAME + '_lu.c',
-	common_dir_path_aux + '/utils.c',
-	samples_dir_path_aux + '/common.c',
+	'vnet_sriov.c',
+	common_dir_path + '/utils.c',
+	samples_dir_path + '/common.c',
 ])
-
-if is_variable('lib_devemu_vnet_disabled')
-	set_variable('app_' + APP_NAME + '_disable_reason', 'Missing devemu vnet support')
-	subdir_done()
-endif
-
-vnet_doca_deps = ['devemu']
-foreach doca_dep : vnet_doca_deps
-	if not available_libs.contains(doca_dep)
-		set_variable('app_' + APP_NAME + '_disable_reason', 'Missing dependency: ' + doca_dep)
-		subdir_done()
-	endif
-	app_dependencies += get_variable(DOCA_PREFIX + doca_dep + '_dependency_internal')
-endforeach
 
 # Add libbsd for strlcpy
 libbsd_dep = dependency('libbsd', required: false)
@@ -59,12 +39,13 @@ if libbsd_dep.found()
 endif
 
 # libibverbs
-app_dependencies += dependency_libibverbs
+app_dependencies += dependency('libibverbs')
 
 app_inc_dirs += include_directories('.')
-app_inc_dirs += include_directories(samples_dir_path_aux)
+app_inc_dirs += include_directories(samples_dir_path)
 
 executable(DOCA_PREFIX + APP_NAME, app_srcs,
 	c_args : base_c_args,
 	dependencies : app_dependencies,
-	include_directories: app_inc_dirs)
+	include_directories: app_inc_dirs,
+	install: install_apps)

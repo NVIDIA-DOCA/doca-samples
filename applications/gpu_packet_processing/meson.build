@@ -22,13 +22,23 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+if not flag_enable_gpu_support
+	warning('Skipping compilation of DOCA Application - @0@ - Missing GPU support.'.format(APP_NAME))
+	subdir_done()
+endif
+
+app_dependencies += declare_dependency(link_args : '-lresolv')
+app_dependencies += gpu_dependencies
+
+doca_gpu_dep = dependency('doca-gpunetio')
+gpunetio_device_path = doca_gpu_dep.get_variable(pkgconfig : 'libdir')
+dependency_gpunetio_device = declare_dependency(compile_args : '-Wl,--whole-archive',
+						link_args : ['-L' + gpunetio_device_path , '-ldoca_gpunetio_device'],)
+app_dependencies += doca_gpu_dep
+app_dependencies += dependency_gpunetio_device
+
 app_srcs = files([
 	'gpu_packet_processing.c',
-	common_dir_path + '/utils.c',
-	samples_dir_path + '/common.c',
-])
-
-config_srcs = files([
 	'args.c',
 	'device.c',
 	'queues/flow.c',
@@ -36,40 +46,32 @@ config_srcs = files([
 	'queues/udp_queues.c',
 	'queues/tcp_queues.c',
 	'queues/icmp_queues.c',
-])
-
-dpdk_srcs = files([
 	'tcp_cpu/tcp_cpu_rss_func.c',
 	'tcp_cpu/tcp_session_table.c',
 ])
 
-kernels_srcs = files([
+app_srcs += [
+	common_dir_path + '/utils.c',
+	samples_dir_path + '/common.c',
+]
+
+app_srcs += files([
 	'gpu_kernels/receive_tcp.cu',
 	'gpu_kernels/receive_udp.cu',
 	'gpu_kernels/receive_icmp.cu',
 	'gpu_kernels/http_server.cu',
 ])
 
+vanilla_app_srcs = [
+	APP_NAME + '.c',
+]
+
 app_inc_dirs += include_directories('queues')
 
-# Check if we should skip the compilation of the applications
-if flag_disable_applications_compilation
-	subdir_done()
-endif
-
-app_dependencies += gpu_dependencies
-
-# GPUNetIO-based samples & apps are only supported in amalgamation build
-if not flag_amalgamation_build
-	set_variable('app_' + APP_NAME + '_disable_reason', 'Internal compilation isn\'t supported for this App outside of amalgamation mode')
-	subdir_done()
-endif
-
-executable(DOCA_PREFIX + APP_NAME, app_srcs + config_srcs + dpdk_srcs + kernels_srcs,
-	dependencies : app_dependencies + gpunetio_device_dep,
-	# RM#3857532: Required for maintaining build order
-	link_with : gpunetio_device_lib,
-	c_args : apps_common_c_args + gpu_compile_flags,
-	cuda_args : gpu_compile_flags,
-	override_options : ['cpp_std=c++17'],
-	include_directories: app_inc_dirs)
+executable(DOCA_PREFIX + APP_NAME,
+		app_srcs + vanilla_app_srcs,
+		c_args : gpu_c_args,
+		cuda_args : gpu_cuda_args,
+		dependencies : app_dependencies,
+		include_directories : app_inc_dirs,
+		install: install_apps)

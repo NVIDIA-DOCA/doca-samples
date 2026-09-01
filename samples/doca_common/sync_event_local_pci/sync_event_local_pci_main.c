@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -39,7 +39,7 @@ DOCA_LOG_REGISTER(SYNC_EVENT::MAIN);
  * @se_rt_objs [in/out]: sample's runtime resources
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t sync_event_run(struct sync_event_config *se_cfg, struct sync_event_runtime_objects *se_rt_objs);
+doca_error_t sync_event_run(const struct sync_event_config *se_cfg, struct sync_event_runtime_objects *se_rt_objs);
 
 /*
  * Sample main function

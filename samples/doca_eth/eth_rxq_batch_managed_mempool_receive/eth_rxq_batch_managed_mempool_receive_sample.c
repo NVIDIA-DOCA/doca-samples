@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -141,12 +141,10 @@ static void event_batch_managed_rcv_success_cb(struct doca_eth_rxq_event_batch_m
 		}
 
 		if (metadata_array != NULL)
-			DOCA_LOG_INFO("Packet#%u: metadata associated with the packet is %u",
-				      i,
-				      doca_eth_rxq_event_batch_managed_recv_metadata_array_get_metadata(metadata_array,
-													1,
-													i,
-													0));
+			DOCA_LOG_INFO(
+				"Packet#%u: metadata associated with the packet is %u",
+				i,
+				doca_eth_rxq_event_batch_recv_metadata_array_get_metadata(metadata_array, 1, i, 0));
 
 		if (rx_hash_array != NULL)
 			DOCA_LOG_INFO("Packet#%u: rx_hash associated with the packet is %u", i, rx_hash_array[i]);

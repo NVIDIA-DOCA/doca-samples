@@ -63,52 +63,21 @@ doca_error_t flow_ct_register_params(void)
 	return register_doca_flow_switch_params();
 }
 
-doca_error_t init_doca_flow_ct(uint32_t flags,
-			       uint32_t nb_arm_queues,
-			       uint32_t nb_ctrl_queues,
-			       uint32_t actions_mem_size,
-			       doca_flow_ct_entry_finalize_cb entry_finalize_cb,
-			       bool o_match_inner,
-			       struct doca_flow_meta *o_zone_mask,
-			       struct doca_flow_ct_meta *o_modify_mask,
-			       bool r_match_inner,
-			       struct doca_flow_meta *r_zone_mask,
-			       struct doca_flow_ct_meta *r_modify_mask)
+doca_error_t init_doca_flow_switch_ports_with_ct(struct flow_devs_manager devs_manager[],
+						 int nb_managers,
+						 struct doca_flow_port *ports[],
+						 int nb_ports,
+						 uint32_t actions_mem_size[],
+						 struct flow_resources *resources,
+						 const struct ct_port_cfg *ct_cfg)
 {
-	struct doca_flow_ct_cfg *ct_cfg;
-	doca_error_t result;
-
-	if (o_zone_mask == NULL || o_modify_mask == NULL) {
-		DOCA_LOG_ERR("Origin masks can't be null");
-		return DOCA_ERROR_INVALID_VALUE;
-	} else if (r_zone_mask == NULL || r_modify_mask == NULL) {
-		DOCA_LOG_ERR("Reply masks can't be null");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-
-	result = doca_flow_ct_cfg_create(&ct_cfg);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create DOCA Flow CT config: %s", doca_error_get_name(result));
-		return result;
-	}
-
-	doca_flow_ct_cfg_set_flags(ct_cfg, flags);
-	doca_flow_ct_cfg_set_queues(ct_cfg, nb_arm_queues);
-	doca_flow_ct_cfg_set_ctrl_queues(ct_cfg, nb_ctrl_queues);
-	doca_flow_ct_cfg_set_actions_mem_size(ct_cfg, actions_mem_size);
-	doca_flow_ct_cfg_set_aging_core(ct_cfg, nb_arm_queues + 1);
-	doca_flow_ct_cfg_set_entry_finalize_cb(ct_cfg, entry_finalize_cb);
-	doca_flow_ct_cfg_set_direction(ct_cfg, false, o_match_inner, o_zone_mask, o_modify_mask);
-	doca_flow_ct_cfg_set_direction(ct_cfg, true, r_match_inner, r_zone_mask, r_modify_mask);
-
-	/* Asymmetric counter is determined by core from pool/counter capacity; no config param. */
-	result = doca_flow_ct_init(ct_cfg);
-	if (result != DOCA_SUCCESS)
-		DOCA_LOG_ERR("Failed to initialize DOCA Flow CT: %s", doca_error_get_name(result));
-
-	doca_flow_ct_cfg_destroy(ct_cfg);
-
-	return result;
+	return init_doca_flow_switch_ports_internal(devs_manager,
+						    nb_managers,
+						    ports,
+						    nb_ports,
+						    actions_mem_size,
+						    resources,
+						    ct_cfg);
 }
 
 doca_error_t flow_ct_capable(struct doca_devinfo *dev_info)
@@ -153,7 +122,6 @@ void cleanup_procedure(struct doca_flow_pipe *ct_pipe, int nb_ports, struct doca
 	if (result != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to stop doca flow ports: %s", doca_error_get_descr(result));
 
-	doca_flow_ct_destroy();
 	doca_flow_destroy();
 }
 
@@ -380,7 +348,17 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 					ct_status,
 					*entry);
 	if (result != DOCA_SUCCESS) {
+		doca_error_t rollback_result;
+
 		DOCA_LOG_ERR("Failed to add CT pipe an entry: %s", doca_error_get_descr(result));
+		if (*entry != NULL && (prepare_flags & DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS) != 0) {
+			rollback_result = doca_flow_ct_entry_prepare_rollback(ct_queue, pipe, *entry);
+			if (rollback_result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to rollback prepared CT entry: %s",
+					     doca_error_get_descr(rollback_result));
+			}
+			*entry = NULL;
+		}
 		return result;
 	}
 

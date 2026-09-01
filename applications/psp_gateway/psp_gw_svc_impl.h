@@ -100,7 +100,7 @@ public:
 	 * @packet [in]: The packet received from RSS
 	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
 	 */
-	doca_error_t handle_miss_packet(struct rte_mbuf *packet);
+	doca_error_t handle_miss_packet(struct rte_mbuf *packet, uint16_t queue_id);
 
 	/**
 	 * @brief Displays the counters of all tunnel sessions that have

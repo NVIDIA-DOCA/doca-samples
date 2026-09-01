@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -88,17 +88,13 @@ static doca_error_t create_port_fwd_pipe(struct doca_flow_port *port,
 {
 	struct doca_flow_pipe_entry *entry;
 	struct doca_flow_match match;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	uint32_t flags;
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
-
-	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -126,11 +122,8 @@ static doca_error_t create_port_fwd_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	/* Forwarding traffic to other port */
 	if (dest_pipe) {
@@ -149,7 +142,9 @@ static doca_error_t create_port_fwd_pipe(struct doca_flow_port *port,
 	doca_flow_pipe_cfg_destroy(pipe_cfg);
 
 	flags = DOCA_FLOW_ENTRY_FLAGS_NO_WAIT;
-	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, &actions, NULL, NULL, flags, status, &entry);
+
+	/* No entry actions; no need to pass actions to the entry. */
+	result = doca_flow_pipe_basic_add_entry(0, *pipe, &match, 0, NULL, NULL, NULL, flags, status, &entry);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add port forwarding entry: %s", doca_error_get_descr(result));
 		return result;

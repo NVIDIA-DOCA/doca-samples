@@ -51,7 +51,7 @@ __global__ void put_bw(struct doca_gpu_dev_verbs_qp *qp,
 	uint32_t tidx = threadIdx.x + (blockIdx.x * blockDim.x);
 
 #if KERNEL_DEBUG_TIMES == 1
-	unsigned long long step1 = 0, step2 = 0, step3 = 0;
+	unsigned long long step1 = 0, step2 = 0;
 #endif
 
 	for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < num_iters; idx += (blockDim.x * gridDim.x)) {
@@ -71,40 +71,21 @@ __global__ void put_bw(struct doca_gpu_dev_verbs_qp *qp,
 		step2 = doca_gpu_dev_verbs_query_globaltimer();
 #endif
 
-		if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD) {
-			if (doca_gpu_dev_verbs_poll_cq_at<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(doca_gpu_dev_verbs_qp_get_cq_sq(qp), out_ticket) != 0) {
-				#if ENABLE_DEBUG == 1
-					printf("Error CQE!\n");
-				#endif
-			}
-		}
-
-		if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP) {
-			if (lane_idx == 0) {
-				if (doca_gpu_dev_verbs_poll_cq_at<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(doca_gpu_dev_verbs_qp_get_cq_sq(qp), out_ticket + DOCA_GPUNETIO_VERBS_WARP_SIZE - 1) != 0) {
-					#if ENABLE_DEBUG == 1
-						printf("Error CQE!\n");
-					#endif
-				}
-			}
-		}
-#if KERNEL_DEBUG_TIMES == 1
-		step3 = doca_gpu_dev_verbs_query_globaltimer();
-#endif
-
 		__syncthreads();
 
 #if KERNEL_DEBUG_TIMES == 1
 		if (threadIdx.x == 0)
-			printf("iteration %d src_buf %lx size %d dst_buf %lx put %ld ns, poll %ld ns\n",
+			printf("iteration %d src_buf %lx size %d dst_buf %lx put %ld ns\n",
 			       idx,
 			       src_buf,
 			       data_size,
 			       dst_buf,
-			       step2 - step1,
-			       step3 - step2);
+			       step2 - step1);
 #endif
 	}
+
+	doca_gpu_dev_verbs_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp);
+
 }
 
 extern "C" {
@@ -126,7 +107,7 @@ doca_error_t gpunetio_verbs_put_bw(cudaStream_t stream,
 	/* Check no previous CUDA errors */
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 
@@ -148,10 +129,14 @@ doca_error_t gpunetio_verbs_put_bw(cudaStream_t stream,
 									src_buf_mkey,
 									dst_buf,
 									dst_buf_mkey);
+	else {
+		DOCA_LOG_ERR("Invalid exec scope %d, must be thread or warp", scope);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {
-		DOCA_LOG_ERR("[%s:%d] cuda failed with %s \n", __FILE__, __LINE__, cudaGetErrorString(result));
+		DOCA_LOG_ERR("[%s:%d] cuda failed with %s", __FILE__, __LINE__, cudaGetErrorString(result));
 		return DOCA_ERROR_BAD_STATE;
 	}
 

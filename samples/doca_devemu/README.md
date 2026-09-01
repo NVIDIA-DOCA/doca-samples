@@ -283,8 +283,8 @@ This sample illustrates how the host driver can set up memory for DMA, then the 
 
 ## PCI Device TLP Handler
 
-This sample illustrates how to handle raw Transaction Layer Packets (TLPs) at the BlueField DPU level, providing low-level PCIe protocol processing capabilities for custom device emulation. It also demonstrates how the host driver can interact with transaction regions for testing TLP processing functionality. In addition, the sample supports TLP channel handover (live upgrade): a running source instance can transfer its active TLP channel to a newly started destination instance with zero host-visible disruption, enabling seamless in-service software upgrades.
-This sample implements a single PCIe endpoint and is limited to a single TLP channel downstream port, therefore the user must set the number of TLP ports to 1 via mlxconfig before running the sample.
+This sample illustrates how to handle raw Transaction Layer Packets (TLPs) at the BlueField DPU level, providing low-level PCIe protocol processing capabilities for custom device emulation. It also demonstrates how the host driver can interact with transaction regions for testing TLP processing functionality. In addition, the sample supports TLP channel handover (live upgrade): a running source instance can transfer its active TLP channel to a newly started destination instance with zero host-visible disruption, enabling seamless in-service software upgrades. The sample can also optionally expose an SR-IOV capability on the PF and serve the configuration and memory TLPs of each VF over the same endpoint.
+This sample implements a single PCIe endpoint and is limited to a single TLP channel downstream port, therefore the user must set the number of TLP ports to 1 via mlxconfig before running the sample, unless querying the TLP channel's DSP BDF is supported, in which case TLPs that are associated with unused DSPs can be completed with UR status using the DSP's BDF as the completer ID.
 
 ### Sample Logic
 
@@ -296,6 +296,7 @@ This sample implements a single PCIe endpoint and is limited to a single TLP cha
 - Registering a TLP request handler callback function to process incoming transactions.
 - Creating a device representor to enable host-side device enumeration.
 - Initializing a TLP device context for transaction processing.
+- Optionally enabling SR-IOV: exposing an SR-IOV capability on the PF, bringing up the requested VFs, and routing each function's configuration and memory TLPs.
 - Processing various types of TLP requests including:
   - Configuration space read/write operations (Type 0)
   - Memory read/write operations
@@ -312,9 +313,9 @@ This sample implements a single PCIe endpoint and is limited to a single TLP cha
   - Both the **source** and **destination** must be started with the same `--shm-dir-path` (shared memory directory); handover is not available without this path on either side.
   - The **source** instance runs normally and listens for an incoming handover request on a Unix domain socket.
   - The **destination** instance is started with the `--handover-destination` flag. It connects to the source and performs a multi-step handover protocol:
-    1. **SETUP** — receives the ibverbs `cmd_fd` via `SCM_RIGHTS` to import the same DOCA device context.
+    1. **SETUP** — receives the ibverbs `cmd_fd` via `SCM_RIGHTS` to import the same DOCA device context, along with the source's VF count when SR-IOV is enabled, which must match the destination's.
     2. **EXPORT** — receives the serialized TLP channel export descriptor to reconstruct the channel.
-    3. **BEGIN** — receives the PCI configuration space, TLP handler context, transaction region contents, and Expansion ROM contents; the source stops the channel.
+    3. **BEGIN** — receives the PCI configuration space, TLP handler context, transaction region contents, and Expansion ROM contents, for the PF and for each VF in case SR-IOV is used; the source stops the channel.
     4. **END** — notifies the source of success or failure; on success the source destroys its channel and exits, and the destination starts handling incoming TLP channel requests.
   - If the destination fails during a handover, the source attempts rollback to continue serving the host.
 - The sample polls indefinitely for TLP requests until the user presses `[Ctrl+c]` to close the sample.

@@ -301,6 +301,7 @@ static doca_error_t vblk_io_ctx_oe_threads_create(struct vblk_pci_dev_resources 
 		io_cfgs[ctx_id].seg_max = config->seg_max ? config->seg_max : 1;
 		io_cfgs[ctx_id].indirect_enabled = config->indirect_enabled;
 		io_cfgs[ctx_id].stats_ios_period = config->stats_ios_period;
+		io_cfgs[ctx_id].shm_dir_path = config->shm_dir_path;
 		io_cfgs[ctx_id].ops = &s_io_ops;
 
 		err = vblk_io_ctx_thread_create(&io_cfgs[ctx_id], &res->io_pe_ctxs[ctx_id].thread);
@@ -334,11 +335,6 @@ static doca_error_t vblk_app_cfg_validate(struct vblk_pci_dev_config *cfg, uint8
 	}
 
 	/* Validate constraints */
-	if (cfg->io_ctx_mask == 0) {
-		DOCA_LOG_ERR("io_ctx_mask must have at least one bit set");
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-
 	if ((cfg->io_ctx_mask & (1UL << cfg->offload_engine_core_idx)) == 0) {
 		DOCA_LOG_ERR("offload_engine_core_idx (%u) must be in io_ctx_mask (0x%lx)",
 			     cfg->offload_engine_core_idx,
@@ -401,7 +397,12 @@ static doca_error_t emu_request_initial_state(struct vblk_ipc_ep *ipc, struct vb
 	uint32_t type, len;
 	struct pollfd pfd = {.fd = ipc->fd, .events = POLLIN};
 
-	vblk_ipc_send(ipc, VBLK_MSG_STATE_REQUEST, NULL, 0);
+	doca_error_t rc = vblk_ipc_send(ipc, VBLK_MSG_STATE_REQUEST, NULL, 0);
+
+	if (rc != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("EMU SRC: failed to send VBLK_MSG_STATE_REQUEST: %s", doca_error_get_name(rc));
+		return rc;
+	}
 
 	while (poll(&pfd, 1, EMU_INITIAL_STATE_TIMEOUT_MS) > 0) {
 		if (vblk_ipc_recv(ipc, &type, buf, sizeof(buf), &len) != DOCA_SUCCESS)
@@ -423,7 +424,9 @@ static doca_error_t emu_request_initial_state(struct vblk_ipc_ep *ipc, struct vb
 	return DOCA_ERROR_TIME_OUT;
 }
 
-static doca_error_t emu_dst_collect_initial_state(struct vblk_ho_ctx *ho, struct vblk_ctrl *ctrl)
+static doca_error_t emu_dst_collect_initial_state(struct vblk_ho_ctx *ho,
+						  struct vblk_ctrl *ctrl,
+						  struct vblk_pci_dev_config *config)
 {
 	doca_error_t err = vblk_ho_dst_get_initial_state(ho);
 	if (err != DOCA_SUCCESS) {
@@ -433,6 +436,10 @@ static doca_error_t emu_dst_collect_initial_state(struct vblk_ho_ctx *ho, struct
 	err = vblk_ctrl_set_recovery_export(ctrl, ho->export_desc, ho->export_desc_len);
 	if (err != DOCA_SUCCESS)
 		return err;
+
+	config->seg_max = ho->initial_cfg->seg_max;
+	config->indirect_enabled = ho->initial_cfg->indir_desc_enabled;
+
 	ctrl->handover_dst = true;
 	return DOCA_SUCCESS;
 }
@@ -452,7 +459,11 @@ static void emu_dst_rebind_as_src(struct vblk_ho_ctx *ho)
 	ho->role = VBLK_HO_ROLE_SRC;
 	ho->peer_path = VBLK_IPC_EMU_DST_PATH;
 
-	vblk_ipc_send(ho->ipc, VBLK_MSG_EXPORT_DESC, ho->export_desc, ho->export_desc_len);
+	err = vblk_ipc_send(ho->ipc, VBLK_MSG_EXPORT_DESC, ho->export_desc, ho->export_desc_len);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("EMU SRC: failed to send VBLK_MSG_EXPORT_DESC: %s", doca_error_get_name(err));
+		return;
+	}
 	DOCA_LOG_INFO("EMU SRC: sent export descriptor (%zu bytes)", ho->export_desc_len);
 }
 
@@ -513,7 +524,7 @@ doca_error_t vblk_pci_dev_emu_run(struct vblk_pci_dev_config *config,
 	if (role == VBLK_HO_ROLE_SRC)
 		err = emu_request_initial_state(ipc, &s_resources.vblk_ctrl);
 	else
-		err = emu_dst_collect_initial_state(&ho_ctx, &s_resources.vblk_ctrl);
+		err = emu_dst_collect_initial_state(&ho_ctx, &s_resources.vblk_ctrl, config);
 	if (err != DOCA_SUCCESS)
 		return err;
 
@@ -576,7 +587,11 @@ doca_error_t vblk_pci_dev_emu_run(struct vblk_pci_dev_config *config,
 			DOCA_LOG_ERR("EMU SRC: export failed: %s", doca_error_get_name(err));
 			goto force_quit;
 		}
-		vblk_ipc_send(ipc, VBLK_MSG_EXPORT_DESC, exp_desc, exp_len);
+		err = vblk_ipc_send(ipc, VBLK_MSG_EXPORT_DESC, exp_desc, exp_len);
+		if (err != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("EMU SRC: failed to send VBLK_MSG_EXPORT_DESC: %s", doca_error_get_name(err));
+			goto force_quit;
+		}
 		err = vblk_export_desc_store(&ho_ctx.export_desc, &ho_ctx.export_desc_len, exp_desc, exp_len);
 		if (err != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("EMU SRC: failed to store export descriptor: %s", doca_error_get_name(err));
@@ -607,6 +622,8 @@ doca_error_t vblk_pci_dev_emu_run(struct vblk_pci_dev_config *config,
 		 * triggers enable in dst_handle_begin_ack(). */
 		const void *dst_exp_desc;
 		size_t dst_exp_len;
+		void *new_desc = NULL;
+		size_t new_len = 0;
 
 		err = doca_devemu_vblk_offload_engine_export(s_resources.vblk_ctrl.vq_engine,
 							     &dst_exp_desc,
@@ -615,11 +632,15 @@ doca_error_t vblk_pci_dev_emu_run(struct vblk_pci_dev_config *config,
 			DOCA_LOG_ERR("EMU DST: export failed: %s", doca_error_get_name(err));
 			goto force_quit;
 		}
-		err = vblk_export_desc_store(&ho_ctx.export_desc, &ho_ctx.export_desc_len, dst_exp_desc, dst_exp_len);
+		err = vblk_export_desc_store(&new_desc, &new_len, dst_exp_desc, dst_exp_len);
 		if (err != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("EMU DST: failed to store export descriptor: %s", doca_error_get_name(err));
 			goto force_quit;
 		}
+		/* Swap: free the imported-from-SRC descriptor, then publish DST's own. */
+		vblk_export_desc_free(&ho_ctx.export_desc, &ho_ctx.export_desc_len);
+		ho_ctx.export_desc = new_desc;
+		ho_ctx.export_desc_len = new_len;
 		DOCA_LOG_INFO("EMU DST: exported OE state (%zu bytes)", dst_exp_len);
 
 		DOCA_LOG_INFO("EMU DST: starting switchover (vq_engine=%p)", (void *)s_resources.vblk_ctrl.vq_engine);
@@ -649,7 +670,7 @@ cleanup_pe:
 	}
 
 cleanup:
-	vblk_export_desc_release(&ho_ctx.export_desc, &ho_ctx.export_desc_len);
+	vblk_export_desc_free(&ho_ctx.export_desc, &ho_ctx.export_desc_len);
 	vblk_pci_dev_resources_cleanup(&s_resources);
 	free(io_cfgs);
 	return err;

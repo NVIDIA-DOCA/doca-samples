@@ -22,7 +22,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-app_srcs = files([
+app_srcs = [
 	APP_NAME + '.c',
 	APP_NAME + '_core.c',
 	common_dir_path + '/dpdk_utils.c',
@@ -32,17 +32,14 @@ app_srcs = files([
 	samples_dir_path + '/common.c',
 	samples_dir_path + '/doca_flow/flow_common.c',
 	samples_dir_path + '/doca_flow/flow_switch_common.c',
-])
+]
 
 app_inc_dirs += include_directories(samples_dir_path)
 app_inc_dirs += include_directories(samples_dir_path + '/doca_flow')
 
-# Check if we should skip the compilation of the applications
-if flag_disable_applications_compilation
-	subdir_done()
-endif
-
-executable(DOCA_PREFIX + APP_NAME, app_srcs,
-	c_args : apps_common_c_args,
+executable(DOCA_PREFIX + APP_NAME,
+	app_srcs,
+	c_args : base_c_args,
 	dependencies : app_dependencies,
-	include_directories: app_inc_dirs)
+	include_directories : app_inc_dirs,
+	install: install_apps)

@@ -41,7 +41,7 @@
 
 #include <log_common.h>
 
-DOCA_LOG_REGISTER(LOG_LIMITS_SERVER);
+DOCA_LOG_REGISTER(LOG_LIMITS_SERVER::SAMPLE);
 
 /* Control value to exit listening loop - triggered by ctrl+c interrupt */
 static volatile int end_listening = 0;

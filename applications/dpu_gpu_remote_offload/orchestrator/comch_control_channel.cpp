@@ -38,7 +38,16 @@ namespace {
 
 uint32_t constexpr max_concurrent_comch_control_messages = 4;
 
+void doca_comch_event_consumer_nop_cb(struct doca_comch_event_consumer *event,
+				      struct doca_comch_connection *comch_connection,
+				      uint32_t id)
+{
+	static_cast<void>(event);
+	static_cast<void>(comch_connection);
+	static_cast<void>(id);
 }
+
+} // namespace
 
 namespace remote_offload {
 namespace orchestrator {
@@ -96,6 +105,15 @@ comch_control_channel::comch_control_channel(doca_dev *dev, std::string const &c
 			throw remote_offload::runtime_error{
 				result,
 				"Failed to configure doca_comch_client receive task callback"};
+		}
+
+		result = doca_comch_client_event_consumer_register(m_comch_client,
+								   doca_comch_event_consumer_nop_cb,
+								   doca_comch_event_consumer_nop_cb);
+		if (result != DOCA_SUCCESS) {
+			throw remote_offload::runtime_error{
+				result,
+				"Failed to register for doca_comch_client consumer registration events"};
 		}
 
 		result = doca_ctx_set_user_data(doca_comch_client_as_ctx(m_comch_client), doca_data{.ptr = this});

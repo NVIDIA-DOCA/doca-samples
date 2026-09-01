@@ -27,7 +27,6 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <unistd.h>
-#include <time.h>
 
 #include <doca_error.h>
 #include <doca_log.h>
@@ -221,7 +220,7 @@ void vblk_reset(void)
  */
 static inline uint16_t vblk_qid_to_io_ctx_id(struct vblk_ctrl *ctrl, const int qid)
 {
-	return (uint16_t)(qid % ctrl->num_io_ctx);
+	return (uint16_t)((ctrl->io_ctx_base + (uint32_t)qid) % ctrl->num_io_ctx);
 }
 
 /* Returns true if a controller reset is in progress (VQs still being torn down) */
@@ -230,9 +229,19 @@ static inline bool vblk_ctrl_reset_in_progress(struct vblk_ctrl *ctrl)
 	return ctrl->pending_vqs > 0;
 }
 
+/* Account a VQ into pending_vqs exactly once per reset request. */
+static inline void vblk_ctrl_reset_account(struct vblk_ctrl *ctrl, int qid)
+{
+	/* defence thread race to avoid redundant miss count */
+	if (!atomic_exchange_explicit(&ctrl->vqs[qid].pending_counted, true, memory_order_acq_rel))
+		ctrl->pending_vqs++;
+}
+
 /* Called on offload engine when a VQ reaches DESTROYED.
  * When the last VQ is destroyed, clear device_status to 0 so host can
- * proceed with reinitialization (host polls until status==0). */
+ * proceed with reinitialization (host polls until status==0).
+ * If FLR is in progress, raise flr_kickoff to hand off to the OE
+ * post-FLR cleanup path */
 static inline void vblk_ctrl_reset_vq_done(struct vblk_ctrl *ctrl)
 {
 	uint16_t expected = ctrl->pending_vqs;
@@ -244,7 +253,13 @@ static inline void vblk_ctrl_reset_vq_done(struct vblk_ctrl *ctrl)
 		return;
 	struct vblk_pci_virtio_pci_common_cfg *pci_cfg = vblk_pci_virtio_get_pci_cfg(ctrl->vblk_pci_dev);
 	pci_cfg->device_status = 0;
+	atomic_store_explicit(&ctrl->reset_pending, false, memory_order_release);
 	DOCA_LOG_INFO("All VQs destroyed, device_status cleared to 0");
+
+	if (ctrl->vblk_pci_dev->flr_in_progress && !ctrl->vblk_pci_dev->flr_kickoff) {
+		ctrl->vblk_pci_dev->flr_kickoff = true;
+		DOCA_LOG_INFO("FLR requested, All VQs destroyed");
+	}
 }
 
 /**
@@ -267,6 +282,7 @@ static inline void vblk_vq_set_state(struct vblk_ctrl *ctrl, int qid, enum vblk_
 	case VBLK_VQ_STARTING:
 		/* Queue creation requested; engine must create VQ */
 		ctrl->engine_poll.pending += 1;
+		atomic_store_explicit(&ctrl->vqs[qid].reset_deferred, false, memory_order_relaxed);
 		break;
 	case VBLK_VQ_BINDING:
 		/* VQ created; io_ctx must bind, engine work done */
@@ -274,26 +290,35 @@ static inline void vblk_vq_set_state(struct vblk_ctrl *ctrl, int qid, enum vblk_
 		ctrl->engine_poll.pending -= 1;
 		break;
 	case VBLK_VQ_UNBINDING:
-		/* VQ stop requested; io_ctx must unbind, engine will destroy later */
-		ctrl->io_ctxs[io_ctx_id].poll.pending += 1;
+		/* VQ stop requested; io_ctx must unbind, engine will destroy later.
+		 * pending_vqs is accounted once in the reset loop. */
+		if (old_state != VBLK_VQ_BINDING)
+			ctrl->io_ctxs[io_ctx_id].poll.pending += 1;
 		ctrl->engine_poll.pending += 1;
-		ctrl->pending_vqs++;
 		break;
 	case VBLK_VQ_RUNNING:
 		if (old_state == VBLK_VQ_BINDING)
 			ctrl->io_ctxs[io_ctx_id].poll.pending -= 1;
 		break;
 	case VBLK_VQ_STOPPING:
-		/* io_ctx finished unbinding */
-		if (old_state == VBLK_VQ_UNBINDING)
+		/* BINDING -> STOPPING is taken when vblk_ctrl_queue_start() fails
+		 * on the IO ctx (bind/enable returns error). The IO ctx aborts the
+		 * pending bind, so we mirror BINDING's io_ctx counter, hand the VQ
+		 * back to the engine to destroy, and account it in pending_vqs so
+		 * a concurrent reset waits for this VQ to reach DESTROYED. */
+		if (old_state == VBLK_VQ_UNBINDING || old_state == VBLK_VQ_BINDING)
 			ctrl->io_ctxs[io_ctx_id].poll.pending -= 1;
-		/* STARTING->STOPPING during reset: track pending teardown */
-		if (old_state == VBLK_VQ_STARTING)
-			ctrl->pending_vqs++;
+		/* BINDING->STOPPING (deferred bind failed): move work to engine */
+		if (old_state == VBLK_VQ_BINDING) {
+			ctrl->io_ctxs[io_ctx_id].poll.pending -= 1;
+			ctrl->engine_poll.pending += 1;
+		}
 		break;
 	case VBLK_VQ_DESTROYED:
 		ctrl->engine_poll.pending -= 1;
-		vblk_ctrl_reset_vq_done(ctrl);
+		/* Decrement pending_vqs once, only if this VQ was counted for the epoch. */
+		if (atomic_exchange_explicit(&ctrl->vqs[qid].pending_counted, false, memory_order_acq_rel))
+			vblk_ctrl_reset_vq_done(ctrl);
 		break;
 	}
 
@@ -484,19 +509,22 @@ static void vblk_ctrl_stats_progress(struct vblk_ctrl_io_ctx *io_ctx)
 	if (++io_ctx->stats_ios % ctrl->ios_period != 0 && !io_ctx->stats_wip)
 		return;
 
-	if (ctrl->state_list == NULL || ctrl->list_len == 0) {
-		vblk_ctrl_stats_list_try_create(ctrl);
-		if (ctrl->state_list == NULL || ctrl->list_len == 0) {
-			io_ctx->stats_wip = false;
-			return;
-		}
-	}
-
 	if (!io_ctx->stats_wip) {
-		/* Try to acquire the shared populate lock atomically */
+		/* Serialize both list creation and population. A controller can be
+		 * progressed by multiple IO threads, so creating the queue-backed list
+		 * before taking this lock can publish competing lists. */
 		bool expected = false;
 		if (!atomic_compare_exchange_strong(&ctrl->stats_populate_wip, &expected, true))
 			return; /* Another ctx is already populating */
+
+		if (ctrl->state_list == NULL || ctrl->list_len == 0) {
+			vblk_ctrl_stats_list_try_create(ctrl);
+			if (ctrl->state_list == NULL || ctrl->list_len == 0) {
+				io_ctx->stats_wip = false;
+				atomic_store_explicit(&ctrl->stats_populate_wip, false, memory_order_release);
+				return;
+			}
+		}
 
 		err = doca_devemu_virtio_queue_dbg_state_populate_list(ctrl->state_list);
 		if (err == DOCA_SUCCESS || err == DOCA_ERROR_IN_PROGRESS)
@@ -539,16 +567,26 @@ static void virtio_ctrl_change_cb(struct vblk_pci_virtio_dev *dev, void *arg)
 	pci_cfg = vblk_pci_virtio_get_pci_cfg(dev);
 	const struct vblk_pci_virtq_pci_cfg *vqs = vblk_pci_virtio_get_virtq_pci_cfg(dev);
 	struct vblk_ctrl *ctrl = arg;
+	bool need_reset = false;
 	int qid;
 
 	const uint8_t prev_status = ctrl->last_device_status;
 	uint8_t cur_status = pci_cfg->device_status;
 
-	DOCA_LOG_TRC("VIRTIO_CB status=0x%x prev=0x%x queue_select=%u", cur_status, prev_status, pci_cfg->queue_select);
 	if (cur_status == 0 && prev_status != 0) {
 		DOCA_LOG_INFO("Virtio controller reset detected -- stopping all queues");
+		need_reset = true;
+	}
 
-		ctrl = arg;
+	if (dev->flr_in_progress && ctrl->inited) {
+		DOCA_LOG_INFO("Virtio controller FLR detected -- stopping all queues");
+		need_reset = true;
+	}
+
+	DOCA_LOG_TRC("VIRTIO_CB status=0x%x prev=0x%x queue_select=%u", cur_status, prev_status, pci_cfg->queue_select);
+	if (need_reset) {
+		uint16_t clean_vqs = 0;
+
 		/* Defer stats list destruction to IO thread to avoid blocking TLP thread */
 		if (ctrl->state_list && !ctrl->stats_destroy_pending) {
 			ctrl->stats_destroy_pending = true;
@@ -559,26 +597,67 @@ static void virtio_ctrl_change_cb(struct vblk_pci_virtio_dev *dev, void *arg)
 			ctrl->io_ctxs[ctx_id].stats_wip = false;
 		}
 
-		ctrl->pending_vqs = 0;
+		/* Begin a reset epoch: a host reset arrived and VQ teardown is now
+		 * underway. Teardown is done in two passes so pending_vqs reaches its
+		 * full count before any VQ is handed off for teardown. Otherwise a VQ
+		 * counted early could be destroyed by the OE/IO threads and drive
+		 * pending_vqs to a transient 0, letting reset_vq_done clear
+		 * device_status/reset_pending before the rest are even counted. */
+
+		/* Pass 1 - count only: account each VQ that is still live (RUNNING,
+		 * BINDING, STARTING) into pending_vqs before any teardown begins. VQs
+		 * already in UNBINDING/STOPPING were counted when they entered teardown
+		 * (in an earlier epoch) and must NOT be re-accounted here: the OE clears
+		 * pending_counted as it drives such a VQ to DESTROYED, and re-accounting
+		 * in that window would re-set the token on a VQ that is already gone,
+		 * stranding a count in pending_vqs and hanging the reset. No state is
+		 * changed and nothing is handed to the OE/IO threads in this pass, so
+		 * pending_vqs cannot be decremented mid-count. */
 		for (qid = 0; qid < ctrl->num_queues; qid++) {
-			const enum vblk_vq_state state = ctrl->vqs[qid].state;
-			switch (state) {
+			switch (ctrl->vqs[qid].state) {
+			case VBLK_VQ_RUNNING:
+			case VBLK_VQ_BINDING:
+			case VBLK_VQ_STARTING:
+				vblk_ctrl_reset_account(ctrl, qid);
+				break;
 			case VBLK_VQ_DESTROYED:
+				clean_vqs++;
 				break;
 			case VBLK_VQ_UNBINDING:
 			case VBLK_VQ_STOPPING:
-				ctrl->pending_vqs++;
+				/* Already counted from a prior epoch; leave the count intact. */
 				break;
+			}
+		}
+
+		/* Mark reset in progress only after the count is complete, so the IO
+		 * thread cannot start tearing down a BINDING VQ before it is counted.
+		 * reset_pending stays set until the last VQ is DESTROYED; while set, the
+		 * DRIVER_OK handler below is skipped, so the next DRIVER_OK cannot
+		 * recreate the queues until every old queue has been fully destroyed. */
+		atomic_store_explicit(&ctrl->reset_pending, true, memory_order_release);
+
+		/* Pass 2 - transition: drive each VQ toward teardown. RUNNING -> UNBINDING
+		 * and STARTING -> STOPPING; BINDING is deferred (bind may be in flight
+		 * with post-DRIVER_OK IO) until the IO thread finishes bind and takes the
+		 * standard UNBINDING path. cfg is cleared after the state change so the OE
+		 * thread observes the new state before cfg is zeroed (avoids a torn read). */
+		for (qid = 0; qid < ctrl->num_queues; qid++) {
+			switch (ctrl->vqs[qid].state) {
 			case VBLK_VQ_RUNNING:
-			case VBLK_VQ_BINDING:
 				vblk_vq_set_state(ctrl, qid, VBLK_VQ_UNBINDING);
+				break;
+			case VBLK_VQ_BINDING:
+				atomic_store_explicit(&ctrl->vqs[qid].reset_deferred, true, memory_order_release);
 				break;
 			case VBLK_VQ_STARTING:
 				vblk_vq_set_state(ctrl, qid, VBLK_VQ_STOPPING);
 				break;
+			case VBLK_VQ_DESTROYED:
+			case VBLK_VQ_UNBINDING:
+			case VBLK_VQ_STOPPING:
+				break;
 			}
-			/* Clear cached config after state transition so OE thread
-			 * sees STOPPING before cfg is zeroed (avoids torn read) */
 			memset(&ctrl->vqs[qid].cfg, 0, sizeof(ctrl->vqs[qid].cfg));
 		}
 
@@ -588,10 +667,31 @@ static void virtio_ctrl_change_cb(struct vblk_pci_virtio_dev *dev, void *arg)
 		if (ctrl->pending_vqs > 0) {
 			pci_cfg->device_status = VBLK_PCI_VIRTIO_DEVICE_STATUS_NEEDS_RESET;
 			DOCA_LOG_INFO("Reset: holding status=0x40 until %d VQs destroyed", (int)ctrl->pending_vqs);
+		} else {
+			atomic_store_explicit(&ctrl->reset_pending, false, memory_order_release);
+		}
+
+		if (clean_vqs == ctrl->num_queues && dev->flr_in_progress) {
+			/* Raise flr_kickoff only on the first observation that
+			 * all VQs are destroyed during this FLR window. The OE
+			 * clears dev->flr_kickoff in oe_check_flr_kickoff() once
+			 * it has fanned out to the per-io_ctx flags; any later
+			 * callback re-entry within the same FLR (e.g. CFG
+			 * back-to-back path or a stray callback before OE
+			 * consumes the signal) is a no-op. */
+			if (!dev->flr_kickoff) {
+				DOCA_LOG_INFO("FLR requested, All VQs destroyed");
+				dev->flr_kickoff = true;
+			}
 		}
 	}
 
-	if (cur_status & VBLK_PCI_VIRTIO_DEVICE_STATUS_DRIVER_OK) {
+	/* VF FLR must not start queues from a mixed NEEDS_RESET|DRIVER_OK
+	 * status. The FLR tail defers the callback until the recycled datapath
+	 * can consume Linux's restored queue config. */
+	if ((cur_status & VBLK_PCI_VIRTIO_DEVICE_STATUS_DRIVER_OK) &&
+	    !(cur_status & VBLK_PCI_VIRTIO_DEVICE_STATUS_NEEDS_RESET) &&
+	    !atomic_load_explicit(&ctrl->reset_pending, memory_order_acquire)) {
 		DOCA_LOG_DBG("Virtio controller starting queues");
 
 		/* Always cache VQ configs from PCI config space on TLP thread first.
@@ -646,7 +746,8 @@ void vblk_ctrl_offload_engine_progress(struct vblk_ctrl *ctrl)
 		if (ctrl->state_list) {
 			doca_error_t result = doca_devemu_virtio_queue_dbg_state_destroy_list(ctrl->state_list);
 			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to destroy stats list, will retry");
+				DOCA_LOG_ERR("Failed to destroy stats list: %s, will retry",
+					     doca_error_get_descr(result));
 				goto skip_stats_destroy;
 			}
 			ctrl->state_list = NULL;
@@ -956,8 +1057,6 @@ static void vblk_ctrl_dma_error(struct doca_dma_task_memcpy *dma_task,
 	struct doca_task *task = doca_dma_task_memcpy_as_task(dma_task);
 	doca_error_t err = doca_task_get_status(task);
 
-	(void)ctx_user_data;
-
 	DOCA_LOG_ERR("DMA ERROR %d(%s:%s) for req %p type %d list_len %d len %d",
 		     err,
 		     doca_error_get_name(err),
@@ -1047,17 +1146,25 @@ destroy_mpool:
 	return err;
 }
 
-static void vblk_ctrl_io_ctx_reset(struct vblk_ctrl_io_ctx *io_ctx, bool owns_mpool)
+void vblk_ctrl_io_ctx_reset(struct vblk_ctrl_io_ctx *io_ctx, bool owns_mpool)
 {
 	if (owns_mpool && io_ctx->mpool != NULL)
 		vblk_mpool_set_destroy(io_ctx->mpool);
 	io_ctx->mpool = NULL;
-	doca_dma_destroy(io_ctx->dma_ctx);
+	if (io_ctx->dma_ctx != NULL) {
+		doca_dma_destroy(io_ctx->dma_ctx);
+		io_ctx->dma_ctx = NULL;
+	}
 	if (io_ctx->dma_pe != NULL) {
 		doca_pe_destroy(io_ctx->dma_pe);
 		io_ctx->dma_pe = NULL;
 	}
-	doca_devemu_vblk_io_destroy(io_ctx->vq_io_ctx);
+	if (io_ctx->vq_io_ctx != NULL) {
+		doca_devemu_vblk_io_destroy(io_ctx->vq_io_ctx);
+		io_ctx->vq_io_ctx = NULL;
+	}
+
+	atomic_store_explicit(&io_ctx->need_flr_teardown, false, memory_order_release);
 }
 static void vblk_ctrl_io_ctxs_reset(struct vblk_ctrl *ctrl, uint8_t ctxs_num)
 {
@@ -1077,10 +1184,188 @@ static void vblk_ctrl_vqs_destroy(struct vblk_ctrl *ctrl)
 	}
 }
 
+doca_error_t vblk_ctrl_recycle_vq_backends(struct vblk_ctrl *ctrl)
+{
+	doca_error_t err;
+
+	if (ctrl == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	if (ctrl->state_list != NULL) {
+		err = doca_devemu_virtio_queue_dbg_state_destroy_list(ctrl->state_list);
+		if (err != DOCA_SUCCESS)
+			return err;
+		ctrl->state_list = NULL;
+		ctrl->list_len = 0;
+	}
+	atomic_store_explicit(&ctrl->stats_destroy_pending, false, memory_order_release);
+	atomic_store_explicit(&ctrl->stats_populate_wip, false, memory_order_release);
+
+	for (int qid = 0; qid < ctrl->num_queues; qid++) {
+		struct doca_devemu_vblk_req_vq *vq = ctrl->vqs[qid].vq;
+
+		if (vq != NULL) {
+			err = vblk_ctrl_vq_stop_destroy(vq);
+			if (err != DOCA_SUCCESS)
+				return err;
+			ctrl->vqs[qid].vq = NULL;
+		}
+		ctrl->vqs[qid].state = VBLK_VQ_DESTROYED;
+		atomic_store_explicit(&ctrl->vqs[qid].pending_counted, false, memory_order_relaxed);
+		atomic_store_explicit(&ctrl->vqs[qid].reset_deferred, false, memory_order_relaxed);
+	}
+
+	atomic_store_explicit(&ctrl->pending_vqs, 0, memory_order_release);
+	atomic_store_explicit(&ctrl->engine_poll.pending, 0, memory_order_release);
+	for (uint16_t ctx_id = 0; ctx_id < ctrl->num_io_ctx; ctx_id++)
+		atomic_store_explicit(&ctrl->io_ctxs[ctx_id].poll.pending, 0, memory_order_release);
+
+	return DOCA_SUCCESS;
+}
+
+void vblk_ctrl_replay_enabled_vqs(struct vblk_ctrl *ctrl)
+{
+	if (ctrl == NULL)
+		return;
+
+	/* PF FLR replay restores saved queue config only. Non-LU vblk still does
+	 * not recover runtime doorbell/ring indices, so an outstanding request may
+	 * need a fresh guest kick until that gap is proven and fixed. */
+	for (int qid = 0; qid < ctrl->num_queues; qid++) {
+		if (!ctrl->vqs[qid].cfg.queue_enable)
+			continue;
+		if (ctrl->vqs[qid].vq != NULL || ctrl->vqs[qid].state != VBLK_VQ_DESTROYED)
+			continue;
+		vblk_vq_set_state(ctrl, qid, VBLK_VQ_STARTING);
+	}
+}
+
+/*
+ * Build the virtio-blk offload engine on ctrl->vblk_pci_dev (whose TLP device
+ * must already exist and be started). Datapath-only: assumes ctrl->num_queues and
+ * ctrl->vblk_pci_dev are set. Reusable for both the PF and an SR-IOV VF.
+ */
+static doca_error_t vblk_ctrl_dp_build(struct vblk_ctrl *ctrl)
+{
+	doca_error_t err;
+	struct doca_devemu_virtio_offload_engine *virtio_engine;
+
+	err = doca_devemu_vblk_offload_engine_create(doca_devemu_pci_tlp_dev_as_ep(ctrl->vblk_pci_dev->pci_tlp_dev),
+						     &ctrl->vq_engine);
+	if (err != DOCA_SUCCESS)
+		return err;
+
+	err = doca_devemu_vblk_offload_engine_set_seg_max(ctrl->vq_engine, ctrl->seg_max);
+	if (err != DOCA_SUCCESS)
+		goto destroy_vq_engine;
+
+	virtio_engine = doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
+
+	err = doca_devemu_virtio_offload_engine_set_indir_descs_enabled(virtio_engine, !!ctrl->indirect_enabled);
+	if (err != DOCA_SUCCESS)
+		goto destroy_vq_engine;
+
+	err = doca_devemu_virtio_offload_engine_set_num_queues(virtio_engine, ctrl->num_queues);
+	if (err != DOCA_SUCCESS)
+		goto destroy_vq_engine;
+
+	err = doca_devemu_virtio_offload_engine_start(virtio_engine);
+	if (err != DOCA_SUCCESS)
+		goto destroy_vq_engine;
+
+	return DOCA_SUCCESS;
+
+destroy_vq_engine:
+	(void)doca_devemu_vblk_offload_engine_destroy(ctrl->vq_engine);
+	ctrl->vq_engine = NULL;
+	return err;
+}
+
+static doca_error_t vblk_ctrl_wait_engine_disabled(struct doca_devemu_virtio_offload_engine *virtio_engine)
+{
+	enum doca_devemu_virtio_offload_engine_states state;
+	doca_error_t err;
+
+	for (uint32_t n = 0; n < VBLK_IO_CTX_MAX_WAIT_ITERATIONS_IDLE; n++) {
+		err = doca_devemu_virtio_offload_engine_get_state(virtio_engine, &state);
+		if (err != DOCA_SUCCESS)
+			return err;
+		if (state == DOCA_DEVEMU_VIRTIO_OFFLOAD_ENGINE_STATE_DISABLED)
+			return DOCA_SUCCESS;
+		if (state != DOCA_DEVEMU_VIRTIO_OFFLOAD_ENGINE_STATE_DISABLING)
+			return DOCA_ERROR_BAD_STATE;
+	}
+
+	return DOCA_ERROR_TIME_OUT;
+}
+
+/* Iteration-bounded drain of the async offload-engine stop. Same shape as
+ * vblk_ctrl_wait_engine_disabled / vblk_wait_ctx_idle: on a healthy EP stop
+ * completes in a handful of doca_pe_progress() calls, so the 1M iteration cap
+ * is essentially never reached; if it is, the engine is genuinely stuck and
+ * the caller logs + proceeds so the real bug surfaces via the follow-up
+ * 'Cannot destroy offload engine while it is started' error. */
+static doca_error_t vblk_wait_engine_stopped(struct doca_pe *pe, struct doca_devemu_virtio_offload_engine *engine)
+{
+	doca_error_t err;
+
+	for (uint32_t n = 0; n < VBLK_IO_CTX_MAX_WAIT_ITERATIONS_IDLE; n++) {
+		err = doca_devemu_virtio_offload_engine_stop(engine);
+		if (err != DOCA_ERROR_IN_PROGRESS)
+			return err;
+		if (pe != NULL)
+			(void)doca_pe_progress(pe);
+	}
+	return DOCA_ERROR_TIME_OUT;
+}
+
+/*
+ * Tear down the offload engine built by vblk_ctrl_dp_build(). Datapath-only;
+ * leaves the PCI device / vqs untouched. No-op when the engine was never
+ * created. Reusable for both the PF and an SR-IOV VF. pe drives the async
+ * engine-stop drain (same shape as vblk_ctrl_cleanup).
+ */
+static void vblk_ctrl_dp_teardown(struct vblk_ctrl *ctrl, struct doca_pe *pe)
+{
+	struct doca_devemu_virtio_offload_engine *virtio_engine;
+	doca_error_t err;
+
+	if (ctrl->vq_engine == NULL)
+		return;
+
+	virtio_engine = doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
+	/* Only disable an engine that is actually enabled. A VFE-disabled VF (or a
+	 * PF mid-FLR) reaches teardown already disabled; disabling again just makes
+	 * the SDK log a spurious "offload engine is not enabled" error. */
+	if (ctrl->engine_enabled) {
+		err = doca_devemu_virtio_offload_engine_disable(virtio_engine);
+		if (err == DOCA_ERROR_IN_PROGRESS)
+			err = vblk_ctrl_wait_engine_disabled(virtio_engine);
+		if (err != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("cleanup: offload_engine_disable failed: %s", doca_error_get_name(err));
+			return;
+		}
+		ctrl->engine_enabled = false;
+	}
+
+	/* Drain the async stop the same way vblk_ctrl_cleanup does. Treating
+	 * IN_PROGRESS as failure here would skip destroy and leave ctrl->vq_engine
+	 * live, so the next VF re-plug would trip 'ctx already in use'. */
+	err = vblk_wait_engine_stopped(pe, virtio_engine);
+	if (err != DOCA_SUCCESS && err != DOCA_ERROR_BAD_STATE)
+		DOCA_LOG_WARN("cleanup: offload_engine_stop returned %s, proceeding", doca_error_get_descr(err));
+
+	err = doca_devemu_vblk_offload_engine_destroy(ctrl->vq_engine);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("cleanup: offload_engine_destroy failed: %s", doca_error_get_name(err));
+		return;
+	}
+	ctrl->vq_engine = NULL;
+}
+
 doca_error_t vblk_ctrl_init(struct vblk_ctrl *ctrl, const struct vblk_ctrl_attrs *attr)
 {
 	doca_error_t err;
-	struct doca_devemu_virtio_offload_engine *virtio_engine = NULL;
 
 	/* create a single virtio block pci endpoint */
 	const struct vblk_pci_virtio_blk_config blk_cfg = {
@@ -1099,15 +1384,23 @@ doca_error_t vblk_ctrl_init(struct vblk_ctrl *ctrl, const struct vblk_ctrl_attrs
 						 .dev_cfg = &blk_cfg};
 
 	pci_attr.device_features |= attr->indirect_enabled ? (1ULL << VBLK_PCI_VIRTIO_F_INDIRECT_DESC) : 0;
+	DOCA_LOG_INFO("Indirect descriptor feature: %s (device_features bit %d %s)",
+		      attr->indirect_enabled ? "enabled" : "disabled",
+		      VBLK_PCI_VIRTIO_F_INDIRECT_DESC,
+		      attr->indirect_enabled ? "set" : "not set");
 
 	memset(ctrl, 0, sizeof(*ctrl));
 	ctrl->num_queues = attr->num_queues;
 	ctrl->num_io_ctx = attr->num_io_ctx;
 	ctrl->ep_index = attr->ep_index;
+	ctrl->seg_max = attr->seg_max;
+	ctrl->indirect_enabled = (attr->indirect_enabled ? 1 : 0);
 
 	ctrl->vqs = calloc(ctrl->num_queues, sizeof(*ctrl->vqs));
-	if (!ctrl->vqs)
+	if (!ctrl->vqs) {
+		memset(ctrl, 0, sizeof(*ctrl));
 		return DOCA_ERROR_NO_MEMORY;
+	}
 
 	/* Initialize queue<->io_ctx mapping once (round-robin for now) */
 	for (int qid = 0; qid < ctrl->num_queues; qid++)
@@ -1120,34 +1413,14 @@ doca_error_t vblk_ctrl_init(struct vblk_ctrl *ctrl, const struct vblk_ctrl_attrs
 		goto destroy_vqs;
 	}
 
-	err = doca_devemu_vblk_offload_engine_create(doca_devemu_pci_tlp_dev_as_ep(ctrl->vblk_pci_dev->pci_tlp_dev),
-						     &ctrl->vq_engine);
+	err = vblk_ctrl_dp_build(ctrl);
 	if (err != DOCA_SUCCESS)
 		goto destroy_pci_dev;
 
-	err = doca_devemu_vblk_offload_engine_set_seg_max(ctrl->vq_engine, attr->seg_max);
-	if (err != DOCA_SUCCESS)
-		goto destroy_vq_engine;
-
-	virtio_engine = doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
-
-	err = doca_devemu_virtio_offload_engine_set_indir_descs_enabled(virtio_engine, attr->indirect_enabled);
-	if (err != DOCA_SUCCESS)
-		goto destroy_vq_engine;
-
-	err = doca_devemu_virtio_offload_engine_set_num_queues(virtio_engine, ctrl->num_queues);
-	if (err != DOCA_SUCCESS)
-		goto destroy_vq_engine;
-
-	err = doca_devemu_virtio_offload_engine_start(virtio_engine);
-	if (err != DOCA_SUCCESS)
-		goto destroy_vq_engine;
-
+	ctrl->inited = true;
 	strncpy(ctrl->vblk_dev_id, VBLK_CTRL_DEFAULT_ID, sizeof(ctrl->vblk_dev_id));
 	return DOCA_SUCCESS;
 
-destroy_vq_engine:
-	doca_devemu_vblk_offload_engine_destroy(ctrl->vq_engine);
 destroy_pci_dev:
 	vblk_pci_virtio_dev_destroy(ctrl->vblk_pci_dev);
 destroy_vqs:
@@ -1160,13 +1433,31 @@ doca_error_t vblk_ctrl_enable(struct vblk_ctrl *ctrl)
 {
 	struct doca_devemu_virtio_offload_engine *virtio_engine;
 
-	if (ctrl == NULL)
+	if (ctrl == NULL || ctrl->vq_engine == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
 
 	virtio_engine = doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
 	doca_error_t err = doca_devemu_virtio_offload_engine_enable(virtio_engine);
 	if (err != DOCA_SUCCESS)
 		return err;
+	ctrl->engine_enabled = true;
+	return DOCA_SUCCESS;
+}
+
+doca_error_t vblk_ctrl_disable(struct vblk_ctrl *ctrl)
+{
+	struct doca_devemu_virtio_offload_engine *virtio_engine;
+
+	if (ctrl == NULL || ctrl->vq_engine == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	virtio_engine = doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
+	doca_error_t err = doca_devemu_virtio_offload_engine_disable(virtio_engine);
+	if (err == DOCA_ERROR_IN_PROGRESS)
+		err = vblk_ctrl_wait_engine_disabled(virtio_engine);
+	if (err != DOCA_SUCCESS)
+		return err;
+	ctrl->engine_enabled = false;
 	return DOCA_SUCCESS;
 }
 
@@ -1219,6 +1510,7 @@ doca_error_t vblk_ctrl_init_io_ctx_on_thread(struct vblk_ctrl *ctrl,
 {
 	doca_error_t err;
 	struct doca_ctx *io_ctx;
+	bool owns_mpool = (shared_mpool == NULL);
 
 	if (ctrl == NULL || pe == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
@@ -1231,12 +1523,12 @@ doca_error_t vblk_ctrl_init_io_ctx_on_thread(struct vblk_ctrl *ctrl,
 
 	err = vblk_ctrl_connect_io_ctx(ctrl, ctx_id, pe);
 	if (err != DOCA_SUCCESS)
-		return err;
+		goto err_reset_io_ctx;
 
 	/* Start per-IO DMA ctx */
 	err = doca_ctx_start(vblk_ctrl_dma_ctx(ctrl, ctx_id));
 	if (err != DOCA_SUCCESS)
-		goto err_destroy_dma_pe;
+		goto err_reset_io_ctx;
 
 	/* Start IO ctx (may be async) */
 	io_ctx = vblk_ctrl_io_ctx(ctrl, ctx_id);
@@ -1260,9 +1552,8 @@ err_stop_dma:
 				 vblk_ctrl_dma_ctx(ctrl, ctx_id),
 				 "dma",
 				 VBLK_IO_CTX_MAX_WAIT_ITERATIONS_IDLE);
-err_destroy_dma_pe:
-	doca_pe_destroy(ctrl->io_ctxs[ctx_id].dma_pe);
-	ctrl->io_ctxs[ctx_id].dma_pe = NULL;
+err_reset_io_ctx:
+	vblk_ctrl_io_ctx_reset(&ctrl->io_ctxs[ctx_id], owns_mpool);
 	return err;
 }
 
@@ -1287,9 +1578,20 @@ doca_error_t vblk_ctrl_shutdown_io_ctx_on_thread(struct vblk_ctrl *ctrl, uint16_
 		if (st == VBLK_VQ_RUNNING || st == VBLK_VQ_UNBINDING || st == VBLK_VQ_BINDING) {
 			if (ctrl->vqs[qid].vq == NULL)
 				continue;
+			uint32_t stop_iters = 0;
 			while ((err = vblk_ctrl_queue_stop(ctrl, qid)) == DOCA_ERROR_AGAIN) {
 				doca_pe_progress(pe);
 				doca_pe_progress(io_ctx->dma_pe);
+				/* Best effort: a VQ under active I/O (e.g. SIGINT during FIO)
+				 * may not quiesce promptly. Bound the retry so shutdown can
+				 * never hang on a wedged queue; fall through to ctx stop +
+				 * idle wait, which are themselves bounded. */
+				if (++stop_iters > VBLK_IO_CTX_MAX_WAIT_ITERATIONS_IDLE) {
+					DOCA_LOG_WARN("shutdown: vq qid=%d did not quiesce after %u iters",
+						      qid,
+						      stop_iters);
+					break;
+				}
 			}
 
 			if (err != DOCA_SUCCESS) {
@@ -1322,19 +1624,177 @@ doca_error_t vblk_ctrl_shutdown_io_ctx_on_thread(struct vblk_ctrl *ctrl, uint16_
 	return DOCA_SUCCESS;
 }
 
-void vblk_ctrl_cleanup(struct vblk_ctrl *ctrl)
+doca_error_t vblk_ctrl_init_vf_engine(struct vblk_ctrl *ctrl,
+				      struct vblk_pci_virtio_dev *vf_dev,
+				      uint16_t num_queues,
+				      uint16_t seg_max,
+				      bool indirect_enabled,
+				      uint8_t num_io_ctx,
+				      uint16_t io_ctx_base)
 {
-	struct doca_devemu_virtio_offload_engine *virtio_engine =
-		doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
+	doca_error_t err;
 
-	vblk_ctrl_vqs_destroy(ctrl);
-	vblk_ctrl_io_ctxs_reset(ctrl, ctrl->num_io_ctx);
-	(void)doca_devemu_virtio_offload_engine_disable(virtio_engine);
-	(void)doca_devemu_virtio_offload_engine_stop(virtio_engine);
-	(void)doca_devemu_vblk_offload_engine_destroy(ctrl->vq_engine);
-	vblk_pci_virtio_dev_destroy(ctrl->vblk_pci_dev);
+	if (ctrl == NULL || vf_dev == NULL || vf_dev->pci_tlp_dev == NULL || num_io_ctx == 0)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	memset(ctrl, 0, sizeof(*ctrl));
+	ctrl->num_queues = num_queues;
+	ctrl->num_io_ctx = num_io_ctx; /* PF parity: VF queues fan out across all IO threads */
+	ctrl->io_ctx_base = io_ctx_base;
+	ctrl->ep_index = vf_dev->ep_index;
+	/* The SR-IOV slot owns vf_dev and its TLP device; the controller only
+	 * borrows them and must not destroy them in vblk_ctrl_cleanup_vf(). */
+	ctrl->vblk_pci_dev = vf_dev;
+	ctrl->seg_max = seg_max;
+	ctrl->indirect_enabled = (indirect_enabled ? 1 : 0);
+
+	ctrl->vqs = calloc(ctrl->num_queues, sizeof(*ctrl->vqs));
+	if (!ctrl->vqs)
+		return DOCA_ERROR_NO_MEMORY;
+	for (int qid = 0; qid < ctrl->num_queues; qid++)
+		ctrl->vqs[qid].io_ctx_id = vblk_qid_to_io_ctx_id(ctrl, qid);
+
+	err = vblk_ctrl_dp_build(ctrl);
+	if (err != DOCA_SUCCESS)
+		goto free_vqs;
+
+	/* Engine only - the per-thread io_ctxs are created separately
+	 * (vblk_ctrl_init_io_ctx_on_thread per ctx_id on each IO thread), and the
+	 * engine is left DISABLED. The OE thread enables it on the VFE 0->1 edge
+	 * and disables it on 1->0 (oe_check_vf_dp), so a VF's engine is armed only
+	 * while the VF is host-enabled. */
+	ctrl->inited = true;
+	strncpy(ctrl->vblk_dev_id, VBLK_CTRL_DEFAULT_ID, sizeof(ctrl->vblk_dev_id));
+	/* Wire the same config-change callback the PF uses (vblk_ctrl_init create
+	 * path) so the guest's VF DRIVER_OK / queue-enable / reset / FLR MMIO
+	 * writes drive this controller - without it the VF reaches DRIVER_OK but
+	 * its VQs never start.
+	 *
+	 * Ordering vs the guest: the VF TLP device already exists and the VF
+	 * controller is built while VFE is still clear. The engine stays disabled
+	 * until the VFE path asks the OE thread to enable it. VF FLR uses this
+	 * same stable callback and keeps the controller object alive.
+	 *
+	 * Publish the callback pointer, THEN replay it once. The replay reconciles
+	 * any state the guest may already have driven into the shadow config
+	 * (FEATURES_OK / DRIVER_OK / queue-enable) before the pointer went live:
+	 * those MMIO writes updated the shadow but dropped their side effect while
+	 * pci_cfg_change_cb was NULL, and a doorbell kick does not re-enter this
+	 * callback. The replay is level-triggered (acts on the current DRIVER_OK +
+	 * queue_enable), so one pass starts the VQs. Publish-before-replay leaves
+	 * no lost-transition gap: a write landing just before publish is caught by
+	 * this replay; one landing after publish goes through the now-live pointer. */
+	vblk_pci_virtio_cfg_change_set(vf_dev, virtio_ctrl_change_cb, ctrl);
+	(void)vblk_pci_virtio_cfg_change_notify(vf_dev);
+	return DOCA_SUCCESS;
+
+free_vqs:
 	free(ctrl->vqs);
 	ctrl->vqs = NULL;
+	return err;
+}
+
+void vblk_ctrl_cleanup_vf(struct vblk_ctrl *ctrl, struct doca_pe *pe)
+{
+	if (ctrl == NULL)
+		return;
+
+	/* Final VF teardown only. The caller must stop the VF TLP device before
+	 * freeing vf_ctrl, so no TLP config callback can race this cleanup. */
+
+	/* The per-thread io_ctxs were already drained + stopped on their owning IO
+	 * threads (vblk_ctrl_shutdown_io_ctx_on_thread, in the io-thread shutdown
+	 * loop). Here on the OE thread: destroy the now-drained VQs, reset all
+	 * io_ctx resources, then tear down the engine (engine destroyed last, after
+	 * the io_ctxs created from it are gone). Mirrors vblk_ctrl_cleanup (PF);
+	 * pe is required so dp_teardown can drain the async engine stop and
+	 * actually destroy the engine (otherwise the next VF re-plug trips
+	 * 'ctx already in use'). */
+	vblk_ctrl_vqs_destroy(ctrl);
+	vblk_ctrl_io_ctxs_reset(ctrl, ctrl->num_io_ctx);
+	vblk_ctrl_dp_teardown(ctrl, pe);
+	ctrl->inited = false;
+	free(ctrl->vqs);
+	ctrl->vqs = NULL;
+	/* vf_dev is owned by the SR-IOV slot; do not destroy it here. */
+}
+
+static doca_error_t vblk_ctrl_finish_destroy(struct vblk_ctrl *ctrl)
+{
+	doca_error_t err = doca_devemu_vblk_offload_engine_destroy(ctrl->vq_engine);
+
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_WARN("offload engine destroy returned %s", doca_error_get_descr(err));
+		return err;
+	}
+	ctrl->vq_engine = NULL;
+	ctrl->inited = false;
+	vblk_pci_virtio_dev_destroy(ctrl->vblk_pci_dev);
+	ctrl->vblk_pci_dev = NULL;
+	free(ctrl->vqs);
+	ctrl->vqs = NULL;
+	return DOCA_SUCCESS;
+}
+
+doca_error_t vblk_ctrl_cleanup(struct vblk_ctrl *ctrl, struct doca_pe *pe)
+{
+	struct doca_devemu_virtio_offload_engine *virtio_engine;
+	doca_error_t err;
+
+	if (ctrl == NULL) {
+		DOCA_LOG_ERR("vblk_ctrl_cleanup: 'ctrl' is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	/* doca lib state machine REQUIRES this exact ordering:
+	 *   1) destroy VQs and reset io_ctxs (so vq_list / virtio_io_list are empty)
+	 *   2) disable engine (state: ENABLED -> DISABLED)
+	 *   3) wait for engine STOPPED
+	 *   4) destroy engine (must satisfy !started)
+	 * See doca_devemu_virtio_offload_engine_disable()/_stop() in
+	 * libs/doca_devemu/virtio/core/host/tlp/src/doca_devemu_virtio_tlp.c:
+	 *   stop() returns NOT_PERMITTED unless state==DISABLED AND vq_list empty
+	 *   AND virtio_io_list empty. Reordering (e.g. disable before destroying
+	 *   VQs) makes disable/stop fail with "Operation not permitted", which
+	 *   then makes finish_destroy fail with "Cannot destroy while started",
+	 *   leaving doca lib in an inconsistent state. Across many such failed
+	 *   unplugs the DPU PCIe path eventually collapses and host BIOS POST
+	 *   crashes with MCE on CmpltTO (observed at hp.sh round ~91). */
+	vblk_ctrl_vqs_destroy(ctrl);
+	vblk_ctrl_io_ctxs_reset(ctrl, ctrl->num_io_ctx);
+
+	if (ctrl->vq_engine == NULL) {
+		ctrl->inited = false;
+		if (ctrl->vblk_pci_dev != NULL) {
+			vblk_pci_virtio_dev_destroy(ctrl->vblk_pci_dev);
+			ctrl->vblk_pci_dev = NULL;
+		}
+		free(ctrl->vqs);
+		ctrl->vqs = NULL;
+		return DOCA_SUCCESS;
+	}
+
+	virtio_engine = doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
+
+	if (ctrl->engine_enabled) {
+		err = doca_devemu_virtio_offload_engine_disable(virtio_engine);
+		if (err == DOCA_ERROR_IN_PROGRESS)
+			err = vblk_ctrl_wait_engine_disabled(virtio_engine);
+		if (err != DOCA_SUCCESS && err != DOCA_ERROR_BAD_STATE)
+			DOCA_LOG_WARN("offload engine disable returned %s, proceeding", doca_error_get_descr(err));
+		ctrl->engine_enabled = false;
+	}
+
+	/* Engine stop is async via the PE. If we let destroy run while stop is
+	 * still IN_PROGRESS, doca rejects it with 'Cannot destroy offload engine
+	 * while it is started' and the underlying doca ctxs stay registered to
+	 * the PE -- the next plug for this EP then fails with 'ctx is already
+	 * in use'. Drain stop here so destroy succeeds. */
+	err = vblk_wait_engine_stopped(pe, virtio_engine);
+	if (err != DOCA_SUCCESS)
+		DOCA_LOG_WARN("offload engine stop returned %s, proceeding", doca_error_get_descr(err));
+
+	return vblk_ctrl_finish_destroy(ctrl);
 }
 
 struct vblk_poll_state *vblk_ctrl_io_ctx_poll(struct vblk_ctrl *ctrl, uint8_t ctx_id)
@@ -1355,12 +1815,22 @@ void vblk_ctrl_io_context_progress(struct vblk_ctrl *vblk_ctrl, uint8_t core_id)
 			continue;
 		const enum vblk_vq_state state = vblk_ctrl->vqs[qid].state;
 		switch (state) {
-		case VBLK_VQ_BINDING:
-			if (vblk_ctrl_queue_start(vblk_ctrl, qid))
-				vblk_vq_set_state(vblk_ctrl, qid, VBLK_VQ_RUNNING);
-			else
+		case VBLK_VQ_BINDING: {
+			const bool bound_ok = vblk_ctrl_queue_start(vblk_ctrl, qid);
+			const bool reset_active =
+				atomic_load_explicit(&vblk_ctrl->reset_pending, memory_order_acquire) ||
+				atomic_load_explicit(&vblk_ctrl->vqs[qid].reset_deferred, memory_order_acquire);
+
+			if (!bound_ok)
+				/* Bind/enable failed: VQ left unbound, hand to engine to destroy. */
 				vblk_vq_set_state(vblk_ctrl, qid, VBLK_VQ_STOPPING);
+			else if (reset_active)
+				/* Deferred reset: bind finished, drain via standard UNBINDING path. */
+				vblk_vq_set_state(vblk_ctrl, qid, VBLK_VQ_UNBINDING);
+			else
+				vblk_vq_set_state(vblk_ctrl, qid, VBLK_VQ_RUNNING);
 			break;
+		}
 		case VBLK_VQ_RUNNING:
 			/* Reset handling is done in virtio_ctrl_change_cb */
 			break;
@@ -1373,7 +1843,7 @@ void vblk_ctrl_io_context_progress(struct vblk_ctrl *vblk_ctrl, uint8_t core_id)
 					doca_devemu_vblk_req_vq_as_vq(vblk_ctrl->vqs[qid].vq);
 
 				DOCA_LOG_DBG("flushing vq conf %d to io_ctx %u", qid, core_id);
-				doca_devemu_virtio_io_flush_vq(io_ctx, vq);
+				(void)doca_devemu_virtio_io_flush_vq(io_ctx, vq);
 
 				DOCA_LOG_DBG("unbinding vq conf %d to io_ctx %u", qid, core_id);
 				err = doca_devemu_virtio_io_unbind_vq(io_ctx, vq);

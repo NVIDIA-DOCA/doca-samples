@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -147,14 +147,12 @@ static doca_error_t create_shared_meter_mark_pipe(struct doca_flow_port *port,
 {
 	struct doca_flow_match match;
 	struct doca_flow_monitor monitor;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
 	memset(&monitor, 0, sizeof(monitor));
-	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
 
 	/* 5 tuple match */
@@ -166,8 +164,6 @@ static doca_error_t create_shared_meter_mark_pipe(struct doca_flow_port *port,
 	match.outer.ip4.dst_ip = 0xffffffff;
 	SET_L4_PORT(outer, src_port, 0xffff);
 	SET_L4_PORT(outer, dst_port, 0xffff);
-
-	actions_arr[0] = &actions;
 
 	/* monitor with changeable shared meter ID */
 	monitor.meter_type = DOCA_FLOW_RESOURCE_TYPE_SHARED;
@@ -189,16 +185,13 @@ static doca_error_t create_shared_meter_mark_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
 	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	/* Forward to next pipe to match on marked meter color */
 	fwd.type = DOCA_FLOW_FWD_PIPE;
@@ -519,7 +512,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 			return result;
 		}
 
-		result = doca_flow_entries_process(ports[port_id], 0, DEFAULT_TIMEOUT_US, num_of_entries);
+		result = doca_flow_pipe_queue_drain(ports[port_id], 0, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);

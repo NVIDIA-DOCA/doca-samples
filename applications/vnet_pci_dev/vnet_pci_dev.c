@@ -31,6 +31,7 @@
 #include <string.h>
 #include <signal.h>
 #include <sched.h>
+#include <inttypes.h>
 
 #include <doca_argp.h>
 #include <doca_log.h>
@@ -229,11 +230,25 @@ static doca_error_t max_queue_pairs_callback(void *param, void *config)
 	return DOCA_SUCCESS;
 }
 
+static doca_error_t admin_queue_num_callback(void *param, void *config)
+{
+	struct vnet_pci_dev_config *vnet_cfg = config;
+	int admin_queue_num = *(int *)param;
+
+	if (admin_queue_num < 0 || admin_queue_num > VNET_PCI_DEV_MAX_ADMIN_QUEUES) {
+		DOCA_LOG_ERR("Admin queue count must be 0 or %u", VNET_PCI_DEV_MAX_ADMIN_QUEUES);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	vnet_cfg->admin_queue_num = admin_queue_num;
+	return DOCA_SUCCESS;
+}
+
 /**
  * @brief ARGP callback for VirtQueue size parameter
  *
  * Validates and stores the VirtQueue size (number of entries per queue).
- * Size must be a power of 2, between 16 and 32768 (VirtIO spec limit).
+ * Size must be a power of 2, between VNET_MIN_QUEUE_SIZE and VNET_MAX_QUEUE_SIZE.
  *
  * @param[in] param Input parameter containing queue size value
  * @param[in,out] config Program configuration context to update
@@ -365,46 +380,90 @@ static doca_error_t register_hotplug_mode(void)
 	return result;
 }
 
-static doca_error_t tlp_core_callback(void *param, void *config)
+/*
+ * Parse --total-vfs, the single SR-IOV switch: 0 disables (default), 1..N
+ * enables and sets TotalVFs. sriov_enabled is derived so the stack gates on
+ * one boolean; per-VF MSI-X/doorbells are derived from the queue geometry.
+ */
+static doca_error_t sriov_total_vfs_callback(void *param, void *config)
 {
-	struct vnet_pci_dev_config *conf = (struct vnet_pci_dev_config *)config;
+	struct vnet_pci_dev_config *vnet_cfg = (struct vnet_pci_dev_config *)config;
+	int value = *(int *)param;
+
+	if (value < 0 || value > VNET_SRIOV_MAX_VFS_PER_PF) {
+		DOCA_LOG_ERR("Invalid --total-vfs value: %d. Supported range is 0..%u per PF (0 disables SR-IOV)",
+			     value,
+			     VNET_SRIOV_MAX_VFS_PER_PF);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	vnet_cfg->sriov_total_vfs = (uint16_t)value;
+	vnet_cfg->sriov_enabled = (value > 0);
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Register --total-vfs, the single SR-IOV switch.
+ *
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t register_sriov_params(void)
+{
+	struct doca_argp_param *param;
+	doca_error_t result;
+
+	result = doca_argp_param_create(&param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(param, "total-vfs");
+	doca_argp_param_set_description(
+		param,
+		"SR-IOV TotalVFs per PF (default: 0 = disabled; 1..64 enables and exposes the SR-IOV "
+		"capability). Per-VF MSI-X/doorbells are derived from the queue count");
+	doca_argp_param_set_callback(param, sriov_total_vfs_callback);
+	doca_argp_param_set_type(param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register --total-vfs: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t core_idx_callback(void *param, int *core_idx, const char *core_name)
+{
 	int core = *(int *)param;
 
 	if (core < -1 || core >= CPU_SETSIZE) {
-		DOCA_LOG_ERR("Invalid TLP core index: %d. Use -1 for auto or 0..%d", core, CPU_SETSIZE - 1);
+		DOCA_LOG_ERR("Invalid %s core index: %d. Use -1 for auto or 0..%d", core_name, core, CPU_SETSIZE - 1);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	conf->tlp_core_idx = core;
+	*core_idx = core;
 	return DOCA_SUCCESS;
+}
+
+static doca_error_t tlp_core_callback(void *param, void *config)
+{
+	struct vnet_pci_dev_config *conf = (struct vnet_pci_dev_config *)config;
+
+	return core_idx_callback(param, &conf->tlp_core_idx, "TLP");
 }
 
 static doca_error_t worker_core_callback(void *param, void *config)
 {
 	struct vnet_pci_dev_config *conf = (struct vnet_pci_dev_config *)config;
-	int core = *(int *)param;
 
-	if (core < -1 || core >= CPU_SETSIZE) {
-		DOCA_LOG_ERR("Invalid worker core index: %d. Use -1 for auto or 0..%d", core, CPU_SETSIZE - 1);
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-
-	conf->worker_core_idx = core;
-	return DOCA_SUCCESS;
+	return core_idx_callback(param, &conf->worker_core_idx, "worker");
 }
 
 static doca_error_t mq_core_callback(void *param, void *config)
 {
 	struct vnet_pci_dev_config *conf = (struct vnet_pci_dev_config *)config;
-	int core = *(int *)param;
 
-	if (core < -1 || core >= CPU_SETSIZE) {
-		DOCA_LOG_ERR("Invalid MQ core index: %d. Use -1 for auto or 0..%d", core, CPU_SETSIZE - 1);
-		return DOCA_ERROR_INVALID_VALUE;
-	}
-
-	conf->mq_core_idx = core;
-	return DOCA_SUCCESS;
+	return core_idx_callback(param, &conf->mq_core_idx, "MQ");
 }
 
 /*
@@ -434,6 +493,81 @@ static doca_error_t vnet_lu_mode_callback(void *param, void *config)
 }
 
 /*
+ * Define a boolean CLI callback that toggles a single optional Virtio-net feature bit
+ * in config->opt_features. The bit is advertised later only if the controller supports it.
+ */
+#define VNET_OPT_FEATURE_CB(fn, feature_bit) \
+	static doca_error_t fn(void *param, void *config) \
+	{ \
+		struct vnet_pci_dev_config *conf = (struct vnet_pci_dev_config *)config; \
+		if (*(bool *)param) \
+			conf->opt_features |= (1ULL << (feature_bit)); \
+		else \
+			conf->opt_features &= ~(1ULL << (feature_bit)); \
+		return DOCA_SUCCESS; \
+	}
+
+VNET_OPT_FEATURE_CB(vnet_pci_dev_guest_csum_callback, VIRTIO_NET_F_GUEST_CSUM)
+VNET_OPT_FEATURE_CB(vnet_pci_dev_guest_tso4_callback, VIRTIO_NET_F_GUEST_TSO4)
+VNET_OPT_FEATURE_CB(vnet_pci_dev_guest_tso6_callback, VIRTIO_NET_F_GUEST_TSO6)
+VNET_OPT_FEATURE_CB(vnet_pci_dev_guest_ecn_callback, VIRTIO_NET_F_GUEST_ECN)
+VNET_OPT_FEATURE_CB(vnet_pci_dev_guest_ufo_callback, VIRTIO_NET_F_GUEST_UFO)
+VNET_OPT_FEATURE_CB(vnet_pci_dev_host_ecn_callback, VIRTIO_NET_F_HOST_ECN)
+VNET_OPT_FEATURE_CB(vnet_pci_dev_host_ufo_callback, VIRTIO_NET_F_HOST_UFO)
+VNET_OPT_FEATURE_CB(vnet_pci_dev_mrg_rxbuf_callback, VIRTIO_NET_F_MRG_RXBUF)
+
+/* CLI flags for the optional Virtio-net features. Each enables a single feature bit. */
+static const struct {
+	const char *long_name;
+	const char *description;
+	doca_argp_param_cb_t cb;
+} vnet_opt_feature_params[] = {
+	{"guest-csum",
+	 "Driver handles packets with partial checksum (VIRTIO_NET_F_GUEST_CSUM)",
+	 vnet_pci_dev_guest_csum_callback},
+	{"guest-tso4", "Driver can receive TSOv4 (VIRTIO_NET_F_GUEST_TSO4)", vnet_pci_dev_guest_tso4_callback},
+	{"guest-tso6", "Driver can receive TSOv6 (VIRTIO_NET_F_GUEST_TSO6)", vnet_pci_dev_guest_tso6_callback},
+	{"guest-ecn", "Driver can receive TSO with ECN (VIRTIO_NET_F_GUEST_ECN)", vnet_pci_dev_guest_ecn_callback},
+	{"guest-ufo", "Driver can receive UFO (VIRTIO_NET_F_GUEST_UFO)", vnet_pci_dev_guest_ufo_callback},
+	{"host-ecn", "Device can receive TSO with ECN (VIRTIO_NET_F_HOST_ECN)", vnet_pci_dev_host_ecn_callback},
+	{"host-ufo", "Device can receive UFO (VIRTIO_NET_F_HOST_UFO)", vnet_pci_dev_host_ufo_callback},
+	{"mrg-rxbuf", "Driver can merge receive buffers (VIRTIO_NET_F_MRG_RXBUF)", vnet_pci_dev_mrg_rxbuf_callback},
+};
+
+/*
+ * Register the optional Virtio-net feature CLI flags from vnet_opt_feature_params[].
+ *
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t register_vnet_opt_feature_params(void)
+{
+	size_t i;
+
+	for (i = 0; i < sizeof(vnet_opt_feature_params) / sizeof(vnet_opt_feature_params[0]); i++) {
+		struct doca_argp_param *param;
+		doca_error_t result;
+
+		result = doca_argp_param_create(&param);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+			return result;
+		}
+		doca_argp_param_set_long_name(param, vnet_opt_feature_params[i].long_name);
+		doca_argp_param_set_description(param, vnet_opt_feature_params[i].description);
+		doca_argp_param_set_callback(param, vnet_opt_feature_params[i].cb);
+		doca_argp_param_set_type(param, DOCA_ARGP_TYPE_BOOLEAN);
+		result = doca_argp_register_param(param);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+			doca_argp_param_destroy(param);
+			return result;
+		}
+	}
+
+	return DOCA_SUCCESS;
+}
+
+/*
  * Register the command line parameters for the application
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -441,7 +575,8 @@ static doca_error_t vnet_lu_mode_callback(void *param, void *config)
 static doca_error_t register_vnet_pci_dev_params(void)
 {
 	struct doca_argp_param *pci_param, *ibdev_param, *mac_param, *mtu_param, *speed_param, *duplex_param,
-		*queues_param, *queue_size_param, *tlp_core_param, *worker_core_param, *mq_core_param;
+		*queues_param, *admin_queues_param, *queue_size_param, *tlp_core_param, *worker_core_param,
+		*mq_core_param;
 	doca_error_t result;
 
 	/* Create and register PCI address parameter */
@@ -564,6 +699,24 @@ static doca_error_t register_vnet_pci_dev_params(void)
 		return result;
 	}
 
+	result = doca_argp_param_create(&admin_queues_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(admin_queues_param, "aq");
+	doca_argp_param_set_long_name(admin_queues_param, "admin-queues");
+	doca_argp_param_set_description(admin_queues_param,
+					"Admin queue count (0 disables AQ, 1 enables one AQ; default: 0)");
+	doca_argp_param_set_callback(admin_queues_param, admin_queue_num_callback);
+	doca_argp_param_set_type(admin_queues_param, DOCA_ARGP_TYPE_INT);
+	result = doca_argp_register_param(admin_queues_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		(void)doca_argp_param_destroy(admin_queues_param);
+		return result;
+	}
+
 	/* Create and register VirtQueue size parameter */
 	result = doca_argp_param_create(&queue_size_param);
 	if (result != DOCA_SUCCESS) {
@@ -573,7 +726,7 @@ static doca_error_t register_vnet_pci_dev_params(void)
 	doca_argp_param_set_short_name(queue_size_param, "z");
 	doca_argp_param_set_long_name(queue_size_param, "queue-size");
 	doca_argp_param_set_description(queue_size_param,
-					"VirtQueue size in entries (power of 2, 16-4096, default: 1024)");
+					"VirtQueue size in entries (power of 2, 32-4096, default: 1024)");
 	doca_argp_param_set_callback(queue_size_param, queue_size_callback);
 	doca_argp_param_set_type(queue_size_param, DOCA_ARGP_TYPE_INT);
 	result = doca_argp_register_param(queue_size_param);
@@ -591,6 +744,12 @@ static doca_error_t register_vnet_pci_dev_params(void)
 	result = register_hotplug_mode();
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = register_sriov_params();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register SR-IOV params: %s", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -661,6 +820,10 @@ static doca_error_t register_vnet_pci_dev_params(void)
 		}
 	}
 
+	result = register_vnet_opt_feature_params();
+	if (result != DOCA_SUCCESS)
+		return result;
+
 	return DOCA_SUCCESS;
 }
 
@@ -681,12 +844,16 @@ int main(int argc, char **argv)
 					     .duplex = 1,			      /* Full duplex */
 					     .max_queue_pairs = VNET_MAX_QUEUE_PAIRS, /* Default Max QPs */
 					     .queue_size = VNET_DEFAULT_QUEUE_SIZE,   /* Default queue size */
-					     .num_ep = 1,			/* Default Number of Endpoints (1) */
-					     .hotplug_mode = true,		/* Default: hotplug mode */
+					     .admin_queue_num = 0,		      /* AQ disabled by default */
+					     .num_ep = 1,	   /* Default Number of Endpoints (1) */
+					     .hotplug_mode = true, /* Default: hotplug mode */
+					     .opt_features = 0,	   /* No optional features unless requested */
 					     .vnet_lu_mode = VNET_LU_MODE_NONE, /* Default LU Mode (none) */
 					     .tlp_core_idx = -1,		/* Auto affinity */
 					     .worker_core_idx = -1,		/* Auto affinity */
-					     .mq_core_idx = -1};		/* Auto single-core affinity */
+					     .mq_core_idx = -1,			/* Auto single-core affinity */
+					     .sriov_enabled = false,		/* SR-IOV disabled by default */
+					     .sriov_total_vfs = VNET_SRIOV_DEFAULT_TOTAL_VFS};
 	struct doca_log_backend *sdk_log;
 	int exit_status = EXIT_FAILURE;
 	doca_error_t result;
@@ -735,6 +902,10 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("mq-core (%d) must not equal tlp-core (%d)", config.mq_core_idx, config.tlp_core_idx);
 		goto destroy_argp;
 	}
+	if (vnet_lu_is_enabled(config.vnet_lu_mode) && config.admin_queue_num != 0) {
+		DOCA_LOG_WARN("Admin queues are not supported in LU mode; disabling AQ");
+		config.admin_queue_num = 0;
+	}
 
 	/* PCI address is now set with default value "03:00.0" */
 
@@ -753,8 +924,10 @@ int main(int argc, char **argv)
 	DOCA_LOG_INFO("  Duplex: %s", config.duplex ? "Full" : "Half");
 	DOCA_LOG_INFO("  Max Queue Pairs: %u (Total VQs: %u)", config.max_queue_pairs, config.max_queue_pairs * 2 + 1);
 	DOCA_LOG_INFO("  Queue Size: %u entries", config.queue_size);
+	DOCA_LOG_INFO("  Admin Queues: %u", config.admin_queue_num);
 	DOCA_LOG_INFO("  Number of Endpoints: %u", config.num_ep);
 	DOCA_LOG_INFO("  Hotplug Mode: %s", config.hotplug_mode ? "Hotplug" : "Static");
+	DOCA_LOG_INFO("  Optional features mask: 0x%" PRIx64, config.opt_features);
 	if (config.tlp_core_idx < 0)
 		DOCA_LOG_INFO("  TLP Core: auto");
 	else
@@ -771,6 +944,14 @@ int main(int argc, char **argv)
 		      config.vnet_lu_mode == VNET_LU_MODE_ACTIVE  ? "active" :
 		      config.vnet_lu_mode == VNET_LU_MODE_STANDBY ? "standby" :
 								    "none");
+	if (config.sriov_enabled)
+		DOCA_LOG_INFO("  SR-IOV: enabled (total_vfs=%u, vf_msix=%u, vf_db=%u derived from %u queue pairs)",
+			      config.sriov_total_vfs,
+			      VNET_SRIOV_VF_NUM_MSIX(config.max_queue_pairs),
+			      VNET_SRIOV_VF_NUM_DB(config.max_queue_pairs),
+			      config.max_queue_pairs);
+	else
+		DOCA_LOG_INFO("  SR-IOV: disabled");
 
 	/* Run the core VirtIO Net PCI device logic */
 	result = vnet_pci_dev_run(&config, &force_quit);

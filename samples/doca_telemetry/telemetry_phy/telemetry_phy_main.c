@@ -209,6 +209,22 @@ static doca_error_t management_cable_ddm_info_callback(void *param, void *config
 }
 
 /*
+ * ARGP Callback - Handle system temperature and power info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t system_temp_and_pwr_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_system_temp_and_pwr_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_system_temp_and_pwr_info = !!get_system_temp_and_pwr_info;
+	return DOCA_SUCCESS;
+}
+
+/*
  * Register the command line parameters for the sample.
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -219,7 +235,7 @@ static doca_error_t register_telemetry_phy_params(void)
 	struct doca_argp_param *pci_param, *operation_info_param, *supported_info_param, *troubleshooting_info_param,
 		*module_info_param, *counter_and_ber_info_param, *fec_histogram_info_param,
 		*management_cable_single_page_info_param, *management_cable_dump_info_param,
-		*management_cable_ddm_info_param;
+		*management_cable_ddm_info_param, *system_temp_and_pwr_info_param;
 
 	result = doca_argp_param_create(&pci_param);
 	if (result != DOCA_SUCCESS) {
@@ -383,6 +399,22 @@ static doca_error_t register_telemetry_phy_params(void)
 		return result;
 	}
 
+	result = doca_argp_param_create(&system_temp_and_pwr_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(system_temp_and_pwr_info_param, "stpi");
+	doca_argp_param_set_long_name(system_temp_and_pwr_info_param, "get-system-temp-and-power-info");
+	doca_argp_param_set_description(system_temp_and_pwr_info_param, "Retrieve system temperature and power info");
+	doca_argp_param_set_callback(system_temp_and_pwr_info_param, system_temp_and_pwr_info_callback);
+	doca_argp_param_set_type(system_temp_and_pwr_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(system_temp_and_pwr_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
 	return DOCA_SUCCESS;
 }
 
@@ -403,6 +435,7 @@ static void set_default_params(struct telemetry_phy_sample_cfg *cfg)
 	cfg->management_cable_page_id = 0;
 	cfg->get_management_cable_dump_info = false;
 	cfg->get_management_cable_ddm_info = false;
+	cfg->get_system_temp_and_pwr_info = false;
 }
 
 /*

@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -31,14 +31,10 @@ app_srcs += files([
 	'../' + common_dir_path + '/utils.c',
 ])
 
-# Check if we should skip the compilation of the applications
-if flag_disable_applications_compilation
-	subdir_done()
-endif
-
-urom_samples_inc_dir = include_directories('../' + samples_dir_path + '/doca_urom')
+urom_sample_inc_dir = include_directories('../' + samples_dir_path + '/doca_urom/')
 
 executable(DOCA_PREFIX + APP_NAME, app_srcs + app_common_src,
-	c_args : apps_common_c_args,
+	c_args : base_c_args,
 	dependencies : app_dependencies,
-	include_directories: app_inc_dirs + app_common_includes + urom_samples_inc_dir)
+	include_directories : app_inc_dirs + app_common_includes + urom_sample_inc_dir,
+	install: install_apps)

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -148,7 +148,7 @@ void rdma_cm_disconnect_cb(struct doca_rdma_connection *connection,
  *
  * @oob_sock_fd [out]: Socket FD
  * @oob_client_sock [out]: Client socket FD
- * @return: positive integer on success and -1 otherwise
+ * @return: 0 on success and -1 otherwise
  */
 int oob_connection_server_setup(int *oob_sock_fd, int *oob_client_sock)
 {
@@ -217,14 +217,13 @@ int oob_connection_server_setup(int *oob_sock_fd, int *oob_client_sock)
  *
  * @oob_sock_fd [in]: Socket FD
  * @oob_client_sock [in]: Client socket FD
- * @return: positive integer on success and -1 otherwise
  */
 void oob_connection_server_close(int oob_sock_fd, int oob_client_sock)
 {
-	if (oob_client_sock > 0)
+	if (oob_client_sock >= 0)
 		close(oob_client_sock);
 
-	if (oob_sock_fd > 0)
+	if (oob_sock_fd >= 0)
 		close(oob_sock_fd);
 }
 
@@ -233,7 +232,7 @@ void oob_connection_server_close(int oob_sock_fd, int oob_client_sock)
  *
  * @server_ip [in]: Server IP address to connect
  * @oob_sock_fd [out]: Socket FD
- * @return: positive integer on success and -1 otherwise
+ * @return: 0 on success and -1 otherwise
  */
 int oob_connection_client_setup(const char *server_ip, int *oob_sock_fd)
 {
@@ -269,11 +268,10 @@ int oob_connection_client_setup(const char *server_ip, int *oob_sock_fd)
  * OOB connection to exchange RDMA info - client side closure
  *
  * @oob_sock_fd [in]: Socket FD
- * @return: positive integer on success and -1 otherwise
  */
 void oob_connection_client_close(int oob_sock_fd)
 {
-	if (oob_sock_fd > 0)
+	if (oob_sock_fd >= 0)
 		close(oob_sock_fd);
 }
 
@@ -669,6 +667,7 @@ error:
 	result2 = doca_buf_arr_destroy(buf_arr_obj->buf_arr);
 	if (result2 != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to call doca_buf_arr_destroy: %s", doca_error_get_descr(result2));
+	buf_arr_obj->buf_arr = NULL;
 
 	return result;
 }

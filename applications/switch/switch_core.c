@@ -411,7 +411,7 @@ doca_error_t switch_init(struct application_dpdk_config *app_dpdk_config, struct
 		return result;
 	}
 
-	result = create_pipes_manager(&pipes_manager);
+	result = pipes_manager_create(&pipes_manager);
 	if (result != DOCA_SUCCESS) {
 		stop_doca_flow_ports(nb_ports, ports);
 		doca_flow_destroy();
@@ -427,5 +427,5 @@ void switch_destroy(void)
 {
 	stop_doca_flow_ports(nb_ports, ports);
 	doca_flow_destroy();
-	destroy_pipes_manager(pipes_manager);
+	pipes_manager_destroy(pipes_manager);
 }

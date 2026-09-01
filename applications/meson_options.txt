@@ -53,7 +53,7 @@ option('spdk_isal_prefix', type : 'string', value : '/opt/mellanox/spdk/lib',
 	description : 'SPDK ISA-L installation prefix.')
 
 # DPACC options
-option('dpacc_mcpu', type : 'string', value : 'nv-dpa-bf3,nv-dpa-cx7,nv-dpa-cx8,nv-dpa-cx9',
+option('dpacc_mcpu', type : 'string', value : 'nv-dpa-bf3,nv-dpa-cx7,nv-dpa-cx8,nv-dpa-cx9,nv-dpa-cx10',
 	description : 'Set the supported architecture for DPA related application.')
 
 # Enables per application - turned off by default
@@ -111,6 +111,8 @@ option('enable_urom_rdmo', type: 'boolean', value: false,
 	description: 'Enable UROM RDMO application.')
 option('enable_vblk_pci_dev', type: 'boolean', value: false,
 	description: 'Enable VirtIO Block PCI Device application.')
+option('enable_verbs_multi_rail_server_client', type: 'boolean', value: false,
+	description: 'Enable Verbs Multi Rail Server Client application.')
 option('enable_virtiofs', type: 'boolean', value: false,
 	description: 'Enable Virtiofs application.')
 option('enable_vnet_pci_dev', type: 'boolean', value: false,

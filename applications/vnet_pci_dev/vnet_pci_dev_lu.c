@@ -36,20 +36,24 @@
 #include <sys/mman.h>
 #include <pthread.h>
 #include <linux/if_ether.h>
+#include <stdlib.h>
 
 #include <doca_log.h>
 #include <doca_dev.h>
 #include <doca_rdma_bridge.h>
 #include <doca_devemu_pci.h>
+#include <doca_devemu_pci_tlp.h>
 #include <doca_ctx.h>
 #include <doca_devemu_virtio.h>
 #include <doca_devemu_virtio_tlp.h>
+#include <doca_devemu_virtio_io.h>
 #include <doca_devemu_vnet_offload_engine.h>
 #include <doca_devemu_vnet_io.h>
 #include <doca_devemu_vnet_counters.h>
 
 #include "vnet_pci_dev_lu.h"
 #include "vnet_pci_dev_core.h"
+#include "vnet_sriov.h"
 
 /* Forward declaration for channel LU active handler (defined below) */
 static doca_error_t vnet_lu_channel_handover(int conn_fd, struct tlp_context *tlp_ctx);
@@ -57,15 +61,48 @@ static doca_error_t vnet_lu_channel_handover(int conn_fd, struct tlp_context *tl
 DOCA_LOG_REGISTER(VNET_LIVE_UPDATE);
 
 static volatile sig_atomic_t vnet_lu_handover_requested = 0;
+static volatile sig_atomic_t vnet_lu_handover_completed = 0;
 static int vnet_lu_listen_fd = -1;
 static int vnet_lu_standby_conn_fd = -1;
 static int vnet_lu_lock_fd = -1;
 
 static struct vnet_lu_shm *vnet_lu_saved_shm = NULL;
 static size_t vnet_lu_saved_shm_size = 0;
+static struct vnet_lu_sriov_shm *vnet_lu_saved_sriov_shm = NULL;
+static size_t vnet_lu_saved_sriov_shm_size = 0;
+static const uint8_t *vnet_lu_saved_sriov_tail_base = NULL;
 
 static struct vnet_lu_shm *vnet_lu_active_shm = NULL;
 static size_t vnet_lu_active_shm_size = 0;
+static struct vnet_lu_sriov_shm *vnet_lu_active_sriov_shm = NULL;
+static size_t vnet_lu_active_sriov_shm_size = 0;
+
+struct vnet_lu_write_ctx {
+	void *shm_base;
+	uint32_t blob_cursor;
+};
+
+struct vnet_lu_sriov_sidecar_counts {
+	uint32_t num_pf_entries;
+	uint32_t total_active_vfs;
+	uint32_t total_vq_entries;
+	size_t total_blob_size;
+};
+
+struct vnet_lu_sriov_blob_entry {
+	const void *blob;
+	size_t blob_len;
+};
+
+struct vnet_lu_sriov_write_ctx {
+	struct vnet_lu_sriov_shm *shm;
+	const struct vnet_lu_sriov_blob_entry *blobs;
+	uint32_t segment_cursor;
+	uint32_t blob_cursor;
+	uint32_t blob_idx;
+};
+
+#define VNET_LU_SRIOV_SIDE_ALIGN 8
 
 /*********************************************************************************************************************
  * Utilities -- signal handling, socket/poll helpers, SCM_RIGHTS, query helpers
@@ -80,6 +117,11 @@ static void vnet_lu_sigusr1_handler(int sig)
 bool vnet_lu_handover_was_triggered(void)
 {
 	return vnet_lu_handover_requested != 0;
+}
+
+bool vnet_lu_handover_was_completed(void)
+{
+	return vnet_lu_handover_completed != 0;
 }
 
 static doca_error_t vnet_lu_wait_readable(int fd, int timeout_sec)
@@ -293,10 +335,955 @@ static void vnet_lu_save_one_vq(struct vnet_lu_vq_state *dst, const struct vnet_
 	dst->enabled = src->queue_enable != 0;
 }
 
-struct vnet_lu_write_ctx {
-	void *shm_base;
-	uint32_t blob_cursor;
-};
+static doca_error_t vnet_lu_checked_size_add(size_t left, size_t right, size_t *result)
+{
+	if (result == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+	if (left > SIZE_MAX - right)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	*result = left + right;
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t vnet_lu_checked_size_mul(size_t left, size_t right, size_t *result)
+{
+	if (result == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+	if (left != 0 && right > SIZE_MAX / left)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	*result = left * right;
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t vnet_lu_checked_align_up(size_t value, size_t align, size_t *result)
+{
+	size_t aligned;
+	doca_error_t tmp_result;
+
+	if (align == 0 || (align & (align - 1)) != 0)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	tmp_result = vnet_lu_checked_size_add(value, align - 1, &aligned);
+	if (tmp_result != DOCA_SUCCESS)
+		return tmp_result;
+
+	*result = aligned & ~(align - 1);
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t vnet_lu_rep_get_vhca_id(struct doca_dev_rep *rep, uint16_t *vhca_id)
+{
+	struct doca_devinfo_rep *rep_info;
+
+	if (rep == NULL || vhca_id == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	rep_info = doca_dev_rep_as_devinfo(rep);
+	if (rep_info == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	return doca_devinfo_rep_get_vhca_id(rep_info, vhca_id);
+}
+
+static void vnet_lu_rep_get_vuid(struct doca_dev_rep *rep, char *vuid, size_t vuid_size)
+{
+	struct doca_devinfo_rep *rep_info;
+
+	if (vuid == NULL || vuid_size == 0)
+		return;
+	vuid[0] = '\0';
+	if (rep == NULL)
+		return;
+	rep_info = doca_dev_rep_as_devinfo(rep);
+	if (rep_info == NULL)
+		return;
+	(void)doca_devinfo_rep_get_vuid(rep_info, vuid, (uint32_t)vuid_size);
+}
+
+static bool vnet_lu_sriov_slot_is_active(const struct vnet_vf_slot *slot)
+{
+	return slot != NULL && slot->rep != NULL && slot->tlp_dev != NULL && atomic_load(&slot->active);
+}
+
+static void vnet_lu_sriov_save_bdf_state(struct vnet_lu_sriov_bdf_state *dst,
+					 uint8_t bus,
+					 uint8_t device,
+					 uint8_t function,
+					 bool is_bdf_set,
+					 uint16_t bdf)
+{
+	dst->bus = bus;
+	dst->device = device;
+	dst->function = function;
+	dst->is_bdf_set = is_bdf_set ? 1 : 0;
+	dst->bdf = bdf;
+}
+
+static uint16_t vnet_lu_sriov_get_slot_num_vqs(const struct tlp_context *tlp_ctx, const struct vnet_vf_slot *slot)
+{
+	uint16_t max_qp;
+
+	if (tlp_ctx == NULL || slot == NULL || slot->vf_dev == NULL)
+		return 0;
+
+	max_qp = slot->max_queue_pairs != 0 ? slot->max_queue_pairs : tlp_ctx->max_queue_pairs;
+	if (max_qp > VNET_CTRL_MAX_QUEUES_PAIRS)
+		max_qp = VNET_CTRL_MAX_QUEUES_PAIRS;
+	if (slot->vf_dev->vqs_count < VNET_TOTAL_VQS(max_qp))
+		return slot->vf_dev->vqs_count;
+	return VNET_TOTAL_VQS(max_qp);
+}
+
+static doca_error_t vnet_lu_sriov_update_sidecar_counts(struct tlp_context *tlp_ctx,
+							struct vnet_lu_sriov_sidecar_counts *counts)
+{
+	struct vnet_sriov_pf_state *sriov;
+	struct pci_device_config *ep;
+	struct vnet_vf_slot *slot;
+	uint32_t i;
+	uint16_t j;
+
+	if (tlp_ctx == NULL || counts == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	memset(counts, 0, sizeof(*counts));
+
+	for (i = 0; i < tlp_ctx->num_ep; i++) {
+		ep = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + i];
+		sriov = ep->sriov;
+		if (sriov == NULL)
+			continue;
+
+		counts->num_pf_entries++;
+		if (sriov->vf_slots == NULL)
+			continue;
+
+		for (j = 0; j < sriov->total_vf; j++) {
+			slot = &sriov->vf_slots[j];
+			if (!vnet_lu_sriov_slot_is_active(slot))
+				continue;
+
+			if (slot->vf_dev == NULL) {
+				DOCA_LOG_ERR("SR-IOV LU: active VF[vf_index=%u] has no cfg-space object",
+					     slot->vf_index);
+				return DOCA_ERROR_BAD_STATE;
+			}
+
+			counts->total_active_vfs++;
+			counts->total_vq_entries += vnet_lu_sriov_get_slot_num_vqs(tlp_ctx, slot);
+		}
+	}
+
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t vnet_lu_sriov_export_blobs(struct tlp_context *tlp_ctx,
+					       struct vnet_lu_sriov_blob_entry *blobs,
+					       uint32_t num_blobs,
+					       size_t *total_blob_size)
+{
+	struct vnet_sriov_pf_state *sriov;
+	struct pci_device_config *ep;
+	struct vnet_vf_slot *slot;
+	doca_error_t result;
+	uint32_t blob_idx = 0;
+	uint32_t i;
+	uint16_t j;
+
+	if (tlp_ctx == NULL || total_blob_size == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	*total_blob_size = 0;
+	for (i = 0; i < tlp_ctx->num_ep; i++) {
+		ep = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + i];
+		sriov = ep->sriov;
+		if (sriov == NULL || sriov->vf_slots == NULL)
+			continue;
+
+		for (j = 0; j < sriov->total_vf; j++) {
+			slot = &sriov->vf_slots[j];
+			if (!vnet_lu_sriov_slot_is_active(slot))
+				continue;
+			if (blob_idx >= num_blobs) {
+				DOCA_LOG_ERR(
+					"SR-IOV LU: active VF blob count exceeds allocation (pf=%u, vf_index=%u, blob_idx=%u, num_blobs=%u)",
+					i,
+					slot->vf_index,
+					blob_idx,
+					num_blobs);
+				return DOCA_ERROR_INVALID_VALUE;
+			}
+
+			if (slot->offload_engine != NULL && atomic_load(&slot->engine_started)) {
+				result = doca_devemu_vnet_offload_engine_export(slot->offload_engine,
+										&blobs[blob_idx].blob,
+										&blobs[blob_idx].blob_len);
+				if (result != DOCA_SUCCESS) {
+					DOCA_LOG_ERR("SR-IOV LU: VF[vf_index=%u] OE export failed: %s",
+						     slot->vf_index,
+						     doca_error_get_descr(result));
+					return result;
+				}
+				result = vnet_lu_checked_size_add(*total_blob_size,
+								  blobs[blob_idx].blob_len,
+								  total_blob_size);
+				if (result != DOCA_SUCCESS) {
+					DOCA_LOG_ERR("SR-IOV LU: sidecar blob size overflow (current=%zu, add=%zu)",
+						     *total_blob_size,
+						     blobs[blob_idx].blob_len);
+					return result;
+				}
+			}
+			blob_idx++;
+		}
+	}
+
+	if (blob_idx != num_blobs) {
+		DOCA_LOG_ERR("SR-IOV LU: active VF blob count mismatch (seen=%u, expected=%u)", blob_idx, num_blobs);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t vnet_lu_sriov_create_shm(size_t shm_size, struct vnet_lu_sriov_shm **shm_out)
+{
+	int fd;
+
+	(void)shm_unlink(VNET_LU_SRIOV_SHM_NAME);
+
+	fd = shm_open(VNET_LU_SRIOV_SHM_NAME, O_CREAT | O_RDWR, 0600);
+	if (fd < 0) {
+		DOCA_LOG_ERR("shm_open(%s) failed: %s", VNET_LU_SRIOV_SHM_NAME, strerror(errno));
+		return DOCA_ERROR_IO_FAILED;
+	}
+
+	if (ftruncate(fd, (off_t)shm_size) < 0) {
+		DOCA_LOG_ERR("ftruncate(%zu) failed: %s", shm_size, strerror(errno));
+		close(fd);
+		(void)shm_unlink(VNET_LU_SRIOV_SHM_NAME);
+		return DOCA_ERROR_IO_FAILED;
+	}
+
+	*shm_out = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	close(fd);
+	if (*shm_out == MAP_FAILED) {
+		DOCA_LOG_ERR("mmap(%zu) failed: %s", shm_size, strerror(errno));
+		*shm_out = NULL;
+		(void)shm_unlink(VNET_LU_SRIOV_SHM_NAME);
+		return DOCA_ERROR_IO_FAILED;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+static void vnet_lu_sriov_fill_pf_entry(struct vnet_lu_sriov_pf_entry *entry,
+					const struct pci_device_config *ep,
+					uint32_t pf_idx,
+					uint32_t num_active_vf,
+					uint32_t num_vq_entries)
+{
+	const struct vnet_sriov_pf_state *sriov = ep->sriov;
+
+	memset(entry, 0, sizeof(*entry));
+	entry->dev_idx = pf_idx;
+	entry->ep_vhca_id = (uint16_t)ep->vhca_id;
+	vnet_lu_rep_get_vuid(ep->rep, entry->vuid, sizeof(entry->vuid));
+
+	entry->sriov = *sriov;
+	entry->sriov.vf_slots = NULL;
+	entry->num_active_vf = num_active_vf;
+	entry->num_vq_entries = num_vq_entries;
+
+	vnet_lu_sriov_save_bdf_state(&entry->bdf, ep->bus, ep->device, ep->function, ep->is_bdf_set, ep->bdf);
+}
+
+static doca_error_t vnet_lu_sriov_fill_vf_slot(struct vnet_lu_sriov_vf_slot_state *state, struct vnet_vf_slot *slot)
+{
+	const struct vnet_virtio_net_config *net_cfg;
+	doca_error_t result;
+
+	memset(state, 0, sizeof(*state));
+	state->vf_index = slot->vf_index;
+
+	result = vnet_lu_rep_get_vhca_id(slot->rep, &state->rep_vhca_id);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("SR-IOV LU: failed to query VF[vf_index=%u] rep vhca_id: %s",
+			     slot->vf_index,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	net_cfg = vnet_pci_device_get_vnet_dev_cfg(slot->vf_dev);
+	if (net_cfg == NULL) {
+		DOCA_LOG_ERR("SR-IOV LU: VF[vf_index=%u] has no network config", slot->vf_index);
+		return DOCA_ERROR_BAD_STATE;
+	}
+	memcpy(state->net.mac, net_cfg->mac, ETH_ALEN);
+	state->net.mtu = net_cfg->mtu;
+
+	state->virtio.device_features = slot->vf_dev->driver_features;
+	state->virtio.max_queue_pairs = slot->max_queue_pairs;
+	state->virtio.num_active_qps = atomic_load(&slot->num_active_qps);
+	state->virtio.queue_size = slot->vf_dev->queue_size;
+	state->virtio.mq_feature_negotiated = slot->mq_feature_negotiated;
+
+	/* Save the full VF config/TLP shadow; the OE blob only restores datapath.
+	 * Host sriov_numvfs teardown still needs VF cfg/MMIO routing to work. */
+	memcpy(&state->vf_cfg_shadow, &slot->vf_dev->pcie_dev, sizeof(state->vf_cfg_shadow));
+	/* VFs do not use is_bdf_set/bdf in vnet_pci_device. */
+	vnet_lu_sriov_save_bdf_state(&state->bdf,
+				     slot->vf_dev->bus,
+				     slot->vf_dev->device,
+				     slot->vf_dev->function,
+				     false,
+				     0);
+
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t vnet_lu_sriov_save_vf_blob(struct vnet_lu_sriov_vf_slot_state *state,
+					       const struct vnet_lu_sriov_blob_entry *blob_entry,
+					       struct vnet_lu_sriov_write_ctx *wctx)
+{
+	if (blob_entry->blob == NULL || blob_entry->blob_len == 0)
+		return DOCA_SUCCESS;
+
+	if (blob_entry->blob_len > UINT32_MAX ||
+	    (size_t)wctx->blob_cursor + blob_entry->blob_len > wctx->shm->hdr.total_size) {
+		DOCA_LOG_ERR("SR-IOV LU: VF[vf_index=%u] blob does not fit sidecar (offset=%u, len=%zu, total=%u)",
+			     state->vf_index,
+			     wctx->blob_cursor,
+			     blob_entry->blob_len,
+			     wctx->shm->hdr.total_size);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	state->blob_offset = wctx->blob_cursor;
+	state->blob_len = (uint32_t)blob_entry->blob_len;
+	memcpy((uint8_t *)wctx->shm + wctx->blob_cursor, blob_entry->blob, blob_entry->blob_len);
+	wctx->blob_cursor += (uint32_t)blob_entry->blob_len;
+	return DOCA_SUCCESS;
+}
+
+static void vnet_lu_sriov_save_vq_entries(struct vnet_lu_sriov_vf_vq_entry *entries,
+					  struct vnet_vf_slot *slot,
+					  uint16_t num_vqs)
+{
+	struct vnet_virtio_queue_config snap;
+	uint16_t i;
+
+	for (i = 0; i < num_vqs; i++) {
+		memset(&snap, 0, sizeof(snap));
+		entries[i].vf_index = slot->vf_index;
+		if (vnet_pci_device_snapshot_vq(slot->vf_dev, i, &snap))
+			vnet_lu_save_one_vq(&entries[i].vq, &snap, i);
+		else
+			entries[i].vq.index = i;
+	}
+}
+
+static doca_error_t vnet_lu_sriov_fill_pf_segment(struct tlp_context *tlp_ctx,
+						  uint32_t pf_idx,
+						  struct vnet_lu_sriov_pf_entry *entry,
+						  struct vnet_lu_sriov_write_ctx *wctx)
+{
+	struct vnet_lu_sriov_vf_slot_state *slot_states;
+	struct vnet_lu_sriov_vf_vq_entry *vq_entries;
+	struct vnet_sriov_pf_state *sriov;
+	struct pci_device_config *ep;
+	struct vnet_vf_slot *slot;
+	uint32_t active_count = 0;
+	uint32_t slot_cursor;
+	uint32_t slot_idx;
+	uint32_t vq_count = 0;
+	uint32_t vq_cursor;
+	uint32_t vq_idx;
+	doca_error_t result;
+	uint16_t num_vqs;
+	uint16_t i;
+
+	ep = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + pf_idx];
+	sriov = ep->sriov;
+	if (sriov == NULL)
+		return DOCA_ERROR_NOT_FOUND;
+
+	if (sriov->vf_slots != NULL) {
+		for (i = 0; i < sriov->total_vf; i++) {
+			slot = &sriov->vf_slots[i];
+			if (!vnet_lu_sriov_slot_is_active(slot))
+				continue;
+			active_count++;
+			vq_count += vnet_lu_sriov_get_slot_num_vqs(tlp_ctx, slot);
+		}
+	}
+
+	vnet_lu_sriov_fill_pf_entry(entry, ep, pf_idx, active_count, vq_count);
+
+	slot_cursor = wctx->segment_cursor;
+	slot_states = (struct vnet_lu_sriov_vf_slot_state *)((uint8_t *)wctx->shm + slot_cursor);
+	vq_cursor = slot_cursor + active_count * sizeof(*slot_states);
+	vq_entries = (struct vnet_lu_sriov_vf_vq_entry *)((uint8_t *)wctx->shm + vq_cursor);
+
+	if (sriov->vf_slots != NULL) {
+		slot_idx = 0;
+		vq_idx = 0;
+
+		for (i = 0; i < sriov->total_vf; i++) {
+			slot = &sriov->vf_slots[i];
+			if (!vnet_lu_sriov_slot_is_active(slot))
+				continue;
+
+			result = vnet_lu_sriov_fill_vf_slot(&slot_states[slot_idx], slot);
+			if (result != DOCA_SUCCESS)
+				return result;
+
+			/* Blob bytes are appended in the blob_data_offset area; the VF slot
+			 * record only stores blob_offset/blob_len. */
+			result = vnet_lu_sriov_save_vf_blob(&slot_states[slot_idx], &wctx->blobs[wctx->blob_idx], wctx);
+			if (result != DOCA_SUCCESS)
+				return result;
+			wctx->blob_idx++;
+
+			num_vqs = vnet_lu_sriov_get_slot_num_vqs(tlp_ctx, slot);
+			vnet_lu_sriov_save_vq_entries(&vq_entries[vq_idx], slot, num_vqs);
+			vq_idx += num_vqs;
+			slot_idx++;
+		}
+	}
+
+	wctx->segment_cursor = vq_cursor + vq_count * sizeof(*vq_entries);
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t vnet_lu_sriov_calc_tail_base(uint32_t num_pf_entries, size_t *tail_base)
+{
+	size_t header_bytes;
+	size_t pf_bytes;
+	doca_error_t result;
+
+	result = vnet_lu_checked_size_mul(num_pf_entries, sizeof(struct vnet_lu_sriov_pf_entry), &pf_bytes);
+	if (result != DOCA_SUCCESS)
+		return result;
+	result = vnet_lu_checked_size_add(sizeof(struct vnet_lu_sriov_shm_hdr), pf_bytes, &header_bytes);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	return vnet_lu_checked_align_up(header_bytes, VNET_LU_SRIOV_SIDE_ALIGN, tail_base);
+}
+
+static doca_error_t vnet_lu_sriov_calc_shm_layout(const struct vnet_lu_sriov_sidecar_counts *counts,
+						  size_t *tail_base,
+						  size_t *blob_offset,
+						  size_t *shm_size)
+{
+	size_t segment_end;
+	size_t vf_bytes;
+	size_t vq_bytes;
+	doca_error_t result;
+
+	if (counts == NULL || tail_base == NULL || blob_offset == NULL || shm_size == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	result = vnet_lu_sriov_calc_tail_base(counts->num_pf_entries, tail_base);
+	if (result != DOCA_SUCCESS)
+		return result;
+	result = vnet_lu_checked_size_mul(counts->total_active_vfs,
+					  sizeof(struct vnet_lu_sriov_vf_slot_state),
+					  &vf_bytes);
+	if (result != DOCA_SUCCESS)
+		return result;
+	result =
+		vnet_lu_checked_size_mul(counts->total_vq_entries, sizeof(struct vnet_lu_sriov_vf_vq_entry), &vq_bytes);
+	if (result != DOCA_SUCCESS)
+		return result;
+	result = vnet_lu_checked_size_add(*tail_base, vf_bytes, &segment_end);
+	if (result != DOCA_SUCCESS)
+		return result;
+	result = vnet_lu_checked_size_add(segment_end, vq_bytes, &segment_end);
+	if (result != DOCA_SUCCESS)
+		return result;
+	result = vnet_lu_checked_align_up(segment_end, VNET_LU_SRIOV_SIDE_ALIGN, blob_offset);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	return vnet_lu_checked_size_add(*blob_offset, counts->total_blob_size, shm_size);
+}
+
+/* SR-IOV sidecar SHM layout:
+ *   hdr | pf_entries[N] | PF#0 active VF slots | PF#0 VF VQs | PF#1 active VF slots | PF#1 VF VQs | ...
+ *   blob_data_offset -> blob0 | blob1 | blob2 | ...
+ * Active VF slot records stay in the slot segment and point to blobs by offset/len. */
+doca_error_t vnet_lu_sriov_save_state(struct tlp_context *tlp_ctx)
+{
+	struct vnet_lu_sriov_sidecar_counts counts;
+	struct vnet_lu_sriov_blob_entry *blobs = NULL;
+	struct vnet_lu_sriov_write_ctx wctx = {0};
+	struct vnet_lu_sriov_shm *shm = NULL;
+	size_t tail_base, blob_offset, shm_size;
+	size_t total_blob_size = 0;
+	doca_error_t result;
+	uint32_t pf_entry_idx = 0;
+
+	result = vnet_lu_sriov_update_sidecar_counts(tlp_ctx, &counts);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	if (counts.num_pf_entries == 0) {
+		(void)shm_unlink(VNET_LU_SRIOV_SHM_NAME);
+		return DOCA_SUCCESS;
+	}
+
+	if (counts.total_active_vfs != 0) {
+		blobs = calloc(counts.total_active_vfs, sizeof(*blobs));
+		if (blobs == NULL)
+			return DOCA_ERROR_NO_MEMORY;
+	}
+
+	result = vnet_lu_sriov_export_blobs(tlp_ctx, blobs, counts.total_active_vfs, &total_blob_size);
+	if (result != DOCA_SUCCESS)
+		goto release_blobs;
+	counts.total_blob_size = total_blob_size;
+
+	result = vnet_lu_sriov_calc_shm_layout(&counts, &tail_base, &blob_offset, &shm_size);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR(
+			"SR-IOV LU: sidecar size overflow (pf_entries=%u, num_active_vf=%u, vq_entries=%u, blobs=%zu)",
+			counts.num_pf_entries,
+			counts.total_active_vfs,
+			counts.total_vq_entries,
+			counts.total_blob_size);
+		goto release_blobs;
+	}
+
+	if (shm_size > UINT32_MAX || blob_offset > UINT32_MAX) {
+		DOCA_LOG_ERR("SR-IOV LU: sidecar too large (size=%zu, blob_offset=%zu)", shm_size, blob_offset);
+		result = DOCA_ERROR_INVALID_VALUE;
+		goto release_blobs;
+	}
+
+	result = vnet_lu_sriov_create_shm(shm_size, &shm);
+	if (result != DOCA_SUCCESS)
+		goto release_blobs;
+
+	memset(shm, 0, shm_size);
+	shm->hdr.magic = VNET_LU_SRIOV_MAGIC;
+	shm->hdr.schema_version = VNET_LU_SRIOV_SCHEMA_VERSION;
+	shm->hdr.header_size = sizeof(struct vnet_lu_sriov_shm_hdr);
+	shm->hdr.total_size = (uint32_t)shm_size;
+	shm->hdr.num_pf_entries = counts.num_pf_entries;
+	shm->hdr.blob_data_offset = (uint32_t)blob_offset;
+
+	wctx.shm = shm;
+	wctx.blobs = blobs;
+	wctx.segment_cursor = (uint32_t)tail_base;
+	wctx.blob_cursor = (uint32_t)blob_offset;
+	wctx.blob_idx = 0;
+
+	for (uint32_t i = 0; i < tlp_ctx->num_ep; i++) {
+		result = vnet_lu_sriov_fill_pf_segment(tlp_ctx, i, &shm->pf_entries[pf_entry_idx], &wctx);
+		if (result == DOCA_ERROR_NOT_FOUND)
+			continue;
+		if (result != DOCA_SUCCESS)
+			goto fail;
+		pf_entry_idx++;
+	}
+
+	vnet_lu_active_sriov_shm = shm;
+	vnet_lu_active_sriov_shm_size = shm_size;
+
+	DOCA_LOG_INFO("SR-IOV LU sidecar saved: pf_entries=%u num_active_vf=%u vq_entries=%u size=%zu blobs=%zu",
+		      counts.num_pf_entries,
+		      counts.total_active_vfs,
+		      counts.total_vq_entries,
+		      shm_size,
+		      counts.total_blob_size);
+	free(blobs);
+	return DOCA_SUCCESS;
+
+fail:
+	munmap(shm, shm_size);
+	(void)shm_unlink(VNET_LU_SRIOV_SHM_NAME);
+release_blobs:
+	free(blobs);
+	return result;
+}
+
+static doca_error_t vnet_lu_sriov_validate_pf_segment(const struct vnet_lu_sriov_shm *shm,
+						      const struct vnet_lu_sriov_pf_entry *entry,
+						      const uint8_t *slot_base,
+						      const uint8_t *vq_base)
+{
+	const struct vnet_lu_sriov_vf_slot_state *slots = (const struct vnet_lu_sriov_vf_slot_state *)slot_base;
+	const struct vnet_lu_sriov_vf_vq_entry *vqs = (const struct vnet_lu_sriov_vf_vq_entry *)vq_base;
+	doca_error_t result = DOCA_SUCCESS;
+	uint8_t *seen_vqs = NULL;
+	uint8_t *active = NULL;
+	uint32_t seen_idx;
+	uint32_t idx;
+	uint32_t i;
+	uint16_t max_vqs = VNET_TOTAL_VQS(VNET_CTRL_MAX_QUEUES_PAIRS);
+
+	if (entry->num_active_vf > entry->sriov.total_vf) {
+		DOCA_LOG_ERR("SR-IOV LU: num_active_vf=%u > total_vf=%u", entry->num_active_vf, entry->sriov.total_vf);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (entry->sriov.total_vf == 0 && entry->num_active_vf != 0)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	active = calloc(entry->sriov.total_vf ? entry->sriov.total_vf : 1, sizeof(*active));
+	seen_vqs = calloc((entry->sriov.total_vf ? entry->sriov.total_vf : 1) * max_vqs, sizeof(*seen_vqs));
+	if (active == NULL || seen_vqs == NULL) {
+		result = DOCA_ERROR_NO_MEMORY;
+		goto out;
+	}
+
+	for (i = 0; i < entry->num_active_vf; i++) {
+		if (slots[i].vf_index < entry->sriov.first_vf_idx ||
+		    slots[i].vf_index >= entry->sriov.first_vf_idx + entry->sriov.total_vf) {
+			DOCA_LOG_ERR("SR-IOV LU: VF index %u outside PF range [%u, %u)",
+				     slots[i].vf_index,
+				     entry->sriov.first_vf_idx,
+				     entry->sriov.first_vf_idx + entry->sriov.total_vf);
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto out;
+		}
+		if (slots[i].rep_vhca_id == 0) {
+			DOCA_LOG_ERR("SR-IOV LU: VF index %u has empty rep_vhca_id", slots[i].vf_index);
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto out;
+		}
+		if (slots[i].blob_len != 0 &&
+		    (slots[i].blob_offset < shm->hdr.blob_data_offset ||
+		     (uint64_t)slots[i].blob_offset + slots[i].blob_len > shm->hdr.total_size)) {
+			DOCA_LOG_ERR("SR-IOV LU: VF index %u blob out of bounds (offset=%u len=%u)",
+				     slots[i].vf_index,
+				     slots[i].blob_offset,
+				     slots[i].blob_len);
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto out;
+		}
+		idx = slots[i].vf_index - entry->sriov.first_vf_idx;
+		if (active[idx]) {
+			DOCA_LOG_ERR("SR-IOV LU: duplicate active VF index %u", slots[i].vf_index);
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto out;
+		}
+		active[idx] = 1;
+	}
+
+	for (i = 0; i < entry->num_vq_entries; i++) {
+		if (vqs[i].vf_index < entry->sriov.first_vf_idx ||
+		    vqs[i].vf_index >= entry->sriov.first_vf_idx + entry->sriov.total_vf) {
+			DOCA_LOG_ERR("SR-IOV LU: VQ owner VF index %u outside PF range", vqs[i].vf_index);
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto out;
+		}
+		idx = vqs[i].vf_index - entry->sriov.first_vf_idx;
+		if (!active[idx]) {
+			DOCA_LOG_ERR("SR-IOV LU: VQ entry references inactive VF index %u", vqs[i].vf_index);
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto out;
+		}
+		if (vqs[i].vq.index >= max_vqs) {
+			DOCA_LOG_ERR("SR-IOV LU: VQ index %u exceeds max %u", vqs[i].vq.index, max_vqs);
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto out;
+		}
+		seen_idx = idx * max_vqs + vqs[i].vq.index;
+		if (seen_vqs[seen_idx]) {
+			DOCA_LOG_ERR("SR-IOV LU: duplicate VQ entry (vf_index=%u, vq=%u)",
+				     vqs[i].vf_index,
+				     vqs[i].vq.index);
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto out;
+		}
+		seen_vqs[seen_idx] = 1;
+	}
+
+out:
+	free(active);
+	free(seen_vqs);
+	return result;
+}
+
+static doca_error_t vnet_lu_sriov_validate_shm(const struct vnet_lu_sriov_shm *shm,
+					       size_t file_size,
+					       const uint8_t **tail_base_out)
+{
+	const struct vnet_lu_sriov_pf_entry *entry;
+	const uint8_t *slot_base;
+	const uint8_t *vq_base;
+	doca_error_t result;
+	size_t tail_base;
+	size_t next_cursor;
+	size_t cursor;
+	size_t vf_bytes;
+	size_t vq_bytes;
+	uint32_t i;
+
+	if (file_size < sizeof(struct vnet_lu_sriov_shm_hdr))
+		return DOCA_ERROR_INVALID_VALUE;
+	if (shm->hdr.magic != VNET_LU_SRIOV_MAGIC || shm->hdr.schema_version != VNET_LU_SRIOV_SCHEMA_VERSION ||
+	    shm->hdr.header_size != sizeof(struct vnet_lu_sriov_shm_hdr) || shm->hdr.total_size != file_size) {
+		DOCA_LOG_ERR("SR-IOV LU: invalid sidecar header (magic=0x%x version=%u header=%u total=%u file=%zu)",
+			     shm->hdr.magic,
+			     shm->hdr.schema_version,
+			     shm->hdr.header_size,
+			     shm->hdr.total_size,
+			     file_size);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	if (shm->hdr.num_pf_entries > MAX_NUM_EP)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	result = vnet_lu_sriov_calc_tail_base(shm->hdr.num_pf_entries, &tail_base);
+	if (result != DOCA_SUCCESS)
+		return DOCA_ERROR_INVALID_VALUE;
+	if (tail_base > file_size || shm->hdr.blob_data_offset < tail_base || shm->hdr.blob_data_offset > file_size)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	cursor = tail_base;
+	for (i = 0; i < shm->hdr.num_pf_entries; i++) {
+		entry = &shm->pf_entries[i];
+		result = vnet_lu_checked_size_mul(entry->num_active_vf,
+						  sizeof(struct vnet_lu_sriov_vf_slot_state),
+						  &vf_bytes);
+		if (result != DOCA_SUCCESS)
+			return DOCA_ERROR_INVALID_VALUE;
+		result = vnet_lu_checked_size_add(cursor, vf_bytes, &next_cursor);
+		if (result != DOCA_SUCCESS || next_cursor > shm->hdr.blob_data_offset)
+			return DOCA_ERROR_INVALID_VALUE;
+		slot_base = (const uint8_t *)shm + cursor;
+		cursor = next_cursor;
+
+		result = vnet_lu_checked_size_mul(entry->num_vq_entries,
+						  sizeof(struct vnet_lu_sriov_vf_vq_entry),
+						  &vq_bytes);
+		if (result != DOCA_SUCCESS)
+			return DOCA_ERROR_INVALID_VALUE;
+		result = vnet_lu_checked_size_add(cursor, vq_bytes, &next_cursor);
+		if (result != DOCA_SUCCESS || next_cursor > shm->hdr.blob_data_offset)
+			return DOCA_ERROR_INVALID_VALUE;
+		vq_base = (const uint8_t *)shm + cursor;
+		cursor = next_cursor;
+
+		result = vnet_lu_sriov_validate_pf_segment(shm, entry, slot_base, vq_base);
+		if (result != DOCA_SUCCESS)
+			return result;
+	}
+
+	if (tail_base_out != NULL)
+		*tail_base_out = (const uint8_t *)shm + tail_base;
+
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t vnet_lu_sriov_open_shm(struct vnet_lu_sriov_shm **shm_out,
+					   size_t *shm_size_out,
+					   const uint8_t **tail_base_out)
+{
+	struct vnet_lu_sriov_shm *shm;
+	struct stat st;
+	doca_error_t result;
+	size_t file_size;
+	int fd;
+
+	fd = shm_open(VNET_LU_SRIOV_SHM_NAME, O_RDONLY, 0);
+	if (fd < 0) {
+		if (errno == ENOENT) {
+			*shm_out = NULL;
+			*shm_size_out = 0;
+			if (tail_base_out != NULL)
+				*tail_base_out = NULL;
+			return DOCA_SUCCESS;
+		}
+		DOCA_LOG_ERR("shm_open(%s) failed: %s", VNET_LU_SRIOV_SHM_NAME, strerror(errno));
+		return DOCA_ERROR_IO_FAILED;
+	}
+	if (fstat(fd, &st) != 0) {
+		DOCA_LOG_ERR("fstat(%s) failed: %s", VNET_LU_SRIOV_SHM_NAME, strerror(errno));
+		close(fd);
+		return DOCA_ERROR_IO_FAILED;
+	}
+
+	file_size = (size_t)st.st_size;
+	if (file_size < sizeof(struct vnet_lu_sriov_shm_hdr)) {
+		DOCA_LOG_ERR("SR-IOV LU sidecar too small: %zu < %zu", file_size, sizeof(struct vnet_lu_sriov_shm_hdr));
+		close(fd);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	shm = mmap(NULL, file_size, PROT_READ, MAP_SHARED, fd, 0);
+	close(fd);
+	if (shm == MAP_FAILED) {
+		DOCA_LOG_ERR("mmap(%zu) failed: %s", file_size, strerror(errno));
+		return DOCA_ERROR_IO_FAILED;
+	}
+
+	result = vnet_lu_sriov_validate_shm(shm, file_size, tail_base_out);
+	if (result != DOCA_SUCCESS) {
+		munmap(shm, file_size);
+		return result;
+	}
+
+	*shm_out = shm;
+	*shm_size_out = file_size;
+	DOCA_LOG_INFO("SR-IOV LU sidecar opened: pf_entries=%u size=%zu", shm->hdr.num_pf_entries, file_size);
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t vnet_lu_sriov_validate_restored_sizing(const struct vnet_lu_sriov_shm *sriov_shm,
+							   uint16_t total_vf,
+							   uint16_t vf_msix,
+							   uint16_t vf_db)
+{
+	const struct vnet_lu_sriov_pf_entry *entry;
+	uint32_t i;
+
+	for (i = 1; i < sriov_shm->hdr.num_pf_entries; i++) {
+		entry = &sriov_shm->pf_entries[i];
+		if (entry->sriov.total_vf != total_vf || entry->sriov.vf_num_msix != vf_msix ||
+		    entry->sriov.vf_num_db != vf_db) {
+			DOCA_LOG_ERR(
+				"SR-IOV LU: per-PF restored sizing mismatch at PF entry %u (total_vf=%u/%u, vf_msix=%u/%u, vf_db=%u/%u)",
+				i,
+				entry->sriov.total_vf,
+				total_vf,
+				entry->sriov.vf_num_msix,
+				vf_msix,
+				entry->sriov.vf_num_db,
+				vf_db);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+	}
+
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t vnet_lu_sriov_restore_context_config(struct tlp_context *tlp_ctx,
+							 const struct vnet_lu_sriov_shm *sriov_shm)
+{
+	const struct vnet_lu_sriov_pf_entry *first_entry;
+	doca_error_t result;
+	uint16_t total_vf;
+	uint16_t vf_msix;
+	uint16_t vf_db;
+
+	if (tlp_ctx == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	if (sriov_shm == NULL || sriov_shm->hdr.num_pf_entries == 0) {
+		tlp_ctx->sriov_enabled = false;
+		tlp_ctx->sriov_total_vfs = 0;
+		tlp_ctx->sriov_num_vf_msix = 0;
+		tlp_ctx->sriov_num_vf_db = 0;
+		DOCA_LOG_INFO("SR-IOV LU: no sidecar PF entries; SR-IOV disabled on standby");
+		return DOCA_SUCCESS;
+	}
+
+	first_entry = &sriov_shm->pf_entries[0];
+	total_vf = first_entry->sriov.total_vf;
+	vf_msix = first_entry->sriov.vf_num_msix;
+	vf_db = first_entry->sriov.vf_num_db;
+	if (total_vf == 0 || total_vf > VNET_SRIOV_MAX_VFS_PER_PF) {
+		DOCA_LOG_ERR("SR-IOV LU: invalid restored total_vf=%u", total_vf);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	result = vnet_lu_sriov_validate_restored_sizing(sriov_shm, total_vf, vf_msix, vf_db);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	tlp_ctx->sriov_enabled = true;
+	tlp_ctx->sriov_total_vfs = total_vf;
+	tlp_ctx->sriov_num_vf_msix = vf_msix;
+	tlp_ctx->sriov_num_vf_db = vf_db;
+	DOCA_LOG_INFO("SR-IOV LU: restored config from sidecar (total_vfs=%u, vf_msix=%u, vf_db=%u)",
+		      tlp_ctx->sriov_total_vfs,
+		      tlp_ctx->sriov_num_vf_msix,
+		      tlp_ctx->sriov_num_vf_db);
+	return DOCA_SUCCESS;
+}
+
+doca_error_t vnet_lu_sriov_quiesce_active_pf(struct tlp_context *tlp_ctx, uint32_t pf_idx)
+{
+	struct vnet_vf_slot *slot;
+	struct pci_device_config *pf;
+	doca_error_t first_error = DOCA_SUCCESS;
+	doca_error_t result;
+	uint16_t i;
+
+	if (tlp_ctx == NULL || pf_idx >= tlp_ctx->num_ep)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	pf = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + pf_idx];
+	if (pf->sriov == NULL || pf->sriov->vf_slots == NULL)
+		return DOCA_SUCCESS;
+
+	pthread_rwlock_wrlock(&pf->endpoint_lock);
+	for (i = 0; i < pf->sriov->total_vf; i++) {
+		slot = &pf->sriov->vf_slots[i];
+		if (!vnet_lu_sriov_slot_is_active(slot))
+			continue;
+
+		result = vnet_pci_dev_vf_lu_quiesce(slot);
+		DOCA_ERROR_PROPAGATE(first_error, result);
+	}
+	pthread_rwlock_unlock(&pf->endpoint_lock);
+
+	return first_error;
+}
+
+static bool vnet_lu_hotplug_runtime_slot_is_present(const struct tlp_context *tlp_ctx, uint32_t idx)
+{
+	const struct pci_device_config *ep = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + idx];
+
+	return atomic_load(&ep->device_present);
+}
+
+static const struct vnet_lu_device_state *vnet_lu_hotplug_get_first_present_device_state(const struct vnet_lu_shm *shm,
+											 uint32_t *idx_out)
+{
+	for (uint32_t i = 0; i < shm->num_devices; i++) {
+		if (shm->hotplug.slot_present[i] == 0)
+			continue;
+		if (idx_out != NULL)
+			*idx_out = i;
+		return &shm->devices[i];
+	}
+
+	if (idx_out != NULL)
+		*idx_out = 0;
+	return NULL;
+}
+
+static doca_error_t vnet_lu_hotplug_restore_shared_config(struct tlp_context *tlp_ctx, const struct vnet_lu_shm *shm)
+{
+	const struct vnet_lu_device_state *restore_cfg_ds;
+	uint32_t restore_cfg_idx = 0;
+
+	restore_cfg_ds = vnet_lu_hotplug_get_first_present_device_state(shm, &restore_cfg_idx);
+	if (restore_cfg_ds != NULL) {
+		if (restore_cfg_ds->net.mtu > 0)
+			tlp_ctx->mtu = restore_cfg_ds->net.mtu;
+		if (restore_cfg_ds->virtio.max_queue_pairs == 0 || restore_cfg_ds->virtio.queue_size == 0) {
+			DOCA_LOG_ERR("SHM device %u: invalid config (max_queue_pairs=%u, queue_size=%u)",
+				     restore_cfg_idx,
+				     restore_cfg_ds->virtio.max_queue_pairs,
+				     restore_cfg_ds->virtio.queue_size);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+		tlp_ctx->max_queue_pairs = restore_cfg_ds->virtio.max_queue_pairs;
+		tlp_ctx->queue_size = restore_cfg_ds->virtio.queue_size;
+	}
+	memcpy(tlp_ctx->mac_bytes_base, shm->hotplug.base_mac, ETH_ALEN);
+
+	return DOCA_SUCCESS;
+}
 
 static void vnet_lu_fill_device_state(struct vnet_lu_device_state *ds,
 				      struct tlp_context *tlp_ctx,
@@ -310,6 +1297,7 @@ static void vnet_lu_fill_device_state(struct vnet_lu_device_state *ds,
 	struct vnet_pci_device *vdev = &tlp_ctx->virtio_dev[idx];
 	const struct vnet_virtio_queue_config *vq_cfg;
 	const struct vnet_virtio_net_config *net_cfg;
+	const struct vnet_virtio_common_config *common_cfg;
 	uint16_t max_vqs = VNET_TOTAL_VQS(VNET_CTRL_MAX_QUEUES_PAIRS);
 
 	ds->magic = VNET_LU_MAGIC;
@@ -327,16 +1315,22 @@ static void vnet_lu_fill_device_state(struct vnet_lu_device_state *ds,
 	if (net_cfg) {
 		memcpy(ds->net.mac, net_cfg->mac, ETH_ALEN);
 		ds->net.mtu = net_cfg->mtu;
+		ds->net.speed = net_cfg->speed;
 	}
 
-	ds->virtio.device_features = vdev->driver_features;
+	/* config_msix_vector is host-written common-config state (not in the export
+	 * blob) and is never re-written after LU, so carry it explicitly. */
+	common_cfg = vnet_pci_device_get_pci_cfg(vdev);
+
+	ds->virtio.device_features = vdev->driver_features & ~(1ULL << VNET_VIRTIO_F_ADMIN_VQ);
 	ds->virtio.max_queue_pairs = ctrl->max_queue_pairs;
 	ds->virtio.num_active_qps = atomic_load(&ctrl->num_active_qps);
 	ds->virtio.queue_size = vdev->queue_size;
+	ds->virtio.config_msix_vector = common_cfg ? common_cfg->config_msix_vector : VIRTIO_MSI_NO_VECTOR;
 	ds->virtio.mq_feature_negotiated = ctrl->mq_feature_negotiated;
 
 	vq_cfg = vnet_pci_device_get_virtq_pci_cfg(vdev);
-	ds->vqs.num_vqs = vdev->vqs_count;
+	ds->vqs.num_vqs = VNET_TOTAL_VQS(ctrl->max_queue_pairs);
 	for (uint16_t q = 0; q < vdev->vqs_count && q < max_vqs; q++)
 		vnet_lu_save_one_vq(&ds->vqs.vqs[q], &vq_cfg[q], q);
 
@@ -350,11 +1344,13 @@ static void vnet_lu_fill_device_state(struct vnet_lu_device_state *ds,
 		ds->blob_len = 0;
 	}
 
-	DOCA_LOG_INFO("Saved device %u: ep_vhca=0x%x, vqs=%u, active_qps=%u, blob=%u bytes",
+	DOCA_LOG_INFO("Saved device %u: ep_vhca=0x%x, vqs=%u, active_qps=%u, cfg_msix=0x%04x, speed=%u, blob=%u bytes",
 		      idx,
 		      ds->ep_vhca_id,
 		      ds->vqs.num_vqs,
 		      ds->virtio.num_active_qps,
+		      ds->virtio.config_msix_vector,
+		      ds->net.speed,
 		      ds->blob_len);
 }
 
@@ -395,6 +1391,8 @@ doca_error_t vnet_lu_save_state(struct tlp_context *tlp_ctx)
 	const void **blobs = NULL;
 	size_t *blob_lens = NULL;
 	struct vnet_lu_shm *shm = NULL;
+	uint32_t num_present_devices = 0;
+	bool hotplug_mode;
 	doca_error_t result;
 	uint32_t num_ep;
 
@@ -404,6 +1402,7 @@ doca_error_t vnet_lu_save_state(struct tlp_context *tlp_ctx)
 	}
 
 	num_ep = tlp_ctx->num_ep;
+	hotplug_mode = tlp_ctx->hotplug_mode;
 	base_size = sizeof(struct vnet_lu_shm) + num_ep * sizeof(struct vnet_lu_device_state);
 
 	/* Pass 1: export blobs to determine total blob size */
@@ -418,6 +1417,13 @@ doca_error_t vnet_lu_save_state(struct tlp_context *tlp_ctx)
 
 	for (uint32_t i = 0; i < num_ep; i++) {
 		struct vnet_pci_dev_controller *ctrl = &tlp_ctx->vnet_controller[i];
+
+		if (hotplug_mode) {
+			if (!vnet_lu_hotplug_runtime_slot_is_present(tlp_ctx, i))
+				continue;
+		}
+
+		num_present_devices++;
 
 		if (!ctrl->offload_engine) {
 			DOCA_LOG_WARN("Device %u: no offload engine, skipping blob export", i);
@@ -445,12 +1451,22 @@ doca_error_t vnet_lu_save_state(struct tlp_context *tlp_ctx)
 	DOCA_LOG_INFO("LU state: INITIALIZED -> PRE_COPY");
 	shm->num_devices = num_ep;
 	shm->blob_data_offset = (uint32_t)base_size;
+	shm->hotplug.num_present_devices = num_present_devices;
+	memcpy(shm->hotplug.base_mac, tlp_ctx->mac_bytes_base, ETH_ALEN);
+	memset(shm->hotplug.slot_present, hotplug_mode ? 0 : 1, sizeof(shm->hotplug.slot_present));
 
 	/* Pass 2: fill per-device state and copy blobs into trailing region */
 	struct vnet_lu_write_ctx wctx = {.shm_base = shm, .blob_cursor = (uint32_t)base_size};
 
-	for (uint32_t i = 0; i < num_ep; i++)
+	for (uint32_t i = 0; i < num_ep; i++) {
+		if (hotplug_mode) {
+			if (!vnet_lu_hotplug_runtime_slot_is_present(tlp_ctx, i))
+				continue;
+			shm->hotplug.slot_present[i] = 1;
+		}
+
 		vnet_lu_fill_device_state(&shm->devices[i], tlp_ctx, i, blobs[i], blob_lens[i], &wctx);
+	}
 
 	vnet_lu_active_shm = shm;
 	vnet_lu_active_shm_size = shm_size;
@@ -461,6 +1477,17 @@ doca_error_t vnet_lu_save_state(struct tlp_context *tlp_ctx)
 		      shm_size,
 		      total_blob_size);
 	result = DOCA_SUCCESS;
+
+	if (tlp_ctx->sriov_enabled) {
+		result = vnet_lu_sriov_save_state(tlp_ctx);
+		if (result != DOCA_SUCCESS) {
+			munmap(shm, shm_size);
+			(void)shm_unlink(VNET_LU_SHM_NAME);
+			vnet_lu_active_shm = NULL;
+			vnet_lu_active_shm_size = 0;
+			goto release_blobs;
+		}
+	}
 
 release_blobs:
 	free(blobs);
@@ -505,6 +1532,7 @@ doca_error_t vnet_lu_active_init(void)
 	struct sigaction sa = {0};
 
 	vnet_lu_handover_requested = 0;
+	vnet_lu_handover_completed = 0;
 	(void)shm_unlink(VNET_LU_SHM_NAME);
 
 	sa.sa_handler = vnet_lu_sigusr1_handler;
@@ -517,15 +1545,47 @@ doca_error_t vnet_lu_active_init(void)
 	return vnet_lu_create_listen_socket(&vnet_lu_listen_fd);
 }
 
+static doca_error_t vnet_lu_hotplug_validate_quiesced(const struct tlp_context *tlp_ctx)
+{
+	uint32_t i;
+
+	if (tlp_ctx == NULL) {
+		DOCA_LOG_ERR("'tlp_ctx' is NULL");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (!tlp_ctx->hotplug_mode)
+		return DOCA_SUCCESS;
+
+	for (i = 0; i < tlp_ctx->num_ep; i++) {
+		const struct pci_device_config *ep = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + i];
+
+		if (atomic_load(&ep->pending_unplug)) {
+			DOCA_LOG_ERR("LU rejected: slot %u still has pending unplug state", i);
+			return DOCA_ERROR_IN_PROGRESS;
+		}
+		if (atomic_load(&ep->pending_destroy)) {
+			DOCA_LOG_ERR("LU rejected: slot %u still has pending destroy state", i);
+			return DOCA_ERROR_IN_PROGRESS;
+		}
+	}
+
+	return DOCA_SUCCESS;
+}
+
 static doca_error_t vnet_lu_handover(struct vnet_pci_dev_resources *resources)
 {
 	struct tlp_context *tlp_ctx = resources->tlp_ctx;
-	enum vnet_lu_msg msg;
+	enum vnet_lu_msg msg = VNET_LU_MSG_INVALID;
 	doca_error_t result;
 	int conn_fd = -1;
 	int cmd_fd = -1;
 
 	/* Pre-copy phase: export state, send cmd_fd, let App_B init. */
+
+	result = vnet_lu_hotplug_validate_quiesced(tlp_ctx);
+	if (result != DOCA_SUCCESS)
+		return result;
 
 	result = vnet_lu_get_cmd_fd(tlp_ctx->dev, &cmd_fd);
 	if (result != DOCA_SUCCESS)
@@ -577,8 +1637,20 @@ static doca_error_t vnet_lu_handover(struct vnet_pci_dev_resources *resources)
 
 	pci_cfg_workqueue_shutdown();
 
-	/* Pipelined: disable + send DEV_GO per device for parallel enable. */
+	/* Pipelined: disable + send DEV_GO per present slot for parallel enable. */
 	for (uint32_t i = 0; i < tlp_ctx->num_ep; i++) {
+		if (vnet_lu_active_shm != NULL && i < vnet_lu_active_shm->num_devices &&
+		    vnet_lu_active_shm->hotplug.slot_present[i] == 0)
+			continue;
+
+		result = vnet_lu_sriov_quiesce_active_pf(tlp_ctx, i);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("SR-IOV LU: failed to quiesce active VFs for PF %u: %s",
+				     i,
+				     doca_error_get_descr(result));
+			goto out;
+		}
+
 		(void)vnet_controller_cleanup(&tlp_ctx->vnet_controller[i], false);
 
 		result = vnet_lu_send_msg(conn_fd, VNET_LU_MSG_DEV_GO);
@@ -637,6 +1709,13 @@ out:
 		vnet_lu_active_shm = NULL;
 		vnet_lu_active_shm_size = 0;
 	}
+	if (vnet_lu_active_sriov_shm) {
+		if (result != DOCA_SUCCESS)
+			(void)shm_unlink(VNET_LU_SRIOV_SHM_NAME);
+		munmap(vnet_lu_active_sriov_shm, vnet_lu_active_sriov_shm_size);
+		vnet_lu_active_sriov_shm = NULL;
+		vnet_lu_active_sriov_shm_size = 0;
+	}
 	return result;
 }
 
@@ -649,6 +1728,7 @@ bool vnet_lu_active_post_loop(struct vnet_pci_dev_resources *resources)
 		doca_error_t result = vnet_lu_handover(resources);
 
 		did_handover = (result == DOCA_SUCCESS);
+		vnet_lu_handover_completed = did_handover ? 1 : 0;
 		if (!did_handover)
 			DOCA_LOG_ERR("LU handover failed: %s", doca_error_get_descr(result));
 	}
@@ -746,6 +1826,53 @@ static void vnet_lu_apply_channel_config(const struct vnet_lu_channel_config *ch
 	}
 }
 
+static void vnet_lu_reset_pf_routing_cache(struct tlp_context *tlp_ctx)
+{
+	for (uint32_t i = 0; i < BDF_MAP_SIZE; i++)
+		tlp_ctx->bdf_map[i] = NULL;
+
+	if (tlp_ctx->bdf_entries == NULL)
+		return;
+
+	for (uint32_t i = 0; i < tlp_ctx->num_devices; i++) {
+		tlp_ctx->bdf_entries[i].key = 0;
+		tlp_ctx->bdf_entries[i].dev_cfg = NULL;
+		tlp_ctx->bdf_entries[i].next = NULL;
+	}
+
+	DOCA_LOG_INFO("Channel LU standby: BDF map cache reset");
+}
+
+void vnet_lu_sriov_sync_pf_shadow_from_dw_regs(struct tlp_context *tlp_ctx)
+{
+	struct vnet_sriov_pf_state *sriov;
+	struct vnet_pci_device *virtio_dev;
+	struct pci_device_config *pf;
+	uint32_t dw2;
+
+	for (uint32_t i = 0; i < tlp_ctx->num_ep; i++) {
+		pf = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + i];
+		sriov = pf->sriov;
+		virtio_dev = &tlp_ctx->virtio_dev[i];
+		if (sriov == NULL)
+			continue;
+
+		dw2 = VIRTIO_DEV_CONFIG_READ(virtio_dev, PCIE_EXT_CAP_REG_NUM_SRIOV + 2);
+		sriov->control_shadow = (uint16_t)(dw2 & 0xFFFFu);
+		sriov->status_shadow = (uint16_t)((dw2 >> 16) & 0xFFFFu);
+		sriov->num_vfs_shadow =
+			(uint16_t)(VIRTIO_DEV_CONFIG_READ(virtio_dev, PCIE_EXT_CAP_REG_NUM_SRIOV + 4) & 0xFFFFu);
+		sriov->system_pg_size = VIRTIO_DEV_CONFIG_READ(virtio_dev, PCIE_EXT_CAP_REG_NUM_SRIOV + 8);
+		for (uint32_t bar = 0; bar < 6; bar++)
+			sriov->vf_bar[bar] = VIRTIO_DEV_CONFIG_READ(virtio_dev, PCIE_EXT_CAP_REG_NUM_SRIOV + 9 + bar);
+
+		DOCA_LOG_INFO("SR-IOV LU: synced PF[%u] shadow from channel dw_regs (ctrl=0x%04x numvfs=%u)",
+			      i,
+			      sriov->control_shadow,
+			      sriov->num_vfs_shadow);
+	}
+}
+
 static void vnet_lu_channel_reclaim(struct tlp_context *tlp_ctx)
 {
 	doca_error_t result;
@@ -790,9 +1917,10 @@ static doca_error_t vnet_lu_channel_handover(int conn_fd, struct tlp_context *tl
 	size_t export_desc_len = 0;
 	struct doca_ctx *ch_ctx = NULL;
 	uint8_t handover_ok = 0;
-	enum vnet_lu_msg msg;
+	enum vnet_lu_msg msg = VNET_LU_MSG_INVALID;
 	doca_error_t result;
 	uint32_t desc_len32;
+	uint16_t flushed;
 
 	if (!tlp_ctx->tlp_channel) {
 		DOCA_LOG_ERR("Channel LU active: no TLP channel to export");
@@ -837,6 +1965,7 @@ static doca_error_t vnet_lu_channel_handover(int conn_fd, struct tlp_context *tl
 		DOCA_LOG_ERR("Channel LU: expected CH_BEGIN, got %u", (unsigned)msg);
 		return (result == DOCA_SUCCESS) ? DOCA_ERROR_IO_FAILED : result;
 	}
+	DOCA_LOG_INFO("Channel LU active: received CH_BEGIN, yielding primary");
 
 	/* Yield primary role first, then stop context -- matches SDK sample ordering.
 	 * Yielding before stopping lets standby become primary earlier. */
@@ -845,27 +1974,7 @@ static doca_error_t vnet_lu_channel_handover(int conn_fd, struct tlp_context *tl
 		DOCA_LOG_ERR("Channel LU: set_primary(false) failed: %s", doca_error_get_descr(result));
 		goto send_begin_nack;
 	}
-
-	ch_ctx = doca_devemu_pci_tlp_channel_as_ctx(tlp_ctx->tlp_channel);
-	result = doca_ctx_stop(ch_ctx);
-	if (result == DOCA_ERROR_IN_PROGRESS) {
-		enum doca_ctx_states ctx_state;
-
-		do {
-			(void)doca_pe_progress(tlp_ctx->pe);
-			result = doca_ctx_get_state(ch_ctx, &ctx_state);
-			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Channel LU: ctx_get_state failed: %s", doca_error_get_descr(result));
-				goto rollback_primary;
-			}
-		} while (ctx_state != DOCA_CTX_STATE_IDLE);
-	} else if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Channel LU: ctx_stop failed: %s", doca_error_get_descr(result));
-		goto rollback_primary;
-	}
-	ch_ctx = NULL;
-
-	DOCA_LOG_INFO("Channel LU active: yielded primary, channel stopped");
+	DOCA_LOG_INFO("Channel LU active: set_primary(false) done, collecting channel config");
 
 	vnet_lu_collect_channel_config(&ch_cfg, tlp_ctx);
 
@@ -874,23 +1983,24 @@ static doca_error_t vnet_lu_channel_handover(int conn_fd, struct tlp_context *tl
 	if (tlp_ctx->transaction_region_size == 0) {
 		DOCA_LOG_ERR("Channel LU active: transaction_region_size is zero");
 		result = DOCA_ERROR_INVALID_VALUE;
-		goto rollback_stopped;
+		goto rollback_primary;
 	}
 	if ((size_t)ch_cfg.transaction_region_size != tlp_ctx->transaction_region_size) {
 		DOCA_LOG_ERR("Channel LU active: transaction_region_size overflow in ch_cfg (cfg=%u ctx=%zu)",
 			     ch_cfg.transaction_region_size,
 			     tlp_ctx->transaction_region_size);
 		result = DOCA_ERROR_INVALID_VALUE;
-		goto rollback_stopped;
+		goto rollback_primary;
 	}
 
 	result = vnet_lu_send_msg(conn_fd, VNET_LU_MSG_CH_BEGIN_ACK);
 	if (result != DOCA_SUCCESS)
-		goto rollback_stopped;
+		goto rollback_primary;
+	DOCA_LOG_INFO("Channel LU active: CH_BEGIN_ACK sent, sending config before standby primary");
 
 	result = vnet_lu_send_all(conn_fd, &ch_cfg, sizeof(ch_cfg));
 	if (result != DOCA_SUCCESS)
-		goto rollback_stopped;
+		goto rollback_primary;
 
 	/* Send per-device transaction regions (PCI config space snapshots) */
 	for (uint32_t i = 0; i < tlp_ctx->num_ep; i++) {
@@ -901,7 +2011,7 @@ static doca_error_t vnet_lu_channel_handover(int conn_fd, struct tlp_context *tl
 					  tlp_ctx->transaction_region_size);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Channel LU: send transaction region %u failed", i);
-			goto rollback_stopped;
+			goto rollback_primary;
 		}
 	}
 
@@ -915,37 +2025,73 @@ static doca_error_t vnet_lu_channel_handover(int conn_fd, struct tlp_context *tl
 					  sizeof(tlp_ctx->virtio_dev[i].pcie_dev.dw_regs));
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Channel LU: send dw_regs[%u] failed", i);
-			goto rollback_stopped;
+			goto rollback_primary;
 		}
 	}
 
-	DOCA_LOG_INFO("Channel LU active: config sent (%u devices, %u bridges, %u ep), waiting for CH_END",
+	DOCA_LOG_INFO("Channel LU active: config sent (%u devices, %u bridges, %u ep), waiting for CH_PRIMARY",
 		      ch_cfg.num_devices,
 		      ch_cfg.num_bridges,
 		      ch_cfg.num_ep);
 
-	/* On UDS a successful send() guarantees the data reaches the peer's
-	 * kernel buffer, so if the standby's set_primary(true) + CH_END send
-	 * both succeeded we will receive CH_END here.  A timeout or recv
-	 * failure means the socket broke, which also means the standby's
-	 * CH_END send failed -- the standby will have reverted primary and
-	 * destroyed its channel.  Safe to reclaim on the active side. */
+	result = vnet_lu_wait_readable(conn_fd, VNET_LU_CH_TIMEOUT_SEC);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Channel LU: timeout waiting for CH_PRIMARY");
+		goto rollback_primary;
+	}
+	result = vnet_lu_recv_msg(conn_fd, &msg);
+	if (result != DOCA_SUCCESS || msg != VNET_LU_MSG_CH_PRIMARY) {
+		DOCA_LOG_ERR("Channel LU: expected CH_PRIMARY, got %u", (unsigned)msg);
+		result = (result == DOCA_SUCCESS) ? DOCA_ERROR_IO_FAILED : result;
+		goto rollback_primary;
+	}
+	DOCA_LOG_INFO("Channel LU active: standby became primary, flushing ACG credits");
+
+	ch_ctx = doca_devemu_pci_tlp_channel_as_ctx(tlp_ctx->tlp_channel);
+	flushed = acg_queue_flush(tlp_ctx);
+	if (flushed > 0)
+		DOCA_LOG_INFO("Channel LU active: flushed %u queued ACG credits after standby primary", flushed);
+
+	result = doca_ctx_stop(ch_ctx);
+	if (result == DOCA_ERROR_IN_PROGRESS) {
+		enum doca_ctx_states ctx_state;
+
+		DOCA_LOG_INFO("Channel LU active: ctx_stop in progress, draining channel context");
+		do {
+			(void)doca_pe_progress(tlp_ctx->pe);
+			result = doca_ctx_get_state(ch_ctx, &ctx_state);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Channel LU: ctx_get_state failed: %s", doca_error_get_descr(result));
+				goto post_primary_failure;
+			}
+		} while (ctx_state != DOCA_CTX_STATE_IDLE);
+	} else if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Channel LU: ctx_stop failed: %s", doca_error_get_descr(result));
+		goto post_primary_failure;
+	}
+	ch_ctx = NULL;
+
+	DOCA_LOG_INFO("Channel LU active: yielded primary, channel stopped, waiting for CH_END");
+
+	/* Once CH_PRIMARY is received, standby owns the primary role. Do not
+	 * reclaim primary on later socket failures; App_A should only stop and
+	 * destroy its secondary channel from this point onward. */
 	result = vnet_lu_wait_readable(conn_fd, VNET_LU_CH_TIMEOUT_SEC);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Channel LU: timeout waiting for CH_END");
-		goto rollback_stopped;
+		goto post_primary_failure;
 	}
 	result = vnet_lu_recv_msg(conn_fd, &msg);
 	if (result != DOCA_SUCCESS || msg != VNET_LU_MSG_CH_END) {
 		DOCA_LOG_ERR("Channel LU: expected CH_END, got %u", (unsigned)msg);
 		result = (result == DOCA_SUCCESS) ? DOCA_ERROR_IO_FAILED : result;
-		goto rollback_stopped;
+		goto post_primary_failure;
 	}
 
 	result = vnet_lu_recv_all(conn_fd, &handover_ok, sizeof(handover_ok));
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Channel LU: failed to receive handover status");
-		goto rollback_stopped;
+		goto post_primary_failure;
 	}
 
 	if (!handover_ok) {
@@ -970,10 +2116,10 @@ static doca_error_t vnet_lu_channel_handover(int conn_fd, struct tlp_context *tl
 	DOCA_LOG_INFO("Channel LU active: handover complete, channel destroyed");
 	return DOCA_SUCCESS;
 
-rollback_stopped:
-	/* Channel already stopped + non-primary; attempt to reclaim ownership. */
-	DOCA_LOG_WARN("Channel LU active: post-stop send/recv failed, rolling back");
-	vnet_lu_channel_reclaim(tlp_ctx);
+post_primary_failure:
+	/* Standby already reported primary ownership. Do not reclaim primary here;
+	 * cleanup will destroy App_A's secondary channel. */
+	DOCA_LOG_WARN("Channel LU active: failure after standby became primary; not reclaiming active channel");
 	return result;
 
 rollback_primary:
@@ -1022,6 +2168,13 @@ static doca_error_t vnet_lu_open_shm(struct vnet_lu_shm **shm_out, size_t *shm_s
 
 	if (shm->num_devices == 0 || shm->num_devices > MAX_NUM_EP) {
 		DOCA_LOG_ERR("SHM invalid: num_devices=%u", shm->num_devices);
+		munmap(shm, file_size);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	if (shm->hotplug.num_present_devices > shm->num_devices) {
+		DOCA_LOG_ERR("SHM invalid: num_present_devices=%u > num_devices=%u",
+			     shm->hotplug.num_present_devices,
+			     shm->num_devices);
 		munmap(shm, file_size);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
@@ -1140,8 +2293,11 @@ close_ctx:
  * Called while App_A is still serving traffic. */
 doca_error_t vnet_lu_restore_early(struct vnet_pci_dev_resources *resources)
 {
+	struct vnet_lu_sriov_shm *sriov_shm = NULL;
 	const struct vnet_lu_device_state *ds0;
+	const uint8_t *sriov_tail_base = NULL;
 	struct vnet_lu_shm *shm = NULL;
+	size_t sriov_shm_size = 0;
 	doca_error_t result;
 	size_t shm_size = 0;
 	int cmd_fd = -1;
@@ -1172,12 +2328,30 @@ doca_error_t vnet_lu_restore_early(struct vnet_pci_dev_resources *resources)
 	if (result != DOCA_SUCCESS)
 		goto cleanup_conn;
 
+	result = vnet_lu_sriov_open_shm(&sriov_shm, &sriov_shm_size, &sriov_tail_base);
+	if (result != DOCA_SUCCESS) {
+		munmap(shm, shm_size);
+		goto cleanup_conn;
+	}
+	result = vnet_lu_sriov_restore_context_config(resources->tlp_ctx, sriov_shm);
+	if (result != DOCA_SUCCESS) {
+		munmap(shm, shm_size);
+		if (sriov_shm != NULL)
+			munmap(sriov_shm, sriov_shm_size);
+		goto cleanup_conn;
+	}
+
 	for (uint32_t i = 0; i < shm->num_devices; i++) {
 		const struct vnet_lu_device_state *ds = &shm->devices[i];
+
+		if (resources->tlp_ctx->hotplug_mode && i < MAX_NUM_EP && shm->hotplug.slot_present[i] == 0)
+			continue;
 
 		if (ds->magic != VNET_LU_MAGIC) {
 			DOCA_LOG_ERR("Device %u: invalid magic (0x%x)", i, ds->magic);
 			munmap(shm, shm_size);
+			if (sriov_shm != NULL)
+				munmap(sriov_shm, sriov_shm_size);
 			result = DOCA_ERROR_INVALID_VALUE;
 			goto cleanup_conn;
 		}
@@ -1192,27 +2366,44 @@ doca_error_t vnet_lu_restore_early(struct vnet_pci_dev_resources *resources)
 	result = vnet_lu_open_dev_from_cmd_fd(resources->tlp_ctx, cmd_fd);
 	if (result != DOCA_SUCCESS) {
 		munmap(shm, shm_size);
+		if (sriov_shm != NULL)
+			munmap(sriov_shm, sriov_shm_size);
 		goto cleanup_conn;
 	}
 	cmd_fd = -1; /* now owned by ibv_context */
 
-	ds0 = &shm->devices[0];
-	if (ds0->net.mtu > 0)
-		resources->tlp_ctx->mtu = ds0->net.mtu;
-	if (ds0->virtio.max_queue_pairs == 0 || ds0->virtio.queue_size == 0) {
-		DOCA_LOG_ERR("SHM device 0: invalid config (max_queue_pairs=%u, queue_size=%u)",
-			     ds0->virtio.max_queue_pairs,
-			     ds0->virtio.queue_size);
-		munmap(shm, shm_size);
-		result = DOCA_ERROR_INVALID_VALUE;
-		goto cleanup_conn;
+	if (resources->tlp_ctx->hotplug_mode) {
+		result = vnet_lu_hotplug_restore_shared_config(resources->tlp_ctx, shm);
+		if (result != DOCA_SUCCESS) {
+			munmap(shm, shm_size);
+			if (sriov_shm != NULL)
+				munmap(sriov_shm, sriov_shm_size);
+			goto cleanup_conn;
+		}
+	} else {
+		ds0 = &shm->devices[0];
+		if (ds0->net.mtu > 0)
+			resources->tlp_ctx->mtu = ds0->net.mtu;
+		if (ds0->virtio.max_queue_pairs == 0 || ds0->virtio.queue_size == 0) {
+			DOCA_LOG_ERR("SHM device 0: invalid config (max_queue_pairs=%u, queue_size=%u)",
+				     ds0->virtio.max_queue_pairs,
+				     ds0->virtio.queue_size);
+			munmap(shm, shm_size);
+			if (sriov_shm != NULL)
+				munmap(sriov_shm, sriov_shm_size);
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto cleanup_conn;
+		}
+		resources->tlp_ctx->max_queue_pairs = ds0->virtio.max_queue_pairs;
+		resources->tlp_ctx->queue_size = ds0->virtio.queue_size;
+		memcpy(resources->tlp_ctx->mac_bytes_base, ds0->net.mac, ETH_ALEN);
 	}
-	resources->tlp_ctx->max_queue_pairs = ds0->virtio.max_queue_pairs;
-	resources->tlp_ctx->queue_size = ds0->virtio.queue_size;
-	memcpy(resources->tlp_ctx->mac_bytes_base, ds0->net.mac, ETH_ALEN);
 
 	vnet_lu_saved_shm = shm;
 	vnet_lu_saved_shm_size = shm_size;
+	vnet_lu_saved_sriov_shm = sriov_shm;
+	vnet_lu_saved_sriov_shm_size = sriov_shm_size;
+	vnet_lu_saved_sriov_tail_base = sriov_tail_base;
 	return DOCA_SUCCESS;
 
 cleanup_conn:
@@ -1230,6 +2421,83 @@ const struct vnet_lu_shm *vnet_lu_get_shm(void)
 	return vnet_lu_saved_shm;
 }
 
+const struct vnet_lu_sriov_shm *vnet_lu_sriov_get_shm(void)
+{
+	return vnet_lu_saved_sriov_shm;
+}
+
+const uint8_t *vnet_lu_sriov_get_tail_base(void)
+{
+	return vnet_lu_saved_sriov_tail_base;
+}
+
+static void vnet_lu_sriov_get_entry_segments(const struct vnet_lu_sriov_pf_entry *entry,
+					     const uint8_t **cursor,
+					     const struct vnet_lu_sriov_vf_slot_state **slots_out,
+					     const struct vnet_lu_sriov_vf_vq_entry **vqs_out)
+{
+	if (slots_out != NULL)
+		*slots_out = (const struct vnet_lu_sriov_vf_slot_state *)*cursor;
+	*cursor += entry->num_active_vf * sizeof(struct vnet_lu_sriov_vf_slot_state);
+	if (vqs_out != NULL)
+		*vqs_out = (const struct vnet_lu_sriov_vf_vq_entry *)*cursor;
+	*cursor += entry->num_vq_entries * sizeof(struct vnet_lu_sriov_vf_vq_entry);
+}
+
+doca_error_t vnet_lu_sriov_get_pf_state(uint16_t ep_vhca_id,
+					const struct vnet_lu_sriov_pf_entry **entry_out,
+					const struct vnet_lu_sriov_vf_slot_state **slots_out,
+					const struct vnet_lu_sriov_vf_vq_entry **vqs_out)
+{
+	const struct vnet_lu_sriov_vf_slot_state *slots;
+	const struct vnet_lu_sriov_vf_vq_entry *vqs;
+	const struct vnet_lu_sriov_pf_entry *entry;
+	const uint8_t *cursor;
+
+	if (entry_out == NULL || slots_out == NULL || vqs_out == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	*entry_out = NULL;
+	*slots_out = NULL;
+	*vqs_out = NULL;
+
+	if (vnet_lu_saved_sriov_shm == NULL || vnet_lu_saved_sriov_tail_base == NULL) {
+		DOCA_LOG_ERR("SR-IOV LU: sidecar state is not available");
+		return DOCA_ERROR_NOT_FOUND;
+	}
+
+	cursor = vnet_lu_saved_sriov_tail_base;
+	for (uint32_t i = 0; i < vnet_lu_saved_sriov_shm->hdr.num_pf_entries; i++) {
+		entry = &vnet_lu_saved_sriov_shm->pf_entries[i];
+		vnet_lu_sriov_get_entry_segments(entry, &cursor, &slots, &vqs);
+
+		if (entry->ep_vhca_id == ep_vhca_id) {
+			*entry_out = entry;
+			*slots_out = slots;
+			*vqs_out = vqs;
+			return DOCA_SUCCESS;
+		}
+	}
+
+	return DOCA_ERROR_NOT_FOUND;
+}
+
+doca_error_t vnet_lu_sriov_get_vf_import_desc(const struct vnet_lu_sriov_vf_slot_state *slot_state,
+					      const void **export_desc,
+					      size_t *export_desc_len)
+{
+	if (slot_state == NULL || export_desc == NULL || export_desc_len == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+	if (vnet_lu_saved_sriov_shm == NULL)
+		return DOCA_ERROR_NOT_FOUND;
+	if (slot_state->blob_len == 0)
+		return DOCA_ERROR_NOT_FOUND;
+
+	*export_desc = (const uint8_t *)vnet_lu_saved_sriov_shm + slot_state->blob_offset;
+	*export_desc_len = slot_state->blob_len;
+	return DOCA_SUCCESS;
+}
+
 void vnet_lu_release_shm(void)
 {
 	if (vnet_lu_saved_shm) {
@@ -1237,15 +2505,55 @@ void vnet_lu_release_shm(void)
 		vnet_lu_saved_shm = NULL;
 		vnet_lu_saved_shm_size = 0;
 	}
+	if (vnet_lu_saved_sriov_shm) {
+		munmap(vnet_lu_saved_sriov_shm, vnet_lu_saved_sriov_shm_size);
+		vnet_lu_saved_sriov_shm = NULL;
+		vnet_lu_saved_sriov_shm_size = 0;
+		vnet_lu_saved_sriov_tail_base = NULL;
+	}
 }
 
 doca_error_t vnet_lu_get_ep_vhca_id(uint32_t idx, uint16_t *vhca_id_out)
 {
 	if (!vnet_lu_saved_shm || !vhca_id_out || idx >= vnet_lu_saved_shm->num_devices)
 		return DOCA_ERROR_INVALID_VALUE;
+	if (vnet_lu_saved_shm->hotplug.slot_present[idx] == 0)
+		return DOCA_ERROR_NOT_FOUND;
 
 	*vhca_id_out = vnet_lu_saved_shm->devices[idx].ep_vhca_id;
 	return DOCA_SUCCESS;
+}
+
+bool vnet_lu_hotplug_is_present_slot(uint32_t idx)
+{
+	if (vnet_lu_saved_shm == NULL || idx >= vnet_lu_saved_shm->num_devices)
+		return false;
+
+	return vnet_lu_saved_shm->hotplug.slot_present[idx] != 0;
+}
+
+uint32_t vnet_lu_hotplug_get_num_present_devices(void)
+{
+	if (vnet_lu_saved_shm == NULL)
+		return 0;
+
+	return vnet_lu_saved_shm->hotplug.num_present_devices;
+}
+
+doca_error_t vnet_lu_hotplug_get_restore_slot(uint32_t idx, bool *is_present_out, uint16_t *vhca_id_out)
+{
+	if (!vnet_lu_saved_shm || !is_present_out || !vhca_id_out)
+		return DOCA_ERROR_INVALID_VALUE;
+	if (idx >= vnet_lu_saved_shm->num_devices)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	*is_present_out = vnet_lu_saved_shm->hotplug.slot_present[idx] != 0;
+	*vhca_id_out = 0;
+
+	if (!*is_present_out)
+		return DOCA_SUCCESS;
+
+	return vnet_lu_get_ep_vhca_id(idx, vhca_id_out);
 }
 
 doca_error_t vnet_lu_get_import_desc(uint32_t idx, const void **export_desc, size_t *export_desc_len)
@@ -1257,6 +2565,8 @@ doca_error_t vnet_lu_get_import_desc(uint32_t idx, const void **export_desc, siz
 
 	if (idx >= vnet_lu_saved_shm->num_devices)
 		return DOCA_ERROR_INVALID_VALUE;
+	if (vnet_lu_saved_shm->hotplug.slot_present[idx] == 0)
+		return DOCA_ERROR_NOT_FOUND;
 
 	ds = &vnet_lu_saved_shm->devices[idx];
 	if (ds->blob_len == 0 || ds->blob_offset == 0)
@@ -1298,6 +2608,7 @@ doca_error_t vnet_lu_restore_complete(void)
 
 	/* Close deferred to vnet_lu_close_conn(); early close races with active. */
 	(void)shm_unlink(VNET_LU_SHM_NAME);
+	(void)shm_unlink(VNET_LU_SRIOV_SHM_NAME);
 	return DOCA_SUCCESS;
 }
 
@@ -1354,9 +2665,16 @@ doca_error_t vnet_lu_find_existing_rep(struct doca_devemu_pci_type *pci_type,
 
 void vnet_lu_override_config(struct vnet_pci_dev_config *config, const struct tlp_context *tlp_ctx, uint8_t *mac_bytes)
 {
-	config->max_queue_pairs = tlp_ctx->max_queue_pairs;
-	config->queue_size = tlp_ctx->queue_size;
-	config->mtu = tlp_ctx->mtu;
+	/* In hotplug mode an all-empty topology has no saved present device to
+	 * supply shared queue/MTU settings, so preserve the CLI-provided values. */
+	if (!tlp_ctx->hotplug_mode || vnet_lu_hotplug_get_num_present_devices() > 0) {
+		config->max_queue_pairs = tlp_ctx->max_queue_pairs;
+		config->queue_size = tlp_ctx->queue_size;
+		config->mtu = tlp_ctx->mtu;
+	}
+	config->admin_queue_num = 0;
+	config->sriov_enabled = tlp_ctx->sriov_enabled;
+	config->sriov_total_vfs = tlp_ctx->sriov_total_vfs;
 	memcpy(mac_bytes, tlp_ctx->mac_bytes_base, ETH_ALEN);
 	snprintf(config->mac_addr,
 		 sizeof(config->mac_addr),
@@ -1495,23 +2813,37 @@ static doca_error_t vnet_lu_replay_one_device(struct vnet_pci_dev_controller *ct
 		return DOCA_ERROR_UNEXPECTED;
 	}
 
-	DOCA_LOG_INFO("LU replay: device %u (ep_vhca=0x%x, active_qps=%u, mq=%d)",
+	DOCA_LOG_INFO("LU replay: device %u (ep_vhca=0x%x, active_qps=%u, mq=%d, cfg_msix=0x%04x, speed=%u)",
 		      idx,
 		      ds->ep_vhca_id,
 		      ds->virtio.num_active_qps,
-		      ds->virtio.mq_feature_negotiated);
+		      ds->virtio.mq_feature_negotiated,
+		      ds->virtio.config_msix_vector,
+		      ds->net.speed);
 
 	result = vnet_lu_validate_replay_params(ctrl, ds, vdev);
 	if (result != DOCA_SUCCESS)
 		return result;
 
 	ctrl->mq_feature_negotiated = ds->virtio.mq_feature_negotiated;
+	ctrl->admin_queue_num = 0;
+	ctrl->admin_queue_index = 0;
+	ctrl->admin_vq_negotiated = false;
 	atomic_store(&ctrl->num_active_qps, ds->virtio.num_active_qps);
 	ctrl->max_queue_pairs = ds->virtio.max_queue_pairs;
-	vdev->driver_features = ds->virtio.device_features;
+	vdev->driver_features = ds->virtio.device_features & ~(1ULL << VNET_VIRTIO_F_ADMIN_VQ);
 	common_cfg->device_status = VNET_VIRTIO_DEVICE_STATUS_ACK | VNET_VIRTIO_DEVICE_STATUS_DRIVER |
 				    VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK | VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK;
 	vdev->prev_status = common_cfg->device_status;
+
+	/* Restore the host-assigned config-change MSI-X vector: the host never
+	 * re-writes it after LU, so otherwise it stays VIRTIO_MSI_NO_VECTOR and a
+	 * config-change (e.g. speed-change link bounce) fails with BAD_STATE. */
+	common_cfg->config_msix_vector = ds->virtio.config_msix_vector;
+
+	/* Preserve the operator's last-set link speed across the upgrade. */
+	if (ds->net.speed)
+		vdev->vnet_cfg.speed = ds->net.speed;
 
 	for (uint16_t q = 0; q < ds->vqs.num_vqs && q < vdev->vqs_count; q++) {
 		vq_shadow[q].queue_size = ds->vqs.vqs[q].size;
@@ -1527,6 +2859,15 @@ static doca_error_t vnet_lu_replay_one_device(struct vnet_pci_dev_controller *ct
 		DOCA_LOG_ERR("LU replay: failed to get virtio engine for device %u", idx);
 		return DOCA_ERROR_UNEXPECTED;
 	}
+
+	result = vnet_pci_dev_apply_negotiated_features(virtio_engine, vdev);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("LU replay: failed to apply negotiated features for device %u: %s",
+			     idx,
+			     doca_error_get_name(result));
+		return result;
+	}
+
 	result = doca_devemu_virtio_offload_engine_start(virtio_engine);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("LU replay: engine start failed for device %u: %s", idx, doca_error_get_descr(result));
@@ -1562,15 +2903,205 @@ static doca_error_t vnet_lu_replay_one_device(struct vnet_pci_dev_controller *ct
 	return DOCA_SUCCESS;
 }
 
+static doca_error_t vnet_lu_sriov_restore_vf_config(struct vnet_vf_slot *slot,
+						    const struct vnet_lu_sriov_vf_slot_state *vf_state,
+						    const struct vnet_lu_sriov_vf_vq_entry *vqs,
+						    uint32_t num_vq_entries)
+{
+	struct vnet_virtio_queue_config *vq_shadow;
+	struct vnet_virtio_common_config *common_cfg;
+	const struct vnet_lu_vq_state *src;
+	uint32_t i;
+	uint16_t q;
+
+	if (slot == NULL || slot->vf_dev == NULL || vf_state == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	slot->max_queue_pairs = vf_state->virtio.max_queue_pairs;
+	slot->mq_feature_negotiated = vf_state->virtio.mq_feature_negotiated;
+	atomic_store(&slot->num_active_qps, vf_state->virtio.num_active_qps);
+	slot->vf_dev->driver_features = vf_state->virtio.device_features;
+
+	/* Restore the full VF config/TLP shadow for host continuity. */
+	memcpy(&slot->vf_dev->pcie_dev, &vf_state->vf_cfg_shadow, sizeof(slot->vf_dev->pcie_dev));
+	slot->vf_dev->bus = vf_state->bdf.bus;
+	slot->vf_dev->device = vf_state->bdf.device;
+	slot->vf_dev->function = vf_state->bdf.function;
+
+	common_cfg = vnet_pci_device_get_pci_cfg(slot->vf_dev);
+	if (common_cfg == NULL) {
+		DOCA_LOG_ERR("SR-IOV LU: VF[vf_index=%u] has no common config", vf_state->vf_index);
+		return DOCA_ERROR_BAD_STATE;
+	}
+
+	common_cfg->device_status = VNET_VIRTIO_DEVICE_STATUS_ACK | VNET_VIRTIO_DEVICE_STATUS_DRIVER |
+				    VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK | VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK;
+	slot->vf_dev->prev_status = slot->vf_dev->pci_cfg.device_status;
+
+	vq_shadow = (struct vnet_virtio_queue_config *)vnet_pci_device_get_virtq_pci_cfg(slot->vf_dev);
+	if (vq_shadow == NULL)
+		return DOCA_ERROR_UNEXPECTED;
+
+	for (i = 0; i < num_vq_entries; i++) {
+		if (vqs[i].vf_index != vf_state->vf_index)
+			continue;
+		src = &vqs[i].vq;
+		q = src->index;
+		if (q >= slot->vf_dev->vqs_count)
+			return DOCA_ERROR_INVALID_VALUE;
+		vq_shadow[q].queue_size = src->size;
+		vq_shadow[q].queue_msix_vector = src->msix_vector;
+		vq_shadow[q].queue_desc = src->desc_addr;
+		vq_shadow[q].queue_driver = src->driver_addr;
+		vq_shadow[q].queue_device = src->device_addr;
+		vq_shadow[q].queue_enable = src->enabled;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t vnet_lu_sriov_replay_vf(struct vnet_pci_dev_resources *resources,
+					    struct pci_device_config *pf,
+					    const struct vnet_lu_sriov_pf_entry *entry,
+					    const struct vnet_lu_sriov_vf_slot_state *vf_state,
+					    const struct vnet_lu_sriov_vf_vq_entry *vqs)
+{
+	struct doca_devemu_virtio_offload_engine *oe;
+	struct doca_devemu_pci_ep *pci_ep;
+	const void *import_desc = NULL;
+	struct vnet_vf_slot *slot;
+	size_t import_desc_len = 0;
+	doca_error_t result;
+	uint32_t idx;
+
+	idx = vf_state->vf_index - entry->sriov.first_vf_idx;
+	slot = &pf->sriov->vf_slots[idx];
+
+	/* Early restore only reopens the VF rep and cfg object. Start the live
+	 * tlp_dev here so replay can roll it back with the imported datapath. */
+	result = vnet_sriov_start_vf_slot(resources->tlp_ctx, slot);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	result = vnet_lu_sriov_restore_vf_config(slot, vf_state, vqs, entry->num_vq_entries);
+	if (result != DOCA_SUCCESS)
+		goto rollback_slot;
+
+	result = vnet_lu_sriov_get_vf_import_desc(vf_state, &import_desc, &import_desc_len);
+	if (result == DOCA_ERROR_NOT_FOUND)
+		return DOCA_SUCCESS;
+	if (result != DOCA_SUCCESS)
+		goto rollback_slot;
+
+	pci_ep = doca_devemu_pci_tlp_dev_as_ep(slot->tlp_dev);
+	if (pci_ep == NULL) {
+		result = DOCA_ERROR_UNEXPECTED;
+		goto rollback_slot;
+	}
+
+	result = doca_devemu_vnet_offload_engine_create_from_export(import_desc,
+								    import_desc_len,
+								    VNET_LU_OE_SHM_DIR,
+								    pci_ep,
+								    &slot->offload_engine);
+	if (result != DOCA_SUCCESS)
+		goto rollback_slot;
+
+	oe = doca_devemu_vnet_offload_engine_as_virtio_offload(slot->offload_engine);
+	if (oe == NULL) {
+		result = DOCA_ERROR_UNEXPECTED;
+		goto rollback_slot;
+	}
+
+	result = vnet_pci_dev_apply_negotiated_features(oe, slot->vf_dev);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("SR-IOV LU replay: VF[vf_index=%u] apply features failed: %s",
+			     vf_state->vf_index,
+			     doca_error_get_descr(result));
+		goto rollback_slot;
+	}
+
+	result = doca_devemu_virtio_offload_engine_start(oe);
+	if (result != DOCA_SUCCESS)
+		goto rollback_slot;
+	atomic_store(&slot->engine_started, true);
+
+	result = vnet_pci_dev_vf_vqs_create(resources->tlp_ctx, slot);
+	if (result != DOCA_SUCCESS)
+		goto rollback_slot;
+
+	result = vnet_pci_dev_vf_initialize_io_context(resources->tlp_ctx, pf, slot);
+	if (result != DOCA_SUCCESS)
+		goto rollback_slot;
+
+	result = vnet_pci_dev_vf_start_vqs(slot);
+	if (result != DOCA_SUCCESS)
+		goto rollback_slot;
+
+	DOCA_LOG_INFO("SR-IOV LU replay: VF[vf_index=%u] prepared from blob (%zu bytes)",
+		      vf_state->vf_index,
+		      import_desc_len);
+	return DOCA_SUCCESS;
+
+rollback_slot:
+	(void)vnet_sriov_stop_vf_slot(slot);
+	return result;
+}
+
+doca_error_t vnet_lu_sriov_replay(struct vnet_pci_dev_resources *resources)
+{
+	const struct vnet_lu_sriov_shm *sriov_shm = vnet_lu_sriov_get_shm();
+	const struct vnet_lu_sriov_pf_entry *entry;
+	const struct vnet_lu_sriov_vf_slot_state *slots;
+	const struct vnet_lu_sriov_vf_vq_entry *vqs;
+	const uint8_t *cursor;
+	struct pci_device_config *pf;
+	doca_error_t result;
+	uint32_t i;
+	uint32_t j;
+
+	if (sriov_shm == NULL) {
+		DOCA_LOG_INFO("SR-IOV LU replay: no sidecar state, skipping VF replay");
+		return DOCA_SUCCESS;
+	}
+
+	cursor = vnet_lu_sriov_get_tail_base();
+	if (cursor == NULL)
+		return DOCA_ERROR_BAD_STATE;
+
+	for (i = 0; i < sriov_shm->hdr.num_pf_entries; i++) {
+		entry = &sriov_shm->pf_entries[i];
+		vnet_lu_sriov_get_entry_segments(entry, &cursor, &slots, &vqs);
+		if (entry->dev_idx >= resources->tlp_ctx->num_ep)
+			return DOCA_ERROR_INVALID_VALUE;
+
+		pf = &resources->tlp_ctx->devs_config[FIRST_PF_IDX(resources->tlp_ctx) + entry->dev_idx];
+		if (pf->sriov == NULL || pf->sriov->vf_slots == NULL)
+			return DOCA_ERROR_BAD_STATE;
+
+		for (j = 0; j < entry->num_active_vf; j++) {
+			result = vnet_lu_sriov_replay_vf(resources, pf, entry, &slots[j], vqs);
+			if (result != DOCA_SUCCESS)
+				return result;
+		}
+	}
+
+	return DOCA_SUCCESS;
+}
+
 doca_error_t vnet_pci_dev_lu_replay(struct vnet_pci_dev_resources *resources,
 				    const struct vnet_lu_device_state *dev_states,
 				    uint32_t num_devices)
 {
 	doca_error_t result;
+	bool hotplug_mode = resources->tlp_ctx->hotplug_mode;
 
 	DOCA_LOG_INFO("LU replay: restoring %u devices from SHM state", num_devices);
 
 	for (uint32_t i = 0; i < num_devices; i++) {
+		if (hotplug_mode && !vnet_lu_hotplug_is_present_slot(i))
+			continue;
+
 		result = vnet_lu_replay_one_device(&resources->tlp_ctx->vnet_controller[i], &dev_states[i], i);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("LU replay: device %u failed: %s (%u/%u restored)",
@@ -1585,6 +3116,9 @@ doca_error_t vnet_pci_dev_lu_replay(struct vnet_pci_dev_resources *resources,
 	for (uint32_t i = 0; i < num_devices; i++) {
 		struct vnet_pci_dev_controller *ctrl = &resources->tlp_ctx->vnet_controller[i];
 		uint16_t sf_vhca_id = 0;
+
+		if (hotplug_mode && !vnet_lu_hotplug_is_present_slot(i))
+			continue;
 
 		if (ctrl->offload_engine && vnet_lu_get_sf_vhca_id(ctrl->offload_engine, &sf_vhca_id) == DOCA_SUCCESS)
 			DOCA_LOG_DBG("LU replay: device %u SF vhca_id=0x%x (post-restore)", i, sf_vhca_id);
@@ -1608,7 +3142,6 @@ doca_error_t vnet_lu_apply_shm_replay(struct vnet_pci_dev_resources *resources, 
 		DOCA_LOG_ERR("LU: SHM num_devices (%u) exceeds allocated EPs (%u)",
 			     shm->num_devices,
 			     resources->tlp_ctx->num_ep);
-		vnet_lu_release_shm();
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -1616,8 +3149,10 @@ doca_error_t vnet_lu_apply_shm_replay(struct vnet_pci_dev_resources *resources, 
 	resources->tlp_ctx->num_ep = shm->num_devices;
 
 	result = vnet_pci_dev_lu_replay(resources, shm->devices, shm->num_devices);
-	vnet_lu_release_shm();
-	return result;
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	return vnet_lu_sriov_replay(resources);
 }
 
 struct lu_enable_arg {
@@ -1655,19 +3190,68 @@ static void *lu_enable_thread_fn(void *arg)
 	return NULL;
 }
 
+doca_error_t vnet_lu_sriov_enable_imported_vfs(struct vnet_pci_dev_resources *resources)
+{
+	const struct vnet_lu_sriov_shm *sriov_shm = vnet_lu_sriov_get_shm();
+	const struct vnet_lu_sriov_vf_slot_state *slots;
+	const struct vnet_lu_sriov_pf_entry *entry;
+	const uint8_t *cursor;
+	struct pci_device_config *pf;
+	struct vnet_vf_slot *slot;
+	doca_error_t result;
+	uint32_t idx, i, j;
+
+	if (sriov_shm == NULL) {
+		DOCA_LOG_INFO("SR-IOV LU: no imported VF state to enable");
+		return DOCA_SUCCESS;
+	}
+
+	cursor = vnet_lu_sriov_get_tail_base();
+	if (cursor == NULL)
+		return DOCA_ERROR_BAD_STATE;
+
+	for (i = 0; i < sriov_shm->hdr.num_pf_entries; i++) {
+		entry = &sriov_shm->pf_entries[i];
+		vnet_lu_sriov_get_entry_segments(entry, &cursor, &slots, NULL);
+		if (entry->dev_idx >= resources->tlp_ctx->num_ep)
+			return DOCA_ERROR_INVALID_VALUE;
+
+		pf = &resources->tlp_ctx->devs_config[FIRST_PF_IDX(resources->tlp_ctx) + entry->dev_idx];
+		if (pf->sriov == NULL || pf->sriov->vf_slots == NULL)
+			return DOCA_ERROR_BAD_STATE;
+
+		for (j = 0; j < entry->num_active_vf; j++) {
+			idx = slots[j].vf_index - entry->sriov.first_vf_idx;
+			slot = &pf->sriov->vf_slots[idx];
+			if (slots[j].blob_len == 0)
+				continue;
+
+			result = vnet_pci_dev_vf_enable_engine(slot);
+			if (result != DOCA_SUCCESS)
+				return result;
+		}
+	}
+
+	return DOCA_SUCCESS;
+}
+
 doca_error_t vnet_lu_phase2_enable_engines(struct vnet_pci_dev_resources *resources)
 {
 	doca_error_t result = DOCA_SUCCESS;
 	uint32_t num_ep = resources->tlp_ctx->num_ep;
+	uint32_t num_targets = resources->tlp_ctx->hotplug_mode ? vnet_lu_hotplug_get_num_present_devices() : num_ep;
 	pthread_t threads[MAX_NUM_EP];
 	struct lu_enable_arg args[MAX_NUM_EP];
 	uint32_t spawned = 0;
 
-	DOCA_LOG_INFO("LU phase2: enabling %u engines in parallel", num_ep);
+	DOCA_LOG_INFO("LU phase2: enabling %u engines in parallel", num_targets);
 
 	/* Read per-device DEV_GO, spawn concurrent enable thread for each. */
 	for (uint32_t i = 0; i < num_ep; i++) {
-		enum vnet_lu_msg msg;
+		enum vnet_lu_msg msg = VNET_LU_MSG_INVALID;
+
+		if (resources->tlp_ctx->hotplug_mode && !vnet_lu_hotplug_is_present_slot(i))
+			continue;
 
 		result = vnet_lu_wait_readable(vnet_lu_standby_conn_fd, VNET_LU_ACK_TIMEOUT_SEC);
 		if (result != DOCA_SUCCESS) {
@@ -1680,11 +3264,11 @@ doca_error_t vnet_lu_phase2_enable_engines(struct vnet_pci_dev_resources *resour
 			result = DOCA_ERROR_IO_FAILED;
 			goto join;
 		}
-		args[i].ctrl = &resources->tlp_ctx->vnet_controller[i];
-		args[i].idx = i;
-		args[i].result = DOCA_SUCCESS;
+		args[spawned].ctrl = &resources->tlp_ctx->vnet_controller[i];
+		args[spawned].idx = i;
+		args[spawned].result = DOCA_SUCCESS;
 
-		if (pthread_create(&threads[i], NULL, lu_enable_thread_fn, &args[i]) != 0) {
+		if (pthread_create(&threads[spawned], NULL, lu_enable_thread_fn, &args[spawned]) != 0) {
 			DOCA_LOG_ERR("LU phase2: failed to create enable thread for device %u", i);
 			result = DOCA_ERROR_OPERATING_SYSTEM;
 			goto join;
@@ -1708,19 +3292,25 @@ join:
 		DOCA_LOG_ERR("LU phase2: enable failed -- %u/%u threads spawned, "
 			     "devices 0..%u received DEV_GO. No fallback, partial state.",
 			     spawned,
-			     num_ep,
+			     num_targets,
 			     spawned > 0 ? spawned - 1 : 0);
 		for (uint32_t i = 0; i < spawned; i++) {
 			DOCA_LOG_WARN("LU phase2: device %u: %s",
-				      i,
+				      args[i].idx,
 				      args[i].result == DOCA_SUCCESS ? "enabled (OK)" : "FAILED");
 		}
-		for (uint32_t i = spawned; i < num_ep; i++)
+		for (uint32_t i = spawned; i < num_targets; i++)
 			DOCA_LOG_WARN("LU phase2: device %u: not started (no DEV_GO received)", i);
 		return result;
 	}
 
-	DOCA_LOG_INFO("LU phase2: all %u engines enabled -- traffic restored", num_ep);
+	if (vnet_lu_sriov_get_shm() != NULL) {
+		result = vnet_lu_sriov_enable_imported_vfs(resources);
+		if (result != DOCA_SUCCESS)
+			return result;
+	}
+
+	DOCA_LOG_INFO("LU phase2: all %u engines enabled -- traffic restored", num_targets);
 	return DOCA_SUCCESS;
 }
 
@@ -1734,7 +3324,7 @@ doca_error_t vnet_lu_channel_restore(struct vnet_pci_dev_resources *resources)
 	struct vnet_lu_channel_config ch_cfg;
 	union doca_data user_data = {0};
 	uint8_t success_flag = 0;
-	enum vnet_lu_msg msg;
+	enum vnet_lu_msg msg = VNET_LU_MSG_INVALID;
 	void *export_desc = NULL;
 	uint32_t export_desc_len = 0;
 	doca_error_t end_result;
@@ -1807,6 +3397,7 @@ doca_error_t vnet_lu_channel_restore(struct vnet_pci_dev_resources *resources)
 	result = vnet_lu_send_msg(vnet_lu_standby_conn_fd, VNET_LU_MSG_CH_BEGIN);
 	if (result != DOCA_SUCCESS)
 		goto cleanup_channel;
+	DOCA_LOG_INFO("Channel LU standby: CH_BEGIN sent, waiting for CH_BEGIN_ACK");
 
 	result = vnet_lu_wait_readable(vnet_lu_standby_conn_fd, VNET_LU_CH_TIMEOUT_SEC);
 	if (result != DOCA_SUCCESS) {
@@ -1880,27 +3471,44 @@ doca_error_t vnet_lu_channel_restore(struct vnet_pci_dev_resources *resources)
 		}
 	}
 
+	/* SR-IOV LU re-syncs PF shadows/routing from the final Channel LU image
+	 *after all restored state has landed. */
+	if (vnet_lu_sriov_get_shm() != NULL) {
+		vnet_lu_sriov_sync_pf_shadow_from_dw_regs(tlp_ctx);
+		vnet_lu_reset_pf_routing_cache(tlp_ctx);
+		vnet_pci_device_lu_restore_pf_routing(tlp_ctx);
+	}
+
 	result = doca_devemu_pci_tlp_channel_set_primary(tlp_ctx->tlp_channel, true);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Channel LU: set_primary(true) failed: %s", doca_error_get_descr(result));
 		goto send_ch_end_fail;
 	}
 
+	result = vnet_lu_send_msg(vnet_lu_standby_conn_fd, VNET_LU_MSG_CH_PRIMARY);
+	if (result != DOCA_SUCCESS) {
+		(void)doca_devemu_pci_tlp_channel_set_primary(tlp_ctx->tlp_channel, false);
+		goto cleanup_channel;
+	}
+	DOCA_LOG_INFO("Channel LU standby: CH_PRIMARY sent");
+
 	DOCA_LOG_INFO("Channel LU standby: became primary, sending CH_END (success)");
 
-	/* Send CH_END + success flag so active can destroy its channel */
+	/* After CH_PRIMARY is visible to active, standby must keep the primary role even if final ACKing fails. */
 	end_result = vnet_lu_send_msg(vnet_lu_standby_conn_fd, VNET_LU_MSG_CH_END);
 	if (end_result != DOCA_SUCCESS) {
-		(void)doca_devemu_pci_tlp_channel_set_primary(tlp_ctx->tlp_channel, false);
-		result = end_result;
-		goto cleanup_channel;
+		DOCA_LOG_WARN("Channel LU: failed to send CH_END after becoming primary: %s",
+			      doca_error_get_descr(end_result));
+		result = DOCA_SUCCESS;
+		goto cleanup;
 	}
 	success_flag = 1;
 	end_result = vnet_lu_send_all(vnet_lu_standby_conn_fd, &success_flag, sizeof(success_flag));
 	if (end_result != DOCA_SUCCESS) {
-		(void)doca_devemu_pci_tlp_channel_set_primary(tlp_ctx->tlp_channel, false);
-		result = end_result;
-		goto cleanup_channel;
+		DOCA_LOG_WARN("Channel LU: failed to send handover status after becoming primary: %s",
+			      doca_error_get_descr(end_result));
+		result = DOCA_SUCCESS;
+		goto cleanup;
 	}
 
 	/* Wait for CH_END_ACK -- non-fatal if missing (we are already primary) */
@@ -1934,9 +3542,10 @@ nack_cleanup:
 
 cleanup_channel:
 	/* Tear down the standby-side channel so the process does not carry
-	 * stale channel state into chainable-active mode. */
+	 * stale channel state into chainable-active mode. ACG-safe sequence:
+	 * stop -> acg_queue_destroy -> drain (see tlp_channel_stop_and_drain). */
 	if (tlp_ctx->tlp_channel) {
-		(void)doca_ctx_stop(vnet_pci_dev_tlp_channel_ctx(tlp_ctx));
+		tlp_channel_stop_and_drain(tlp_ctx, "Channel LU standby");
 		doca_devemu_pci_tlp_channel_destroy(tlp_ctx->tlp_channel);
 		tlp_ctx->tlp_channel = NULL;
 	}

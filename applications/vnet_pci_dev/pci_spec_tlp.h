@@ -445,6 +445,11 @@ static const struct tlp_cap_conf tlp_pci_cap_confs[TLP_PCI_CAPS_NUM] = {
 	{TLP_PCI_CAP_ID_PM, TLP_PCI_CAP_OFFSET_PM, TLP_CAP_PM_LEN_DW * 4},
 };
 
+/* Forward decl for SR-IOV per-PF runtime state. Full definition lives in
+ * vnet_pci_device.h to keep pci_spec_tlp.h independent of the vNET
+ * application-layer types. */
+struct vnet_sriov_pf_state;
+
 struct pci_device_config {
 	union {
 		struct pci_cfg_type0_header type0;
@@ -472,11 +477,12 @@ struct pci_device_config {
 	atomic_bool pending_unplug;	   /* Pending unplug - wait for host reset before destroy */
 	atomic_bool pending_destroy;	   /* Destroy work is queued (prevents duplicate submissions) */
 	struct timespec unplug_start_time; /* Timestamp when unplug was initiated (for timeout) */
-	/* MSI retry state (used on DSP bridges when ACG credit is temporarily exhausted):
-	 * set by trigger_hotplug_event() / trigger_command_completed() when MSI send returns
-	 * DOCA_ERROR_AGAIN, drained by run_progress_loop() once credits are replenished. */
-	atomic_bool msi_retry_pending;		 /* Slot-event MSI was dropped, retry scheduled */
-	atomic_uint_fast64_t msi_retry_since_ns; /* Retry window start time in monotonic ns, 0 if unset */
+	/* Pending hotplug slot-event MSI. Set by trigger_hotplug_event() on the
+	 * worker thread (PE2); the MSI is issued by drain_pending_slot_msi() on the TLP
+	 * thread (PE1) - see there for the thread-safety contract. Also retried on
+	 * PE1 while ACG credit is exhausted. */
+	atomic_bool msi_retry_pending;		 /* Slot-event MSI awaiting send on PE1 */
+	atomic_uint_fast64_t msi_retry_since_ns; /* Publish time (monotonic ns) for the abandon window; 0 if unset */
 	pthread_rwlock_t endpoint_lock;		 /* RW-lock protecting tlp_dev/rep during hotplug removal */
 	struct doca_dev_rep *rep;		 /* Representor (for both hotplug and static) */
 	bool lu_rep_opened;			 /* true if rep was opened (LU) vs created (normal) */
@@ -495,6 +501,12 @@ struct pci_device_config {
 	uint16_t cmpl_length;
 	uint8_t cmpl_status;
 	uint32_t cmpl_data;
+
+	/* SR-IOV per-PF state — NULL when SR-IOV is not enabled for this EP
+	 * (--total-vfs 0, the default). Allocated and populated by the
+	 * SR-IOV cap layer; see struct vnet_sriov_pf_state in
+	 * vnet_pci_device.h for the contents. */
+	struct vnet_sriov_pf_state *sriov;
 };
 
 /* Context structure for managing TLP channel and devices */
@@ -521,22 +533,55 @@ struct tlp_context {
 	uint16_t acg_queue_count;			    /* Number of ACG credits in queue */
 	uint16_t acg_queue_size;			    /* ACG queue capacity (from device cap) */
 	bool hotplug_mode;				    /* Hotplug mode: true for hotplug, false for static */
+	atomic_bool lu_standby_takeover_complete;	    /* Standby completed LU restore and now owns opened reps */
 	struct vnet_pci_device *virtio_dev;
 	struct vnet_pci_dev_controller *vnet_controller; /* VNet offload controller */
 	uint8_t mac_bytes_base[ETH_ALEN];
 	uint16_t mtu;
 	uint16_t max_queue_pairs;
 	uint16_t queue_size; /* VirtQueue size (entries per queue) */
+	uint16_t num_admin_queues;
+	uint64_t opt_features; /* Optional Virtio feature bits (filtered against device caps) */
+
+	/* SR-IOV mirror — populated in vnet_pci_dev_run() before
+	 * vnet_pci_dev_start(). vf_num_msix/db are derived from the queue count.
+	 * All zero/false when SR-IOV is disabled (the default). */
+	bool sriov_enabled;
+	uint16_t sriov_total_vfs;
+	uint16_t sriov_num_vf_msix;
+	uint16_t sriov_num_vf_db;
+
+	/* Global SR-IOV dynamic-VF index pool. Each PF reserves a contiguous
+	 * range via vnet_sriov_pool_alloc_range() before create_rep_ex(); the
+	 * cursor rewinds on release. pool_size 0 = no dynamic pool (alloc fails
+	 * and PFs fall back to the non-rep_ex create path). */
+	struct vnet_sriov_pool {
+		uint16_t pool_size; /* SDK dynamic-vf-pool-size cap; 0 = unavailable */
+		uint16_t next_idx;  /* Cursor: next free index in [0, pool_size) */
+		uint16_t allocated; /* Outstanding reserved indices; resets cursor to 0 when it drains */
+	} sriov_pool;
 };
 
 /* ACG queue functions */
 doca_error_t acg_queue_push(struct tlp_context *tlp_ctx, struct doca_devemu_pci_tlp_channel_req *acg_req);
 void acg_queue_stats_get(struct tlp_context *tlp_ctx, uint16_t *count, uint16_t *size);
 struct doca_devemu_pci_tlp_channel_req *acg_queue_pop(struct tlp_context *tlp_ctx);
+uint16_t acg_queue_flush(struct tlp_context *tlp_ctx);
+/* Atomically NULLs acg_queue, FLUSH-completes all captured credits, and frees
+ * the queue array. Must be called after doca_ctx_stop() and before
+ * doca_devemu_pci_tlp_channel_destroy(). See implementation for full contract.
+ */
+uint16_t acg_queue_destroy(struct tlp_context *tlp_ctx);
+
+/* ACG-safe TLP-channel teardown: doca_ctx_stop() -> acg_queue_destroy() ->
+ * drain doca_pe_progress() to IDLE. Caller still owns
+ * doca_devemu_pci_tlp_channel_destroy() afterward. log_prefix may be NULL.
+ */
+void tlp_channel_stop_and_drain(struct tlp_context *tlp_ctx, const char *log_prefix);
 
 /* Device index lookup */
 doca_error_t get_pf_index_for_device(struct tlp_context *tlp_ctx,
-				     struct pci_device_config *dev_cfg,
+				     const struct pci_device_config *dev_cfg,
 				     uint32_t *pf_index);
 
 #endif

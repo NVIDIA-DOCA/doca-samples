@@ -137,6 +137,7 @@ static doca_error_t read_hotplug_command(uint32_t max_dsp, uint32_t *dsp_idx, bo
 	char line[128];
 	char command[32];
 	uint32_t idx;
+	char *p;
 
 	/* Read one line from stdin (non-blocking since stdin_has_input() was checked) */
 	if (fgets(line, sizeof(line), stdin) == NULL) {
@@ -144,6 +145,13 @@ static doca_error_t read_hotplug_command(uint32_t max_dsp, uint32_t *dsp_idx, bo
 		clearerr(stdin);
 		return DOCA_ERROR_IO_FAILED;
 	}
+
+	/* Silently drop blank / whitespace-only input (e.g. bare Enter). */
+	p = line;
+	while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+		p++;
+	if (*p == '\0')
+		return DOCA_ERROR_EMPTY;
 
 	/* Parse the line */
 	if (sscanf(line, "%31s %u", command, &idx) != 2) {
@@ -3884,22 +3892,6 @@ static void devemu_pci_tlp_bridge_handler_cleanup(struct tlp_context *tlp_ctx)
 	if (tlp_ctx == NULL)
 		return;
 
-	/* Flush all pending ACG requests from queue */
-	if (tlp_ctx->acg_queue != NULL) {
-		struct doca_devemu_pci_tlp_channel_req *acg_req;
-		uint16_t count = 0;
-		while ((acg_req = acg_queue_pop(tlp_ctx)) != NULL) {
-			doca_devemu_pci_tlp_channel_req_complete_acg(
-				acg_req,
-				0,
-				DOCA_DEVEMU_PCI_TLP_CHANNEL_REQ_ACG_COMP_OPMODE_FLUSH);
-			count++;
-		}
-		DOCA_LOG_DBG("Flushed %u ACG credits", count);
-		free(tlp_ctx->acg_queue);
-		tlp_ctx->acg_queue = NULL;
-	}
-
 	/* Clean up all devices (both hotplug and static) */
 	if (tlp_ctx->devs_config != NULL) {
 		for (i = 0; i < tlp_ctx->num_ep; i++) {
@@ -3920,6 +3912,22 @@ static void devemu_pci_tlp_bridge_handler_cleanup(struct tlp_context *tlp_ctx)
 			DOCA_LOG_ERR("Failed to stop TLP channel context: %s", doca_error_get_descr(result));
 		else
 			tlp_ctx->channel_ctx = NULL;
+	}
+
+	/* Flush all pending ACG requests from queue */
+	if (tlp_ctx->acg_queue != NULL) {
+		struct doca_devemu_pci_tlp_channel_req *acg_req;
+		uint16_t count = 0;
+		while ((acg_req = acg_queue_pop(tlp_ctx)) != NULL) {
+			doca_devemu_pci_tlp_channel_req_complete_acg(
+				acg_req,
+				0,
+				DOCA_DEVEMU_PCI_TLP_CHANNEL_REQ_ACG_COMP_OPMODE_FLUSH);
+			count++;
+		}
+		DOCA_LOG_DBG("Flushed %u ACG credits", count);
+		free(tlp_ctx->acg_queue);
+		tlp_ctx->acg_queue = NULL;
 	}
 
 	/* Drain the TLP channel if stop is in progress */

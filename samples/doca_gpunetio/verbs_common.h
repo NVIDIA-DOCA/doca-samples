@@ -112,6 +112,7 @@ struct doca_gpu_verbs_qp_init_attr_hl {
 	enum doca_gpu_dev_verbs_nic_handler nic_handler;
 	uint8_t recv_inline;
 	uint8_t cq_collapsed;
+	struct doca_verbs_comp_channel *comp_channel;
 };
 
 struct doca_gpu_verbs_qp_hl {
@@ -153,6 +154,7 @@ struct verbs_config {
 	char gpu_pcie_addr[MAX_PCI_ADDRESS_LEN];	    /* PF DOCA device name */
 	bool is_server;					    /* Sample is acting as client or server */
 	uint32_t gid_index;				    /* GID index */
+	uint32_t port_num;				    /* Port num */
 	char server_ip_addr[MAX_IP_ADDRESS_LEN];	    /* DOCA device name */
 	uint32_t num_iters;				    /* total number orations per cuda kernel */
 	uint32_t cuda_threads;				    /* cuda threads per cuda block */
@@ -209,6 +211,9 @@ struct verbs_resources {
 
 	uint8_t *local_poll_buf[NUM_MSG_SIZE]; /* The local data buffer */
 	uint8_t *local_post_buf[NUM_MSG_SIZE]; /* The local data buffer */
+
+	bool enable_comp_channel; /* Enable creation of CQ comp channel for error checking */
+	struct doca_verbs_comp_channel *comp_channel;
 };
 
 struct cpu_proxy_args {
@@ -248,7 +253,7 @@ doca_error_t verbs_client(struct verbs_config *cfg);
  *
  * @oob_sock_fd [out]: Socket FD
  * @oob_client_sock [out]: Client socket FD
- * @return: positive integer on success and -1 otherwise
+ * @return: 0 on success and -1 otherwise
  */
 int oob_verbs_connection_server_setup(int *oob_sock_fd, int *oob_client_sock);
 
@@ -265,7 +270,7 @@ void oob_verbs_connection_server_close(int oob_sock_fd, int oob_client_sock);
  *
  * @server_ip [in]: Server IP address to connect
  * @oob_sock_fd [out]: Socket FD
- * @return: positive integer on success and -1 otherwise
+ * @return: 0 on success and -1 otherwise
  */
 int oob_verbs_connection_client_setup(const char *server_ip, int *oob_sock_fd);
 
@@ -304,8 +309,8 @@ doca_error_t connect_verbs_qp(struct verbs_resources *resources);
 /*
  * CPU proxy progresses the QP
  *
- * @args [in]: thread args
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ * @args_ [in]: thread args (struct cpu_proxy_args)
+ * @return: NULL, pthread start routine signature
  */
 void *progress_cpu_proxy(void *args_);
 
@@ -321,8 +326,9 @@ size_t get_page_size(void);
  * This function encapsulate all required steps using doca verbs and doca gpunetio to
  * create a GDAKI QP.
  *
- * @param [in] qp_init_attr
+ * @param [in/out] qp_init_attr
  * High-level QP init attributes.
+ * Note: sq_nwqe and rq_nwqe are rounded up in place to the next power of two.
  * @param [out] qp
  * GPUNetIO device handler.
  *
@@ -353,8 +359,10 @@ doca_error_t doca_gpu_verbs_destroy_qp_hl(struct doca_gpu_verbs_qp_hl *qp);
  * create two GDAKI QPs, main one and the one used for core direct operations.
  * The two QPs share the same UAR.
  *
- * @param [in] qp_init_attr
+ * @param [in/out] qp_init_attr
  * High-level QP init attributes.
+ * Note: sq_nwqe and rq_nwqe are rounded up in place to the next power of two
+ * (applied once per QP, so they may be rounded twice overall).
  * @param [out] qpg
  * GPUNetIO QP Group device handler.
  *
@@ -379,7 +387,7 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
  */
 doca_error_t doca_gpu_verbs_destroy_qp_group_hl(struct doca_gpu_verbs_qp_group_hl *qpg);
 
-#if __cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -389,7 +397,7 @@ extern "C" {
  * @stream [in]: CUDA Stream to launch the kernel
  * @qp [in]: Verbs GPU object
  * @num_iters [in]: Total number of iterations
- * @cuda_blocks [in]: Number of CUDA blocks to launch the kernel
+ * @cuda_blocks [in]: Number of CUDA blocks to launch the kernel. Must be 1, DOCA_ERROR_BAD_STATE otherwise
  * @cuda_threads [in]: Number of CUDA threads to launch the kernel
  * @data_size [in]: Data buffer size (number of bytes)
  * @src_buf [in]: Source GPU data buffer address
@@ -415,8 +423,8 @@ doca_error_t gpunetio_verbs_write_bw(cudaStream_t stream,
  * @stream [in]: CUDA Stream to launch the kernel
  * @qp [in]: Verbs GPU object
  * @num_iters [in]: Total number of iterations
- * @cuda_blocks [in]: Number of CUDA blocks to launch the kernel
- * @cuda_threads [in]: Number of CUDA threads to launch the kernel
+ * @cuda_blocks [in]: Number of CUDA blocks to launch the kernel. Must be 1, DOCA_ERROR_BAD_STATE otherwise
+ * @cuda_threads [in]: Number of CUDA threads to launch the kernel. Must be 1, DOCA_ERROR_BAD_STATE otherwise
  * @data_size [in]: Data buffer size (number of bytes)
  * @local_poll_buf [in]: Flag address to poll waiting for remote peer notification
  * @local_poll_mkey [in]: Flag mkey to poll waiting for remote peer notification
@@ -456,14 +464,16 @@ doca_error_t gpunetio_verbs_write_lat(cudaStream_t stream,
  * @src_buf [in]: Source GPU data buffer address
  * @src_buf_mkey [in]: Source GPU data buffer memory key
  * @src_flag [in]: Source GPU flag buffer address. Used by client to poll waiting for server notification.
- * @src_flag_mkey [in]: Source GPU data buffer memory key
- * @dst_flag [in]: Destination GPU data buffer address. Used by server to notify client.
- * @dst_flag_mkey [in]: Destination GPU data buffer memory key
+ * @src_flag_mkey [in]: Source GPU flag buffer memory key
+ * @dst_flag [in]: Destination GPU flag buffer address. Used by server to notify client.
+ * @dst_flag_mkey [in]: Destination GPU flag buffer memory key
  * @dump_flag [in]: Flag in GPU memory to use with Dump WQE, if needed
  * @dump_flag_mkey [in]: Dump flag memory key
- * @scope [in]: Each put is called per CUDA thread or per CUDA warp
+ * @scope [in]: Each send/recv is called per CUDA thread or per CUDA warp; any other scope returns
+ * DOCA_ERROR_INVALID_VALUE
  * @is_client [in]: This kernel should act like the client (true) or server (false)
- * @recv_inline [in]: Enable recv inline for server
+ * @recv_inline [in]: If non-zero, enable recv inline for server; the value is also the expected inline data byte
+ * validated against the CQE
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t gpunetio_verbs_two_sided_bw(cudaStream_t stream,
@@ -494,13 +504,13 @@ doca_error_t gpunetio_verbs_two_sided_bw(cudaStream_t stream,
  * @cuda_blocks [in]: Number of CUDA blocks to launch the kernel
  * @cuda_threads [in]: Number of CUDA threads to launch the kernel
  * @data_size [in]: Data buffer size (number of bytes)
- * @src_buf [in]: Source GPU data buffer address
- * @src_buf_mkey [in]: Source GPU data buffer memory key
- * @dst_buf [in]: Destination GPU data buffer address
- * @dst_buf_mkey [in]: Destination GPU data buffer memory key
+ * @src_buf [in]: Local GPU data buffer address; the get reads the remote data into this buffer
+ * @src_buf_mkey [in]: Local GPU data buffer memory key
+ * @dst_buf [in]: Remote data buffer address; the get reads from this buffer
+ * @dst_buf_mkey [in]: Remote data buffer memory key
  * @dump_flag [in]: Flag in GPU memory to use with Dump WQE, if needed
  * @dump_flag_mkey [in]: Dump flag memory key
- * @scope [in]: Each put is called per CUDA thread or per CUDA warp
+ * @scope [in]: Each get is called per CUDA thread or per CUDA warp; any other scope returns DOCA_ERROR_INVALID_VALUE
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t gpunetio_verbs_get_bw(cudaStream_t stream,
@@ -530,7 +540,7 @@ doca_error_t gpunetio_verbs_get_bw(cudaStream_t stream,
  * @src_buf_mkey [in]: Source GPU data buffer memory key
  * @dst_buf [in]: Destination GPU data buffer address
  * @dst_buf_mkey [in]: Destination GPU data buffer memory key
- * @scope [in]: Each put is called per CUDA thread or per CUDA warp
+ * @scope [in]: Each put is called per CUDA thread or per CUDA warp; any other scope returns DOCA_ERROR_INVALID_VALUE
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t gpunetio_verbs_put_bw(cudaStream_t stream,
@@ -562,7 +572,7 @@ doca_error_t gpunetio_verbs_put_bw(cudaStream_t stream,
  * @dst_buf_mkey [in]: Destination GPU data buffer memory key
  * @dst_flag [in]: Destination GPU atomic fetch and add flag address
  * @dst_flag_mkey [in]: Destination GPU atomic fetch and add flag memory key
- * @scope [in]: Each put is called per CUDA thread or per CUDA warp
+ * @scope [in]: Each put is called per CUDA thread or per CUDA warp; any other scope returns DOCA_ERROR_INVALID_VALUE
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t gpunetio_verbs_put_signal_bw(cudaStream_t stream,
@@ -625,7 +635,8 @@ doca_error_t gpunetio_verbs_put_signal_lat(cudaStream_t stream,
  * Launch a CUDA kernel with to measure One-Sided Put Counter Shared QP bandwidth
  *
  * @stream [in]: CUDA Stream to launch the kernel
- * @qp [in]: Verbs GPU object
+ * @qp_main [in]: Verbs GPU object of the main QP
+ * @qp_companion [in]: Verbs GPU object of the companion QP used for the counter operations
  * @num_iters [in]: Total number of iterations
  * @cuda_blocks [in]: Number of CUDA blocks to launch the kernel
  * @cuda_threads [in]: Number of CUDA threads to launch the kernel
@@ -638,7 +649,7 @@ doca_error_t gpunetio_verbs_put_signal_lat(cudaStream_t stream,
  * @dst_buf_mkey [in]: Destination GPU data buffer memory key
  * @dst_flag [in]: Destination GPU atomic fetch and add flag address
  * @dst_flag_mkey [in]: Destination GPU atomic fetch and add flag memory key
- * @scope [in]: Each put is called per CUDA thread or per CUDA warp
+ * @scope [in]: Each put is called per CUDA thread or per CUDA warp; any other scope returns DOCA_ERROR_INVALID_VALUE
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t gpunetio_verbs_put_counter_bw(cudaStream_t stream,
@@ -662,7 +673,8 @@ doca_error_t gpunetio_verbs_put_counter_bw(cudaStream_t stream,
  * Launch a CUDA kernel with to measure One-Sided Put Counter Shared QP latency
  *
  * @stream [in]: CUDA Stream to launch the kernel
- * @qp [in]: Verbs GPU object
+ * @qp_main [in]: Verbs GPU object of the main QP
+ * @qp_companion [in]: Verbs GPU object of the companion QP used for the counter operations
  * @start_iters [in]: Start iteration idx (after warmup)
  * @num_iters [in]: Total number of iterations
  * @cuda_threads [in]: Number of CUDA threads to launch the kernel. Always 1.
@@ -698,7 +710,7 @@ doca_error_t gpunetio_verbs_put_counter_lat(cudaStream_t stream,
 					    uint64_t *dst_flag,
 					    uint32_t dst_flag_mkey,
 					    bool is_client);
-#if __cplusplus
+#ifdef __cplusplus
 }
 #endif
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -184,7 +184,7 @@ doca_error_t send_netflow_record(void)
 	 * This section should happen periodically with updated the flows.
 	 */
 	if (ring_count == 0)
-		return 0;
+		return DOCA_SUCCESS;
 	/* We need to dequeue only the records that were enqueued with the allocated memory */
 	records_to_send = rte_ring_dequeue_bulk(netflow_pending_ring, (void **)records, ring_count, NULL);
 	while (records_sent < records_to_send) {
@@ -193,7 +193,7 @@ doca_error_t send_netflow_record(void)
 							      records_to_send - records_sent,
 							      &records_successfully_sent);
 		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to send Netflow, error=%d", result);
+			DOCA_LOG_ERR("Failed to send Netflow: %s", doca_error_get_name(result));
 			return result;
 		}
 		records_sent += records_successfully_sent;
@@ -233,6 +233,7 @@ void destroy_netflow_schema_and_source(void)
 	rte_ring_free(netflow_freelist_ring);
 
 	doca_telemetry_exporter_netflow_destroy();
+	doca_telemetry_exporter_netflow_template_destroy(netflow_template);
 }
 
 doca_error_t init_netflow_schema_and_source(uint8_t id, char *source_tag)
@@ -248,12 +249,12 @@ doca_error_t init_netflow_schema_and_source(uint8_t id, char *source_tag)
 
 	result = init_template_fields();
 	if (result != DOCA_SUCCESS)
-		return result;
+		goto destroy_template;
 
 	result = doca_telemetry_exporter_netflow_init(id);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Cannot init DOCA netflow");
-		return result;
+		goto destroy_template;
 	}
 
 	doca_telemetry_exporter_netflow_set_ipc_enabled();
@@ -266,8 +267,7 @@ doca_error_t init_netflow_schema_and_source(uint8_t id, char *source_tag)
 	result = get_hostname_ip(hostname);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Getting hostname failed");
-		doca_telemetry_exporter_netflow_destroy();
-		return result;
+		goto destroy_netflow;
 	}
 
 	doca_telemetry_exporter_netflow_source_set_id(hostname);
@@ -276,8 +276,7 @@ doca_error_t init_netflow_schema_and_source(uint8_t id, char *source_tag)
 	result = doca_telemetry_exporter_netflow_start();
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Cannot start DOCA netflow");
-		doca_telemetry_exporter_netflow_destroy();
-		return result;
+		goto destroy_netflow;
 	}
 	/* In the Netflow ring scenario, a producer-consumer solution is given where the dpi_worker threads produce
 	 * records and enqueues them to a rings struct. The records are consumed by the main thread that dequeues
@@ -287,16 +286,22 @@ doca_error_t init_netflow_schema_and_source(uint8_t id, char *source_tag)
 	netflow_freelist_ring =
 		rte_ring_create("placeholder_netflow_queue", NETFLOW_QUEUE_SIZE, SOCKET_ID_ANY, RING_F_SP_ENQ);
 	if (netflow_pending_ring == NULL || netflow_freelist_ring == NULL) {
-		doca_telemetry_exporter_netflow_destroy();
-		return DOCA_ERROR_NO_MEMORY;
+		result = DOCA_ERROR_NO_MEMORY;
+		goto destroy_netflow;
 	}
 	for (i = 0; i < NETFLOW_QUEUE_SIZE; i++)
 		data_to_send_ptr[i] = &data_to_send[i];
 	if (rte_ring_enqueue_bulk(netflow_freelist_ring, (void **)data_to_send_ptr, NETFLOW_QUEUE_SIZE - 1, NULL) !=
 	    NETFLOW_QUEUE_SIZE - 1) {
-		doca_telemetry_exporter_netflow_destroy();
-		return DOCA_ERROR_NO_MEMORY;
+		result = DOCA_ERROR_NO_MEMORY;
+		goto destroy_netflow;
 	}
 
 	return DOCA_SUCCESS;
+
+destroy_netflow:
+	doca_telemetry_exporter_netflow_destroy();
+destroy_template:
+	doca_telemetry_exporter_netflow_template_destroy(netflow_template);
+	return result;
 }

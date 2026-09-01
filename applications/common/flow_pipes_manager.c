@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -43,22 +43,19 @@ DOCA_LOG_REGISTER(FLOW_PIPES_MANAGER);
  * FNV-1a hash algorithm for pointer to id mapping
  *
  * @ptr [in]: Flow to send
- * @return: Pointer to the allocated ID
+ * @return: Generated ID
  */
-static uint64_t *generateID(void *ptr)
+static uint64_t generateID(void *ptr)
 {
 	uint64_t id = FNV_OFFSET;
-	const unsigned char *byte = (const unsigned char *)ptr;
-	uint64_t *id_ptr;
-	uint8_t bytes_num = sizeof(ptr);
-
-	id_ptr = (uint64_t *)rte_malloc(NULL, sizeof(uint64_t), 0);
+	uintptr_t ptr_value = (uintptr_t)ptr;
+	const unsigned char *byte = (const unsigned char *)&ptr_value;
+	uint8_t bytes_num = sizeof(ptr_value);
 
 	while (bytes_num--)
 		id = (uint64_t)((*byte++) ^ id) * FNV_PRIME;
 
-	*id_ptr = id;
-	return id_ptr;
+	return id;
 }
 
 /*
@@ -106,7 +103,7 @@ static void destroy_pipe_info(struct pipe_info *pipe_info)
 	rte_free(pipe_info);
 }
 
-doca_error_t create_pipes_manager(struct flow_pipes_manager **pipes_manager)
+doca_error_t pipes_manager_create(struct flow_pipes_manager **pipes_manager)
 {
 	struct rte_hash_parameters table_params = {.name = "Pipe id to Pipe info Entries",
 						   .entries = DEFAULT_ENTRIES_NUM,
@@ -157,29 +154,22 @@ doca_error_t create_pipes_manager(struct flow_pipes_manager **pipes_manager)
 	return DOCA_SUCCESS;
 }
 
-void destroy_pipes_manager(struct flow_pipes_manager *manager)
+void pipes_manager_destroy(struct flow_pipes_manager *manager)
 {
 	struct rte_hash *pipes_table;
-	struct doca_flow_pipe_entry *entry;
 	struct pipe_info *pipe_info;
-	uint64_t *pipe_id, *generated_entry_id;
-	uint32_t pipe_itr = 0, entry_itr;
+	uint64_t *pipe_id;
+	uint32_t pipe_itr = 0;
 	uint32_t *port_id;
 
+	/* Keys returned by rte_hash_iterate() point into the table's internal key store
+	 * and must not be freed by the caller.
+	 */
 	while (rte_hash_iterate(manager->pipe_id_to_pipe_info_table,
 				(const void **)&pipe_id,
 				(void **)&pipe_info,
-				&pipe_itr) >= 0) {
-		entry_itr = 0;
-		while (rte_hash_iterate(pipe_info->entries_table,
-					(const void **)&generated_entry_id,
-					(void **)&entry,
-					&entry_itr) >= 0)
-			rte_free(generated_entry_id);
-
-		rte_free(pipe_id);
+				&pipe_itr) >= 0)
 		destroy_pipe_info(pipe_info);
-	}
 
 	pipe_itr = 0;
 	while (rte_hash_iterate(manager->port_id_to_pipes_id_table,
@@ -206,19 +196,18 @@ doca_error_t pipes_manager_pipe_create(struct flow_pipes_manager *manager,
 						   .key_len = sizeof(uint64_t),
 						   .hash_func = rte_jhash,
 						   .hash_func_init_val = 0};
-	uint64_t *generated_pipe_id;
+	uint64_t generated_pipe_id;
 	/**
 	 * RTE Hash may access memory after our key if the key length isn't divisible by 4.
 	 * Use this temp variable to ensure we don't read out of bounds of the original variable.
 	 */
 	uint32_t temp_port_id = (uint32_t)port_id;
-	uint32_t *port_id_key;
 	int32_t result;
 	bool is_new_table = false;
 
 	generated_pipe_id = generateID(pipe);
-	if (rte_hash_lookup(manager->pipe_id_to_pipe_info_table, (const void *)generated_pipe_id) >= 0) {
-		DOCA_LOG_ERR("Could not add new pipe with id=%" PRIu64 ", id already exists", *generated_pipe_id);
+	if (rte_hash_lookup(manager->pipe_id_to_pipe_info_table, (const void *)&generated_pipe_id) >= 0) {
+		DOCA_LOG_ERR("Could not add new pipe with id=%" PRIu64 ", id already exists", generated_pipe_id);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -228,77 +217,67 @@ doca_error_t pipes_manager_pipe_create(struct flow_pipes_manager *manager,
 	if (result < 0) {
 		is_new_table = true;
 
-		/* allocate new port id key */
-		port_id_key = (uint32_t *)rte_malloc(NULL, sizeof(uint32_t), 0);
-		*port_id_key = temp_port_id;
-
 		pipes_table = rte_hash_create(&table_params);
 		if (pipes_table == NULL) {
 			DOCA_LOG_ERR("Could not create new pipes table for pipe with id=%" PRIu64 "",
-				     *generated_pipe_id);
-			rte_free(port_id_key);
-			rte_free(generated_pipe_id);
+				     generated_pipe_id);
 			return DOCA_ERROR_NO_MEMORY;
 		}
 
-		result = rte_hash_add_key(pipes_table, (const void *)generated_pipe_id);
+		result = rte_hash_add_key(pipes_table, (const void *)&generated_pipe_id);
 		if (result < 0) {
 			DOCA_LOG_ERR("Could not add new pipe with id=%" PRIu64 ", to relevant pipes table",
-				     *generated_pipe_id);
+				     generated_pipe_id);
 			rte_hash_free(pipes_table);
-			rte_free(port_id_key);
-			rte_free(generated_pipe_id);
 			return DOCA_ERROR_INVALID_VALUE;
 		}
 
 		result = rte_hash_add_key_data(manager->port_id_to_pipes_id_table,
-					       (const void *)port_id_key,
+					       (const void *)&temp_port_id,
 					       (void *)pipes_table);
 		if (result != 0) {
 			DOCA_LOG_ERR("Could not add new pipes table to port to pipes table");
-			rte_hash_del_key(pipes_table, (const void *)generated_pipe_id);
+			rte_hash_del_key(pipes_table, (const void *)&generated_pipe_id);
 			rte_hash_free(pipes_table);
-			rte_free(port_id_key);
 			return DOCA_ERROR_INVALID_VALUE;
 		}
 
 	} else {
-		result = rte_hash_add_key(pipes_table, (const void *)generated_pipe_id);
+		result = rte_hash_add_key(pipes_table, (const void *)&generated_pipe_id);
 		if (result < 0) {
 			DOCA_LOG_ERR("Could not add new pipe id=%" PRIu64 " to relevant pipes table",
-				     *generated_pipe_id);
-			rte_free(generated_pipe_id);
+				     generated_pipe_id);
 			return DOCA_ERROR_INVALID_VALUE;
 		}
 	}
 
 	pipe_info = create_pipe_info(pipe, pipes_table);
 	if (pipe_info == NULL) {
-		DOCA_LOG_ERR("Could not add new pipe id=%" PRIu64 " to relevant pipe_info", *generated_pipe_id);
-		rte_hash_del_key(pipes_table, (const void *)generated_pipe_id);
+		DOCA_LOG_ERR("Could not add new pipe id=%" PRIu64 " to relevant pipe_info", generated_pipe_id);
+		rte_hash_del_key(pipes_table, (const void *)&generated_pipe_id);
 		if (is_new_table) {
-			rte_hash_del_key(manager->port_id_to_pipes_id_table, (const void *)port_id_key);
+			rte_hash_del_key(manager->port_id_to_pipes_id_table, (const void *)&temp_port_id);
 			rte_hash_free(pipes_table);
 		}
 		return DOCA_ERROR_NO_MEMORY;
 	}
 
 	result = rte_hash_add_key_data(manager->pipe_id_to_pipe_info_table,
-				       (const void *)generated_pipe_id,
+				       (const void *)&generated_pipe_id,
 				       (void *)pipe_info);
 	if (result != 0) {
 		DOCA_LOG_ERR("Could not add new pipe_info with pipe id=%" PRIu64 " to relevant pipe info table",
-			     *generated_pipe_id);
-		rte_hash_del_key(pipes_table, (const void *)generated_pipe_id);
+			     generated_pipe_id);
+		rte_hash_del_key(pipes_table, (const void *)&generated_pipe_id);
 		destroy_pipe_info(pipe_info);
 		if (is_new_table) {
-			rte_hash_del_key(manager->port_id_to_pipes_id_table, (const void *)port_id_key);
+			rte_hash_del_key(manager->port_id_to_pipes_id_table, (const void *)&temp_port_id);
 			rte_hash_free(pipes_table);
 		}
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	*pipe_id = *generated_pipe_id;
+	*pipe_id = generated_pipe_id;
 
 	return DOCA_SUCCESS;
 }
@@ -308,7 +287,7 @@ doca_error_t pipes_manager_pipe_add_entry(struct flow_pipes_manager *manager,
 					  uint64_t pipe_id,
 					  uint64_t *entry_id)
 {
-	uint64_t *generated_entry_id, *pipe_id_ptr;
+	uint64_t generated_entry_id, *pipe_id_ptr;
 	struct pipe_info *pipe_info;
 	struct rte_hash *entries_table;
 	int result;
@@ -329,29 +308,27 @@ doca_error_t pipes_manager_pipe_add_entry(struct flow_pipes_manager *manager,
 	entries_table = pipe_info->entries_table;
 
 	if (rte_hash_lookup(entries_table, (const void *)&generated_entry_id) >= 0) {
-		DOCA_LOG_ERR("Could not add new entry with id=%" PRIu64 ", id already exists", *generated_entry_id);
+		DOCA_LOG_ERR("Could not add new entry with id=%" PRIu64 ", id already exists", generated_entry_id);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	result = rte_hash_add_key_data(entries_table, (const void *)generated_entry_id, (void *)entry);
+	result = rte_hash_add_key_data(entries_table, (const void *)&generated_entry_id, (void *)entry);
 	if (result != 0) {
 		DOCA_LOG_ERR("Could not add new entry with id=%" PRIu64 ", to relevant entries table",
-			     *generated_entry_id);
-		rte_free(generated_entry_id);
+			     generated_entry_id);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
 	result = rte_hash_add_key_data(manager->entry_id_to_pipe_id_table,
-				       (const void *)generated_entry_id,
+				       (const void *)&generated_entry_id,
 				       (void *)pipe_id_ptr);
 	if (result != 0) {
-		DOCA_LOG_ERR("Could not add new entry with id=%" PRIu64 ", to entry-to-pipe table",
-			     *generated_entry_id);
-		rte_hash_del_key(entries_table, (const void *)generated_entry_id);
+		DOCA_LOG_ERR("Could not add new entry with id=%" PRIu64 ", to entry-to-pipe table", generated_entry_id);
+		rte_hash_del_key(entries_table, (const void *)&generated_entry_id);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	*entry_id = *generated_entry_id;
+	*entry_id = generated_entry_id;
 
 	return DOCA_SUCCESS;
 }

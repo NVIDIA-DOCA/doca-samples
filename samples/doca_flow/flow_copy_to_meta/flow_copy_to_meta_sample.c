@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -56,7 +56,6 @@ static doca_error_t create_match_meta_pipe(struct doca_flow_port *port, int port
 {
 	struct doca_flow_match match;
 	struct doca_flow_match match_mask;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
 	struct doca_flow_fwd fwd_miss;
 	struct doca_flow_pipe_cfg *pipe_cfg;
@@ -64,15 +63,12 @@ static doca_error_t create_match_meta_pipe(struct doca_flow_port *port, int port
 
 	memset(&match_mask, 0, sizeof(match_mask));
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&fwd_miss, 0, sizeof(fwd_miss));
 
 	/* set match_mask on meta */
 	match_mask.meta.u32[0] = UINT32_MAX;
 	match_mask.meta.u32[1] = META_DMAC_47_32_FIELD;
-
-	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -90,11 +86,8 @@ static doca_error_t create_match_meta_pipe(struct doca_flow_port *port, int port
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	/* forwarding traffic to other port */
 	fwd.type = DOCA_FLOW_FWD_PORT;
@@ -119,12 +112,10 @@ static doca_error_t add_match_meta_pipe_entry(struct doca_flow_pipe *pipe,
 					      enum copy_to_meta copy_type)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions;
 	struct doca_flow_pipe_entry *entry;
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 
 	if (copy_type == COPY_MAC_TO_META) {
 		/* setting mac match on meta */
@@ -139,7 +130,7 @@ static doca_error_t add_match_meta_pipe_entry(struct doca_flow_pipe *pipe,
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, NULL, NULL, 0, status, &entry);
+	result = doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, NULL, NULL, 0, status, &entry);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -282,8 +273,6 @@ static doca_error_t create_copy_vsid_to_meta_pipe(struct doca_flow_port *port,
 						  struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions;
-	struct doca_flow_actions *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_fwd fwd;
 	struct doca_flow_fwd fwd_miss;
 	struct doca_flow_pipe_cfg *pipe_cfg;
@@ -293,7 +282,6 @@ static doca_error_t create_copy_vsid_to_meta_pipe(struct doca_flow_port *port,
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&fwd_miss, 0, sizeof(fwd_miss));
 	memset(&descs, 0, sizeof(descs));
@@ -306,7 +294,6 @@ static doca_error_t create_copy_vsid_to_meta_pipe(struct doca_flow_port *port,
 	desc_array[0].field_op.dst.bit_offset = META_U32_BIT_OFFSET(0);
 	desc_array[0].field_op.width = 24;
 
-	actions_arr[0] = &actions;
 	descs_arr[0] = &descs;
 	descs.nb_action_desc = NB_ACTION_DESC;
 	descs.desc_array = desc_array;
@@ -327,7 +314,7 @@ static doca_error_t create_copy_vsid_to_meta_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, descs_arr, NB_ACTIONS_ARR);
+	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, NULL, NULL, descs_arr, NB_ACTIONS_ARR);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -358,7 +345,6 @@ static doca_error_t add_copy_vsid_to_meta_pipe_entry(struct doca_flow_pipe *pipe
 static doca_error_t create_root_pipe(struct doca_flow_port *port, struct doca_flow_pipe **pipe)
 {
 	struct doca_flow_match match;
-	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
 	struct doca_flow_monitor monitor;
 	struct doca_flow_fwd fwd;
 	struct doca_flow_fwd fwd_miss;
@@ -366,7 +352,6 @@ static doca_error_t create_root_pipe(struct doca_flow_port *port, struct doca_fl
 	doca_error_t result;
 
 	memset(&match, 0, sizeof(match));
-	memset(&actions, 0, sizeof(actions));
 	memset(&monitor, 0, sizeof(monitor));
 	memset(&fwd, 0, sizeof(fwd));
 	memset(&fwd_miss, 0, sizeof(fwd_miss));
@@ -374,8 +359,6 @@ static doca_error_t create_root_pipe(struct doca_flow_port *port, struct doca_fl
 	/* Match on header types */
 	match.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
 	match.outer.ip4.next_proto = 0xFF;
-
-	actions_arr[0] = &actions;
 
 	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
 	if (result != DOCA_SUCCESS) {
@@ -393,16 +376,13 @@ static doca_error_t create_root_pipe(struct doca_flow_port *port, struct doca_fl
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, NULL, NB_ACTIONS_ARR);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
-		goto destroy_pipe_cfg;
-	}
 	result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg monitor: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
+
+	/* No pipe actions; no need to set actions in the pipe config. */
 
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = NULL;
@@ -561,7 +541,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 			return result;
 		}
 
-		result = doca_flow_entries_process(ports[port_id], 0, DEFAULT_TIMEOUT_US, num_of_entries);
+		result = doca_flow_pipe_queue_drain(ports[port_id], 0, NULL);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);

@@ -302,16 +302,23 @@ doca_error_t dpdk_queues_and_ports_init(struct application_dpdk_config *app_dpdk
 
 	/* Check for available logical cores */
 	ret = rte_lcore_count();
-	if (app_dpdk_config->port_config.nb_queues > 0 && ret < app_dpdk_config->port_config.nb_queues) {
-		DOCA_LOG_ERR("At least %u cores are needed for the application to run, available_cores=%d",
-			     app_dpdk_config->port_config.nb_queues,
-			     ret);
-		return DOCA_ERROR_DRIVER;
-	}
-	app_dpdk_config->port_config.nb_queues = ret;
+	if (app_dpdk_config->port_config.nb_queues > 0) {
+		if (ret < app_dpdk_config->port_config.nb_queues) {
+			DOCA_LOG_ERR("At least %u cores are needed for the application to run, available_cores=%d",
+				     app_dpdk_config->port_config.nb_queues,
+				     ret);
+			return DOCA_ERROR_DRIVER;
+		}
+	} else
+		app_dpdk_config->port_config.nb_queues = ret;
 
-	if (app_dpdk_config->reserve_main_thread)
+	if (app_dpdk_config->reserve_main_thread) {
+		if (app_dpdk_config->port_config.nb_queues <= 1) {
+			DOCA_LOG_ERR("No queues are available for the application to run");
+			return DOCA_ERROR_DRIVER;
+		}
 		app_dpdk_config->port_config.nb_queues -= 1;
+	}
 
 	if (app_dpdk_config->port_config.nb_ports > 0) {
 		result = dpdk_ports_init(app_dpdk_config);
@@ -623,6 +630,9 @@ void dpdk_mempool_shadow_destroy(struct dpdk_mempool_shadow *mempool_shadow)
 {
 	uint32_t mmap_idx;
 
+	if (mempool_shadow == NULL)
+		return;
+
 	if (mempool_shadow->mmap_arr != NULL) {
 		for (mmap_idx = 0; mmap_idx < mempool_shadow->nb_mmaps; mmap_idx++)
 			doca_mmap_destroy(mempool_shadow->mmap_arr[mmap_idx]);
@@ -678,8 +688,10 @@ void dpdk_fini_with_devs(uint16_t nb_devs)
 	dpdk_fini();
 	for (i = 0; i < nb_devs; i++) {
 		result = doca_dpdk_port_as_dev(i, &dev);
-		if (result != DOCA_SUCCESS)
+		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_WARN("Failed to get device for closing port %d: %s", i, doca_error_get_descr(result));
+			continue;
+		}
 
 		result = doca_dev_close(dev);
 		if (result != DOCA_SUCCESS)
@@ -765,7 +777,7 @@ doca_error_t detect_vf_ip_address(char *vf_if_name, uint8_t *vf_ip_local_address
 	}
 
 	for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
-		if (ifa->ifa_addr->sa_family != AF_INET6)
+		if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET6)
 			continue;
 
 		if (strcmp(ifa->ifa_name, vf_if_name) != 0)
