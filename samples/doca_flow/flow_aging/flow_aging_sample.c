@@ -312,7 +312,7 @@ doca_error_t flow_aging(int nb_queues)
 {
 	const int nb_ports = 2;
 	/* the counters will divide by all queues per port */
-	struct flow_resources resource = {0};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
@@ -327,7 +327,7 @@ doca_error_t flow_aging(int nb_queues)
 	resource.nr_counters = 80 + num_of_aging_entries * nb_ports;
 
 	result = init_doca_flow_cb(nb_queues,
-				   "vnf,hws",
+				   "vnf",
 				   &resource,
 				   nr_shared_resources,
 				   check_for_valid_entry_aging,
@@ -343,7 +343,7 @@ doca_error_t flow_aging(int nb_queues)
 	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -440,6 +440,6 @@ entries_cleanup:
 	result = stop_doca_flow_ports(nb_ports, ports);
 	if (result != DOCA_SUCCESS && doca_error == DOCA_SUCCESS)
 		doca_error = result;
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return doca_error;
 }

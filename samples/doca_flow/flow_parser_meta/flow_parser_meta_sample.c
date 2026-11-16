@@ -3236,7 +3236,7 @@ doca_error_t flow_parser_meta(int nb_queues, int stats_interval)
 	resource.nr_counters = MAX_ENTRIES * NUMBER_OF_PORTS;
 	resource.nr_rss = 2;
 
-	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "vnf", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -3304,7 +3304,7 @@ doca_error_t flow_parser_meta(int nb_queues, int stats_interval)
 	flow_wait_for_packets(wait_time, print_port_stats_wrapper, &ctx);
 
 	result = stop_doca_flow_ports(NUMBER_OF_PORTS, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	flow_database_destroy_all();
 	return result;
 
@@ -3315,7 +3315,7 @@ cleanup_ports : {
 	stop_doca_flow_ports(NUMBER_OF_PORTS, ports);
 }
 cleanup_flow : {
-	doca_flow_destroy();
+	destroy_doca_flow();
 }
 	return result;
 }

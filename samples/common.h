@@ -214,6 +214,36 @@ doca_error_t allocate_doca_buf_list(struct doca_buf_inventory *buf_inv,
 				    bool set_data_pos,
 				    struct doca_buf **dbuf);
 
+/**
+ * @brief Receive data from a socket.
+ *
+ * Wraps recv() and translates its result to a doca_error_t. The call loops
+ * until exactly len bytes have been received, retrying automatically on
+ * signal interruption (EINTR). On any failure part of the data may already
+ * have been read into buf and is consumed from the socket; bytes_received
+ * reports how much.
+ *
+ * On DOCA_ERROR_AGAIN (non-blocking socket or receive timeout) the transfer
+ * can be resumed once the socket is readable again. bytes_received reports only
+ * the bytes read by that call, so accumulate it into a separate running total:
+ *   size_t got = 0;
+ *   socket_recv(fd, (uint8_t *)buf + received, len - received, flags, &got);
+ *   received += got;
+ *
+ * @param [in] fd
+ * Connected socket file descriptor.
+ * @param [in] buf
+ * Buffer to receive the data into.
+ * @param [in] len
+ * Number of bytes to receive.
+ * @param [in] flags
+ * Flags passed through to recv() (e.g. MSG_DONTWAIT). Must not include MSG_PEEK.
+ * @param [out] bytes_received
+ * Optional (may be NULL). Set to the number of bytes actually read into buf,
+ * on success and failure alike.
+ * @return: DOCA_SUCCESS on success, i.e. all len bytes were received, and DOCA_ERROR otherwise
+ */
+doca_error_t socket_recv(int fd, void *buf, size_t len, int flags, size_t *bytes_received);
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

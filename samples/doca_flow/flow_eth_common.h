@@ -41,8 +41,8 @@ struct flow_eth_common_rx_cfg {
 	uint16_t nb_rxqs;	      /* Number of RX queues */
 	bool enable_metadata;	      /* Enable metadata */
 	union doca_data rx_user_data; /* User data to pass to the callback, default is set to queue index */
-	doca_eth_rxq_event_batch_managed_recv_handler_cb_t rx_success_cb; /* Success callback */
-	doca_eth_rxq_event_batch_managed_recv_handler_cb_t rx_error_cb;	  /* Error callback */
+	doca_eth_rxq_event_batch_managed_mempool_recv_handler_cb_t rx_success_cb; /* Success callback */
+	doca_eth_rxq_event_batch_managed_mempool_recv_handler_cb_t rx_error_cb;	  /* Error callback */
 };
 
 /*
@@ -58,8 +58,8 @@ struct flow_eth_common_rx_cfg {
 void flow_eth_common_set_dev_cfg(uint16_t nb_queues,
 				 bool enable_metadata,
 				 union doca_data rx_user_data,
-				 doca_eth_rxq_event_batch_managed_recv_handler_cb_t rx_success_cb,
-				 doca_eth_rxq_event_batch_managed_recv_handler_cb_t rx_error_cb,
+				 doca_eth_rxq_event_batch_managed_mempool_recv_handler_cb_t rx_success_cb,
+				 doca_eth_rxq_event_batch_managed_mempool_recv_handler_cb_t rx_error_cb,
 				 struct flow_eth_common_rx_cfg *cfg);
 
 /*

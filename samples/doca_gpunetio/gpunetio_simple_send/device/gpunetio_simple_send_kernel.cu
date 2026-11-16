@@ -36,12 +36,13 @@ __global__ void send_packets_shared_qp_enabled(struct doca_gpu_eth_txq *txq,
 					       const size_t pkt_size,
 					       uint32_t *exit_cond)
 {
+	__shared__ uint32_t exit_loop;
 	uint32_t num_completed, count_cqe;
 	doca_error_t status;
 	doca_gpu_dev_eth_ticket_t out_ticket;
 	enum doca_gpu_eth_send_flags flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NONE;
-	/* For simplicity, every thread always send the same buffer */
-	uint64_t addr = ((uint64_t)pkt_buff_addr) + (uint64_t)(pkt_size * threadIdx.x);
+	/* For simplicity, every thread always sends its own buffer */
+	uint64_t addr = ((uint64_t)pkt_buff_addr) + (uint64_t)(pkt_size * (blockIdx.x * blockDim.x + threadIdx.x));
 
 	/*
 	 * To maximize the throughput, the notification flag can be set at MAX_SQ_DESCR_NUM / 2.
@@ -64,7 +65,15 @@ __global__ void send_packets_shared_qp_enabled(struct doca_gpu_eth_txq *txq,
 			flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NOTIFY;
 	}
 
-	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
+	/*
+	 * Only thread 0 reads the exit condition, then shares it with the block: all the threads of the block must
+	 * leave the loop at the same iteration, as the send functions and the loop use block barriers.
+	 */
+	if (threadIdx.x == 0)
+		DOCA_GPUNETIO_VOLATILE(exit_loop) = DOCA_GPUNETIO_VOLATILE(*exit_cond);
+	__syncthreads();
+
+	while (DOCA_GPUNETIO_VOLATILE(exit_loop) == 0) {
 		doca_gpu_dev_eth_txq_send<DOCA_GPUNETIO_ETH_RESOURCE_SHARING_MODE_GPU,
 					  DOCA_GPUNETIO_ETH_SYNC_SCOPE_GPU,
 					  DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
@@ -80,8 +89,11 @@ __global__ void send_packets_shared_qp_enabled(struct doca_gpu_eth_txq *txq,
 				count_cqe,
 				DOCA_GPUNETIO_ETH_WAIT_FLAG_B,
 				&num_completed);
-			if (status != DOCA_SUCCESS)
+			if (status != DOCA_SUCCESS) {
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
+				DOCA_GPUNETIO_VOLATILE(exit_loop) = 1;
+			} else if (DOCA_GPUNETIO_VOLATILE(*exit_cond) != 0)
+				DOCA_GPUNETIO_VOLATILE(exit_loop) = 1;
 		}
 		__syncthreads();
 	}
@@ -93,11 +105,12 @@ __global__ void send_packets_shared_qp_disabled(struct doca_gpu_eth_txq *txq,
 						const size_t pkt_size,
 						uint32_t *exit_cond)
 {
+	__shared__ uint32_t exit_loop;
 	uint64_t wqe_idx = threadIdx.x, cqe_idx = 0;
 	doca_error_t status;
 	enum doca_gpu_eth_send_flags flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NONE;
 	struct doca_gpu_dev_eth_txq_wqe *wqe_ptr;
-	/* For simplicity, every thread always send the same buffer */
+	/* For simplicity, every thread always sends its own buffer */
 	uint64_t addr = ((uint64_t)pkt_buff_addr) + (uint64_t)(pkt_size * threadIdx.x);
 
 	/*
@@ -108,18 +121,24 @@ __global__ void send_packets_shared_qp_disabled(struct doca_gpu_eth_txq *txq,
 	if (threadIdx.x == (blockDim.x - 1))
 		flags = DOCA_GPUNETIO_ETH_SEND_FLAG_NOTIFY;
 
-	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
+	/*
+	 * Only the last thread, which also submits and polls, reads the exit condition, then shares it with the
+	 * block: all the threads of the block must leave the loop at the same iteration, as the loop uses block
+	 * barriers.
+	 */
+	if (threadIdx.x == (blockDim.x - 1))
+		DOCA_GPUNETIO_VOLATILE(exit_loop) = DOCA_GPUNETIO_VOLATILE(*exit_cond);
+	__syncthreads();
+
+	while (DOCA_GPUNETIO_VOLATILE(exit_loop) == 0) {
 		wqe_ptr = doca_gpu_dev_eth_txq_get_wqe_ptr(txq, wqe_idx);
 		doca_gpu_dev_eth_txq_wqe_prepare_send(txq, wqe_ptr, wqe_idx, addr, pkt_buff_mkey, pkt_size, flags);
 		__syncthreads();
 
 		if (threadIdx.x == (blockDim.x - 1)) {
 			/*
-			 * Generic function to update the dbrec and ring db checking if UAR is on GPU or CPU.
-			 * If these checks are not needed, a lower level combination of API can be used to reduce latency/
-			 * As an example, to ring GPU DB:
-			 * doca_priv_gpu_dev_eth_txq_update_dbr(txq, wqe_idx + 1);
-			 * doca_gpu_dev_eth_txq_ring_db<sync_scope>(txq, wqe_idx + 1);
+			 * Update the doorbell record and ring the doorbell of all the WQEs of the block, either from
+			 * the GPU or through the CPU proxy, depending on the Txq configuration.
 			 */
 			doca_gpu_dev_eth_txq_submit(txq, wqe_idx + 1);
 			status = doca_gpu_dev_eth_txq_poll_completion_at<DOCA_GPUNETIO_ETH_RESOURCE_SHARING_MODE_GPU,
@@ -127,8 +146,11 @@ __global__ void send_packets_shared_qp_disabled(struct doca_gpu_eth_txq *txq,
 				txq,
 				cqe_idx,
 				DOCA_GPUNETIO_ETH_WAIT_FLAG_B);
-			if (status != DOCA_SUCCESS)
+			if (status != DOCA_SUCCESS) {
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
+				DOCA_GPUNETIO_VOLATILE(exit_loop) = 1;
+			} else if (DOCA_GPUNETIO_VOLATILE(*exit_cond) != 0)
+				DOCA_GPUNETIO_VOLATILE(exit_loop) = 1;
 			cqe_idx++;
 		}
 		__syncthreads();

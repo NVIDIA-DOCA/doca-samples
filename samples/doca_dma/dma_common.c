@@ -28,6 +28,7 @@
 
 #include <doca_argp.h>
 #include <doca_buf_inventory.h>
+#include <doca_config.h>
 #include <doca_dev.h>
 #include <doca_ctx.h>
 #include <doca_dma.h>

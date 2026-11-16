@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -30,6 +30,7 @@ app_srcs += [
 	common_dir_path + '/flow_pipes_manager.c',
 	samples_dir_path + '/common.c',
 	samples_dir_path + '/doca_flow/flow_common.c',
+	samples_dir_path + '/doca_flow/flow_tune_common.c',
 	samples_dir_path + '/doca_flow/flow_switch_common.c',
 ]
 

@@ -367,7 +367,7 @@ static doca_error_t add_resizable_pipe_entries(struct doca_flow_pipe *pipe,
 
 failure:
 	stop_doca_flow_ports(3, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }
 
@@ -426,7 +426,7 @@ doca_error_t flow_pipe_resize(uint16_t nb_queues, struct flow_switch_ctx *ctx, b
 {
 	const int nb_ports = 3;
 	uint32_t actions_mem_size[nb_ports];
-	struct flow_resources resource = {0};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_pipe *resizable_pipe;
 	doca_error_t result;
@@ -434,7 +434,7 @@ doca_error_t flow_pipe_resize(uint16_t nb_queues, struct flow_switch_ctx *ctx, b
 
 	/* DOCA flow mode: switch, hardware steering, control pipe dynamic size */
 	result = init_doca_flow_cb(nb_queues,
-				   "switch,hws,cpds",
+				   "switch,cpds",
 				   &resource,
 				   nr_shared_resources,
 				   check_for_valid_entry,
@@ -455,7 +455,7 @@ doca_error_t flow_pipe_resize(uint16_t nb_queues, struct flow_switch_ctx *ctx, b
 					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -464,7 +464,7 @@ doca_error_t flow_pipe_resize(uint16_t nb_queues, struct flow_switch_ctx *ctx, b
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create resizable pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -475,7 +475,7 @@ doca_error_t flow_pipe_resize(uint16_t nb_queues, struct flow_switch_ctx *ctx, b
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -485,6 +485,6 @@ doca_error_t flow_pipe_resize(uint16_t nb_queues, struct flow_switch_ctx *ctx, b
 	remove_resizable_pipe_entries();
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

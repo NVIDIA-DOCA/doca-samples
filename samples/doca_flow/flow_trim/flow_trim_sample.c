@@ -39,6 +39,7 @@
 
 #include <doca_bitfield.h>
 #include <doca_flow.h>
+#include "doca_flow_definitions.h"
 #include <doca_log.h>
 
 #include <flow_common.h>
@@ -61,23 +62,94 @@ DOCA_LOG_REGISTER(FLOW_TRIM);
 #define FLOW_TRIM_WORKER_SLEEP_US 10000
 #define FLOW_TRIM_GET_PORT_PEER_ID(port_id) ((port_id) ^ 1)
 #define FLOW_TRIM_SRC_MAC_PORT_BYTE 5
+/* Bit offset of metadata scratch word idx, used as the copy destination / compare field */
+#define META_U32_BIT_OFFSET(idx) (offsetof(struct doca_flow_meta, u32[(idx)]) << 3)
+/* pkt_length is 16-bit; copy it into scratch word 0 and compare it there against trim_size */
+#define FLOW_TRIM_PKT_LEN_WIDTH 16
 
 struct trim_port_ctx {
 	uint32_t trim_id;
 	struct doca_flow_pipe *post_trim_pipe;
-	struct doca_flow_pipe *ingress_pipe;
+	struct doca_flow_pipe *trim_pipe;
+	struct doca_flow_pipe *copy_pipe;
+	struct doca_flow_pipe *is_gt_pipe;
 	struct doca_flow_pipe_entry *post_trim_port_entry;
 	struct doca_flow_pipe_entry *post_trim_rss_entry;
 	struct doca_flow_pipe_entry *ingress_port_entry;
 	struct doca_flow_pipe_entry *ingress_rss_entry;
 };
 
+/*
+ * pkt_length is exposed through the DOCA Flow definitions API rather than as a public
+ * doca_flow_match field. Users need to register it against their own extended match
+ * struct; `base` must stay first so &trim_match is a valid `struct doca_flow_match *`.
+ */
+struct trim_match {
+	struct doca_flow_match base;
+	doca_be16_t pkt_length;
+};
+static_assert(offsetof(struct trim_match, base) == 0,
+	      "trim_match: 'base' must be first to stay compatible with doca_flow_match");
+
+/*
+ * Build a definitions object registering pkt_length at its offset in struct trim_match.
+ *
+ * @defs [out]: created definitions object (caller destroys it after DOCA Flow init).
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
+ */
+static doca_error_t create_trim_definitions(struct doca_flow_definitions **defs)
+{
+	struct doca_flow_definitions_cfg *defs_cfg = NULL;
+	doca_error_t result;
+
+	*defs = NULL;
+
+	result = doca_flow_definitions_cfg_create(&defs_cfg);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create definitions cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_definitions_create(defs_cfg, defs);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create definitions object: %s", doca_error_get_descr(result));
+		goto cleanup;
+	}
+
+	result = doca_flow_definitions_cfg_destroy(defs_cfg);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to destroy definitions cfg: %s", doca_error_get_descr(result));
+		goto cleanup;
+	}
+	defs_cfg = NULL;
+
+	result = doca_flow_definitions_add_field(*defs,
+						 "match.packet.parser_meta.pkt_length.value",
+						 offsetof(struct trim_match, pkt_length),
+						 sizeof(((struct trim_match *)0)->pkt_length));
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add pkt_length definition field: %s", doca_error_get_descr(result));
+		goto cleanup;
+	}
+
+	return DOCA_SUCCESS;
+
+cleanup:
+	if (*defs != NULL) {
+		doca_flow_definitions_destroy(*defs);
+		*defs = NULL;
+	}
+	if (defs_cfg != NULL)
+		doca_flow_definitions_cfg_destroy(defs_cfg);
+	return result;
+}
+
 static doca_error_t create_post_trim_pipe(struct doca_flow_port *port,
 					  struct doca_flow_pipe **pipe,
 					  bool is_switch_mode)
 {
-	struct doca_flow_match match;
-	struct doca_flow_match match_mask;
+	struct trim_match match;
+	struct trim_match match_mask;
 	struct doca_flow_monitor monitor;
 	struct doca_flow_fwd fwd;
 	struct doca_flow_pipe_cfg *pipe_cfg;
@@ -88,12 +160,14 @@ static doca_error_t create_post_trim_pipe(struct doca_flow_port *port,
 	memset(&monitor, 0, sizeof(monitor));
 	memset(&fwd, 0, sizeof(fwd));
 
-	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
-	match.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
-	match.outer.ip4.dst_ip = FLOW_TRIM_IPV4_FULL_MASK;
-	match_mask.outer.ip4.dst_ip = FLOW_TRIM_IPV4_FULL_MASK;
-	SET_MAC_ADDR(match.outer.eth.src_mac, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
-	match_mask.outer.eth.src_mac[FLOW_TRIM_SRC_MAC_PORT_BYTE] = UINT8_MAX;
+	match.base.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
+	match.base.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+	match.base.outer.ip4.dst_ip = FLOW_TRIM_IPV4_FULL_MASK;
+	match_mask.base.outer.ip4.dst_ip = FLOW_TRIM_IPV4_FULL_MASK;
+	SET_MAC_ADDR(match.base.outer.eth.src_mac, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+	match_mask.base.outer.eth.src_mac[FLOW_TRIM_SRC_MAC_PORT_BYTE] = UINT8_MAX;
+	match.pkt_length = UINT16_MAX;
+	match_mask.pkt_length = UINT16_MAX;
 
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
@@ -115,7 +189,7 @@ static doca_error_t create_post_trim_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set post-trim pipe domain: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, &match_mask);
+	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match.base, &match_mask.base);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set post-trim pipe match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -136,10 +210,11 @@ destroy_pipe_cfg:
 
 static doca_error_t add_post_trim_port_entry(struct doca_flow_pipe *pipe,
 					     uint16_t port_id,
+					     uint32_t trim_size,
 					     struct entries_status *status,
 					     struct doca_flow_pipe_entry **entry)
 {
-	struct doca_flow_match match;
+	struct trim_match match;
 	struct doca_flow_monitor monitor;
 	struct doca_flow_fwd fwd;
 
@@ -147,24 +222,26 @@ static doca_error_t add_post_trim_port_entry(struct doca_flow_pipe *pipe,
 	memset(&monitor, 0, sizeof(monitor));
 	memset(&fwd, 0, sizeof(fwd));
 
-	match.outer.ip4.dst_ip = FLOW_TRIM_FIRST_DST_IP;
-	match.outer.eth.src_mac[FLOW_TRIM_SRC_MAC_PORT_BYTE] = (uint8_t)port_id;
+	match.base.outer.ip4.dst_ip = FLOW_TRIM_FIRST_DST_IP;
+	match.base.outer.eth.src_mac[FLOW_TRIM_SRC_MAC_PORT_BYTE] = (uint8_t)port_id;
+	match.pkt_length = DOCA_HTOBE16((uint16_t)trim_size);
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
 	fwd.type = DOCA_FLOW_FWD_PORT;
 	fwd.port_id = FLOW_TRIM_GET_PORT_PEER_ID(port_id);
 
-	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, &monitor, &fwd, 0, status, entry);
+	return doca_flow_pipe_basic_add_entry(0, pipe, &match.base, 0, NULL, &monitor, &fwd, 0, status, entry);
 }
 
 static doca_error_t add_post_trim_rss_entry(struct doca_flow_pipe *pipe,
 					    uint16_t port_id,
 					    uint16_t *rss_queues,
 					    int nr_queues,
+					    uint32_t trim_size,
 					    struct entries_status *status,
 					    struct doca_flow_pipe_entry **entry)
 {
-	struct doca_flow_match match;
+	struct trim_match match;
 	struct doca_flow_monitor monitor;
 	struct doca_flow_fwd fwd;
 
@@ -172,8 +249,9 @@ static doca_error_t add_post_trim_rss_entry(struct doca_flow_pipe *pipe,
 	memset(&monitor, 0, sizeof(monitor));
 	memset(&fwd, 0, sizeof(fwd));
 
-	match.outer.ip4.dst_ip = FLOW_TRIM_SECOND_DST_IP;
-	match.outer.eth.src_mac[FLOW_TRIM_SRC_MAC_PORT_BYTE] = (uint8_t)port_id;
+	match.base.outer.ip4.dst_ip = FLOW_TRIM_SECOND_DST_IP;
+	match.base.outer.eth.src_mac[FLOW_TRIM_SRC_MAC_PORT_BYTE] = (uint8_t)port_id;
+	match.pkt_length = DOCA_HTOBE16((uint16_t)trim_size);
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
 	fwd.type = DOCA_FLOW_FWD_RSS;
@@ -182,7 +260,7 @@ static doca_error_t add_post_trim_rss_entry(struct doca_flow_pipe *pipe,
 	fwd.rss.queues_array = rss_queues;
 	fwd.rss.nr_queues = nr_queues;
 
-	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, NULL, &monitor, &fwd, 0, status, entry);
+	return doca_flow_pipe_basic_add_entry(0, pipe, &match.base, 0, NULL, &monitor, &fwd, 0, status, entry);
 }
 
 static doca_error_t create_shared_resource_trim(struct doca_flow_port *port,
@@ -213,12 +291,10 @@ static doca_error_t create_shared_resource_trim(struct doca_flow_port *port,
 	return DOCA_SUCCESS;
 }
 
-static doca_error_t create_ingress_trim_pipe(struct doca_flow_port *port,
-					     uint32_t trim_id,
-					     struct doca_flow_pipe **pipe)
+static doca_error_t create_trim_pipe(struct doca_flow_port *port, uint32_t trim_id, struct doca_flow_pipe **pipe)
 {
-	struct doca_flow_match match;
-	struct doca_flow_match match_mask;
+	struct trim_match match;
+	struct trim_match match_mask;
 	struct doca_flow_actions actions, actions_mask, *actions_arr[NB_ACTIONS_ARR], *actions_mask_arr[NB_ACTIONS_ARR];
 	struct doca_flow_monitor monitor;
 	struct doca_flow_fwd fwd;
@@ -232,12 +308,12 @@ static doca_error_t create_ingress_trim_pipe(struct doca_flow_port *port,
 	memset(&monitor, 0, sizeof(monitor));
 	memset(&fwd, 0, sizeof(fwd));
 
-	match.parser_meta.port_id = UINT16_MAX;
-	match_mask.parser_meta.port_id = UINT16_MAX;
-	match.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
-	match.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
-	match.outer.ip4.dst_ip = FLOW_TRIM_IPV4_FULL_MASK;
-	match_mask.outer.ip4.dst_ip = FLOW_TRIM_IPV4_FULL_MASK;
+	match.base.parser_meta.port_id = UINT16_MAX;
+	match_mask.base.parser_meta.port_id = UINT16_MAX;
+	match.base.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
+	match.base.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+	match.base.outer.ip4.dst_ip = FLOW_TRIM_IPV4_FULL_MASK;
+	match_mask.base.outer.ip4.dst_ip = FLOW_TRIM_IPV4_FULL_MASK;
 	/* The sample intentionally overwrites `src_mac[last_byte]` with ingress `port_id` to allow post-trim pipe
 	 * matching/routing, that packet captures will therefore show a modified src MAC. */
 	SET_MAC_ADDR(actions.outer.eth.src_mac, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
@@ -253,12 +329,12 @@ static doca_error_t create_ingress_trim_pipe(struct doca_flow_port *port,
 		return result;
 	}
 
-	result = set_flow_pipe_cfg(pipe_cfg, "TRIM_INGRESS_PIPE", DOCA_FLOW_PIPE_BASIC, true);
+	result = set_flow_pipe_cfg(pipe_cfg, "TRIM_INGRESS_PIPE", DOCA_FLOW_PIPE_BASIC, false);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set ingress pipe cfg: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match, &match_mask);
+	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match.base, &match_mask.base);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set ingress pipe match: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
@@ -283,13 +359,13 @@ destroy_pipe_cfg:
 	return result;
 }
 
-static doca_error_t add_ingress_trim_entry(struct doca_flow_pipe *pipe,
-					   uint16_t port_id,
-					   doca_be32_t dst_ip,
-					   struct entries_status *status,
-					   struct doca_flow_pipe_entry **entry)
+static doca_error_t add_trim_entry(struct doca_flow_pipe *pipe,
+				   uint16_t port_id,
+				   doca_be32_t dst_ip,
+				   struct entries_status *status,
+				   struct doca_flow_pipe_entry **entry)
 {
-	struct doca_flow_match match;
+	struct trim_match match;
 	struct doca_flow_actions actions;
 	struct doca_flow_monitor monitor;
 
@@ -297,12 +373,216 @@ static doca_error_t add_ingress_trim_entry(struct doca_flow_pipe *pipe,
 	memset(&actions, 0, sizeof(actions));
 	memset(&monitor, 0, sizeof(monitor));
 
-	match.parser_meta.port_id = port_id;
-	match.outer.ip4.dst_ip = dst_ip;
+	match.base.parser_meta.port_id = port_id;
+	match.base.outer.ip4.dst_ip = dst_ip;
 	actions.outer.eth.src_mac[FLOW_TRIM_SRC_MAC_PORT_BYTE] = (uint8_t)port_id;
 	monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 
-	return doca_flow_pipe_basic_add_entry(0, pipe, &match, 0, &actions, &monitor, NULL, 0, status, entry);
+	return doca_flow_pipe_basic_add_entry(0, pipe, &match.base, 0, &actions, &monitor, NULL, 0, status, entry);
+}
+
+/*
+ * Control pipe steering by packet length: pkt_length > trim_size goes to the trim pipe, while
+ * pkt_length <= trim_size is sent straight out the peer port, skipping the trim.
+ */
+static doca_error_t create_is_gt_pipe(struct doca_flow_port *port, struct doca_flow_pipe **pipe)
+{
+	struct doca_flow_pipe_cfg *pipe_cfg;
+	doca_error_t result;
+
+	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create is-gt pipe cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = set_flow_pipe_cfg(pipe_cfg, "TRIM_IS_GT_PIPE", DOCA_FLOW_PIPE_CONTROL, false);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set is-gt pipe cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	result = doca_flow_pipe_create(pipe_cfg, NULL, NULL, pipe);
+destroy_pipe_cfg:
+	doca_flow_pipe_cfg_destroy(pipe_cfg);
+	return result;
+}
+
+static doca_error_t add_is_gt_to_trim_pipe_entry(struct doca_flow_pipe *is_gt_pipe,
+						 struct doca_flow_pipe *trim_pipe,
+						 uint32_t trim_size,
+						 struct entries_status *status)
+{
+	struct trim_match match;
+	struct doca_flow_match_condition condition;
+	struct doca_flow_fwd fwd;
+	doca_error_t result;
+
+	memset(&match, 0, sizeof(match));
+	memset(&condition, 0, sizeof(condition));
+	memset(&fwd, 0, sizeof(fwd));
+
+	condition.operation = DOCA_FLOW_COMPARE_GT;
+	condition.field_op.a.field_string = "meta.data";
+	condition.field_op.a.bit_offset = META_U32_BIT_OFFSET(0);
+	condition.field_op.b.field_string = NULL;
+	condition.field_op.b.bit_offset = 0;
+	/*
+	 * The copy pipe stored the 16-bit pkt_length in the low half of meta.u32[0] (upper bits stay 0);
+	 * the HW compare only supports a 32-bit width (COMPARE_SUPPORTED_SIZE), so compare the full word.
+	 */
+	condition.field_op.width = 32;
+	match.base.meta.u32[0] = DOCA_HTOBE32(trim_size);
+
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = trim_pipe;
+	result = doca_flow_pipe_control_add_entry(0,
+						  is_gt_pipe,
+						  &match.base,
+						  NULL,
+						  &condition,
+						  NULL,
+						  NULL,
+						  NULL,
+						  NULL,
+						  0,
+						  &fwd,
+						  status,
+						  NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add is-gt trim entry: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+static doca_error_t add_is_gt_go_to_port_entry(struct doca_flow_pipe *is_gt_pipe,
+					       uint16_t port_id,
+					       struct entries_status *status)
+{
+	struct trim_match match;
+	struct trim_match match_mask;
+	struct doca_flow_fwd fwd;
+	doca_error_t result;
+
+	memset(&match, 0, sizeof(match));
+	memset(&match_mask, 0, sizeof(match_mask));
+	memset(&fwd, 0, sizeof(fwd));
+
+	match.base.parser_meta.port_id = port_id;
+	match_mask.base.parser_meta.port_id = UINT16_MAX;
+	fwd.type = DOCA_FLOW_FWD_PORT;
+	fwd.port_id = FLOW_TRIM_GET_PORT_PEER_ID(port_id);
+
+	result = doca_flow_pipe_control_add_entry(0,
+						  is_gt_pipe,
+						  &match.base,
+						  &match_mask.base,
+						  NULL,
+						  NULL,
+						  NULL,
+						  NULL,
+						  NULL,
+						  1,
+						  &fwd,
+						  status,
+						  NULL);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add is-gt skip entry: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Root pipe: the first dst IP has its read-only pkt_length copied into metadata and goes to the
+ * is-gt pipe; any other traffic (e.g. the second dst IP) misses here and is trimmed unconditionally.
+ */
+static doca_error_t create_copy_pkt_length_pipe(struct doca_flow_port *port,
+						struct doca_flow_pipe *is_gt_pipe,
+						struct doca_flow_pipe *trim_pipe,
+						struct doca_flow_pipe **pipe)
+{
+	struct trim_match match;
+	struct trim_match match_mask;
+	struct doca_flow_actions actions, *actions_arr[NB_ACTIONS_ARR];
+	struct doca_flow_action_descs descs, *descs_arr[NB_ACTIONS_ARR];
+	struct doca_flow_action_desc desc_array[1] = {0};
+	struct doca_flow_fwd fwd;
+	struct doca_flow_fwd fwd_miss;
+	struct doca_flow_pipe_cfg *pipe_cfg;
+	doca_error_t result;
+
+	memset(&match, 0, sizeof(match));
+	memset(&match_mask, 0, sizeof(match_mask));
+	memset(&actions, 0, sizeof(actions));
+	memset(&descs, 0, sizeof(descs));
+	memset(&fwd, 0, sizeof(fwd));
+	memset(&fwd_miss, 0, sizeof(fwd_miss));
+
+	match.base.parser_meta.outer_l3_type = DOCA_FLOW_L3_META_IPV4;
+	match.base.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+	match.base.outer.ip4.dst_ip = FLOW_TRIM_IPV4_FULL_MASK;
+	match_mask.base.outer.ip4.dst_ip = FLOW_TRIM_IPV4_FULL_MASK;
+
+	desc_array[0].type = DOCA_FLOW_ACTION_COPY;
+	desc_array[0].field_op.src.field_string = "parser_meta.pkt_length.value";
+	desc_array[0].field_op.src.bit_offset = 0;
+	desc_array[0].field_op.dst.field_string = "meta.data";
+	desc_array[0].field_op.dst.bit_offset = META_U32_BIT_OFFSET(0);
+	desc_array[0].field_op.width = FLOW_TRIM_PKT_LEN_WIDTH;
+	actions_arr[0] = &actions;
+	descs.nb_action_desc = 1;
+	descs.desc_array = desc_array;
+	descs_arr[0] = &descs;
+
+	result = doca_flow_pipe_cfg_create(&pipe_cfg, port);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create copy pkt_length pipe cfg: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = set_flow_pipe_cfg(pipe_cfg, "TRIM_COPY_PKT_LEN_PIPE", DOCA_FLOW_PIPE_BASIC, true);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set copy pkt_length pipe cfg: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_match(pipe_cfg, &match.base, &match_mask.base);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set copy pkt_length pipe match: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+	result = doca_flow_pipe_cfg_set_actions(pipe_cfg, actions_arr, NULL, descs_arr, NB_ACTIONS_ARR);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set copy pkt_length pipe actions: %s", doca_error_get_descr(result));
+		goto destroy_pipe_cfg;
+	}
+
+	fwd.type = DOCA_FLOW_FWD_PIPE;
+	fwd.next_pipe = is_gt_pipe;
+	fwd_miss.type = DOCA_FLOW_FWD_PIPE;
+	fwd_miss.next_pipe = trim_pipe;
+
+	result = doca_flow_pipe_create(pipe_cfg, &fwd, &fwd_miss, pipe);
+destroy_pipe_cfg:
+	doca_flow_pipe_cfg_destroy(pipe_cfg);
+	return result;
+}
+
+static doca_error_t add_copy_pkt_length_entry(struct doca_flow_pipe *pipe, struct entries_status *status)
+{
+	struct trim_match match;
+	struct doca_flow_actions actions;
+	struct doca_flow_pipe_entry *entry;
+
+	memset(&match, 0, sizeof(match));
+	memset(&actions, 0, sizeof(actions));
+
+	match.base.outer.ip4.dst_ip = FLOW_TRIM_FIRST_DST_IP;
+
+	return doca_flow_pipe_basic_add_entry(0, pipe, &match.base, 0, &actions, NULL, NULL, 0, status, &entry);
 }
 
 static const char *l4_type_to_str(uint8_t proto)
@@ -407,51 +687,61 @@ doca_error_t flow_trim(int nb_queues,
 	struct trim_port_ctx port_ctx[NB_PORTS] = {0};
 	struct entries_status status;
 	uint16_t rss_queues[1] = {RSS_QUEUE_ID};
-	const int entries_per_port_vnf = 2;
-	const int entries_per_port_switch = 4;
+	const int entries_per_port_vnf = 3;
+	const int entries_per_port_switch = 5;
 	int entries_per_port;
+	const int entries_per_pipeline_port = 2; /* copy entry + is-gt entry per pipeline port */
 	int nb_pipeline_ports = NB_PORTS;
 	doca_error_t result;
 	uint64_t deadline_sec;
 	int port_id;
-	const char *mode_str = is_switch_mode ? "switch,hws" : "vnf,hws";
+	const char *mode_str = is_switch_mode ? "switch" : "vnf";
 	char label[64];
 	struct doca_flow_resource_query prev_stats[NB_PORTS][NB_COUNTERS_PER_PORT] = {0};
+	struct doca_flow_definitions *defs = NULL;
 
 	resource.nr_trim = TRIM_RESOURCE_NUM;
 	resource.nr_counters = is_switch_mode ? NB_COUNTERS_PER_PORT * NB_PORTS : NB_COUNTERS_PER_PORT;
 	resource.nr_rss = 1;
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
-	result = init_doca_flow(nb_queues, mode_str, &resource, nr_shared_resources);
+
+	result = create_trim_definitions(&defs);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	result = init_doca_flow_with_defs(nb_queues, mode_str, &resource, nr_shared_resources, defs);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
+		doca_flow_definitions_destroy(defs);
 		return result;
 	}
+	doca_flow_definitions_destroy(defs);
 
 	if (is_switch_mode) {
 		entries_per_port = entries_per_port_switch;
-		ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(entries_per_port_switch * nb_ports));
+		ARRAY_INIT(actions_mem_size,
+			   ACTIONS_MEM_SIZE(entries_per_port_switch * nb_ports + entries_per_pipeline_port));
 		result =
 			init_doca_flow_switch_ports(devs_manager, nb_devs, ports, nb_ports, actions_mem_size, &resource);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to init DOCA Switch ports: %s", doca_error_get_descr(result));
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		switch_port = doca_flow_port_switch_get(ports[0]);
 		if (switch_port == NULL) {
 			DOCA_LOG_ERR("Failed to get switch port");
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return DOCA_ERROR_BAD_STATE;
 		}
 		nb_pipeline_ports = 1;
 	} else {
 		entries_per_port = entries_per_port_vnf;
-		ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(entries_per_port_vnf));
+		ARRAY_INIT(actions_mem_size, ACTIONS_MEM_SIZE(entries_per_port_vnf + entries_per_pipeline_port));
 		result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to init DOCA VNF ports: %s", doca_error_get_descr(result));
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 	}
@@ -485,9 +775,49 @@ doca_error_t flow_trim(int nb_queues,
 			goto cleanup;
 		}
 
-		result = create_ingress_trim_pipe(flow_port, flow_port_ctx->trim_id, &flow_port_ctx->ingress_pipe);
+		result = create_trim_pipe(flow_port, flow_port_ctx->trim_id, &flow_port_ctx->trim_pipe);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create ingress trim pipe: %s", doca_error_get_descr(result));
+			goto cleanup;
+		}
+
+		result = create_is_gt_pipe(flow_port, &flow_port_ctx->is_gt_pipe);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create is-gt pipe: %s", doca_error_get_descr(result));
+			goto cleanup;
+		}
+
+		result = create_copy_pkt_length_pipe(flow_port,
+						     flow_port_ctx->is_gt_pipe,
+						     flow_port_ctx->trim_pipe,
+						     &flow_port_ctx->copy_pipe);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create copy pkt_length pipe: %s", doca_error_get_descr(result));
+			goto cleanup;
+		}
+
+		memset(&status, 0, sizeof(status));
+
+		result = add_copy_pkt_length_entry(flow_port_ctx->copy_pipe, &status);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to add copy pkt_length entry: %s", doca_error_get_descr(result));
+			goto cleanup;
+		}
+		result = add_is_gt_to_trim_pipe_entry(flow_port_ctx->is_gt_pipe,
+						      flow_port_ctx->trim_pipe,
+						      trim_size,
+						      &status);
+		if (result != DOCA_SUCCESS)
+			goto cleanup;
+
+		result = doca_flow_entries_process(flow_port, 0, DEFAULT_TIMEOUT_US, entries_per_pipeline_port);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to process skip-trim entries: %s", doca_error_get_descr(result));
+			goto cleanup;
+		}
+		if (status.nb_processed != entries_per_pipeline_port || status.failure) {
+			DOCA_LOG_ERR("Failed to process skip-trim entries on port %d", port_id);
+			result = DOCA_ERROR_BAD_STATE;
 			goto cleanup;
 		}
 	}
@@ -505,6 +835,7 @@ doca_error_t flow_trim(int nb_queues,
 
 		result = add_post_trim_port_entry(flow_port_ctx->post_trim_pipe,
 						  (switch_port != NULL) ? port_id : FLOW_TRIM_GET_PORT_PEER_ID(port_id),
+						  trim_size,
 						  &status,
 						  &port_ctx[port_id].post_trim_port_entry);
 		if (result != DOCA_SUCCESS) {
@@ -518,6 +849,7 @@ doca_error_t flow_trim(int nb_queues,
 							 port_id,
 							 rss_queues,
 							 1,
+							 trim_size,
 							 &status,
 							 &port_ctx[port_id].post_trim_rss_entry);
 			if (result != DOCA_SUCCESS) {
@@ -528,11 +860,11 @@ doca_error_t flow_trim(int nb_queues,
 			/* In VNF mode, we can't RSS from EGRESS domain */
 		}
 
-		result = add_ingress_trim_entry(flow_port_ctx->ingress_pipe,
-						port_id,
-						FLOW_TRIM_FIRST_DST_IP,
-						&status,
-						&port_ctx[port_id].ingress_port_entry);
+		result = add_trim_entry(flow_port_ctx->trim_pipe,
+					port_id,
+					FLOW_TRIM_FIRST_DST_IP,
+					&status,
+					&port_ctx[port_id].ingress_port_entry);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add ingress trim entry for " FLOW_TRIM_FIRST_DST_IP_STR ": %s",
 				     doca_error_get_descr(result));
@@ -541,16 +873,22 @@ doca_error_t flow_trim(int nb_queues,
 
 		if (is_switch_mode) {
 			/* Add entry for the traffic going to the RSS queue */
-			result = add_ingress_trim_entry(flow_port_ctx->ingress_pipe,
-							port_id,
-							FLOW_TRIM_SECOND_DST_IP,
-							&status,
-							&port_ctx[port_id].ingress_rss_entry);
+			result = add_trim_entry(flow_port_ctx->trim_pipe,
+						port_id,
+						FLOW_TRIM_SECOND_DST_IP,
+						&status,
+						&port_ctx[port_id].ingress_rss_entry);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to add ingress trim entry for " FLOW_TRIM_SECOND_DST_IP_STR ": %s",
 					     doca_error_get_descr(result));
 				goto cleanup;
 			}
+		}
+
+		result = add_is_gt_go_to_port_entry(flow_port_ctx->is_gt_pipe, port_id, &status);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to add is-gt go to port entry: %s", doca_error_get_descr(result));
+			goto cleanup;
 		}
 
 		result = doca_flow_entries_process(flow_port, 0, DEFAULT_TIMEOUT_US, entries_per_port);
@@ -580,7 +918,7 @@ doca_error_t flow_trim(int nb_queues,
 
 			snprintf(label,
 				 sizeof(label),
-				 "port=%d pre  ingress_trim_pipe(" FLOW_TRIM_FIRST_DST_IP_STR ")",
+				 "port=%d pre  trim_pipe(" FLOW_TRIM_FIRST_DST_IP_STR ")",
 				 port_id);
 			(void)query_entry_and_log(port_ctx[port_id].ingress_port_entry, label, &prev_stats[port_id][0]);
 
@@ -594,7 +932,7 @@ doca_error_t flow_trim(int nb_queues,
 
 			snprintf(label,
 				 sizeof(label),
-				 "port=%d pre  ingress_trim_pipe(" FLOW_TRIM_SECOND_DST_IP_STR ")",
+				 "port=%d pre  trim_pipe(" FLOW_TRIM_SECOND_DST_IP_STR ")",
 				 port_id);
 			(void)query_entry_and_log(port_ctx[port_id].ingress_rss_entry, label, &prev_stats[port_id][2]);
 
@@ -610,6 +948,6 @@ doca_error_t flow_trim(int nb_queues,
 
 cleanup:
 	stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

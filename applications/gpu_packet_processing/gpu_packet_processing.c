@@ -60,7 +60,7 @@ void error_send_packet_cb(struct doca_eth_txq_gpu_event_error_send_packet *event
 {
 	uint16_t packet_index;
 
-	doca_eth_txq_gpu_event_error_send_packet_get_position(event_error, &packet_index);
+	doca_eth_txq_gpu_event_error_send_packet_get_packet_index(event_error, &packet_index);
 	DOCA_LOG_INFO("Error in send queue %ld, packet %d. Gracefully killing the app",
 		      event_user_data.u64,
 		      packet_index);
@@ -81,7 +81,7 @@ void debug_send_packet_icmp_cb(struct doca_eth_txq_gpu_event_notify_send_packet 
 	uint64_t packet_timestamp;
 	uint64_t ts_diff = 0;
 
-	doca_eth_txq_gpu_event_notify_send_packet_get_position(event_notify, &packet_index);
+	doca_eth_txq_gpu_event_notify_send_packet_get_packet_index(event_notify, &packet_index);
 	doca_eth_txq_gpu_event_notify_send_packet_get_timestamp(event_notify, &packet_timestamp);
 
 	if (icmp_last_ping != 0)
@@ -117,6 +117,50 @@ static uint64_t get_ns(uint64_t *sec)
 }
 
 /*
+ * Merge latency samples summary into another one
+ *
+ * @dst [in/out]: latency summary to update
+ * @src [in]: latency summary to merge
+ */
+static void latency_merge(struct stats_latency *dst, const struct stats_latency *src)
+{
+	if (src->num == 0)
+		return;
+
+	if (dst->num == 0) {
+		*dst = *src;
+		return;
+	}
+
+	dst->num += src->num;
+	dst->sum += src->sum;
+	if (src->min < dst->min)
+		dst->min = src->min;
+	if (src->max > dst->max)
+		dst->max = src->max;
+}
+
+/*
+ * Print latency samples summary in microseconds
+ *
+ * @name [in]: latency name
+ * @lat [in]: latency summary
+ */
+static void latency_print(const char *name, const struct stats_latency *lat)
+{
+	if (lat->num == 0) {
+		printf(" %s avg/min/max: n/a", name);
+		return;
+	}
+
+	printf(" %s avg/min/max: %.3f/%.3f/%.3f",
+	       name,
+	       ((double)lat->sum / lat->num) / 1000.0,
+	       lat->min / 1000.0,
+	       lat->max / 1000.0);
+}
+
+/*
  * CPU thread to print statistics from GPU filtering on the console
  *
  * @args [in]: thread input args
@@ -128,12 +172,16 @@ static void *stats_core(void *args)
 	doca_error_t result = DOCA_SUCCESS;
 	enum doca_gpu_semaphore_status status;
 	struct stats_udp udp_st[MAX_QUEUES] = {0};
+	struct stats_udp udp_lat[MAX_QUEUES] = {0};	/* Latency over the last print interval */
+	struct stats_udp udp_st_prev[MAX_QUEUES] = {0}; /* Counters at the previous print */
 	struct stats_tcp tcp_st[MAX_QUEUES] = {0};
 	uint32_t sem_idx_udp[MAX_QUEUES] = {0};
 	uint32_t sem_idx_tcp[MAX_QUEUES] = {0};
 	uint64_t start_time_sec = 0;
 	uint64_t interval_print = 0;
 	uint64_t interval_sec = 0;
+	uint64_t now_ns;
+	double interval_s;
 	struct stats_udp *custom_udp_st;
 	struct stats_tcp *custom_tcp_st;
 	pthread_t self_id = pthread_self();
@@ -165,6 +213,14 @@ static void *stats_core(void *args)
 				udp_st[idxq].dns_bytes += custom_udp_st->dns_bytes;
 				udp_st[idxq].others_bytes += custom_udp_st->others_bytes;
 				udp_st[idxq].total_bytes += custom_udp_st->total_bytes;
+
+				latency_merge(&udp_lat[idxq].recv, &custom_udp_st->recv);
+				latency_merge(&udp_lat[idxq].process, &custom_udp_st->process);
+				latency_merge(&udp_lat[idxq].report, &custom_udp_st->report);
+				udp_lat[idxq].recv_pkts += custom_udp_st->recv_pkts;
+				udp_st[idxq].attr_checked += custom_udp_st->attr_checked;
+				udp_st[idxq].attr_bytes_err += custom_udp_st->attr_bytes_err;
+				udp_st[idxq].attr_ts_err += custom_udp_st->attr_ts_err;
 
 				result = doca_gpu_semaphore_set_status(udp_queues.sem_cpu[idxq],
 								       sem_idx_udp[idxq],
@@ -217,25 +273,56 @@ static void *stats_core(void *args)
 			}
 		}
 
-		if ((get_ns(&interval_sec) - interval_print) > 5000000000) {
+		now_ns = get_ns(&interval_sec);
+		if ((now_ns - interval_print) > 5000000000) {
+			interval_s = (now_ns - interval_print) / 1000000000.0;
 			printf("\nSeconds %ld\n", interval_sec - start_time_sec);
 
+			/* Packet counters are cumulative, rates are over the last print interval */
 			for (int idxq = 0; idxq < udp_queues.numq; idxq++) {
-				double dns_bw_gbps = (udp_st[idxq].dns_bytes * 8.0) /
-						     ((interval_sec - start_time_sec) * 1000000000.0);
-				double other_bw_gbps = (udp_st[idxq].others_bytes * 8.0) /
-						       ((interval_sec - start_time_sec) * 1000000000.0);
-				double total_bw_gbps = (udp_st[idxq].total_bytes * 8.0) /
-						       ((interval_sec - start_time_sec) * 1000000000.0);
+				double dns_bw_gbps = ((udp_st[idxq].dns_bytes - udp_st_prev[idxq].dns_bytes) * 8.0) /
+						     (interval_s * 1000000000.0);
+				double other_bw_gbps =
+					((udp_st[idxq].others_bytes - udp_st_prev[idxq].others_bytes) * 8.0) /
+					(interval_s * 1000000000.0);
+				double total_bw_gbps =
+					((udp_st[idxq].total_bytes - udp_st_prev[idxq].total_bytes) * 8.0) /
+					(interval_s * 1000000000.0);
+				double total_mpps =
+					(udp_st[idxq].total - udp_st_prev[idxq].total) / (interval_s * 1000000.0);
 
-				printf("[UDP] QUEUE: %d DNS: %ld DNS_BW: %.3f Gbps OTHER: %ld OTHER_BW: %.3f Gbps TOTAL: %ld TOTAL_BW: %.3f Gbps\n",
+				printf("[UDP] QUEUE: %d DNS: %ld DNS_BW: %.3f Gbps OTHER: %ld OTHER_BW: %.3f Gbps TOTAL: %ld TOTAL_BW: %.3f Gbps TOTAL_PPS: %.3f Mpps\n",
 				       idxq,
 				       udp_st[idxq].dns,
 				       dns_bw_gbps,
 				       udp_st[idxq].others,
 				       other_bw_gbps,
 				       udp_st[idxq].total,
-				       total_bw_gbps);
+				       total_bw_gbps,
+				       total_mpps);
+
+				udp_st_prev[idxq] = udp_st[idxq];
+
+				if (app_cfg.udp_rx.stage_latency) {
+					printf("[UDP] QUEUE: %d STAGE LATENCY (us)", idxq);
+					latency_print("RECV", &udp_lat[idxq].recv);
+					latency_print("PROCESS", &udp_lat[idxq].process);
+					latency_print("REPORT", &udp_lat[idxq].report);
+					printf(" RECV CALLS: %ld PKTS/RECV: %.1f\n",
+					       udp_lat[idxq].recv.num,
+					       udp_lat[idxq].recv.num ?
+						       (double)udp_lat[idxq].recv_pkts / udp_lat[idxq].recv.num :
+						       0.0);
+				}
+
+				if (app_cfg.udp_rx.cqe_attr_check)
+					printf("[UDP] QUEUE: %d CQE ATTR CHECK: CHECKED: %ld BYTES ERRORS: %ld TIMESTAMP ERRORS: %ld\n",
+					       idxq,
+					       udp_st[idxq].attr_checked,
+					       udp_st[idxq].attr_bytes_err,
+					       udp_st[idxq].attr_ts_err);
+
+				memset(&udp_lat[idxq], 0, sizeof(udp_lat[idxq]));
 			}
 
 			for (int idxq = 0; idxq < tcp_queues.numq; idxq++) {
@@ -252,7 +339,7 @@ static void *stats_core(void *args)
 				       tcp_st[idxq].total);
 			}
 
-			interval_print = get_ns(&interval_sec);
+			interval_print = now_ns;
 		}
 	}
 
@@ -319,6 +406,13 @@ int main(int argc, char **argv)
 	DOCA_LOG_INFO("===========================================================");
 
 	/* Basic DPDK initialization */
+	/* UDP receive defaults, may be overwritten by command line parameters */
+	app_cfg.udp_rx.scope = DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK;
+	app_cfg.udp_rx.max_rx_pkts = UDP_RX_MAX_PKTS_DEFAULT;
+	app_cfg.udp_rx.timeout_ns = UDP_RX_TIMEOUT_NS_DEFAULT;
+	app_cfg.udp_rx.pkt_num = MAX_PKT_NUM;
+	app_cfg.udp_rx.pkt_size = MAX_PKT_SIZE;
+
 	result = doca_argp_init(NULL, &app_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init ARGP resources: %s", doca_error_get_descr(result));
@@ -337,11 +431,24 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	DOCA_LOG_INFO("Options enabled:\n\tGPU %s\n\tNIC %s\n\tGPU Rx queues %d\n\tGPU HTTP server enabled %s",
-		      app_cfg.gpu_pcie_addr,
-		      app_cfg.nic_pcie_addr,
-		      app_cfg.queue_num,
-		      (app_cfg.http_server == true ? "Yes" : "No"));
+	DOCA_LOG_INFO(
+		"Options enabled:\n\tGPU %s\n\tNIC %s\n\tGPU Rx queues %d\n\tGPU HTTP server enabled %s\n\tUDP receive scope %s max packets %u timeout %lu ns\n\tUDP RQ %u packet buffers of %u bytes in %s memory, rings in %s memory\n\tUDP packet filtering %s\n\tUDP stage latency %s\n\tUDP CQE attribute check %s",
+		app_cfg.gpu_pcie_addr,
+		app_cfg.nic_pcie_addr,
+		app_cfg.queue_num,
+		(app_cfg.http_server == true ? "Yes" : "No"),
+		(app_cfg.udp_rx.scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD ? "thread" :
+		 app_cfg.udp_rx.scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP   ? "warp" :
+									       "block"),
+		app_cfg.udp_rx.max_rx_pkts,
+		app_cfg.udp_rx.timeout_ns,
+		app_cfg.udp_rx.pkt_num,
+		app_cfg.udp_rx.pkt_size,
+		(app_cfg.udp_rx.pkt_host_mem == true ? "host" : "GPU"),
+		(app_cfg.udp_rx.rq_host_mem == true ? "host" : "GPU"),
+		(app_cfg.udp_rx.process == true ? "Yes" : "No"),
+		(app_cfg.udp_rx.stage_latency == true ? "Yes" : "No"),
+		(app_cfg.udp_rx.cqe_attr_check == true ? "Yes" : "No"));
 
 	/* In a multi-GPU system, ensure CUDA refers to the right GPU device */
 	cuda_ret = cudaDeviceGetByPCIBusId(&cuda_id, app_cfg.gpu_pcie_addr);
@@ -380,7 +487,13 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	result = create_udp_queues(&udp_queues, df_port, gpu_dev, ddev, app_cfg.queue_num, SEMAPHORES_PER_QUEUE);
+	result = create_udp_queues(&udp_queues,
+				   df_port,
+				   gpu_dev,
+				   ddev,
+				   app_cfg.queue_num,
+				   SEMAPHORES_PER_QUEUE,
+				   &app_cfg.udp_rx);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Function create_udp_queues returned %s", doca_error_get_descr(result));
 		return EXIT_FAILURE;
@@ -469,7 +582,7 @@ int main(int argc, char **argv)
 	 */
 	DOCA_LOG_INFO("Warm up CUDA kernels");
 	DOCA_GPUNETIO_VOLATILE(*cpu_exit_condition) = 1;
-	kernel_receive_udp(rx_udp_stream, gpu_exit_condition, &udp_queues);
+	kernel_receive_udp(rx_udp_stream, gpu_exit_condition, &udp_queues, &app_cfg.udp_rx);
 	kernel_receive_tcp(rx_tcp_stream, gpu_exit_condition, &tcp_queues, app_cfg.http_server);
 	kernel_receive_icmp(rx_icmp_stream, gpu_exit_condition, &icmp_queues);
 	if (app_cfg.http_server)
@@ -484,7 +597,12 @@ int main(int argc, char **argv)
 
 	DOCA_LOG_INFO("Launching CUDA kernels");
 
-	kernel_receive_udp(rx_udp_stream, gpu_exit_condition, &udp_queues);
+	result = kernel_receive_udp(rx_udp_stream, gpu_exit_condition, &udp_queues, &app_cfg.udp_rx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Function kernel_receive_udp returned %s", doca_error_get_descr(result));
+		DOCA_GPUNETIO_VOLATILE(*cpu_exit_condition) = 1;
+		goto exit;
+	}
 	kernel_receive_tcp(rx_tcp_stream, gpu_exit_condition, &tcp_queues, app_cfg.http_server);
 	kernel_receive_icmp(rx_icmp_stream, gpu_exit_condition, &icmp_queues);
 	if (app_cfg.http_server)

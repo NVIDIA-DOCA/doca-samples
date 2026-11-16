@@ -66,6 +66,29 @@ struct telemetry_phy_sample_objects {
 	struct doca_telemetry_phy_system_temp_and_pwr_info *system_temp_and_pwr_info_struct; /* Structure that represent
 												the system temperature
 												and power info */
+	struct doca_telemetry_phy_system_temp_info *system_temp_info_struct; /* Structure that represent the system
+										temperature info */
+	struct doca_telemetry_phy_system_pwr_info *system_pwr_info_struct; /* Structure that represent the system power
+									     info */
+	struct doca_telemetry_phy_snr_samples_info *snr_info_struct; /* Structure that represent the SNR samples info */
+	struct doca_telemetry_phy_laser_monitors_samples_info *laser_monitors_info_struct; /* Structure that
+												  represent the VDM
+												  laser monitors samples
+											      info */
+	struct doca_telemetry_phy_pam4_level_transition_samples_info *pam4_level_transition_info_struct; /* Structure
+													    that
+													    represent
+													    the VDM
+													    PAM4
+													    level
+													    transition
+													    info */
+	struct doca_telemetry_phy_pre_fec_ber_samples_info *pre_fec_ber_info_struct; /* Structure that represent the
+											    pre-FEC BER samples info */
+	struct doca_telemetry_phy_ferc_samples_info *ferc_info_struct; /* Structure that represent the FERC samples info
+									*/
+	struct doca_telemetry_phy_sew_max_samples_info *sew_max_info_struct; /* Structure that represent the SEW
+										    MAX info */
 };
 
 /*
@@ -396,6 +419,25 @@ static void telemetry_phy_print_operation_info(struct doca_telemetry_phy_operati
 	default:
 		printf("N/A\n");
 	}
+
+#if LIB_TELEMETRY_PHY_VERSION >= LIB_TELEMETRY_PHY_VERSION_2
+	if (operation_info_struct->mac_address == 0) {
+		printf("MAC_Address: N/A\n");
+	} else {
+		printf("MAC_Address: %02X:%02X:%02X:%02X:%02X:%02X\n",
+		       (unsigned int)((operation_info_struct->mac_address >> 40) & 0xFF),
+		       (unsigned int)((operation_info_struct->mac_address >> 32) & 0xFF),
+		       (unsigned int)((operation_info_struct->mac_address >> 24) & 0xFF),
+		       (unsigned int)((operation_info_struct->mac_address >> 16) & 0xFF),
+		       (unsigned int)((operation_info_struct->mac_address >> 8) & 0xFF),
+		       (unsigned int)(operation_info_struct->mac_address & 0xFF));
+	}
+	printf("Device FW Version: %d.%d.%d\n",
+	       operation_info_struct->device_fw_version.major,
+	       operation_info_struct->device_fw_version.minor,
+	       operation_info_struct->device_fw_version.sub_minor);
+#endif /* LIB_TELEMETRY_PHY_VERSION >= LIB_TELEMETRY_PHY_VERSION_2 */
+
 	printf("\n");
 }
 
@@ -1999,9 +2041,20 @@ static void telemetry_phy_print_counter_and_ber_info(
 	printf("Time Since Last Clear [Min]: %.1f\n",
 	       (double)(counter_and_ber_info_struct->time_since_last_clear) / TIME_CONVERT_MS_MIN);
 
+	/*
+	 * This test is for the latest version of doca_telemetry_phy in default.
+	 * If you want to test other version of doca_telemetry_phy, please add the version selection macro:
+	 * #define LIB_TELEMETRY_PHY_VERSION LIB_TELEMETRY_PHY_VERSION_<version> in the source file.
+	 * For example:
+	 * #define LIB_TELEMETRY_PHY_VERSION LIB_TELEMETRY_PHY_VERSION_1
+	 */
+#if LIB_TELEMETRY_PHY_VERSION >= LIB_TELEMETRY_PHY_VERSION_2
+	printf("Link Down Counter: %u\n", counter_and_ber_info_struct->link_info.link_down_counter);
+	printf("Link Error Recovery Counter: %u\n", counter_and_ber_info_struct->link_info.link_down_recovery_counter);
+#else
 	printf("Link Down Counter: %u\n", counter_and_ber_info_struct->link_down_counter);
 	printf("Link Error Recovery Counter: %u\n", counter_and_ber_info_struct->link_down_recovery_counter);
-
+#endif /* LIB_TELEMETRY_PHY_VERSION >= LIB_TELEMETRY_PHY_VERSION_2 */
 	if (counter_and_ber_info_struct->active_protocol == DOCA_TELEMETRY_PHY_PROTOCOL_IB) {
 		printf("Symbol Errors: %lu\n", counter_and_ber_info_struct->symbol_errors.symbol_errors_counter);
 		printf("Symbol BER: %uE-%u\n",
@@ -2324,6 +2377,39 @@ static void telemetry_phy_print_management_cable_ddm_info(
 }
 
 /*
+ * Print system temperature info
+ *
+ * Print the contents of the extracted system temperature info.
+ *
+ * @system_temp_info_struct [in]: Extracted system_temp_info_struct to print
+ */
+static void telemetry_phy_print_system_temp_info(struct doca_telemetry_phy_system_temp_info *system_temp_info_struct)
+{
+	printf("System Temperature Info\n");
+	printf("-----------------------\n");
+
+	printf("Temperature: %.3fC\n", (double)system_temp_info_struct->temperature);
+	printf("Max Temperature: %.3fC\n", (double)system_temp_info_struct->max_temperature);
+	printf("Temperature Sensor Name: %s\n", system_temp_info_struct->temperature_sensor_name);
+}
+
+/*
+ * Print system power info
+ *
+ * Print the contents of the extracted system power info.
+ *
+ * @system_pwr_info_struct [in]: Extracted system_pwr_info_struct to print
+ */
+static void telemetry_phy_print_system_pwr_info(struct doca_telemetry_phy_system_pwr_info *system_pwr_info_struct)
+{
+	printf("System Power Info\n");
+	printf("-----------------\n");
+
+	printf("Power: %.3fW\n", (double)system_pwr_info_struct->power);
+	printf("Power Sensor Name: %s\n", system_pwr_info_struct->power_sensor_name);
+}
+
+/*
  * Print system temperature and power info
  *
  * Print the contents of the extracted system temperature and power info.
@@ -2336,11 +2422,248 @@ static void telemetry_phy_print_system_temp_and_pwr_info(
 	printf("System Temperature and Power Info\n");
 	printf("---------------------------------\n");
 
-	printf("Temperature: %.3fC\n", (double)system_temp_and_pwr_info_struct->temperature);
+#if LIB_TELEMETRY_PHY_VERSION >= LIB_TELEMETRY_PHY_VERSION_2
+	printf("Temperature: %.3fC\n", (double)system_temp_and_pwr_info_struct->system_temp_info.temperature);
+	printf("Max Temperature: %.3fC\n", (double)system_temp_and_pwr_info_struct->system_temp_info.max_temperature);
+	printf("Temperature Sensor Name: %s\n",
+	       system_temp_and_pwr_info_struct->system_temp_info.temperature_sensor_name);
+	printf("Power: %.3fW\n", (double)system_temp_and_pwr_info_struct->system_power_info.power);
+	printf("Power Sensor Name: %s\n", system_temp_and_pwr_info_struct->system_power_info.power_sensor_name);
+#else
 	printf("Max Temperature: %.3fC\n", (double)system_temp_and_pwr_info_struct->max_temperature);
 	printf("Temperature Sensor Name: %s\n", system_temp_and_pwr_info_struct->temperature_sensor_name);
 	printf("Power: %.3fW\n", (double)system_temp_and_pwr_info_struct->power);
 	printf("Power Sensor Name: %s\n", system_temp_and_pwr_info_struct->power_sensor_name);
+#endif /* LIB_TELEMETRY_PHY_VERSION >= LIB_TELEMETRY_PHY_VERSION_2 */
+}
+
+/*
+ * Print VDM value
+ *
+ * Print the contents of the extracted VDM value.
+ *
+ * @field_name [in]: Name of the field to print
+ * @cap_bitmask_per_lane [in]: Bitmask for the capabilities of the field
+ * @field_value [in]: Value of the field to print
+ * @num_of_elements [in]: Number of elements in the field
+ * @is_float [in]: Whether the field is a float
+ */
+static void telemetry_phy_print_vdm_value(const char *field_name,
+					  uint8_t cap_bitmask_per_lane,
+					  const void *field_value,
+					  uint8_t num_of_elements,
+					  bool is_float)
+{
+	printf("%s", field_name);
+	for (uint8_t i = 0; i < num_of_elements; i++) {
+		if (i != 0)
+			printf(", ");
+
+		if (cap_bitmask_per_lane & (1 << i)) {
+			if (is_float)
+				printf("%.3f", (double)((const float *)field_value)[i]);
+			else
+				printf("%u", ((const uint16_t *)field_value)[i]);
+		} else {
+			printf("N/A");
+		}
+	}
+	printf("\n");
+}
+
+/*
+ * Print SNR samples info
+ *
+ * Print the contents of the extracted SNR samples info.
+ *
+ * @snr_info_struct [in]: Extracted SNR samples info to print
+ */
+static void telemetry_phy_print_snr_samples_info(struct doca_telemetry_phy_snr_samples_info *snr_info_struct)
+{
+	printf("SNR Info\n");
+	printf("------------\n");
+
+	telemetry_phy_print_vdm_value("SNR Media [dB]",
+				      snr_info_struct->snr_cap_media_per_lane,
+				      snr_info_struct->snr_media_per_lane,
+				      snr_info_struct->number_of_lanes,
+				      true);
+	telemetry_phy_print_vdm_value("SNR Host [dB]",
+				      snr_info_struct->snr_cap_host_per_lane,
+				      snr_info_struct->snr_host_per_lane,
+				      snr_info_struct->number_of_lanes,
+				      true);
+
+	printf("SNR Media Low Alarm [dB]: %.3f\n", (double)snr_info_struct->snr_media_low_alarm);
+	printf("SNR Media Low Warning [dB]: %.3f\n", (double)snr_info_struct->snr_media_low_warning);
+	printf("SNR Host Low Alarm [dB]: %.3f\n", (double)snr_info_struct->snr_host_low_alarm);
+	printf("SNR Host Low Warning [dB]: %.3f\n", (double)snr_info_struct->snr_host_low_warning);
+	printf("\n");
+}
+
+/*
+ * Print Laser monitors samples info
+ *
+ * Print the contents of the extracted Laser monitors samples info.
+ *
+ * @laser_monitors_info_struct [in]: Extracted Laser monitors samples info to print
+ */
+static void telemetry_phy_print_laser_monitors_samples_info(
+	struct doca_telemetry_phy_laser_monitors_samples_info *laser_monitors_info_struct)
+{
+	printf("Laser Monitors Info\n");
+	printf("------------------------\n");
+
+	telemetry_phy_print_vdm_value("Laser Age [%]",
+				      laser_monitors_info_struct->laser_age_cap_per_lane,
+				      laser_monitors_info_struct->laser_age_per_lane,
+				      laser_monitors_info_struct->number_of_lanes,
+				      false);
+	telemetry_phy_print_vdm_value("TEC Current [%]",
+				      laser_monitors_info_struct->tec_current_cap_per_lane,
+				      laser_monitors_info_struct->tec_current_laser_per_lane,
+				      laser_monitors_info_struct->number_of_lanes,
+				      true);
+
+	printf("Laser Age High Alarm [%%]: %u\n", laser_monitors_info_struct->laser_age_high_alarm);
+	printf("Laser Age High Warning [%%]: %u\n", laser_monitors_info_struct->laser_age_high_warning);
+	printf("TEC Current Low Alarm [%%]: %.3f\n", (double)laser_monitors_info_struct->tec_current_low_alarm);
+	printf("TEC Current High Alarm [%%]: %.3f\n", (double)laser_monitors_info_struct->tec_current_high_alarm);
+	printf("TEC Current Low Warning [%%]: %.3f\n", (double)laser_monitors_info_struct->tec_current_low_warning);
+	printf("TEC Current High Warning [%%]: %.3f\n", (double)laser_monitors_info_struct->tec_current_high_warning);
+	printf("\n");
+}
+
+/*
+ * Print PAM4 level transition samples info
+ *
+ * Print the contents of the extracted PAM4 level transition samples info.
+ *
+ * @pam4_level_transition_info_struct [in]: Extracted PAM4 level transition samples info to print
+ */
+static void telemetry_phy_print_pam4_level_transition_samples_info(
+	struct doca_telemetry_phy_pam4_level_transition_samples_info *pam4_level_transition_info_struct)
+{
+	printf("PAM4 Level Transition Info\n");
+	printf("-------------------------------\n");
+
+	telemetry_phy_print_vdm_value("PAM4 Level Transition Media [dB]",
+				      pam4_level_transition_info_struct->pam4_level_transition_cap_media_per_lane,
+				      pam4_level_transition_info_struct->pam4_level_transition_media_per_lane,
+				      pam4_level_transition_info_struct->number_of_lanes,
+				      true);
+	telemetry_phy_print_vdm_value("PAM4 Level Transition Host [dB]",
+				      pam4_level_transition_info_struct->pam4_level_transition_cap_host_per_lane,
+				      pam4_level_transition_info_struct->pam4_level_transition_host_per_lane,
+				      pam4_level_transition_info_struct->number_of_lanes,
+				      true);
+
+	printf("PAM4 Level Transition Media Low Alarm [dB]: %.3f\n",
+	       (double)pam4_level_transition_info_struct->pam4_level_transition_media_low_alarm);
+	printf("PAM4 Level Transition Media Low Warning [dB]: %.3f\n",
+	       (double)pam4_level_transition_info_struct->pam4_level_transition_media_low_warning);
+	printf("PAM4 Level Transition Host Low Alarm [dB]: %.3f\n",
+	       (double)pam4_level_transition_info_struct->pam4_level_transition_host_low_alarm);
+	printf("PAM4 Level Transition Host Low Warning [dB]: %.3f\n",
+	       (double)pam4_level_transition_info_struct->pam4_level_transition_host_low_warning);
+	printf("\n");
+}
+
+/*
+ * Print Pre FEC BER samples info
+ *
+ * Print the contents of the extracted Pre FEC BER samples info.
+ *
+ * @pre_fec_ber_info_struct [in]: Extracted Pre FEC BER samples info to print
+ */
+static void telemetry_phy_print_pre_fec_ber_samples_info(
+	struct doca_telemetry_phy_pre_fec_ber_samples_info *pre_fec_ber_info_struct)
+{
+	printf("Pre FEC BER Info\n");
+	printf("--------------------\n");
+
+	telemetry_phy_print_vdm_value("Pre-FEC BER Avg Media [dB]",
+				      pre_fec_ber_info_struct->pre_fec_ber_avg_media_cap_per_lane,
+				      pre_fec_ber_info_struct->pre_fec_ber_avg_media_per_lane,
+				      pre_fec_ber_info_struct->number_of_lanes,
+				      false);
+
+	telemetry_phy_print_vdm_value("Pre-FEC BER Avg Host [dB]",
+				      pre_fec_ber_info_struct->pre_fec_ber_avg_host_cap_per_lane,
+				      pre_fec_ber_info_struct->pre_fec_ber_avg_host_per_lane,
+				      pre_fec_ber_info_struct->number_of_lanes,
+				      false);
+
+	printf("Pre-FEC BER Avg High Media Alarm [dB]: %u\n",
+	       pre_fec_ber_info_struct->pre_fec_ber_avg_high_media_alarm);
+	printf("Pre-FEC BER Avg High Media Warning [dB]: %u\n",
+	       pre_fec_ber_info_struct->pre_fec_ber_avg_high_media_warning);
+	printf("Pre-FEC BER Avg High Host Alarm [dB]: %u\n", pre_fec_ber_info_struct->pre_fec_ber_avg_high_host_alarm);
+	printf("Pre-FEC BER Avg High Host Warning [dB]: %u\n",
+	       pre_fec_ber_info_struct->pre_fec_ber_avg_high_host_warning);
+	printf("\n");
+}
+
+/*
+ * Print FERC samples info
+ *
+ * Print the contents of the extracted FERC samples info.
+ *
+ * @ferc_info_struct [in]: Extracted FERC samples info to print
+ */
+static void telemetry_phy_print_ferc_samples_info(struct doca_telemetry_phy_ferc_samples_info *ferc_info_struct)
+{
+	printf("FERC Info\n");
+	printf("------------\n");
+
+	telemetry_phy_print_vdm_value("FERC Avg Media [dB]",
+				      ferc_info_struct->ferc_avg_media_cap_per_lane,
+				      ferc_info_struct->ferc_avg_media_per_lane,
+				      ferc_info_struct->number_of_lanes,
+				      false);
+
+	telemetry_phy_print_vdm_value("FERC Avg Host [dB]",
+				      ferc_info_struct->ferc_avg_host_cap_per_lane,
+				      ferc_info_struct->ferc_avg_host_per_lane,
+				      ferc_info_struct->number_of_lanes,
+				      false);
+
+	printf("FERC Avg High Media Alarm [dB]: %u\n", ferc_info_struct->ferc_avg_high_media_alarm);
+	printf("FERC Avg High Media Warning [dB]: %u\n", ferc_info_struct->ferc_avg_high_media_warning);
+	printf("FERC Avg High Host Alarm [dB]: %u\n", ferc_info_struct->ferc_avg_high_host_alarm);
+	printf("FERC Avg High Host Warning [dB]: %u\n", ferc_info_struct->ferc_avg_high_host_warning);
+	printf("\n");
+}
+
+/*
+ * Print SEW MAX samples info
+ *
+ * Print the contents of the extracted SEW MAX samples info.
+ *
+ * @sew_max_info_struct [in]: Extracted SEW MAX samples info to print
+ */
+static void telemetry_phy_print_sew_max_samples_info(struct doca_telemetry_phy_sew_max_samples_info *sew_max_info_struct)
+{
+	printf("SEW_max Info\n");
+	printf("----------------\n");
+
+	telemetry_phy_print_vdm_value("SEW_max Avg Media [dB]",
+				      sew_max_info_struct->sew_max_avg_media_cap_per_lane,
+				      sew_max_info_struct->sew_max_avg_media_per_lane,
+				      sew_max_info_struct->number_of_lanes,
+				      false);
+
+	telemetry_phy_print_vdm_value("SEW_max Avg Host [dB]",
+				      sew_max_info_struct->sew_max_avg_host_cap_per_lane,
+				      sew_max_info_struct->sew_max_avg_host_per_lane,
+				      sew_max_info_struct->number_of_lanes,
+				      false);
+
+	printf("SEW_max Avg High Media Alarm [dB]: %u\n", sew_max_info_struct->sew_max_avg_high_media_alarm);
+	printf("SEW_max Avg High Media Warning [dB]: %u\n", sew_max_info_struct->sew_max_avg_high_media_warning);
+	printf("SEW_max Avg High Host Alarm [dB]: %u\n", sew_max_info_struct->sew_max_avg_high_host_alarm);
+	printf("SEW_max Avg High Host Warning [dB]: %u\n", sew_max_info_struct->sew_max_avg_high_host_warning);
+	printf("\n");
 }
 
 /*
@@ -2417,6 +2740,60 @@ static doca_error_t telemetry_phy_sample_cleanup(struct telemetry_phy_sample_obj
 			      sample_objects->system_temp_and_pwr_info_struct);
 		free(sample_objects->system_temp_and_pwr_info_struct);
 		sample_objects->system_temp_and_pwr_info_struct = NULL;
+	}
+
+	if (sample_objects->system_temp_info_struct) {
+		DOCA_LOG_INFO("system_temp_info_struct %p: system_temp_info_struct was destroyed",
+			      sample_objects->system_temp_info_struct);
+		free(sample_objects->system_temp_info_struct);
+		sample_objects->system_temp_info_struct = NULL;
+	}
+
+	if (sample_objects->system_pwr_info_struct) {
+		DOCA_LOG_INFO("system_pwr_info_struct %p: system_pwr_info_struct was destroyed",
+			      sample_objects->system_pwr_info_struct);
+		free(sample_objects->system_pwr_info_struct);
+		sample_objects->system_pwr_info_struct = NULL;
+	}
+
+	if (sample_objects->snr_info_struct) {
+		DOCA_LOG_INFO("snr_info_struct %p: snr_info_struct was destroyed", sample_objects->snr_info_struct);
+		free(sample_objects->snr_info_struct);
+		sample_objects->snr_info_struct = NULL;
+	}
+
+	if (sample_objects->laser_monitors_info_struct) {
+		DOCA_LOG_INFO("laser_monitors_info_struct %p: laser_monitors_info_struct was destroyed",
+			      sample_objects->laser_monitors_info_struct);
+		free(sample_objects->laser_monitors_info_struct);
+		sample_objects->laser_monitors_info_struct = NULL;
+	}
+
+	if (sample_objects->pam4_level_transition_info_struct) {
+		DOCA_LOG_INFO("pam4_level_transition_info_struct %p: pam4_level_transition_info_struct was destroyed",
+			      sample_objects->pam4_level_transition_info_struct);
+		free(sample_objects->pam4_level_transition_info_struct);
+		sample_objects->pam4_level_transition_info_struct = NULL;
+	}
+
+	if (sample_objects->pre_fec_ber_info_struct) {
+		DOCA_LOG_INFO("pre_fec_ber_info_struct %p: pre_fec_ber_info_struct was destroyed",
+			      sample_objects->pre_fec_ber_info_struct);
+		free(sample_objects->pre_fec_ber_info_struct);
+		sample_objects->pre_fec_ber_info_struct = NULL;
+	}
+
+	if (sample_objects->ferc_info_struct) {
+		DOCA_LOG_INFO("ferc_info_struct %p: ferc_info_struct was destroyed", sample_objects->ferc_info_struct);
+		free(sample_objects->ferc_info_struct);
+		sample_objects->ferc_info_struct = NULL;
+	}
+
+	if (sample_objects->sew_max_info_struct) {
+		DOCA_LOG_INFO("sew_max_info_struct %p: sew_max_info_struct was destroyed",
+			      sample_objects->sew_max_info_struct);
+		free(sample_objects->sew_max_info_struct);
+		sample_objects->sew_max_info_struct = NULL;
 	}
 
 	if (sample_objects->telemetry_phy_obj != NULL) {
@@ -2542,6 +2919,88 @@ static doca_error_t doca_telemetry_phy_sample_allocate_output_objects(
 		if (sample_objects->system_temp_and_pwr_info_struct == NULL) {
 			DOCA_LOG_ERR(
 				"Failed to allocate output objects: failed to allocate memory for system temperature and power info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_system_temp_info) {
+		sample_objects->system_temp_info_struct = (struct doca_telemetry_phy_system_temp_info *)malloc(
+			sizeof(struct doca_telemetry_phy_system_temp_info));
+		if (sample_objects->system_temp_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for system temperature info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_system_pwr_info) {
+		sample_objects->system_pwr_info_struct = (struct doca_telemetry_phy_system_pwr_info *)malloc(
+			sizeof(struct doca_telemetry_phy_system_pwr_info));
+		if (sample_objects->system_pwr_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for system power info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_snr_info) {
+		sample_objects->snr_info_struct = (struct doca_telemetry_phy_snr_samples_info *)malloc(
+			sizeof(struct doca_telemetry_phy_snr_samples_info));
+		if (sample_objects->snr_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for SNR samples info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_laser_monitors_info) {
+		sample_objects->laser_monitors_info_struct =
+			(struct doca_telemetry_phy_laser_monitors_samples_info *)malloc(
+				sizeof(struct doca_telemetry_phy_laser_monitors_samples_info));
+		if (sample_objects->laser_monitors_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for laser monitors samples info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_pam4_level_transition_info) {
+		sample_objects->pam4_level_transition_info_struct =
+			(struct doca_telemetry_phy_pam4_level_transition_samples_info *)malloc(
+				sizeof(struct doca_telemetry_phy_pam4_level_transition_samples_info));
+		if (sample_objects->pam4_level_transition_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for PAM4 level transition samples info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_pre_fec_ber_info) {
+		sample_objects->pre_fec_ber_info_struct = (struct doca_telemetry_phy_pre_fec_ber_samples_info *)malloc(
+			sizeof(struct doca_telemetry_phy_pre_fec_ber_samples_info));
+		if (sample_objects->pre_fec_ber_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for pre-FEC BER samples info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_ferc_info) {
+		sample_objects->ferc_info_struct = (struct doca_telemetry_phy_ferc_samples_info *)malloc(
+			sizeof(struct doca_telemetry_phy_ferc_samples_info));
+		if (sample_objects->ferc_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for FERC samples info");
+			return DOCA_ERROR_NO_MEMORY;
+		}
+	}
+
+	if (cfg->get_sew_max_info) {
+		sample_objects->sew_max_info_struct = (struct doca_telemetry_phy_sew_max_samples_info *)malloc(
+			sizeof(struct doca_telemetry_phy_sew_max_samples_info));
+		if (sample_objects->sew_max_info_struct == NULL) {
+			DOCA_LOG_ERR(
+				"Failed to allocate output objects: failed to allocate memory for SEW_max samples info");
 			return DOCA_ERROR_NO_MEMORY;
 		}
 	}
@@ -2674,6 +3133,107 @@ static doca_error_t telemetry_phy_sample_context_init(const struct telemetry_phy
 		}
 	}
 
+	if (cfg->get_system_temp_info) {
+		result = doca_telemetry_phy_cap_system_temp_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy system temperature info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: failed to query capability for system temperature info");
+			return result;
+		}
+	}
+
+	if (cfg->get_system_pwr_info) {
+		result = doca_telemetry_phy_cap_system_pwr_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy system power info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to start telemetry_phy: failed to query capability for system power info");
+			return result;
+		}
+	}
+
+	if (cfg->get_snr_info) {
+		result = doca_telemetry_phy_cap_snr_samples_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy SNR samples info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to start telemetry_phy: failed to query capability for SNR samples info");
+			return result;
+		}
+	}
+
+	if (cfg->get_laser_monitors_info) {
+		result = doca_telemetry_phy_cap_laser_monitors_samples_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy laser monitors samples info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: failed to query capability for laser monitors samples info");
+			return result;
+		}
+	}
+
+	if (cfg->get_pam4_level_transition_info) {
+		result = doca_telemetry_phy_cap_pam4_level_transition_samples_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy PAM4 level transition samples info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: failed to query capability for PAM4 level transition samples info");
+			return result;
+		}
+	}
+
+	if (cfg->get_pre_fec_ber_info) {
+		result = doca_telemetry_phy_cap_pre_fec_ber_samples_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy pre-FEC BER samples info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: failed to query capability for pre-FEC BER samples info");
+			return result;
+		}
+	}
+
+	if (cfg->get_ferc_info) {
+		result = doca_telemetry_phy_cap_ferc_samples_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy FERC samples info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to start telemetry_phy: failed to query capability for FERC samples info");
+			return result;
+		}
+	}
+
+	if (cfg->get_sew_max_info) {
+		result = doca_telemetry_phy_cap_sew_max_samples_info_is_supported(devinfo);
+		if (result == DOCA_ERROR_NOT_SUPPORTED) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: device does not support doca_telemetry_phy SEW_max samples info");
+			return DOCA_ERROR_NOT_SUPPORTED;
+		} else if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR(
+				"Failed to start telemetry_phy: failed to query capability for SEW_max samples info");
+			return result;
+		}
+	}
+
 	/* Create context and set properties */
 	result = doca_telemetry_phy_create(sample_objects->dev, &sample_objects->telemetry_phy_obj);
 	if (result != DOCA_SUCCESS) {
@@ -2734,6 +3294,39 @@ doca_error_t telemetry_phy_sample_run(const struct telemetry_phy_sample_cfg *cfg
 	}
 	if (cfg->get_system_temp_and_pwr_info) {
 		DOCA_LOG_INFO("	Retrieve system temperature and power info");
+	}
+	if (cfg->get_system_temp_info) {
+		DOCA_LOG_INFO("	Retrieve system temperature info");
+	}
+	if (cfg->get_system_pwr_info) {
+		DOCA_LOG_INFO("	Retrieve system power info");
+	}
+	if (cfg->get_snr_info) {
+		DOCA_LOG_INFO("	Retrieve SNR samples info");
+	}
+	if (cfg->get_laser_monitors_info) {
+		DOCA_LOG_INFO("	Retrieve laser monitors samples info");
+	}
+	if (cfg->get_pam4_level_transition_info) {
+		DOCA_LOG_INFO("	Retrieve PAM4 level transition samples info");
+	}
+	if (cfg->get_pre_fec_ber_info) {
+		DOCA_LOG_INFO("	Retrieve pre-FEC BER samples info");
+		if (cfg->vdm_read_and_clear) {
+			DOCA_LOG_INFO("	Read and clear pre-FEC BER samples info option is set");
+		}
+	}
+	if (cfg->get_ferc_info) {
+		DOCA_LOG_INFO("	Retrieve FERC samples info");
+		if (cfg->vdm_read_and_clear) {
+			DOCA_LOG_INFO("	Read and clear FERC samples info option is set");
+		}
+	}
+	if (cfg->get_sew_max_info) {
+		DOCA_LOG_INFO("	Retrieve SEW_max samples info");
+		if (cfg->vdm_read_and_clear) {
+			DOCA_LOG_INFO("	Read and clear SEW_max samples info option is set");
+		}
 	}
 
 	/* Open DOCA device based on the given PCI address */
@@ -2865,6 +3458,95 @@ doca_error_t telemetry_phy_sample_run(const struct telemetry_phy_sample_cfg *cfg
 			goto teardown;
 		}
 		telemetry_phy_print_system_temp_and_pwr_info(sample_objects.system_temp_and_pwr_info_struct);
+	}
+
+	if (cfg->get_system_temp_info) {
+		result = doca_telemetry_phy_get_system_temp_info(sample_objects.telemetry_phy_obj,
+								 sample_objects.system_temp_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read system temperature info with error=%s",
+				     doca_error_get_name(result));
+			goto teardown;
+		}
+		telemetry_phy_print_system_temp_info(sample_objects.system_temp_info_struct);
+	}
+
+	if (cfg->get_system_pwr_info) {
+		result = doca_telemetry_phy_get_system_pwr_info(sample_objects.telemetry_phy_obj,
+								sample_objects.system_pwr_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read system power info with error=%s", doca_error_get_name(result));
+			goto teardown;
+		}
+		telemetry_phy_print_system_pwr_info(sample_objects.system_pwr_info_struct);
+	}
+
+	if (cfg->get_snr_info) {
+		result = doca_telemetry_phy_get_snr_samples_info(sample_objects.telemetry_phy_obj,
+								 sample_objects.snr_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read SNR samples info with error=%s", doca_error_get_name(result));
+			goto teardown;
+		}
+		telemetry_phy_print_snr_samples_info(sample_objects.snr_info_struct);
+	}
+
+	if (cfg->get_laser_monitors_info) {
+		result = doca_telemetry_phy_get_laser_monitors_samples_info(sample_objects.telemetry_phy_obj,
+									    sample_objects.laser_monitors_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read laser monitors samples info with error=%s",
+				     doca_error_get_name(result));
+			goto teardown;
+		}
+		telemetry_phy_print_laser_monitors_samples_info(sample_objects.laser_monitors_info_struct);
+	}
+
+	if (cfg->get_pam4_level_transition_info) {
+		result = doca_telemetry_phy_get_pam4_level_transition_samples_info(
+			sample_objects.telemetry_phy_obj,
+			sample_objects.pam4_level_transition_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read PAM4 level transition samples info with error=%s",
+				     doca_error_get_name(result));
+			goto teardown;
+		}
+		telemetry_phy_print_pam4_level_transition_samples_info(
+			sample_objects.pam4_level_transition_info_struct);
+	}
+
+	if (cfg->get_pre_fec_ber_info) {
+		result = doca_telemetry_phy_get_pre_fec_ber_samples_info(sample_objects.telemetry_phy_obj,
+									 cfg->vdm_read_and_clear,
+									 sample_objects.pre_fec_ber_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read pre-FEC BER samples info with error=%s",
+				     doca_error_get_name(result));
+			goto teardown;
+		}
+		telemetry_phy_print_pre_fec_ber_samples_info(sample_objects.pre_fec_ber_info_struct);
+	}
+
+	if (cfg->get_ferc_info) {
+		result = doca_telemetry_phy_get_ferc_samples_info(sample_objects.telemetry_phy_obj,
+								  cfg->vdm_read_and_clear,
+								  sample_objects.ferc_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read FERC samples info with error=%s", doca_error_get_name(result));
+			goto teardown;
+		}
+		telemetry_phy_print_ferc_samples_info(sample_objects.ferc_info_struct);
+	}
+
+	if (cfg->get_sew_max_info) {
+		result = doca_telemetry_phy_get_sew_max_samples_info(sample_objects.telemetry_phy_obj,
+								     cfg->vdm_read_and_clear,
+								     sample_objects.sew_max_info_struct);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to read SEW_max samples info with error=%s", doca_error_get_name(result));
+			goto teardown;
+		}
+		telemetry_phy_print_sew_max_samples_info(sample_objects.sew_max_info_struct);
 	}
 
 teardown:

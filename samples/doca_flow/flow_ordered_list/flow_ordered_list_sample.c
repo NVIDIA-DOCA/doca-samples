@@ -120,8 +120,7 @@ doca_error_t create_root_pipe(struct doca_flow_port *port,
 	match.outer.tcp.l4_port.dst_port = UINT16_MAX;
 
 	if (use_meta_fwd_mode) {
-		/* ordered_list_entry_actions: template ordered_list_fwd_idx=0, mask marks field for modify */
-		meta_actions.ordered_list_fwd_idx = DOCA_HTOBE32(0);
+		meta_actions.ordered_list_fwd_idx = DOCA_HTOBE32(UINT32_MAX);
 		meta_actions_mask.ordered_list_fwd_idx = DOCA_HTOBE32(UINT32_MAX);
 		actions_arr[0] = (struct doca_flow_actions *)&meta_actions;
 		actions_mask_arr[0] = (struct doca_flow_actions *)&meta_actions_mask;
@@ -555,7 +554,7 @@ static void print_ordered_list_stats(int nb_ports,
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query shared counter resource: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return;
 		}
 	}
@@ -656,9 +655,9 @@ doca_error_t flow_ordered_list(int nb_queues, bool use_meta_fwd_mode)
 	nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_COUNTER] = nb_shared_counters;
 	nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_METER] = 1;
 	if (use_meta_fwd_mode) {
-		result = init_doca_flow_with_defs(nb_queues, "vnf,hws", &resource, nr_shared_resources, defs);
+		result = init_doca_flow_with_defs(nb_queues, "vnf", &resource, nr_shared_resources, defs);
 	} else {
-		result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
+		result = init_doca_flow(nb_queues, "vnf", &resource, nr_shared_resources);
 	}
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -773,7 +772,7 @@ doca_error_t flow_ordered_list(int nb_queues, bool use_meta_fwd_mode)
 	result = stop_doca_flow_ports(nb_ports, ports);
 	ports_initialized = false;
 	flow_initialized = false;
-	doca_flow_destroy();
+	destroy_doca_flow();
 	if (defs != NULL) {
 		doca_flow_definitions_destroy(defs);
 		defs = NULL;
@@ -786,7 +785,7 @@ cleanup:
 		ports_initialized = false;
 	}
 	if (flow_initialized) {
-		doca_flow_destroy();
+		destroy_doca_flow();
 		flow_initialized = false;
 	}
 	if (defs != NULL) {

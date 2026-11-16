@@ -46,8 +46,7 @@
 DOCA_LOG_REGISTER(ETH_RXQ_BATCH_SHARED_MEMPOOL_RECEIVE);
 
 #define SLEEP_IN_NANOS (10 * 1000)   /* sample for event batch every 10 microseconds  */
-#define MAX_BURST_SIZE 2048	     /* Max burst size to set for eth_rxq (also the shared mempool queue depth) */
-#define MAX_PKT_SIZE 1600	     /* Max packet size to set for eth_rxq */
+#define MAX_INFLIGHT_PACKETS 2048    /* Max inflight packets to set for eth_rxq (also the shared mempool queue depth) */
 #define SAMPLE_RUNS_TIME 30	     /* Sample total run-time in [s] */
 #define SHARED_MEMPOOL_DEVICES_NUM 1 /* Number of devices sharing the memory pool */
 
@@ -70,10 +69,13 @@ struct eth_rxq_sample_objects {
 	uint16_t rxq_queue_ids[MAX_QUEUES_NUM];		       /* RXQ queue IDs array (RSS targets for the flow pipe) */
 	uint16_t num_queues;				       /* Number of ETH RXQs sharing the memory pool */
 	uint64_t total_received_packets;		       /* Counter for received packets across all queues */
+	uint32_t max_pkt_size;				       /* Max packet size to set for eth_rxq */
 	bool timestamp_enable;				       /* timestamp enable */
 	uint16_t headroom_size;				       /* headroom size */
 	uint16_t tailroom_size;				       /* tailroom size */
 };
+
+static uint32_t requested_max_pkt_size;
 
 /*
  * ETH RXQ shared mempool receive event batch successful callback
@@ -123,7 +125,7 @@ static void event_batch_shared_mempool_rcv_success_cb(
 	}
 
 	for (uint16_t i = 0; i < packets_number; i++) {
-		ret = doca_buf_get_data_len(pkt_array[i], &packet_size);
+		ret = get_pkt_data_len(pkt_array[i], &packet_size);
 		if (ret != DOCA_SUCCESS)
 			DOCA_LOG_ERR("Packet#%u: failed to get received packet data size, err: %s",
 				     i,
@@ -157,10 +159,9 @@ static void event_batch_shared_mempool_rcv_success_cb(
 		}
 
 		if (metadata_array != NULL)
-			DOCA_LOG_INFO(
-				"Packet#%u: metadata associated with the packet is %u",
-				i,
-				doca_eth_rxq_event_batch_recv_metadata_array_get_metadata(metadata_array, 1, i, 0));
+			DOCA_LOG_INFO("Packet#%u: metadata associated with the packet is %u",
+				      i,
+				      doca_eth_rxq_event_batch_metadata_array_get_metadata(metadata_array, 1, i, 0));
 
 		if (rx_hash_array != NULL)
 			DOCA_LOG_INFO("Packet#%u: rx_hash associated with the packet is %u", i, rx_hash_array[i]);
@@ -292,9 +293,9 @@ static doca_error_t create_eth_rxq_shared_mempool(struct eth_rxq_sample_objects 
 
 	state->devices_array[0] = state->core_resources.core_objs.dev;
 
-	status = doca_eth_rxq_shared_mempool_create(MAX_BURST_SIZE,
+	status = doca_eth_rxq_shared_mempool_create(MAX_INFLIGHT_PACKETS,
 						    state->num_queues,
-						    MAX_PKT_SIZE,
+						    state->max_pkt_size,
 						    state->devices_array,
 						    SHARED_MEMPOOL_DEVICES_NUM,
 						    &(state->shared_mempool));
@@ -349,7 +350,10 @@ static doca_error_t create_eth_rxq_ctx(struct eth_rxq_sample_objects *state, uin
 	state->queues[queue_index].state = state;
 	state->queues[queue_index].queue_id = queue_index;
 
-	status = doca_eth_rxq_create(state->core_resources.core_objs.dev, MAX_BURST_SIZE, MAX_PKT_SIZE, &eth_rxq);
+	status = doca_eth_rxq_create(state->core_resources.core_objs.dev,
+				     MAX_INFLIGHT_PACKETS,
+				     state->max_pkt_size,
+				     &eth_rxq);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ETH RXQ context, err: %s", doca_error_get_name(status));
 		return status;
@@ -411,7 +415,7 @@ static doca_error_t create_eth_rxq_ctx(struct eth_rxq_sample_objects *state, uin
 		goto destroy_eth_rxq;
 	}
 
-	ctx = doca_eth_rxq_as_doca_ctx(eth_rxq);
+	ctx = doca_eth_rxq_as_ctx(eth_rxq);
 	if (ctx == NULL) {
 		DOCA_LOG_ERR("Failed to retrieve DOCA ETH RXQ context as DOCA context");
 		status = DOCA_ERROR_UNEXPECTED;
@@ -529,16 +533,16 @@ static void eth_rxq_cleanup(struct eth_rxq_sample_objects *state)
 static doca_error_t check_device(struct doca_devinfo *devinfo)
 {
 	doca_error_t status;
-	uint32_t max_supported_burst_size;
+	uint32_t max_supported_inflight_packets;
 	uint32_t max_supported_packet_size;
 
-	status = doca_eth_rxq_cap_get_max_burst_size(devinfo, &max_supported_burst_size);
+	status = doca_eth_rxq_cap_get_max_inflight_packets(devinfo, &max_supported_inflight_packets);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get supported max burst size, err: %s", doca_error_get_name(status));
+		DOCA_LOG_ERR("Failed to get supported max inflight packets, err: %s", doca_error_get_name(status));
 		return status;
 	}
 
-	if (max_supported_burst_size < MAX_BURST_SIZE)
+	if (max_supported_inflight_packets < MAX_INFLIGHT_PACKETS)
 		return DOCA_ERROR_NOT_SUPPORTED;
 
 	status = doca_eth_rxq_cap_get_max_packet_size(devinfo, &max_supported_packet_size);
@@ -547,7 +551,7 @@ static doca_error_t check_device(struct doca_devinfo *devinfo)
 		return status;
 	}
 
-	if (max_supported_packet_size < MAX_PKT_SIZE)
+	if (max_supported_packet_size < requested_max_pkt_size)
 		return DOCA_ERROR_NOT_SUPPORTED;
 
 	status = doca_eth_rxq_cap_is_type_supported(devinfo,
@@ -602,21 +606,31 @@ static doca_error_t allocate_eth_core_resources_shared_mempool(struct eth_rxq_sa
  * @headroom_size [in]: packet headroom size
  * @tailroom_size [in]: packet tailroom size
  * @num_queues [in]: number of ETH RXQs to share the memory pool between
+ * @max_pkt_size [in]: max packet size to receive
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise
  */
 doca_error_t eth_rxq_batch_shared_mempool_receive(const char *ib_dev_name,
 						  bool timestamp_enable,
 						  uint16_t headroom_size,
 						  uint16_t tailroom_size,
-						  uint16_t num_queues)
+						  uint16_t num_queues,
+						  uint32_t max_pkt_size)
 {
 	doca_error_t status;
 	struct eth_rxq_sample_objects state = {.total_received_packets = 0,
 					       .num_queues = num_queues,
+					       .max_pkt_size = max_pkt_size,
 					       .timestamp_enable = timestamp_enable,
 					       .headroom_size = headroom_size,
 					       .tailroom_size = tailroom_size};
 	struct eth_flow_common_config flow_cfg = {};
+
+	requested_max_pkt_size = max_pkt_size;
+
+	DOCA_LOG_INFO("Receiving packets of up to %u bytes with headroom %u and tailroom %u",
+		      state.max_pkt_size,
+		      headroom_size,
+		      tailroom_size);
 
 	status = allocate_eth_core_resources_shared_mempool(&state, ib_dev_name);
 	if (status != DOCA_SUCCESS) {

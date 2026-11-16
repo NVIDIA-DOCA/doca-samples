@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -23,6 +23,7 @@
  *
  */
 
+#include <errno.h>
 #include "dpa_common.h"
 #include "doca_dpa.h"
 #include "libflexio/flexio_ver.h"
@@ -39,6 +40,7 @@
 
 DOCA_LOG_REGISTER(DPA_COMMON);
 
+#define PCI_SYSFS_PATH_LEN (64) /* Fits "/sys/bus/pci/devices/<DBDF>/physfn" and the link it points to */
 #define DPA_THREADS_MAX 256
 
 /*
@@ -243,6 +245,71 @@ doca_error_t register_dpa_params(void)
 }
 
 /*
+ * Get the PCI address of the PF that a device belongs to
+ * For a function that is not a VF, the device's own PCI address is returned, for a VF the parent PF's address is read
+ * from sysfs
+ *
+ * @devinfo [in]: The device to query
+ * @base_dev_pci_addr [out]: PCI address of the parent PF, should be of size DOCA_DEVINFO_PCI_ADDR_SIZE at least
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t get_base_pci_addr(const struct doca_devinfo *devinfo, char *base_dev_pci_addr)
+{
+	char physfn_path[PCI_SYSFS_PATH_LEN];
+	char link_target[PCI_SYSFS_PATH_LEN];
+	enum doca_pci_func_type func_type;
+	const char *parent;
+	doca_error_t result;
+	int len;
+
+	result = doca_devinfo_get_pci_addr_str(devinfo, base_dev_pci_addr);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get PCI device address: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_devinfo_get_pci_func_type(devinfo, &func_type);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get PCI function type: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* Only a VF reports an address of its own that differs from the address of its Parent PF */
+	if (func_type != DOCA_PCI_FUNC_TYPE_VF) {
+		return DOCA_SUCCESS;
+	}
+
+	len = snprintf(physfn_path, sizeof(physfn_path), "/sys/bus/pci/devices/%s/physfn", base_dev_pci_addr);
+	if (len < 0 || (size_t)len >= sizeof(physfn_path))
+		return DOCA_ERROR_INVALID_VALUE;
+
+	/* The physfn link of a VF points at the PCI device directory of its parent PF */
+	len = readlink(physfn_path, link_target, sizeof(link_target) - 1);
+	if (len < 0) {
+		DOCA_LOG_ERR("Failed to read %s: %s", physfn_path, strerror(errno));
+		return DOCA_ERROR_OPERATING_SYSTEM;
+	}
+
+	/* readlink() does not report truncation, a full buffer means the target may have been cut short */
+	if ((size_t)len >= sizeof(link_target) - 1) {
+		DOCA_LOG_ERR("Link target of %s is too long", physfn_path);
+		return DOCA_ERROR_OPERATING_SYSTEM;
+	}
+
+	link_target[len] = '\0';
+
+	/* The last component of the target is the parent PF PCI address */
+	parent = strrchr(link_target, '/');
+	if (parent == NULL)
+		return DOCA_ERROR_OPERATING_SYSTEM;
+
+	strncpy(base_dev_pci_addr, parent + 1, DOCA_DEVINFO_PCI_ADDR_SIZE - 1);
+	base_dev_pci_addr[DOCA_DEVINFO_PCI_ADDR_SIZE - 1] = '\0';
+
+	return DOCA_SUCCESS;
+}
+
+/*
  * Open DPA DOCA devices
  *
  * @pf_device_name [in]: Wanted PF device name, can be NOT_SET and then a random DPA supported device is chosen
@@ -256,6 +323,10 @@ static doca_error_t open_dpa_device(const char *pf_device_name,
 				    struct doca_dev **pf_doca_device,
 				    struct doca_dev **rdma_doca_device)
 {
+	char pf_pci_dev_addr[DOCA_DEVINFO_PCI_ADDR_SIZE] = {0};
+	char rdma_base_pci_dev_addr[DOCA_DEVINFO_PCI_ADDR_SIZE] = {0};
+	uint8_t is_rdma_base_pci_addr = 0;
+	uint8_t rdma_device_found = 0;
 	struct doca_devinfo **dev_list;
 	uint32_t nb_devs = 0;
 	doca_error_t result, dpa_cap;
@@ -279,7 +350,39 @@ static doca_error_t open_dpa_device(const char *pf_device_name,
 		return result;
 	}
 
-	/* Start with opening PF DOCA device */
+	if (strcmp(rdma_device_name, DEVICE_DEFAULT_NAME) != 0) {
+		for (i = 0; i < nb_devs; i++) {
+			result = doca_devinfo_get_ibdev_name(dev_list[i], ibdev_name, sizeof(ibdev_name));
+			if (result != DOCA_SUCCESS || strcmp(rdma_device_name, ibdev_name) != 0) {
+				continue;
+			}
+
+			rdma_device_found = 1;
+			result = doca_devinfo_get_pci_func_type(dev_list[i], &func_type);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to get PCI function type: %s", doca_error_get_descr(result));
+				goto exit_open_dpa_device;
+			}
+
+			result = get_base_pci_addr(dev_list[i], rdma_base_pci_dev_addr);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to get PCI device address: %s", doca_error_get_descr(result));
+				goto exit_open_dpa_device;
+			}
+
+			break;
+		}
+		if (!rdma_device_found) {
+			DOCA_LOG_ERR("Couldn't find RDMA DOCA device");
+			result = DOCA_ERROR_NOT_FOUND;
+			goto exit_open_dpa_device;
+		}
+	}
+
+	/*
+	 * Open the PF DOCA device: the first DPA supported PF that matches the requested RDMA device,
+	 * and that shares its PCI address with the requested RDMA base device.
+	 */
 	for (i = 0; i < nb_devs; i++) {
 		dpa_cap = doca_dpa_cap_is_supported(dev_list[i]);
 		if (dpa_cap != DOCA_SUCCESS) {
@@ -300,6 +403,28 @@ static doca_error_t open_dpa_device(const char *pf_device_name,
 		result = doca_devinfo_get_ibdev_name(dev_list[i], ibdev_name, sizeof(ibdev_name));
 		if (result != DOCA_SUCCESS) {
 			continue;
+		}
+
+		if (strcmp(rdma_device_name, DEVICE_DEFAULT_NAME) != 0) {
+			result = doca_devinfo_is_equal_pci_addr(dev_list[i],
+								rdma_base_pci_dev_addr,
+								&is_rdma_base_pci_addr);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to compare PCI device addresses %s: %s",
+					     ibdev_name,
+					     doca_error_get_descr(result));
+				goto exit_open_dpa_device;
+			}
+
+			if (!is_rdma_base_pci_addr) {
+				continue;
+			}
+		}
+
+		result = doca_devinfo_get_pci_addr_str(dev_list[i], pf_pci_dev_addr);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get PCI device address: %s", doca_error_get_descr(result));
+			goto exit_open_dpa_device;
 		}
 
 		if (strcmp(pf_device_name, DEVICE_DEFAULT_NAME) == 0 || strcmp(pf_device_name, ibdev_name) == 0) {
@@ -324,6 +449,7 @@ static doca_error_t open_dpa_device(const char *pf_device_name,
 
 	if (!must_extend_pf_device && strcmp(rdma_device_name, DEVICE_DEFAULT_NAME) != 0) {
 		doca_dev_close(*pf_doca_device);
+		*pf_doca_device = NULL;
 		DOCA_LOG_ERR("RDMA DOCA device is provided, but PF DOCA device is not extendable");
 		result = DOCA_ERROR_BAD_CONFIG;
 		goto exit_open_dpa_device;
@@ -349,6 +475,16 @@ static doca_error_t open_dpa_device(const char *pf_device_name,
 		/* Can't use same rdma device as pf device (in case pf device is extended) */
 		result = doca_devinfo_get_ibdev_name(dev_list[i], ibdev_name, sizeof(ibdev_name));
 		if (result != DOCA_SUCCESS || strcmp(ibdev_name, opened_pf_device_name) == 0) {
+			continue;
+		}
+
+		result = get_base_pci_addr(dev_list[i], rdma_base_pci_dev_addr);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to PCI device address: %s", doca_error_get_descr(result));
+			goto exit_open_dpa_device;
+		}
+
+		if (strcmp(pf_pci_dev_addr, rdma_base_pci_dev_addr) != 0) {
 			continue;
 		}
 
@@ -919,6 +1055,29 @@ doca_error_t dpa_thread_obj_init(struct dpa_thread_obj *dpa_thread_obj)
 				     doca_error_get_descr(doca_err));
 			dpa_thread_obj_destroy(dpa_thread_obj);
 			return doca_err;
+		}
+	}
+
+	if (dpa_thread_obj->event_channel_enabled) {
+		doca_err = doca_dpa_thread_set_event_channel_enabled(dpa_thread_obj->thread, true);
+		if (doca_err != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Function doca_dpa_thread_set_event_channel_enabled failed (%s)",
+				     doca_error_get_descr(doca_err));
+			dpa_thread_obj_destroy(dpa_thread_obj);
+			return doca_err;
+		}
+
+		if (dpa_thread_obj->max_completions > 0) {
+			doca_err = doca_dpa_thread_set_max_num_completions_per_event_channel(
+				dpa_thread_obj->thread,
+				dpa_thread_obj->max_completions);
+			if (doca_err != DOCA_SUCCESS) {
+				DOCA_LOG_ERR(
+					"Function doca_dpa_thread_set_max_num_completions_per_event_channel failed (%s)",
+					doca_error_get_descr(doca_err));
+				dpa_thread_obj_destroy(dpa_thread_obj);
+				return doca_err;
+			}
 		}
 	}
 

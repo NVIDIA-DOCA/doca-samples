@@ -1394,7 +1394,7 @@ doca_error_t flow_custom_header(int nb_queues)
 	struct doca_flow_definitions *defs = NULL;
 	const int nb_ports = 1;
 	struct process_packet_context wait_ctx = {.nb_ports = nb_ports};
-	struct flow_resources resource = {0};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
@@ -1410,7 +1410,7 @@ doca_error_t flow_custom_header(int nb_queues)
 		return result;
 	}
 
-	result = init_doca_flow_with_defs(nb_queues, "vnf,hws", &resource, nr_shared_resources, defs);
+	result = init_doca_flow_with_defs(nb_queues, "vnf", &resource, nr_shared_resources, defs);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow with definitions: %s", doca_error_get_descr(result));
 		goto exit;
@@ -1493,7 +1493,7 @@ doca_error_t flow_custom_header(int nb_queues)
 stop:
 	stop_doca_flow_ports(nb_ports, ports);
 exit:
-	doca_flow_destroy();
+	destroy_doca_flow();
 	doca_flow_definitions_destroy(defs);
 	return result;
 }

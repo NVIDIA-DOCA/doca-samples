@@ -83,7 +83,9 @@ static __device__ uint16_t icmp_checksum(const uint16_t *icmph, int len)
 	return (~sum);
 }
 
-__global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond, struct doca_gpu_eth_rxq *rxq, struct doca_gpu_eth_txq *txq)
+__global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond,
+					 struct doca_gpu_eth_rxq *rxq,
+					 struct doca_gpu_eth_txq *txq)
 {
 	__shared__ uint64_t out_first_pkt_idx;
 	__shared__ uint32_t out_pkt_num;
@@ -105,24 +107,23 @@ __global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond, struct doca_gpu_et
 
 	while (DOCA_GPUNETIO_VOLATILE(*exit_cond) == 0) {
 		ret = doca_gpu_dev_eth_rxq_recv<DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP,
-									DOCA_GPUNETIO_ETH_MCST_AUTO,
-									DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO>(
-								rxq,
-								MAX_RX_NUM_PKTS_ICMP,
-								MAX_RX_TIMEOUT_NS_ICMP,
-								&out_first_pkt_idx,
-								&out_pkt_num,
-								NULL);
+						DOCA_GPUNETIO_ETH_MCST_AUTO,
+						DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO>(rxq,
+										    MAX_RX_NUM_PKTS_ICMP,
+										    MAX_RX_TIMEOUT_NS_ICMP,
+										    &out_first_pkt_idx,
+										    &out_pkt_num,
+										    NULL);
 		/* If any thread returns receive error, the whole execution stops */
 		if (ret != DOCA_SUCCESS) {
 			if (lane_id == 0) {
-				#if ENABLE_KERNEL_DEBUG_PRINTS == 1
+#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 				printf("Receive ICMP kernel error %d warp %d lane %d error %d\n",
 				       ret,
 				       warp_id,
 				       out_pkt_num,
 				       ret);
-				#endif
+#endif
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 			}
 			break;
@@ -151,20 +152,26 @@ __global__ void cuda_kernel_receive_icmp(uint32_t *exit_cond, struct doca_gpu_et
 
 				// Will translate in a notification caught by DOCA PE on the CPU side.
 				// DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA: 1 QP per CUDA block
-				// DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD: For every receiver timeout, not every thread in the warp may receive an ICMP message to reply
+				// DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD: For every receiver timeout, not every thread in
+				// the warp may receive an ICMP message to reply
 				doca_gpu_dev_eth_txq_send<DOCA_GPUNETIO_ETH_RESOURCE_SHARING_MODE_CTA,
-										DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA,
-										DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
-										DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD>(txq, buf_addr, buf_mkey, nbytes,
-											DOCA_GPUNETIO_ETH_SEND_FLAG_NOTIFY, &out_ticket);
+							  DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA,
+							  DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
+							  DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD>(
+					txq,
+					buf_addr,
+					buf_mkey,
+					nbytes,
+					DOCA_GPUNETIO_ETH_SEND_FLAG_NOTIFY,
+					&out_ticket);
 			} else
-				#if ENABLE_KERNEL_DEBUG_PRINTS == 1
+#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 				printf("Unknown ICMP type %d code %d id %d seq %d\n",
 				       hdr->l4_hdr.type,
 				       hdr->l4_hdr.code,
 				       BYTE_SWAP16(hdr->l4_hdr.ident),
 				       BYTE_SWAP16(hdr->l4_hdr.seq_nb));
-				#endif
+#endif
 
 			buf_idx += WARP_SIZE;
 		}

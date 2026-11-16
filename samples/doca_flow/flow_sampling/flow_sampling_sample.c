@@ -379,7 +379,7 @@ doca_error_t flow_sampling(int nb_queues, struct flow_switch_ctx *ctx)
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = num_of_entries;
 
-	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -394,7 +394,7 @@ doca_error_t flow_sampling(int nb_queues, struct flow_switch_ctx *ctx)
 					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -404,7 +404,7 @@ doca_error_t flow_sampling(int nb_queues, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create random sampling pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -412,7 +412,7 @@ doca_error_t flow_sampling(int nb_queues, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add random sampling pipe entry: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -420,7 +420,7 @@ doca_error_t flow_sampling(int nb_queues, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create root pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -428,7 +428,7 @@ doca_error_t flow_sampling(int nb_queues, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add root pipe entry: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -436,7 +436,7 @@ doca_error_t flow_sampling(int nb_queues, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -450,6 +450,6 @@ doca_error_t flow_sampling(int nb_queues, struct flow_switch_ctx *ctx)
 	flow_wait_for_packets(WAITING_TIME, print_sampling_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

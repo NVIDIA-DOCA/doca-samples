@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -38,57 +38,57 @@ use_cases:
         packets_to_send:
           - receiving_port: 0
             packets:
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=104, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=26234, src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=28299, urgptr=0)/Raw(load=b'***IPv4-packet-that-always-hit::should-passes-as-is::index[1]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=146, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=28764, src='2.2.2.2', dst='3.3.3.3')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=32810, urgptr=0)/Raw(load=b'***IPv4-packet::TOS-should-be-updated-with-IHL-for-first-batch-and-gets-VLAN-for-second-batch::index[2]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=0, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11909, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[3]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=120, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11653, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[4]***')
+              - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP()/Raw(load=b'Sent to port 0, hit IPv4 pipe, forwarded as-is from port 1')
+              - Ether()/IP(src='2.2.2.2', dst='3.3.3.3')/TCP()/Raw(load=b'Sent to port 0, missed IPv4 pipe, TOS/VLAN updated, forwarded from port 1')
+              - Ether()/IPv6(tc=0)/TCP()/Raw(load=b'Sent to port 0, IPv6 traffic-class/VLAN updated, forwarded from port 1')
+              - Ether()/IPv6(tc=120)/TCP()/Raw(load=b'Sent to port 0, IPv6 traffic-class/VLAN updated, forwarded from port 1')
           - receiving_port: 1
             packets:
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=104, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=26234, src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=28299, urgptr=0)/Raw(load=b'***IPv4-packet-that-always-hit::should-passes-as-is::index[1]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=146, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=28764, src='2.2.2.2', dst='3.3.3.3')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=32810, urgptr=0)/Raw(load=b'***IPv4-packet::TOS-should-be-updated-with-IHL-for-first-batch-and-gets-VLAN-for-second-batch::index[2]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=0, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11909, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[3]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=120, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11653, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[4]***')
+              - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP()/Raw(load=b'Sent to port 1, hit IPv4 pipe, forwarded as-is from port 0')
+              - Ether()/IP(src='2.2.2.2', dst='3.3.3.3')/TCP()/Raw(load=b'Sent to port 1, missed IPv4 pipe, TOS/VLAN updated, forwarded from port 0')
+              - Ether()/IPv6(tc=0)/TCP()/Raw(load=b'Sent to port 1, IPv6 traffic-class/VLAN updated, forwarded from port 0')
+              - Ether()/IPv6(tc=120)/TCP()/Raw(load=b'Sent to port 1, IPv6 traffic-class/VLAN updated, forwarded from port 0')
         validation:
           - type: packet
             expected_packets:
               - forwarding_port: 1
                 packets:
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=104, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=26234, src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=28299, urgptr=0)/Raw(load=b'***IPv4-packet-that-always-hit::should-passes-as-is::index[1]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=5, len=146, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=28759, src='2.2.2.2', dst='3.3.3.3')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=32810, urgptr=0)/Raw(load=b'***IPv4-packet::TOS-should-be-updated-with-IHL-for-first-batch-and-gets-VLAN-for-second-batch::index[2]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=147, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11909, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[3]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=147, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11653, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[4]***')
+                  - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP()/Raw(load=b'Sent to port 0, hit IPv4 pipe, forwarded as-is from port 1')
+                  - Ether()/IP(tos=5, src='2.2.2.2', dst='3.3.3.3')/TCP()/Raw(load=b'Sent to port 0, missed IPv4 pipe, TOS/VLAN updated, forwarded from port 1')
+                  - Ether()/IPv6(tc=90)/TCP()/Raw(load=b'Sent to port 0, IPv6 traffic-class/VLAN updated, forwarded from port 1')
+                  - Ether()/IPv6(tc=90)/TCP()/Raw(load=b'Sent to port 0, IPv6 traffic-class/VLAN updated, forwarded from port 1')
               - forwarding_port: 0
                 packets:
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=104, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=26234, src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=28299, urgptr=0)/Raw(load=b'***IPv4-packet-that-always-hit::should-passes-as-is::index[1]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=5, len=146, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=28759, src='2.2.2.2', dst='3.3.3.3')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=32810, urgptr=0)/Raw(load=b'***IPv4-packet::TOS-should-be-updated-with-IHL-for-first-batch-and-gets-VLAN-for-second-batch::index[2]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=147, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11909, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[3]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=147, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11653, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[4]***')
+                  - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP()/Raw(load=b'Sent to port 1, hit IPv4 pipe, forwarded as-is from port 0')
+                  - Ether()/IP(tos=5, src='2.2.2.2', dst='3.3.3.3')/TCP()/Raw(load=b'Sent to port 1, missed IPv4 pipe, TOS/VLAN updated, forwarded from port 0')
+                  - Ether()/IPv6(tc=90)/TCP()/Raw(load=b'Sent to port 1, IPv6 traffic-class/VLAN updated, forwarded from port 0')
+                  - Ether()/IPv6(tc=90)/TCP()/Raw(load=b'Sent to port 1, IPv6 traffic-class/VLAN updated, forwarded from port 0')
       - name: "Sending packets iteration 2"
         packets_to_send:
           - receiving_port: 0
             packets:
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=104, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=26234, src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=28299, urgptr=0)/Raw(load=b'***IPv4-packet-that-always-hit::should-passes-as-is::index[1]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=146, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=28764, src='2.2.2.2', dst='3.3.3.3')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=32810, urgptr=0)/Raw(load=b'***IPv4-packet::TOS-should-be-updated-with-IHL-for-first-batch-and-gets-VLAN-for-second-batch::index[2]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=0, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11909, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[3]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=120, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11653, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[4]***')
+              - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP()/Raw(load=b'Sent to port 0, hit IPv4 pipe, forwarded as-is from port 1')
+              - Ether()/IP(src='2.2.2.2', dst='3.3.3.3')/TCP()/Raw(load=b'Sent to port 0, missed IPv4 pipe, TOS/VLAN updated, forwarded from port 1')
+              - Ether()/IPv6(tc=0)/TCP()/Raw(load=b'Sent to port 0, IPv6 traffic-class/VLAN updated, forwarded from port 1')
+              - Ether()/IPv6(tc=120)/TCP()/Raw(load=b'Sent to port 0, IPv6 traffic-class/VLAN updated, forwarded from port 1')
           - receiving_port: 1
             packets:
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=104, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=26234, src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=28299, urgptr=0)/Raw(load=b'***IPv4-packet-that-always-hit::should-passes-as-is::index[1]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=146, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=28764, src='2.2.2.2', dst='3.3.3.3')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=32810, urgptr=0)/Raw(load=b'***IPv4-packet::TOS-should-be-updated-with-IHL-for-first-batch-and-gets-VLAN-for-second-batch::index[2]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=0, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11909, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[3]***')
-              - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=34525)/IPv6(version=6, tc=120, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11653, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[4]***')
+              - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP()/Raw(load=b'Sent to port 1, hit IPv4 pipe, forwarded as-is from port 0')
+              - Ether()/IP(src='2.2.2.2', dst='3.3.3.3')/TCP()/Raw(load=b'Sent to port 1, missed IPv4 pipe, TOS/VLAN updated, forwarded from port 0')
+              - Ether()/IPv6(tc=0)/TCP()/Raw(load=b'Sent to port 1, IPv6 traffic-class/VLAN updated, forwarded from port 0')
+              - Ether()/IPv6(tc=120)/TCP()/Raw(load=b'Sent to port 1, IPv6 traffic-class/VLAN updated, forwarded from port 0')
         validation:
           - type: packet
             expected_packets:
               - forwarding_port: 1
                 packets:
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=104, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=26234, src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=28299, urgptr=0)/Raw(load=b'***IPv4-packet-that-always-hit::should-passes-as-is::index[1]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=33024)/Dot1Q(prio=0, id=1, vlan=564, type=2048)/IP(version=4, ihl=5, tos=0, len=146, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=28764, src='2.2.2.2', dst='3.3.3.3')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=32810, urgptr=0)/Raw(load=b'***IPv4-packet::TOS-should-be-updated-with-IHL-for-first-batch-and-gets-VLAN-for-second-batch::index[2]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=33024)/Dot1Q(prio=0, id=1, vlan=564, type=34525)/IPv6(version=6, tc=0, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11909, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[3]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=33024)/Dot1Q(prio=0, id=1, vlan=564, type=34525)/IPv6(version=6, tc=120, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11653, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[4]***')
+                  - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP()/Raw(load=b'Sent to port 0, hit IPv4 pipe, forwarded as-is from port 1')
+                  - Ether()/Dot1Q(id=1, vlan=564)/IP(src='2.2.2.2', dst='3.3.3.3')/TCP()/Raw(load=b'Sent to port 0, missed IPv4 pipe, TOS/VLAN updated, forwarded from port 1')
+                  - Ether()/Dot1Q(id=1, vlan=564)/IPv6(tc=0)/TCP()/Raw(load=b'Sent to port 0, IPv6 traffic-class/VLAN updated, forwarded from port 1')
+                  - Ether()/Dot1Q(id=1, vlan=564)/IPv6(tc=120)/TCP()/Raw(load=b'Sent to port 0, IPv6 traffic-class/VLAN updated, forwarded from port 1')
               - forwarding_port: 0
                 packets:
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=2048)/IP(version=4, ihl=5, tos=0, len=104, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=26234, src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=28299, urgptr=0)/Raw(load=b'***IPv4-packet-that-always-hit::should-passes-as-is::index[1]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=33024)/Dot1Q(prio=0, id=1, vlan=564, type=2048)/IP(version=4, ihl=5, tos=0, len=146, id=1, flags=0, frag=0, ttl=64, proto=6, chksum=28764, src='2.2.2.2', dst='3.3.3.3')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=32810, urgptr=0)/Raw(load=b'***IPv4-packet::TOS-should-be-updated-with-IHL-for-first-batch-and-gets-VLAN-for-second-batch::index[2]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=33024)/Dot1Q(prio=0, id=1, vlan=564, type=34525)/IPv6(version=6, tc=0, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11909, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[3]***')
-                  - Ether(dst='11:11:11:11:11:11', src='22:22:22:22:22:22', type=33024)/Dot1Q(prio=0, id=1, vlan=564, type=34525)/IPv6(version=6, tc=120, fl=0, plen=147, nh=6, hlim=64, src='::1', dst='::1')/TCP(sport=1234, dport=4321, seq=0, ack=0, dataofs=5, reserved=0, flags=2, window=8192, chksum=11653, urgptr=0)/Raw(load=b'***IPv6-packet::traffic-class-should-be-updated-with-payload-length-for-first-batch-and-gets-VLAN-for-second-batch::index[4]***')
+                  - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP()/Raw(load=b'Sent to port 1, hit IPv4 pipe, forwarded as-is from port 0')
+                  - Ether()/Dot1Q(id=1, vlan=564)/IP(src='2.2.2.2', dst='3.3.3.3')/TCP()/Raw(load=b'Sent to port 1, missed IPv4 pipe, TOS/VLAN updated, forwarded from port 0')
+                  - Ether()/Dot1Q(id=1, vlan=564)/IPv6(tc=0)/TCP()/Raw(load=b'Sent to port 1, IPv6 traffic-class/VLAN updated, forwarded from port 0')
+                  - Ether()/Dot1Q(id=1, vlan=564)/IPv6(tc=120)/TCP()/Raw(load=b'Sent to port 1, IPv6 traffic-class/VLAN updated, forwarded from port 0')

@@ -28,7 +28,7 @@
 #include "packets.h"
 
 #define TCP_CPU_RSS_QUEUE_DEPTH 2048
-#define TCP_PACKET_MAX_BURST_SIZE 128
+#define TCP_PACKET_MAX_INFLIGHT_PACKETS 128
 
 DOCA_LOG_REGISTER(TCP_CPU_RSS);
 
@@ -347,11 +347,11 @@ release_dst:
 	return NULL;
 }
 
-static void rxq_success_cb(struct doca_eth_rxq_event_batch_managed_recv *event_batch_managed_recv,
+static void rxq_success_cb(struct doca_eth_rxq_event_batch_managed_mempool_recv *event_batch_managed_mempool_recv,
 			   uint16_t events_number,
-			   union doca_data event_batch_user_data,
 			   doca_error_t status,
-			   struct doca_buf **pkt_array)
+			   struct doca_buf **pkt_array,
+			   union doca_data event_batch_user_data)
 {
 	(void)status;
 	union doca_data user_data;
@@ -361,7 +361,7 @@ static void rxq_success_cb(struct doca_eth_rxq_event_batch_managed_recv *event_b
 	struct doca_buf **task_batch_packets_array;
 	struct doca_buf *ack_buf = NULL;
 	struct doca_eth_txq *eth_txq;
-	struct doca_buf *tx_packets[TCP_PACKET_MAX_BURST_SIZE];
+	struct doca_buf *tx_packets[TCP_PACKET_MAX_INFLIGHT_PACKETS];
 	struct doca_buf_pool *buf_pool;
 	union doca_data dummy_user_data;
 	doca_error_t result;
@@ -369,7 +369,7 @@ static void rxq_success_cb(struct doca_eth_rxq_event_batch_managed_recv *event_b
 	struct rxq_tcp_queues *tcp_queues;
 	struct doca_buf *pkt;
 	struct tcp_hdr *tcp_hdr;
-	struct doca_ctx *ctx = doca_eth_rxq_event_batch_managed_recv_get_ctx(event_batch_managed_recv);
+	struct doca_ctx *ctx = doca_eth_rxq_event_batch_managed_mempool_recv_get_ctx(event_batch_managed_mempool_recv);
 
 	result = doca_ctx_get_user_data(ctx, &user_data);
 	if (result != DOCA_SUCCESS) {
@@ -420,15 +420,15 @@ static void rxq_success_cb(struct doca_eth_rxq_event_batch_managed_recv *event_b
 			tx_packets[num_tx_packets++] = ack_buf;
 	}
 
-	doca_eth_rxq_event_batch_managed_recv_pkt_array_free(pkt_array);
+	doca_eth_rxq_event_batch_managed_mempool_recv_free_packet_array(pkt_array);
 
 	if (num_tx_packets > 0) {
-		result = doca_eth_txq_task_batch_send_allocate(eth_txq,
-							       num_tx_packets,
-							       dummy_user_data,
-							       &task_batch_packets_array,
-							       &task_batch_user_data_array,
-							       &task_batch);
+		result = doca_eth_txq_task_batch_send_alloc(eth_txq,
+							    num_tx_packets,
+							    dummy_user_data,
+							    &task_batch_packets_array,
+							    &task_batch_user_data_array,
+							    &task_batch);
 		if (result != DOCA_SUCCESS) {
 			/* If packet rate is high, then it can happen that ETH TXQ is full and we can't allocate task
 			 * batch, don't fail the application in this case */
@@ -460,13 +460,13 @@ error:
 	DOCA_GPUNETIO_VOLATILE(force_quit) = true;
 }
 
-static void rxq_error_cb(struct doca_eth_rxq_event_batch_managed_recv *event_batch_managed_recv,
+static void rxq_error_cb(struct doca_eth_rxq_event_batch_managed_mempool_recv *event_batch_managed_mempool_recv,
 			 uint16_t events_number,
-			 union doca_data event_batch_user_data,
 			 doca_error_t status,
-			 struct doca_buf **pkt_array)
+			 struct doca_buf **pkt_array,
+			 union doca_data event_batch_user_data)
 {
-	(void)event_batch_managed_recv;
+	(void)event_batch_managed_mempool_recv;
 	(void)events_number;
 	(void)event_batch_user_data;
 	(void)status;
@@ -729,19 +729,19 @@ doca_error_t create_txq_cpu_rss(struct rxq_tcp_queues *tcp_queues, uint16_t queu
 		goto destroy_eth_txq;
 	}
 
-	result = doca_eth_txq_set_l3_chksum_offload(tcp_queues->eth_txq_cpu_rss[queue_id], 1);
+	result = doca_eth_txq_set_l3_checksum_offload(tcp_queues->eth_txq_cpu_rss[queue_id], 1);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set L3 checksum offload, err: %s", doca_error_get_name(result));
 		goto destroy_eth_txq;
 	}
 
-	result = doca_eth_txq_set_l4_chksum_offload(tcp_queues->eth_txq_cpu_rss[queue_id], 1);
+	result = doca_eth_txq_set_l4_checksum_offload(tcp_queues->eth_txq_cpu_rss[queue_id], 1);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set L4 checksum offload, err: %s", doca_error_get_name(result));
 		goto destroy_eth_txq;
 	}
 
-	ctx = doca_eth_txq_as_doca_ctx(tcp_queues->eth_txq_cpu_rss[queue_id]);
+	ctx = doca_eth_txq_as_ctx(tcp_queues->eth_txq_cpu_rss[queue_id]);
 	if (ctx == NULL) {
 		DOCA_LOG_ERR("Failed to retrieve DOCA ETH TXQ context as DOCA context");
 		goto destroy_eth_txq;
@@ -821,7 +821,7 @@ doca_error_t destroy_txq_cpu_rss(struct rxq_tcp_queues *tcp_queues, uint16_t que
 	struct doca_ctx *ctx;
 
 	if (tcp_queues->eth_txq_cpu_rss[queue_id] != NULL) {
-		ctx = doca_eth_txq_as_doca_ctx(tcp_queues->eth_txq_cpu_rss[queue_id]);
+		ctx = doca_eth_txq_as_ctx(tcp_queues->eth_txq_cpu_rss[queue_id]);
 		result = doca_ctx_stop(ctx);
 		/* In good flow, context can fail to stop due to tasks left to handle */
 		if (result == DOCA_ERROR_IN_PROGRESS) {
@@ -935,10 +935,10 @@ doca_error_t create_rxq_cpu_rss(struct rxq_tcp_queues *tcp_queues, uint16_t queu
 		goto destroy_eth_rxq;
 	}
 
-	result = doca_eth_rxq_set_pkt_buf(tcp_queues->eth_rxq_cpu_rss[queue_id],
-					  tcp_queues->rxq_cpu_rss_mmap[queue_id],
-					  0,
-					  cyclic_buffer_size);
+	result = doca_eth_rxq_set_packet_buf(tcp_queues->eth_rxq_cpu_rss[queue_id],
+					     tcp_queues->rxq_cpu_rss_mmap[queue_id],
+					     0,
+					     cyclic_buffer_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set packet buffer for CPU RSS on queue %u (err=%s)",
 			     queue_id,
@@ -947,12 +947,12 @@ doca_error_t create_rxq_cpu_rss(struct rxq_tcp_queues *tcp_queues, uint16_t queu
 	}
 
 	user_data.ptr = tcp_queues;
-	result = doca_eth_rxq_event_batch_managed_recv_register(tcp_queues->eth_rxq_cpu_rss[queue_id],
-								DOCA_EVENT_BATCH_EVENTS_NUMBER_128,
-								DOCA_EVENT_BATCH_EVENTS_NUMBER_1,
-								user_data,
-								rxq_success_cb,
-								rxq_error_cb);
+	result = doca_eth_rxq_event_batch_managed_mempool_recv_register(tcp_queues->eth_rxq_cpu_rss[queue_id],
+									DOCA_EVENT_BATCH_EVENTS_NUMBER_128,
+									DOCA_EVENT_BATCH_EVENTS_NUMBER_1,
+									user_data,
+									rxq_success_cb,
+									rxq_error_cb);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register managed receive event batch for CPU RSS on queue %u (err=%s)",
 			     queue_id,
@@ -960,7 +960,7 @@ doca_error_t create_rxq_cpu_rss(struct rxq_tcp_queues *tcp_queues, uint16_t queu
 		goto destroy_eth_rxq;
 	}
 
-	ctx = doca_eth_rxq_as_doca_ctx(tcp_queues->eth_rxq_cpu_rss[queue_id]);
+	ctx = doca_eth_rxq_as_ctx(tcp_queues->eth_rxq_cpu_rss[queue_id]);
 	if (ctx == NULL) {
 		DOCA_LOG_ERR("Failed to retrieve DOCA ETH RXQ context as DOCA context for CPU RSS on queue %u (err=%s)",
 			     queue_id,
@@ -1005,7 +1005,7 @@ doca_error_t destroy_rxq_cpu_rss(struct rxq_tcp_queues *tcp_queues, uint16_t que
 	struct doca_ctx *ctx;
 
 	if (tcp_queues->eth_rxq_cpu_rss[queue_id] != NULL) {
-		ctx = doca_eth_rxq_as_doca_ctx(tcp_queues->eth_rxq_cpu_rss[queue_id]);
+		ctx = doca_eth_rxq_as_ctx(tcp_queues->eth_rxq_cpu_rss[queue_id]);
 		result = doca_ctx_stop(ctx);
 		/* In good flow, context always succeeds to be stopped immediately (no tasks to handle) */
 		if (result != DOCA_SUCCESS) {

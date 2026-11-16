@@ -52,15 +52,18 @@ option('spdk_dpdk_prefix', type : 'string', value : '/opt/mellanox/spdk',
 option('spdk_isal_prefix', type : 'string', value : '/opt/mellanox/spdk/lib',
 	description : 'SPDK ISA-L installation prefix.')
 
+option('fio_prefix', type : 'string', value: '',
+	description: 'The root path of the fio source tree (directory containing fio.h and config-host.h after ./configure).')
+
 # DPACC options
 option('dpacc_mcpu', type : 'string', value : 'nv-dpa-bf3,nv-dpa-cx7,nv-dpa-cx8,nv-dpa-cx9,nv-dpa-cx10',
 	description : 'Set the supported architecture for DPA related application.')
 
 # Enables per application - turned off by default
-option('enable_app_shield_agent', type: 'boolean', value: false,
-	description: 'Enable the App Shield Agent application.')
 option('enable_bifurcated_driver_model', type: 'boolean', value: false,
 	description: 'Enable the Bifurcated Driver Model application.')
+option('enable_ct_firewall', type: 'boolean', value: false,
+	description: 'Enable the Connection Tracking Firewall application.')
 option('enable_dma_copy', type: 'boolean', value: false,
 	description: 'Enable the DMA copy application.')
 option('enable_dpa_all_to_all', type: 'boolean', value: false,
@@ -79,6 +82,10 @@ option('enable_ip_frag', type: 'boolean', value: false,
 	description: 'Enable IP fragmentation application.')
 option('enable_ipsec_security_gw', type: 'boolean', value: false,
 	description: 'Enable IPsec Security Gateway application.')
+option('enable_memos_fio_plugin', type: 'boolean', value: false,
+	description: 'Enable MEMOS fio plugin.')
+option('enable_memos_initiator_ref_app', type: 'boolean', value: false,
+	description: 'Enable MEMOS Initiator Reference application.')
 option('enable_psp_gateway', type: 'boolean', value: false,
 	description: 'Enable PSP Gateway application.')
 option('enable_nvme_emulation', type: 'boolean', value: false,
@@ -117,5 +124,3 @@ option('enable_virtiofs', type: 'boolean', value: false,
 	description: 'Enable Virtiofs application.')
 option('enable_vnet_pci_dev', type: 'boolean', value: false,
 	description: 'Enable VirtIO Net PCI Device application.')
-option('enable_yara_inspection', type: 'boolean', value: false,
-	description: 'Enable Yara Inspection application.')

@@ -492,6 +492,24 @@ static doca_error_t handle_stats_print_param(void *param, void *config)
 }
 
 /**
+ * @brief Indicates whether DOCA Flow Tune data collection should be enabled.
+ *
+ * @param [in]: A pointer to a boolean flag
+ * @config [in/out]: A void pointer to the application config struct
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t handle_enable_tune_param(void *param, void *config)
+{
+	auto *app_config = (struct psp_gw_app_config *)config;
+	bool *bool_param = (bool *)param;
+	app_config->enable_tune = *bool_param;
+	if (*bool_param) {
+		DOCA_LOG_INFO("NOTE: DOCA Flow Tune is enabled; expect higher memory consumption");
+	}
+	return DOCA_SUCCESS;
+}
+
+/**
  * @brief Returns supported perf types as a string.
  *
  * @supported_types [out]: string to store supported types
@@ -1378,6 +1396,16 @@ static doca_error_t psp_gw_register_params(void)
 					      "stat-print",
 					      "Enable printing statistics",
 					      handle_stats_print_param,
+					      DOCA_ARGP_TYPE_BOOLEAN,
+					      false,
+					      false);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	result = psp_gw_register_single_param(nullptr,
+					      "enable-tune",
+					      "Enable DOCA Flow Tune data collection and tune server",
+					      handle_enable_tune_param,
 					      DOCA_ARGP_TYPE_BOOLEAN,
 					      false,
 					      false);

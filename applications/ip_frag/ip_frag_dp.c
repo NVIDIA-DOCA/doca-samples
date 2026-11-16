@@ -1276,7 +1276,7 @@ doca_error_t ip_frag(struct ip_frag_config *cfg, struct application_dpdk_config 
 	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	doca_error_t ret;
 
-	ret = init_doca_flow(ctx.num_queues, "vnf,hws", &resource, nr_shared_resources);
+	ret = init_doca_flow(ctx.num_queues, "vnf", &resource, nr_shared_resources);
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(ret));
 		return ret;

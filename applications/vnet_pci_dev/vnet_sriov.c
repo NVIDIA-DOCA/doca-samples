@@ -27,6 +27,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <doca_dev.h>
 #include <doca_devemu_pci.h>
@@ -49,14 +50,39 @@ DOCA_LOG_REGISTER(VNET_SRIOV);
 #define VNET_SRIOV_REQUIRED_VF_STRIDE 1
 #define VNET_SRIOV_REQUIRED_FIRST_VF_OFFSET 1
 
+/* tlp_dev start attempts when restarting a VF slot on VFE 0->1 */
+#define VNET_SRIOV_REFRESH_MAX_ATTEMPTS 50
+
 /*********************************************************************************************************************
  *                                                                                                                   *
  *  Cap probing                                                                                                      *
  *                                                                                                                   *
  *********************************************************************************************************************/
 
+doca_error_t vnet_sriov_device_free_resources(const struct doca_devinfo *devinfo, uint32_t *num_msix, uint32_t *num_db)
+{
+	struct doca_devemu_pci_resources *resources = NULL;
+	doca_error_t result;
+
+	if (devinfo == NULL || num_msix == NULL || num_db == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	result = doca_devemu_pci_get_available_resources(devinfo, &resources);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	result = doca_devemu_pci_resources_get_num_msix(resources, num_msix);
+	if (result == DOCA_SUCCESS)
+		result = doca_devemu_pci_resources_get_num_db(resources, num_db);
+
+	(void)doca_devemu_pci_release_resources(resources);
+	return result;
+}
+
 doca_error_t vnet_sriov_probe_caps(const struct doca_devinfo *devinfo, struct vnet_sriov_caps *caps)
 {
+	uint32_t free_msix = 0;
+	uint32_t free_db = 0;
 	uint8_t supported = 0;
 	doca_error_t result;
 
@@ -116,6 +142,11 @@ doca_error_t vnet_sriov_probe_caps(const struct doca_devinfo *devinfo, struct vn
 		      caps->max_first_vf_offset,
 		      caps->max_num_msix_per_device,
 		      caps->max_num_db_per_device);
+
+	if (vnet_sriov_device_free_resources(devinfo, &free_msix, &free_db) == DOCA_SUCCESS)
+		DOCA_LOG_DBG("SR-IOV: unassigned device resources: msix=%u db=%u", free_msix, free_db);
+	else
+		DOCA_LOG_DBG("SR-IOV: unassigned device resources unavailable");
 	return DOCA_SUCCESS;
 
 probe_failed:
@@ -182,7 +213,8 @@ doca_error_t vnet_sriov_validate_caps(const struct tlp_context *tlp_ctx, const s
 	/* Device-wide VF datapath budget: rejecting oversubscription here avoids a
 	 * VF VQ-start failing only after the guest set DRIVER_OK (which can wedge the
 	 * host). per_vf_vqs = VNET_TOTAL_VQS(max_qp) = sriov_num_vf_msix - 1 (read
-	 * from msix since tlp_ctx->max_queue_pairs is not set until after this). */
+	 * from msix since tlp_ctx->max_queue_pairs is not set until after this).
+	 * Sized on the PF's own queue count, which a per-VF list only redistributes. */
 	{
 		uint32_t num_pf = tlp_ctx->num_ep ? tlp_ctx->num_ep : 1;
 		uint32_t per_vf_vqs = tlp_ctx->sriov_num_vf_msix ? (uint32_t)(tlp_ctx->sriov_num_vf_msix - 1) : 0;
@@ -249,6 +281,66 @@ doca_error_t vnet_sriov_validate_caps(const struct tlp_context *tlp_ctx, const s
 			     tlp_ctx->sriov_num_vf_db,
 			     caps->max_num_db_per_device);
 		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	/* Per-VF queue counts draw MSI-X and doorbells from the pool the PF holds
+	 * for all its VFs, so one VF may outgrow the PF as long as its siblings
+	 * leave room in that pool. */
+	if (tlp_ctx->vf_qp_list_len != 0) {
+		uint16_t qp_max = vnet_sriov_vf_qp_max(tlp_ctx);
+		uint32_t msix_budget = (uint32_t)tlp_ctx->sriov_total_vfs * tlp_ctx->sriov_num_vf_msix;
+		uint32_t db_budget = (uint32_t)tlp_ctx->sriov_total_vfs * tlp_ctx->sriov_num_vf_db;
+		uint32_t msix_want = 0;
+		uint32_t db_want = 0;
+		uint32_t qp_want = 0;
+		uint16_t slot;
+
+		if (caps->max_num_msix_per_device != 0 &&
+		    VNET_SRIOV_VF_NUM_MSIX(qp_max) > caps->max_num_msix_per_device) {
+			DOCA_LOG_ERR("SR-IOV: %u queue pairs need %u MSI-X per VF, above the device "
+				     "per-function max=%u",
+				     qp_max,
+				     VNET_SRIOV_VF_NUM_MSIX(qp_max),
+				     caps->max_num_msix_per_device);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+		if (caps->max_num_db_per_device != 0 && VNET_SRIOV_VF_NUM_DB(qp_max) > caps->max_num_db_per_device) {
+			DOCA_LOG_ERR("SR-IOV: %u queue pairs need %u doorbells per VF, above the device "
+				     "per-function max=%u",
+				     qp_max,
+				     VNET_SRIOV_VF_NUM_DB(qp_max),
+				     caps->max_num_db_per_device);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+
+		/* Only the slots that exist, so entries past the last VF cost nothing. */
+		for (slot = 0; slot < tlp_ctx->sriov_total_vfs; slot++) {
+			uint16_t vf_qp = vnet_sriov_vf_qp(tlp_ctx, slot);
+
+			qp_want += vf_qp;
+			msix_want += VNET_SRIOV_VF_NUM_MSIX(vf_qp);
+			db_want += VNET_SRIOV_VF_NUM_DB(vf_qp);
+		}
+
+		if (msix_want > msix_budget || db_want > db_budget) {
+			DOCA_LOG_ERR("SR-IOV: vf-queue-pairs asks %u queue pairs across %u VFs, needing %u MSI-X "
+				     "and %u doorbells, above the %u and %u the PF holds for them",
+				     qp_want,
+				     tlp_ctx->sriov_total_vfs,
+				     msix_want,
+				     db_want,
+				     msix_budget,
+				     db_budget);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+
+		DOCA_LOG_INFO("SR-IOV: vf-queue-pairs claims %u queue pairs, %u/%u MSI-X and %u/%u doorbells of "
+			      "what the PF holds for its VFs",
+			      qp_want,
+			      msix_want,
+			      msix_budget,
+			      db_want,
+			      db_budget);
 	}
 
 	/* Total VF count across all PFs must fit the dynamic-VF pool. */
@@ -359,9 +451,10 @@ doca_error_t vnet_sriov_create_pf_rep_ex(struct tlp_context *tlp_ctx,
 		return DOCA_ERROR_INVALID_VALUE;
 
 	/* Build the PF representor bound to the reserved VF range. Stride and
-	 * first-VF-offset are the fixed no-ARI values (= 1); the per-VF MSI-X and
-	 * doorbell counts come from the config and are provisioned per VF by the
-	 * SDK as part of this call. */
+	 * first-VF-offset are the fixed no-ARI values (= 1). Per-VF MSI-X and
+	 * doorbells come from the queue-pair geometry, so the PF's VF resource
+	 * envelope is total_vfs x that count; a dynamic list only redistributes
+	 * within it. */
 	result = doca_devemu_pci_rep_init_attr_create(&init_attr);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("SR-IOV: failed to allocate rep init attr: %s", doca_error_get_descr(result));
@@ -505,7 +598,26 @@ static doca_error_t sriov_try_open_vf_rep(struct tlp_context *tlp_ctx,
 			     doca_error_get_descr(result));
 		return result;
 	}
+	if (pthread_rwlock_init(&sriov->vf_slots[local_index].admin_config_lock, NULL) != 0) {
+		DOCA_LOG_ERR("SR-IOV: failed to initialize VF[%u] admin configuration lock", local_index);
+		(void)doca_dev_rep_close(sriov->vf_slots[local_index].rep);
+		sriov->vf_slots[local_index].rep = NULL;
+		return DOCA_ERROR_INITIALIZATION;
+	}
+	sriov->vf_slots[local_index].admin_config_lock_initialized = true;
 	sriov->vf_slots[local_index].vf_index = global_vf_index;
+	vnet_recycle_state_init(&sriov->vf_slots[local_index].recycle);
+	atomic_init(&sriov->vf_slots[local_index].tlp_restart_owed, false);
+	atomic_init(&sriov->vf_slots[local_index].deferred_setup_pending, false);
+	sriov->vf_slots[local_index].deferred_setup_status = 0;
+	atomic_init(&sriov->vf_slots[local_index].teardown_state, VNET_VF_TEARDOWN_IDLE);
+	atomic_init(&sriov->vf_slots[local_index].reset_hold_release_owed, false);
+	atomic_init(&sriov->vf_slots[local_index].admin_cache_generation, 0);
+	atomic_init(&sriov->vf_slots[local_index].admin_operation_generation, 1);
+	atomic_init(&sriov->vf_slots[local_index].admin_mutating, false);
+	atomic_init(&sriov->vf_slots[local_index].admin_stopped, false);
+	atomic_init(&sriov->vf_slots[local_index].admin_stop_requested, false);
+	atomic_init(&sriov->vf_slots[local_index].admin_rebuild_required, false);
 
 	/* Build the per-VF VirtIO cfg-space template; it sits idle in vf_dev until
 	 * VFE 0->1 binds a tlp_dev to it. On failure undo the rep_open so the slot
@@ -518,13 +630,15 @@ static doca_error_t sriov_try_open_vf_rep(struct tlp_context *tlp_ctx,
 		(void)doca_dev_rep_close(sriov->vf_slots[local_index].rep);
 		sriov->vf_slots[local_index].rep = NULL;
 		sriov->vf_slots[local_index].vf_index = 0;
+		pthread_rwlock_destroy(&sriov->vf_slots[local_index].admin_config_lock);
+		sriov->vf_slots[local_index].admin_config_lock_initialized = false;
 		return result;
 	}
 
 	(*out_opened_count)++;
-	DOCA_LOG_INFO("SR-IOV: opened VF rep[local=%u] (vf_index=%u) and initialized template",
-		      local_index,
-		      global_vf_index);
+	DOCA_LOG_DBG("SR-IOV: opened VF rep[local=%u] (vf_index=%u) and initialized template",
+		     local_index,
+		     global_vf_index);
 	return DOCA_SUCCESS;
 }
 
@@ -632,6 +746,10 @@ void vnet_sriov_close_vf_reps(struct vnet_sriov_pf_state *sriov)
 				DOCA_LOG_WARN("SR-IOV: failed to close VF rep[%u]: %s", i, doca_error_get_descr(r));
 			sriov->vf_slots[i].rep = NULL;
 		}
+		if (sriov->vf_slots[i].admin_config_lock_initialized) {
+			pthread_rwlock_destroy(&sriov->vf_slots[i].admin_config_lock);
+			sriov->vf_slots[i].admin_config_lock_initialized = false;
+		}
 	}
 }
 
@@ -641,21 +759,65 @@ void vnet_sriov_close_vf_reps(struct vnet_sriov_pf_state *sriov)
  *                                                                                                                   *
  *********************************************************************************************************************/
 
-doca_error_t vnet_sriov_start_vf_slot(struct tlp_context *tlp_ctx, struct vnet_vf_slot *slot)
+/*
+ * Size one VF slot for its own queue count: a doorbell per virtqueue, and a
+ * vector per virtqueue plus one for config changes. Applied when the slot is
+ * started, and only accepted once the PF has pooled its VF resources.
+ */
+static doca_error_t sriov_size_vf_slot(struct vnet_vf_slot *slot, uint16_t vf_qp)
+{
+	struct doca_devemu_pci_ep *ep = doca_devemu_pci_tlp_dev_as_ep(slot->tlp_dev);
+	uint16_t num_msix = VNET_SRIOV_VF_NUM_MSIX(vf_qp);
+	uint16_t num_db = VNET_SRIOV_VF_NUM_DB(vf_qp);
+	doca_error_t result;
+
+	DOCA_LOG_DBG("SR-IOV: VF[vf_index=%u] sized for qp=%u: %u doorbells, %u MSI-X vectors",
+		     slot->vf_index,
+		     vf_qp,
+		     num_db,
+		     num_msix);
+
+	result = doca_devemu_pci_ep_set_num_db(ep, num_db);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("SR-IOV: VF[vf_index=%u] failed to take %u doorbells: %s",
+			     slot->vf_index,
+			     num_db,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_devemu_pci_ep_set_num_msix(ep, num_msix);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("SR-IOV: VF[vf_index=%u] failed to take %u MSI-X vectors: %s",
+			     slot->vf_index,
+			     num_msix,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+doca_error_t vnet_sriov_provision_vf_slot(struct tlp_context *tlp_ctx, struct vnet_vf_slot *slot, uint16_t vf_qp)
 {
 	doca_error_t result;
 
 	if (tlp_ctx == NULL || slot == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
 
-	/* No opened rep: nothing to start. Returning NOT_FOUND lets the fan-out
-	 * worker iterate over every slot uniformly without per-slot pre-checks. */
+	/* No opened rep: nothing to provision. NOT_FOUND lets callers iterate over
+	 * every slot without per-slot pre-checks. */
 	if (slot->rep == NULL)
 		return DOCA_ERROR_NOT_FOUND;
 
-	/* Already started (re-entrant fan-out or a duplicate host VFE 0->1). */
-	if (atomic_load(&slot->active))
+	/* Already provisioned: LU adoption over a live slot, or a re-entrant call. */
+	if (slot->tlp_dev != NULL)
 		return DOCA_SUCCESS;
+
+	/* One device lifetime, one recycle state. Safe to clear here because the
+	 * slot is not exposed to the host yet, so no trigger can be racing it. */
+	vnet_recycle_state_init(&slot->recycle);
+	atomic_store(&slot->tlp_restart_owed, false);
 
 	result = doca_devemu_pci_tlp_dev_create(tlp_ctx->pci_type, slot->rep, &slot->tlp_dev);
 	if (result != DOCA_SUCCESS) {
@@ -664,6 +826,19 @@ doca_error_t vnet_sriov_start_vf_slot(struct tlp_context *tlp_ctx, struct vnet_v
 			     doca_error_get_descr(result));
 		slot->tlp_dev = NULL;
 		return result;
+	}
+
+	if (vf_qp != 0) {
+		/* Recorded before the start so the VQs and the datapath follow this
+		 * slot's geometry rather than the PF's. */
+		slot->vf_queue_pairs = vf_qp;
+
+		result = sriov_size_vf_slot(slot, vf_qp);
+		if (result != DOCA_SUCCESS) {
+			(void)doca_devemu_pci_tlp_dev_destroy(slot->tlp_dev);
+			slot->tlp_dev = NULL;
+			return result;
+		}
 	}
 
 	result = doca_devemu_pci_tlp_dev_start(slot->tlp_dev);
@@ -676,8 +851,149 @@ doca_error_t vnet_sriov_start_vf_slot(struct tlp_context *tlp_ctx, struct vnet_v
 		return result;
 	}
 
+	DOCA_LOG_DBG("SR-IOV: VF[vf_index=%u] tlp_dev started", slot->vf_index);
+	return DOCA_SUCCESS;
+}
+
+doca_error_t vnet_sriov_provision_vf_slots(struct tlp_context *tlp_ctx, struct pci_device_config *pf_endpoint)
+{
+	uint16_t provisioned = 0;
+	doca_error_t result;
+	uint16_t i;
+
+	if (tlp_ctx == NULL || pf_endpoint == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	if (pf_endpoint->sriov == NULL || pf_endpoint->sriov->vf_slots == NULL)
+		return DOCA_SUCCESS;
+
+	for (i = 0; i < pf_endpoint->sriov->total_vf; i++) {
+		struct vnet_vf_slot *slot = &pf_endpoint->sriov->vf_slots[i];
+		uint16_t vf_qp = tlp_ctx->vf_qp_list_len != 0 ? vnet_sriov_vf_qp(tlp_ctx, i) : 0;
+
+		result = vnet_sriov_provision_vf_slot(tlp_ctx, slot, vf_qp);
+		if (result == DOCA_ERROR_NOT_FOUND)
+			continue; /* range gap: no rep for this slot */
+		if (result != DOCA_SUCCESS) {
+			/* A failed claim leaves the pool part consumed with no way to
+			 * reclaim it, so the PF cannot come up. With no claim there is
+			 * nothing to unwind, and the PF keeps the slots that did. */
+			DOCA_LOG_ERR("SR-IOV: VF[vf_index=%u] could not be provisioned: %s",
+				     slot->vf_index,
+				     doca_error_get_descr(result));
+			if (vf_qp != 0)
+				return result;
+			break;
+		}
+		provisioned++;
+	}
+
+	DOCA_LOG_INFO("SR-IOV: provisioned %u of %u VF slots ahead of the host enable",
+		      provisioned,
+		      pf_endpoint->sriov->total_vf);
+	return DOCA_SUCCESS;
+}
+
+doca_error_t vnet_sriov_expose_vf_slot(struct vnet_vf_slot *slot)
+{
+	if (slot == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	/* Nothing provisioned for this slot, so it stays absent to the host. */
+	if (slot->rep == NULL || slot->tlp_dev == NULL)
+		return DOCA_ERROR_NOT_FOUND;
+
 	atomic_store(&slot->active, true);
-	DOCA_LOG_INFO("SR-IOV: VF[vf_index=%u] tlp_dev started", slot->vf_index);
+	return DOCA_SUCCESS;
+}
+
+doca_error_t vnet_sriov_unexpose_vf_slot(struct vnet_vf_slot *slot)
+{
+	doca_error_t result;
+
+	if (slot == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	if (!atomic_load(&slot->active))
+		return slot->rep == NULL ? DOCA_ERROR_NOT_FOUND : DOCA_SUCCESS;
+
+	/* Datapath only: the slot keeps the resources it claimed, so the next host
+	 * enable needs no device work. */
+	if (slot->offload_engine != NULL) {
+		result = vnet_pci_dev_vf_engine_destroy(slot);
+		if (result != DOCA_SUCCESS)
+			return result;
+	}
+
+	atomic_store(&slot->active, false);
+	return DOCA_SUCCESS;
+}
+
+void vnet_sriov_note_pf_tlp_restart(struct pci_device_config *pf_endpoint)
+{
+	uint16_t owed = 0;
+	uint16_t i;
+
+	if (pf_endpoint == NULL || pf_endpoint->sriov == NULL || pf_endpoint->sriov->vf_slots == NULL)
+		return;
+
+	for (i = 0; i < pf_endpoint->sriov->total_vf; i++) {
+		struct vnet_vf_slot *slot = &pf_endpoint->sriov->vf_slots[i];
+
+		if (slot->tlp_dev == NULL)
+			continue;
+		atomic_store(&slot->tlp_restart_owed, true);
+		owed++;
+	}
+
+	if (owed != 0)
+		DOCA_LOG_INFO("SR-IOV: %u VF slot(s) marked for tlp_dev restart on next VF Enable", owed);
+}
+
+doca_error_t vnet_sriov_refresh_vf_slot(struct vnet_vf_slot *slot)
+{
+	doca_error_t result;
+	unsigned int attempt;
+
+	if (slot == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	if (slot->tlp_dev == NULL || !atomic_load(&slot->tlp_restart_owed))
+		return DOCA_SUCCESS;
+
+	/* An in-flight recycle restarts the tlp_dev itself */
+	if (vnet_recycle_in_progress(&slot->recycle))
+		return DOCA_SUCCESS;
+
+	if (atomic_load(&slot->active) || slot->offload_engine != NULL) {
+		DOCA_LOG_WARN("SR-IOV: VF[vf_index=%u] still in use - tlp_dev restart skipped", slot->vf_index);
+		return DOCA_ERROR_BAD_STATE;
+	}
+
+	result = doca_devemu_pci_tlp_dev_stop(slot->tlp_dev);
+	if (result != DOCA_SUCCESS && result != DOCA_ERROR_BAD_STATE) {
+		DOCA_LOG_ERR("SR-IOV: tlp_dev_stop failed for VF[vf_index=%u] restart: %s",
+			     slot->vf_index,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	for (attempt = 1;; attempt++) {
+		result = doca_devemu_pci_tlp_dev_start(slot->tlp_dev);
+		if (result == DOCA_SUCCESS || result == DOCA_ERROR_BAD_STATE)
+			break;
+		if (attempt == VNET_SRIOV_REFRESH_MAX_ATTEMPTS) {
+			DOCA_LOG_ERR("SR-IOV: tlp_dev_start failed for VF[vf_index=%u] restart after %u attempts: %s",
+				     slot->vf_index,
+				     attempt,
+				     doca_error_get_descr(result));
+			return result;
+		}
+		usleep(VNET_RECYCLE_RETRY_DELAY_USEC);
+	}
+
+	atomic_store(&slot->tlp_restart_owed, false);
+	DOCA_LOG_INFO("SR-IOV: VF[vf_index=%u] tlp_dev restarted", slot->vf_index);
 	return DOCA_SUCCESS;
 }
 
@@ -698,12 +1014,130 @@ void vnet_sriov_derive_vf_mac(const uint8_t *base_mac, uint16_t num_ep, uint32_t
 	out_mac[5] = (uint8_t)(mac_low16 & 0xFF);
 }
 
+/* Free MSI-X and doorbells the PF can still hand to its VFs. */
+static void sriov_log_pool(struct doca_devemu_pci_ep *pf_ep, const char *stage)
+{
+	uint16_t free_msix = 0;
+	uint16_t free_db = 0;
+
+	(void)doca_devemu_pci_ep_get_num_free_dynamic_vf_msix(pf_ep, &free_msix);
+	(void)doca_devemu_pci_ep_get_num_free_dynamic_vf_db(pf_ep, &free_db);
+	DOCA_LOG_DBG("SR-IOV: PF pool %s: %u MSI-X, %u doorbells free", stage, free_msix, free_db);
+}
+
+doca_error_t vnet_sriov_reset_vf_resources(struct tlp_context *tlp_ctx, struct pci_device_config *pf_endpoint)
+{
+	struct doca_devemu_pci_ep *ep;
+	doca_error_t result;
+	uint16_t i;
+
+	if (tlp_ctx == NULL || pf_endpoint == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	/* Per-VF sizing comes from --vf-queue-pairs; without it the VFs run on what
+	 * the representor provisioned and the pool stays untouched. */
+	if (!tlp_ctx->sriov_enabled || tlp_ctx->vf_qp_list_len == 0 || pf_endpoint->tlp_dev == NULL ||
+	    pf_endpoint->sriov == NULL)
+		return DOCA_SUCCESS;
+
+	/* Already pooled: the counts move to the pool once per PF. */
+	if (pf_endpoint->sriov->vf_res_pooled)
+		return DOCA_SUCCESS;
+
+	/* A started slot holds resources the pool cannot take back, and the slots
+	 * outlive every enable cycle, so this only holds before they come up. */
+	if (pf_endpoint->sriov->vf_slots != NULL) {
+		for (i = 0; i < pf_endpoint->sriov->total_vf; i++) {
+			if (pf_endpoint->sriov->vf_slots[i].tlp_dev != NULL) {
+				DOCA_LOG_DBG("SR-IOV: VF resources still held by a started slot; skipping reset");
+				return DOCA_SUCCESS;
+			}
+		}
+	}
+
+	ep = doca_devemu_pci_tlp_dev_as_ep(pf_endpoint->tlp_dev);
+
+	result = doca_devemu_pci_ep_reset_msix_resources(ep);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("SR-IOV: failed to release VF MSI-X vectors to the pool: %s",
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_devemu_pci_ep_reset_db_resources(ep);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("SR-IOV: failed to release VF doorbells to the pool: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	pf_endpoint->sriov->vf_res_pooled = true;
+	sriov_log_pool(ep, "after reset");
+	return DOCA_SUCCESS;
+}
+
+void vnet_sriov_vf_res(const struct tlp_context *tlp_ctx, uint16_t vf_slot, uint16_t *num_msix, uint16_t *num_db)
+{
+	if (tlp_ctx->vf_qp_list_len != 0) {
+		uint16_t vf_qp = vnet_sriov_vf_qp(tlp_ctx, vf_slot);
+
+		*num_msix = VNET_SRIOV_VF_NUM_MSIX(vf_qp);
+		*num_db = VNET_SRIOV_VF_NUM_DB(vf_qp);
+	} else {
+		*num_msix = tlp_ctx->sriov_num_vf_msix;
+		*num_db = tlp_ctx->sriov_num_vf_db;
+	}
+}
+
+uint16_t vnet_sriov_vf_qp(const struct tlp_context *tlp_ctx, uint16_t vf_slot)
+{
+	if (tlp_ctx->vf_qp_list_len == 0)
+		return tlp_ctx->max_queue_pairs;
+
+	return tlp_ctx->vf_qp_list[vf_slot % tlp_ctx->vf_qp_list_len];
+}
+
+uint16_t vnet_sriov_vf_qp_max(const struct tlp_context *tlp_ctx)
+{
+	uint16_t max = 0;
+	uint16_t slot;
+
+	if (tlp_ctx->vf_qp_list_len == 0)
+		return tlp_ctx->max_queue_pairs;
+
+	/* Over the slots that exist, so a list longer than the VF count is bounded by
+	 * the entries actually handed out. */
+	for (slot = 0; slot < tlp_ctx->sriov_total_vfs; slot++) {
+		uint16_t qp = vnet_sriov_vf_qp(tlp_ctx, slot);
+
+		if (qp > max)
+			max = qp;
+	}
+
+	return max;
+}
+
 doca_error_t vnet_sriov_stop_vf_slot(struct vnet_vf_slot *slot)
 {
 	doca_error_t result;
+	bool tlp_already_stopped;
 
 	if (slot == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
+
+	/* Sampled before the recycle is dropped, which returns this to its
+	 * power-on value. */
+	tlp_already_stopped = atomic_load(&slot->recycle.tlp_stopped);
+
+	/* The VF is going away, so any recycle queued against it has nothing
+	 * left to rebuild. Dropped before the teardown rather than after so a
+	 * step that runs in between sees the abandoned state. */
+	vnet_recycle_abandon(&slot->recycle);
+	atomic_store(&slot->tlp_restart_owed, false);
+	atomic_store(&slot->deferred_setup_pending, false);
+	/* Nothing will finish a teardown or publish a release once the slot is
+	 * gone, and a stale hold would be inherited by whatever reuses it. */
+	atomic_store(&slot->teardown_state, VNET_VF_TEARDOWN_IDLE);
+	atomic_store(&slot->reset_hold_release_owed, false);
 
 	/* Teardown ordering is engine -> tlp_dev. Do not depend on rep presence:
 	 * LU/error paths can drop rep first while handles still need cleanup. */
@@ -719,15 +1153,17 @@ doca_error_t vnet_sriov_stop_vf_slot(struct vnet_vf_slot *slot)
 		return (slot->rep == NULL) ? DOCA_ERROR_NOT_FOUND : DOCA_SUCCESS;
 	}
 
-	/* Tear down the per-VF datapath engine first: a live engine holds a
-	 * refcount on the VF tlp_dev's endpoint, so it must go before the
-	 * tlp_dev is stopped/destroyed. No-op when no engine was created. */
-	result = doca_devemu_pci_tlp_dev_stop(slot->tlp_dev);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("SR-IOV: tlp_dev_stop failed for VF[vf_index=%u]: %s",
-			     slot->vf_index,
-			     doca_error_get_descr(result));
-		return result;
+	/* A recycle interrupted by this teardown may already have stopped it. The
+	 * second stop is tolerated below; skipping keeps the SDK's error line out
+	 * of the log. */
+	if (!tlp_already_stopped) {
+		result = doca_devemu_pci_tlp_dev_stop(slot->tlp_dev);
+		if (result != DOCA_SUCCESS && result != DOCA_ERROR_BAD_STATE) {
+			DOCA_LOG_ERR("SR-IOV: tlp_dev_stop failed for VF[vf_index=%u]: %s",
+				     slot->vf_index,
+				     doca_error_get_descr(result));
+			return result;
+		}
 	}
 
 	result = doca_devemu_pci_tlp_dev_destroy(slot->tlp_dev);
@@ -740,6 +1176,6 @@ doca_error_t vnet_sriov_stop_vf_slot(struct vnet_vf_slot *slot)
 
 	slot->tlp_dev = NULL;
 	atomic_store(&slot->active, false);
-	DOCA_LOG_INFO("SR-IOV: VF[vf_index=%u] tlp_dev stopped", slot->vf_index);
+	DOCA_LOG_DBG("SR-IOV: VF[vf_index=%u] tlp_dev stopped", slot->vf_index);
 	return DOCA_SUCCESS;
 }

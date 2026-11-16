@@ -127,22 +127,70 @@ struct vnet_virtio_net_config {
 #define VIRTIO_NET_OK 0	 /* Command succeeded */
 #define VIRTIO_NET_ERR 1 /* Command failed */
 
-/* VirtIO Admin Command Opcodes */
-#define VIRTIO_ADMIN_CMD_LIST_QUERY 0
-#define VIRTIO_ADMIN_CMD_LIST_USE 1
+/* VirtIO-standard network device-parts type. */
+#define VIRTIO_NET_DEV_PART_CVQ_CFG_PART 0x200
+/* Current SNAP/backend wire extension; this value is not defined by VirtIO. */
+#define VNET_ADMIN_DEV_PART_NET_CFG 0x1000
 
-/* VirtIO Admin Command Group Types */
-#define VIRTIO_ADMIN_GROUP_TYPE_SELF 0
+#define VIRTIO_NET_CTRL_MAC_TABLE_SET 0
+#define VIRTIO_NET_CTRL_MAC_ADDR_SET 1
+#define VIRTIO_NET_CTRL_VLAN_ADD 0
+#define VIRTIO_NET_CTRL_VLAN_DEL 1
 
-/* VirtIO Admin Command Status */
-#define VIRTIO_ADMIN_STATUS_OK 0
-#define VIRTIO_ADMIN_STATUS_ERR 1
-#define VIRTIO_ADMIN_STATUS_Q_OK 0
-#define VIRTIO_ADMIN_STATUS_Q_INVALID_COMMAND 1
-#define VIRTIO_ADMIN_STATUS_Q_INVALID_OPCODE 2
-#define VIRTIO_ADMIN_STATUS_Q_INVALID_FIELD 3
-#define VIRTIO_ADMIN_STATUS_Q_INVALID_GROUP 4
-#define VIRTIO_ADMIN_STATUS_Q_INVALID_MEMBER 5
+/*
+ * The full PCI common-config image differs from VirtIO 1.4's per-field part payload.
+ * Network configuration and CVQ payloads are device-specific.
+ */
+struct vnet_virtio_dev_part_cvq_selector {
+	uint8_t class;
+	uint8_t command;
+	uint8_t reserved[6];
+} __attribute__((packed));
+
+struct vnet_virtio_dev_part_pci_common_cfg {
+	uint32_t device_feature_select;
+	uint32_t device_feature;
+	uint32_t driver_feature_select;
+	uint32_t driver_feature;
+	uint16_t config_msix_vector;
+	uint16_t num_queues;
+	uint8_t device_status;
+	uint8_t config_generation;
+	uint16_t queue_select;
+	struct vnet_virtio_queue_config vq;
+	uint16_t admin_queue_index;
+	uint16_t admin_queue_num;
+} __attribute__((packed));
+
+struct vnet_virtio_dev_part_net_config {
+	uint8_t mac[ETH_ALEN];
+	uint16_t status;
+	uint16_t max_virtqueue_pairs;
+	uint16_t transitional;
+	uint16_t vq_pair_n;
+	uint16_t mtu;
+	uint32_t speed;
+	uint8_t duplex;
+	uint8_t rss_max_key_size;
+	uint16_t rss_max_indirection_table_length;
+	uint32_t supported_hash_types;
+	uint32_t supported_tunnel_types;
+} __attribute__((packed));
+
+struct vnet_virtio_net_ctrl_mac_table {
+	uint32_t entries;
+	uint8_t macs[][ETH_ALEN];
+} __attribute__((packed));
+
+struct vnet_virtio_dev_part_vlan_table {
+	uint16_t num_entries;
+	uint8_t reserved[6];
+	uint16_t vlan[];
+} __attribute__((packed));
+
+_Static_assert(sizeof(struct vnet_virtio_dev_part_cvq_selector) == 8, "admin CVQ selector size");
+_Static_assert(sizeof(struct vnet_virtio_dev_part_pci_common_cfg) == 64, "admin PCI common config part size");
+_Static_assert(sizeof(struct vnet_virtio_dev_part_net_config) == 32, "admin net config part size");
 
 /* VirtIO Network Feature Bits */
 #define VIRTIO_NET_F_CSUM 0		   /* Host handles pkts w/ partial csum */

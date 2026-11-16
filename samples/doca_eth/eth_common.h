@@ -37,6 +37,8 @@
 #include "common.h"
 
 #define MAX_QUEUES_NUM 128 /* Max number of ETH RXQs the sample can share the memory pool between */
+#define MAX_RXQ_PKT_SIZE 9216
+#define DEFAULT_RXQ_PKT_SIZE 1600 /* Max packet size an RXQ sample receives unless the command line overrides it */
 
 struct eth_core_resources {
 	struct program_core_objects core_objs; /* DOCA core objects */

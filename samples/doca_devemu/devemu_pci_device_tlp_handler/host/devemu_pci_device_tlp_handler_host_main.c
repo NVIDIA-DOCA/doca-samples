@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include <doca_argp.h>
+#include <doca_config.h>
 #include <doca_error.h>
 #include <doca_dev.h>
 #include <doca_log.h>

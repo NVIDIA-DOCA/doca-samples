@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -31,12 +31,12 @@
 #include <rte_ethdev.h>
 
 #include <doca_argp.h>
-#include <doca_flow_tune_server.h>
 #include <doca_dpdk.h>
 #include <doca_dev.h>
 #include <doca_log.h>
 
 #include <dpdk_utils.h>
+#include <flow_tune_common.h>
 #include <utils.h>
 
 #include "simple_fwd.h"
@@ -105,7 +105,6 @@ int main(int argc, char **argv)
 	};
 	struct app_vnf *vnf;
 	struct simple_fwd_process_pkts_params process_pkts_params = {.cfg = &app_cfg};
-	struct doca_flow_tune_server_cfg *server_cfg;
 
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
@@ -180,29 +179,21 @@ int main(int argc, char **argv)
 	port_cfg.nb_encap = 1;
 	port_cfg.nb_decap = 3;
 	port_cfg.age_thread = app_cfg.age_thread;
+	port_cfg.enable_tune = app_cfg.enable_tune;
 	if (vnf->vnf_init(&port_cfg) != 0) {
 		DOCA_LOG_ERR("VNF application init error");
 		exit_status = EXIT_FAILURE;
 		goto exit_app;
 	}
 
-	/* Init DOCA Flow Tune Server */
-	result = doca_flow_tune_server_cfg_create(&server_cfg);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create flow tune server configuration");
-		return result;
-	}
-	result = doca_flow_tune_server_init(server_cfg);
-	if (result != DOCA_SUCCESS) {
-		if (result == DOCA_ERROR_NOT_SUPPORTED) {
-			DOCA_LOG_DBG("DOCA Flow Tune Server isn't supported in this runtime version");
-		} else {
-			DOCA_LOG_ERR("Failed to initialize the flow tune server");
-			doca_flow_tune_server_cfg_destroy(server_cfg);
-			return result;
+	if (app_cfg.enable_tune) {
+		/* Init DOCA Flow Tune Server */
+		result = flow_tune_server_start(DOCA_FLOW_TUNE_PROFILE_FULL);
+		if (result != DOCA_SUCCESS) {
+			exit_status = EXIT_FAILURE;
+			goto exit_app;
 		}
 	}
-	doca_flow_tune_server_cfg_destroy(server_cfg);
 
 	simple_fwd_map_queue(dpdk_config.port_config.nb_queues);
 	process_pkts_params.vnf = vnf;
@@ -210,8 +201,8 @@ int main(int argc, char **argv)
 	rte_eal_mp_wait_lcore();
 exit_app:
 	/* cleanup app resources */
+	flow_tune_server_stop();
 	simple_fwd_destroy(vnf);
-	doca_flow_tune_server_destroy();
 
 	/* DPDK cleanup resources */
 	dpdk_queues_and_ports_fini(&dpdk_config);

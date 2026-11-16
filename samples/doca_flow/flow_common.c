@@ -35,11 +35,17 @@
 #endif
 
 #include "flow_common.h"
+#include "flow_tune_common.h"
 
 DOCA_LOG_REGISTER(FLOW_COMMON);
 
 /* Hold the converter function for the flow_param_dev_callback (if exists) */
 static flow_dev_ctx_from_user_ctx_t global_user_ctx_converter = NULL;
+
+#define TUNE_PROFILE_ARGUMENTS "<none|pipeline|full>"
+
+/* Tune data collection profile requested by --tune-profile */
+static enum doca_flow_tune_profile g_tune_profile = DOCA_FLOW_TUNE_PROFILE_NONE;
 
 static doca_error_t set_system_level_resources(struct doca_flow_cfg *cfg,
 					       struct flow_resources *resource,
@@ -163,6 +169,26 @@ static doca_error_t set_port_level_resources(struct doca_flow_port_cfg *cfg, str
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set port level trim resource to %d: %s",
 			     resource->nr_trim,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(cfg,
+						     DOCA_FLOW_RESOURCE_PACKET_GENERATE,
+						     resource->nr_packet_generate);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level packet-generation resources to %u: %s",
+			     resource->nr_packet_generate,
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(cfg,
+						     DOCA_FLOW_RESOURCE_TCP_WINDOW_VALIDATION,
+						     resource->nr_tcp_window_validation);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set port level TCP window-validation resource to %u: %s",
+			     resource->nr_tcp_window_validation,
 			     doca_error_get_descr(result));
 		return result;
 	}
@@ -317,6 +343,10 @@ doca_error_t init_doca_flow_cb(int nb_queues,
 		}
 	}
 
+	result = flow_tune_configure(flow_cfg, g_tune_profile);
+	if (result != DOCA_SUCCESS)
+		goto destroy_cfg;
+
 	/* creating doca flow with defs */
 	result = doca_flow_init(flow_cfg);
 	if (result != DOCA_SUCCESS)
@@ -328,7 +358,19 @@ destroy_cfg:
 		DOCA_ERROR_PROPAGATE(result, tmp_result);
 	}
 
+	if (result == DOCA_SUCCESS) {
+		result = flow_tune_server_start(g_tune_profile);
+		if (result != DOCA_SUCCESS)
+			doca_flow_destroy();
+	}
+
 	return result;
+}
+
+void destroy_doca_flow(void)
+{
+	flow_tune_server_stop();
+	doca_flow_destroy();
 }
 
 /*
@@ -458,6 +500,26 @@ static doca_error_t create_doca_flow_port(int port_id,
 				goto destroy_port_cfg;
 			}
 		}
+		if (ct_cfg->stats_update_cb != NULL) {
+			result = doca_flow_port_cfg_set_ct_stats_update_cb(port_cfg, ct_cfg->stats_update_cb);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to set doca_flow_port_cfg ct_stats_update_cb: %s",
+					     doca_error_get_descr(result));
+				goto destroy_port_cfg;
+			}
+		}
+#if LIB_FLOW_VERSION >= LIB_FLOW_VERSION_3
+		if (ct_cfg->tcp_window_validation_comp_cb != NULL) {
+			result = doca_flow_port_cfg_set_cb_ct_tcp_window_validation(
+				port_cfg,
+				ct_cfg->tcp_window_validation_comp_cb);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to set doca_flow_port_cfg tcp_window_validation cb: %s",
+					     doca_error_get_descr(result));
+				goto destroy_port_cfg;
+			}
+		}
+#endif
 		if (ct_cfg->zone_match_mask[0] == NULL || ct_cfg->modify_mask[0] == NULL) {
 			DOCA_LOG_ERR("Origin masks can't be null");
 			result = DOCA_ERROR_INVALID_VALUE;
@@ -1109,6 +1171,59 @@ void destroy_doca_flow_devs(struct flow_dev_ctx *ctx)
 			ctx->devs_manager[i].doca_dev = NULL;
 		}
 	}
+}
+
+/*
+ * Callback function for --tune-profile
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context (unused)
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t tune_profile_callback(void *param, void *config)
+{
+	const char *profile = (const char *)param;
+
+	(void)config;
+
+	if (strcmp(profile, "none") == 0)
+		g_tune_profile = DOCA_FLOW_TUNE_PROFILE_NONE;
+	else if (strcmp(profile, "pipeline") == 0)
+		g_tune_profile = DOCA_FLOW_TUNE_PROFILE_PIPELINE;
+	else if (strcmp(profile, "full") == 0)
+		g_tune_profile = DOCA_FLOW_TUNE_PROFILE_FULL;
+	else {
+		DOCA_LOG_ERR("Invalid tune profile \"%s\", expected one of %s", profile, TUNE_PROFILE_ARGUMENTS);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+doca_error_t register_flow_tune_profile_params(void)
+{
+	struct doca_argp_param *tune_profile_param;
+	doca_error_t result;
+
+	result = doca_argp_param_create(&tune_profile_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(tune_profile_param, "tune-profile");
+	doca_argp_param_set_arguments(tune_profile_param, TUNE_PROFILE_ARGUMENTS);
+	doca_argp_param_set_description(
+		tune_profile_param,
+		"DOCA Flow Tune data collection profile, enables the tune server when not none (default: none)");
+	doca_argp_param_set_callback(tune_profile_param, tune_profile_callback);
+	doca_argp_param_set_type(tune_profile_param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(tune_profile_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register tune-profile argument: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
 }
 
 /*

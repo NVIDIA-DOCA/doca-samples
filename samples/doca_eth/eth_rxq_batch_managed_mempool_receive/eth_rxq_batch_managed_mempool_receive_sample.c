@@ -44,8 +44,7 @@
 DOCA_LOG_REGISTER(ETH_RXQ_BATCH_MANAGED_MEMPOOL_RECEIVE);
 
 #define SLEEP_IN_NANOS (10 * 1000) /* sample for event batch every 10 microseconds  */
-#define MAX_BURST_SIZE 2048	   /* Max burst size to set for eth_rxq */
-#define MAX_PKT_SIZE 1600	   /* Max packet size to set for eth_rxq */
+#define MAX_INFLIGHT_PACKETS 2048  /* Max inflight packets to set for eth_rxq */
 #define RATE 10000		   /* Traffic max rate in [MB/s] */
 #define LOG_MAX_LRO_PKT_SIZE 15	   /* Log of max LRO packet size */
 #define PKT_MAX_TIME 10		   /* Max time in [μs] to process a packet */
@@ -58,25 +57,29 @@ struct eth_rxq_sample_objects {
 	struct doca_eth_rxq *eth_rxq;			 /* DOCA ETH RXQ context */
 	uint64_t total_received_packets;		 /* Counter for received packets */
 	uint16_t rxq_queue_id;				 /* DOCA ETH RXQ's queue ID */
+	uint32_t max_pkt_size;				 /* Max packet size to set for eth_rxq */
 	bool timestamp_enable;				 /* timestamp enable */
 	uint16_t headroom_size;				 /* headroom size */
 	uint16_t tailroom_size;				 /* tailroom size */
 };
 
+static uint32_t requested_max_pkt_size;
+
 /*
  * ETH RXQ managed receive event batch successful callback
  *
- * @event_batch_managed_recv [in]: The managed receive event batch
+ * @event_batch_managed_mempool_recv [in]: The managed receive event batch
  * @events_number [in]: Number of retrieved events, each representing a received packet
- * @event_batch_user_data [in]: User provided data, used to associate with a specific type of event batch
  * @status [in]: Status of retrieved event batch (DOCA_SUCCESS in case of success callback)
  * @pkt_array [in]: Array of doca_bufs containing the received packets (NULL in case of error callback)
+ * @event_batch_user_data [in]: User provided data, used to associate with a specific type of event batch
  */
-static void event_batch_managed_rcv_success_cb(struct doca_eth_rxq_event_batch_managed_recv *event_batch_managed_recv,
-					       uint16_t events_number,
-					       union doca_data event_batch_user_data,
-					       doca_error_t status,
-					       struct doca_buf **pkt_array)
+static void event_batch_managed_rcv_success_cb(
+	struct doca_eth_rxq_event_batch_managed_mempool_recv *event_batch_managed_mempool_recv,
+	uint16_t events_number,
+	doca_error_t status,
+	struct doca_buf **pkt_array,
+	union doca_data event_batch_user_data)
 {
 	doca_error_t ret;
 	struct eth_rxq_sample_objects *state;
@@ -91,23 +94,26 @@ static void event_batch_managed_rcv_success_cb(struct doca_eth_rxq_event_batch_m
 
 	DOCA_LOG_INFO("Received %u packets successfully", events_number);
 
-	ret = doca_eth_rxq_event_batch_managed_recv_get_metadata_array(event_batch_managed_recv, &metadata_array);
+	ret = doca_eth_rxq_event_batch_managed_mempool_recv_get_metadata_array(event_batch_managed_mempool_recv,
+									       &metadata_array);
 	if (ret != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to get metadata_array, err: %s", doca_error_get_name(ret));
 
-	ret = doca_eth_rxq_event_batch_managed_recv_get_rx_hash_array(event_batch_managed_recv, &rx_hash_array);
+	ret = doca_eth_rxq_event_batch_managed_mempool_recv_get_rx_hash_array(event_batch_managed_mempool_recv,
+									      &rx_hash_array);
 	if (ret != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to get rx_hash_array, err: %s", doca_error_get_name(ret));
 
 	if (state->timestamp_enable) {
-		ret = doca_eth_rxq_event_batch_managed_recv_get_timestamp_array(event_batch_managed_recv,
-										&timestamp_array);
+		ret = doca_eth_rxq_event_batch_managed_mempool_recv_get_timestamp_array(
+			event_batch_managed_mempool_recv,
+			&timestamp_array);
 		if (ret != DOCA_SUCCESS)
 			DOCA_LOG_ERR("Failed to get timestamp_array, err: %s", doca_error_get_name(ret));
 	}
 
 	for (uint16_t i = 0; i < events_number; i++) {
-		ret = doca_buf_get_data_len(pkt_array[i], &packet_size);
+		ret = get_pkt_data_len(pkt_array[i], &packet_size);
 		if (ret != DOCA_SUCCESS)
 			DOCA_LOG_ERR("Packet#%u: failed to get received packet data size, err: %s",
 				     i,
@@ -141,10 +147,9 @@ static void event_batch_managed_rcv_success_cb(struct doca_eth_rxq_event_batch_m
 		}
 
 		if (metadata_array != NULL)
-			DOCA_LOG_INFO(
-				"Packet#%u: metadata associated with the packet is %u",
-				i,
-				doca_eth_rxq_event_batch_recv_metadata_array_get_metadata(metadata_array, 1, i, 0));
+			DOCA_LOG_INFO("Packet#%u: metadata associated with the packet is %u",
+				      i,
+				      doca_eth_rxq_event_batch_metadata_array_get_metadata(metadata_array, 1, i, 0));
 
 		if (rx_hash_array != NULL)
 			DOCA_LOG_INFO("Packet#%u: rx_hash associated with the packet is %u", i, rx_hash_array[i]);
@@ -153,23 +158,24 @@ static void event_batch_managed_rcv_success_cb(struct doca_eth_rxq_event_batch_m
 			DOCA_LOG_INFO("Packet#%u: timestamp associated with the packet is %lu", i, timestamp_array[i]);
 	}
 
-	doca_eth_rxq_event_batch_managed_recv_pkt_array_free(pkt_array);
+	doca_eth_rxq_event_batch_managed_mempool_recv_free_packet_array(pkt_array);
 }
 
 /*
  * ETH RXQ managed receive event batch error callback
  *
- * @event_batch_managed_recv [in]: The managed receive event batch
+ * @event_batch_managed_mempool_recv [in]: The managed receive event batch
  * @events_number [in]: Number of retrieved events, each representing a received packet
- * @event_batch_user_data [in]: User provided data, used to associate with a specific type of event batch
  * @status [in]: Status of retrieved event batch (DOCA_SUCCESS in case of success callback)
  * @pkt_array [in]: Array of doca_bufs containing the received packets (NULL in case of error callback)
+ * @event_batch_user_data [in]: User provided data, used to associate with a specific type of event batch
  */
-static void event_batch_managed_rcv_error_cb(struct doca_eth_rxq_event_batch_managed_recv *event_batch_managed_recv,
-					     uint16_t events_number,
-					     union doca_data event_batch_user_data,
-					     doca_error_t status,
-					     struct doca_buf **pkt_array)
+static void event_batch_managed_rcv_error_cb(
+	struct doca_eth_rxq_event_batch_managed_mempool_recv *event_batch_managed_mempool_recv,
+	uint16_t events_number,
+	doca_error_t status,
+	struct doca_buf **pkt_array,
+	union doca_data event_batch_user_data)
 {
 	DOCA_LOG_ERR("Failed to receive packets, err: %s", doca_error_get_name(status));
 }
@@ -237,8 +243,8 @@ static doca_error_t create_eth_rxq_ctx(struct eth_rxq_sample_objects *state)
 	union doca_data user_data;
 
 	status = doca_eth_rxq_create(state->core_resources.core_objs.dev,
-				     MAX_BURST_SIZE,
-				     MAX_PKT_SIZE,
+				     MAX_INFLIGHT_PACKETS,
+				     state->max_pkt_size,
 				     &(state->eth_rxq));
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ETH RXQ context, err: %s", doca_error_get_name(status));
@@ -251,22 +257,22 @@ static doca_error_t create_eth_rxq_ctx(struct eth_rxq_sample_objects *state)
 		goto destroy_eth_rxq;
 	}
 
-	status = doca_eth_rxq_set_pkt_buf(state->eth_rxq,
-					  state->core_resources.core_objs.src_mmap,
-					  0,
-					  state->core_resources.mmap_size);
+	status = doca_eth_rxq_set_packet_buf(state->eth_rxq,
+					     state->core_resources.core_objs.src_mmap,
+					     0,
+					     state->core_resources.mmap_size);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set packet buffer, err: %s", doca_error_get_name(status));
 		goto destroy_eth_rxq;
 	}
 
 	user_data.ptr = state;
-	status = doca_eth_rxq_event_batch_managed_recv_register(state->eth_rxq,
-								DOCA_EVENT_BATCH_EVENTS_NUMBER_64,
-								DOCA_EVENT_BATCH_EVENTS_NUMBER_32,
-								user_data,
-								event_batch_managed_rcv_success_cb,
-								event_batch_managed_rcv_error_cb);
+	status = doca_eth_rxq_event_batch_managed_mempool_recv_register(state->eth_rxq,
+									DOCA_EVENT_BATCH_EVENTS_NUMBER_64,
+									DOCA_EVENT_BATCH_EVENTS_NUMBER_32,
+									user_data,
+									event_batch_managed_rcv_success_cb,
+									event_batch_managed_rcv_error_cb);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register managed receive event batch, err: %s", doca_error_get_name(status));
 		goto destroy_eth_rxq;
@@ -302,7 +308,7 @@ static doca_error_t create_eth_rxq_ctx(struct eth_rxq_sample_objects *state)
 		goto destroy_eth_rxq;
 	}
 
-	state->core_resources.core_objs.ctx = doca_eth_rxq_as_doca_ctx(state->eth_rxq);
+	state->core_resources.core_objs.ctx = doca_eth_rxq_as_ctx(state->eth_rxq);
 	if (state->core_resources.core_objs.ctx == NULL) {
 		DOCA_LOG_ERR("Failed to retrieve DOCA ETH RXQ context as DOCA context, err: %s",
 			     doca_error_get_name(status));
@@ -393,16 +399,16 @@ static void eth_rxq_cleanup(struct eth_rxq_sample_objects *state)
 static doca_error_t check_device(struct doca_devinfo *devinfo)
 {
 	doca_error_t status;
-	uint32_t max_supported_burst_size;
+	uint32_t max_supported_inflight_packets;
 	uint32_t max_supported_packet_size;
 
-	status = doca_eth_rxq_cap_get_max_burst_size(devinfo, &max_supported_burst_size);
+	status = doca_eth_rxq_cap_get_max_inflight_packets(devinfo, &max_supported_inflight_packets);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get supported max burst size, err: %s", doca_error_get_name(status));
+		DOCA_LOG_ERR("Failed to get supported max inflight packets, err: %s", doca_error_get_name(status));
 		return status;
 	}
 
-	if (max_supported_burst_size < MAX_BURST_SIZE)
+	if (max_supported_inflight_packets < MAX_INFLIGHT_PACKETS)
 		return DOCA_ERROR_NOT_SUPPORTED;
 
 	status = doca_eth_rxq_cap_get_max_packet_size(devinfo, &max_supported_packet_size);
@@ -411,7 +417,7 @@ static doca_error_t check_device(struct doca_devinfo *devinfo)
 		return status;
 	}
 
-	if (max_supported_packet_size < MAX_PKT_SIZE)
+	if (max_supported_packet_size < requested_max_pkt_size)
 		return DOCA_ERROR_NOT_SUPPORTED;
 
 	status = doca_eth_rxq_cap_is_type_supported(devinfo,
@@ -430,15 +436,20 @@ static doca_error_t check_device(struct doca_devinfo *devinfo)
  *
  * @ib_dev_name [in]: IB device name of a doca device
  * @timestamp_enable [in]: timestamp enable
+ * @headroom_size [in]: packet headroom size
+ * @tailroom_size [in]: packet tailroom size
+ * @max_pkt_size [in]: max packet size to receive
  * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise
  */
 doca_error_t eth_rxq_batch_managed_mempool_receive(const char *ib_dev_name,
 						   bool timestamp_enable,
 						   uint16_t headroom_size,
-						   uint16_t tailroom_size)
+						   uint16_t tailroom_size,
+						   uint32_t max_pkt_size)
 {
 	doca_error_t status;
 	struct eth_rxq_sample_objects state = {.total_received_packets = 0,
+					       .max_pkt_size = max_pkt_size,
 					       .timestamp_enable = timestamp_enable,
 					       .headroom_size = headroom_size,
 					       .tailroom_size = tailroom_size};
@@ -448,11 +459,18 @@ doca_error_t eth_rxq_batch_managed_mempool_receive(const char *ib_dev_name,
 				      .ibdev_name = ib_dev_name};
 	struct eth_flow_common_config flow_cfg = {};
 
+	requested_max_pkt_size = max_pkt_size;
+
+	DOCA_LOG_INFO("Receiving packets of up to %u bytes with headroom %u and tailroom %u",
+		      state.max_pkt_size,
+		      headroom_size,
+		      tailroom_size);
+
 	status = doca_eth_rxq_estimate_packet_buf_size(DOCA_ETH_RXQ_TYPE_MANAGED_MEMPOOL,
 						       RATE,
 						       PKT_MAX_TIME,
-						       MAX_PKT_SIZE,
-						       MAX_BURST_SIZE,
+						       state.max_pkt_size,
+						       MAX_INFLIGHT_PACKETS,
 						       LOG_MAX_LRO_PKT_SIZE,
 						       headroom_size,
 						       tailroom_size,

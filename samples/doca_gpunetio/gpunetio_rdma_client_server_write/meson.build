@@ -68,6 +68,12 @@ nvcc_flags += ['-gencode', 'arch=compute_90,code=sm_90']
 if cuda_version.version_compare('>= 12-8')
 	nvcc_flags += ['-gencode', 'arch=compute_100,code=sm_100']
 endif
+if cuda_version.version_compare('>= 13-0')
+	nvcc_flags += ['-gencode', 'arch=compute_103,code=sm_103']
+	nvcc_flags += ['-gencode', 'arch=compute_110,code=sm_110']
+	nvcc_flags += ['-gencode', 'arch=compute_120,code=sm_120']
+	nvcc_flags += ['-gencode', 'arch=compute_121,code=sm_121']
+endif
 add_project_arguments(nvcc_flags, language: 'cuda')
 
 # Refer to https://mesonbuild.com/Cuda-module.html
@@ -86,6 +92,12 @@ nvcc_flags_link += ['-gencode=arch=compute_80,code=sm_80']
 nvcc_flags_link += ['-gencode=arch=compute_90,code=sm_90']
 if cuda_version.version_compare('>= 12-8')
 	nvcc_flags_link += ['-gencode=arch=compute_100,code=sm_100']
+endif
+if cuda_version.version_compare('>= 13-0')
+	nvcc_flags_link += ['-gencode=arch=compute_103,code=sm_103']
+	nvcc_flags_link += ['-gencode=arch=compute_110,code=sm_110']
+	nvcc_flags_link += ['-gencode=arch=compute_120,code=sm_120']
+	nvcc_flags_link += ['-gencode=arch=compute_121,code=sm_121']
 endif
 add_project_link_arguments(nvcc_flags_link, language: 'cuda')
 

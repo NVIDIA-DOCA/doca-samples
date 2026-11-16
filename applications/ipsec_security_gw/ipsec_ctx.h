@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -213,6 +213,13 @@ enum ipsec_security_gw_fwd_syndrome {
 	IPSEC_SECURITY_GW_FWD_SYNDROME_RSS,  /* forward bad syndrome packets to app */
 };
 
+/* ARP handling modes */
+enum ipsec_security_gw_arp_mode {
+	IPSEC_SECURITY_GW_ARP_MODE_DEFAULT_MISS = 0, /* default: no ARP entry, ARP goes to the kernel */
+	IPSEC_SECURITY_GW_ARP_MODE_DROP,	     /* Drop ARP packets */
+	IPSEC_SECURITY_GW_ARP_MODE_FORWARD_PORT,     /* Forward ARP to the peer port */
+};
+
 /* IPsec Security Gateway device information */
 struct ipsec_security_gw_dev_info {
 	bool is_representor;		   /* true if device is representor */
@@ -241,6 +248,9 @@ struct ipsec_security_gw_config {
 	bool debug_mode;				  /* run in debug mode */
 	bool vxlan_encap;				  /* True for vxlan encap / decap */
 	bool marker_encap;				  /* insert/remove non-ESP marker header */
+	bool enable_tune;				  /* Collect DOCA Flow Tune data */
+	struct doca_flow_header_eth encap_eth;		  /* resolved L2 header for ESP tunnel encap */
+	struct doca_flow_header_eth decap_eth;		  /* resolved L2 header for ESP tunnel decap */
 	enum ipsec_security_gw_mode mode;		  /* application mode */
 	enum ipsec_security_gw_flow_mode flow_mode;	  /* DOCA Flow mode */
 	enum ipsec_security_gw_esp_offload offload;	  /* ESP offload */
@@ -261,6 +271,8 @@ struct ipsec_security_gw_config {
 	enum doca_flow_crypto_icv_len icv_length;	  /* Supported icv (Integrity Check Value) length */
 	struct entries_status *secured_status;
 	struct entries_status *unsecured_status;
+	enum ipsec_security_gw_arp_mode arp_mode; /* ARP handling mode */
+	bool match_src_port;			  /* Match L4 src port in encrypt pipes as part of the 5-tuple */
 };
 
 /*

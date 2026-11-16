@@ -545,7 +545,6 @@ static doca_error_t create_nvgre_lpm_pipe(struct doca_flow_port *port, struct do
 
 	match_mask.tun.type = DOCA_FLOW_TUN_GRE;
 	match_mask.tun.gre_type = DOCA_FLOW_TUN_EXT_GRE_NVGRE;
-	match_mask.tun.protocol = DOCA_HTOBE16(DOCA_FLOW_ETHER_TYPE_TEB);
 
 	match_mask.tun.nvgre_vs_id = UINT32_MAX;
 	match_mask.tun.nvgre_flow_id = UINT8_MAX;
@@ -889,7 +888,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 	doca_error_t result;
 	int port_id;
 
-	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "vnf", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -899,7 +898,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -910,7 +909,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create VXLAN LPM pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -920,7 +919,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 						    &entries[port_id][vxlan_lpm_start_idx]);
 		if (result != DOCA_SUCCESS) {
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -928,7 +927,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create NVGRE LPM pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -938,7 +937,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 						    &entries[port_id][nvgre_lpm_start_idx]);
 		if (result != DOCA_SUCCESS) {
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -946,7 +945,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create VXLAN copy-to-meta pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -956,7 +955,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add VXLAN copy-to-meta pipe entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -964,7 +963,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create classifier pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -975,7 +974,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add classifier VXLAN entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -986,7 +985,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add classifier NVGRE entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -994,7 +993,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -1004,7 +1003,7 @@ doca_error_t flow_lpm_em(int nb_queues)
 				     NB_ENTRIES,
 				     status.failure);
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return DOCA_ERROR_BAD_STATE;
 		}
 	}
@@ -1021,6 +1020,6 @@ doca_error_t flow_lpm_em(int nb_queues)
 	flow_wait_for_packets(10, print_lpm_em_stats_wrapper, &stats_ctx);
 
 	stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return DOCA_SUCCESS;
 }

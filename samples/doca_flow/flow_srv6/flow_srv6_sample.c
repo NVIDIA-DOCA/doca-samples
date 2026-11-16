@@ -737,7 +737,7 @@ doca_error_t flow_srv6(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx,
 					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -802,6 +802,6 @@ cleanup:
 	if (push_action)
 		doca_flow_external_action_srv6_pipe_action_destroy(push_action);
 	stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

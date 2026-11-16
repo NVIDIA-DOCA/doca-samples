@@ -27,6 +27,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <string.h>
 
 #include <dpa_common.h>
 #include <dpa_nvqual_common_defs.h>
@@ -298,6 +299,54 @@ static doca_error_t excluded_eus_param_callback(void *param, void *config)
 }
 
 /**
+ * @brief ARGP Callback - Handle wait-timeout-sec parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR_INVALID_VALUE otherwise
+ */
+static doca_error_t wait_timeout_param_callback(void *param, void *config)
+{
+	struct dpa_nvqual_config *dpa_cfg = (struct dpa_nvqual_config *)config;
+	unsigned long timeout_sec = strtoul((char *)param, NULL, 10);
+
+	if (timeout_sec == 0) {
+		DOCA_LOG_ERR("Wait timeout must be greater than 0");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	dpa_cfg->wait_timeout_sec = timeout_sec;
+	return DOCA_SUCCESS;
+}
+
+/**
+ * @brief ARGP Callback - Handle wait-for-file parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR_INVALID_VALUE otherwise
+ */
+static doca_error_t wait_for_file_param_callback(void *param, void *config)
+{
+	struct dpa_nvqual_config *dpa_cfg = (struct dpa_nvqual_config *)config;
+	char *path = (char *)param;
+	int len;
+
+	len = strnlen(path, DPA_NVQUAL_WAIT_FILE_PATH_SIZE);
+	if (len == 0) {
+		DOCA_LOG_ERR("Wait-for-file path is empty");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	if (len == DPA_NVQUAL_WAIT_FILE_PATH_SIZE) {
+		DOCA_LOG_ERR("Wait-for-file path exceeds max size of %d", DPA_NVQUAL_WAIT_FILE_PATH_SIZE - 1);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	strncpy(dpa_cfg->wait_for_file, path, DPA_NVQUAL_WAIT_FILE_PATH_SIZE - 1);
+	dpa_cfg->wait_for_file[DPA_NVQUAL_WAIT_FILE_PATH_SIZE - 1] = '\0';
+	return DOCA_SUCCESS;
+}
+
+/**
  * @brief Register DPA nvqual parameters
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -305,7 +354,8 @@ static doca_error_t excluded_eus_param_callback(void *param, void *config)
 doca_error_t dpa_nvqual_register_params(void)
 {
 	doca_error_t err;
-	struct doca_argp_param *dev_name, *test_duration_sec, *user_factor, *excluded_eus;
+	struct doca_argp_param *dev_name, *test_duration_sec, *user_factor, *excluded_eus, *wait_timeout,
+		*wait_for_file;
 
 	err = doca_argp_param_create(&dev_name);
 	if (err != DOCA_SUCCESS) {
@@ -376,6 +426,44 @@ doca_error_t dpa_nvqual_register_params(void)
 	doca_argp_param_set_callback(excluded_eus, excluded_eus_param_callback);
 	doca_argp_param_set_type(excluded_eus, DOCA_ARGP_TYPE_STRING);
 	err = doca_argp_register_param(excluded_eus);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(err));
+		return err;
+	}
+
+	err = doca_argp_param_create(&wait_timeout);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(err));
+		return err;
+	}
+	doca_argp_param_set_short_name(wait_timeout, "wait_to");
+	doca_argp_param_set_long_name(wait_timeout, "wait-timeout-sec");
+	doca_argp_param_set_arguments(wait_timeout, "<timeout sec>");
+	doca_argp_param_set_description(
+		wait_timeout,
+		"Timeout in seconds while waiting for --wait-for-file go-signal (optional). Default: 60.");
+	doca_argp_param_set_callback(wait_timeout, wait_timeout_param_callback);
+	doca_argp_param_set_type(wait_timeout, DOCA_ARGP_TYPE_STRING);
+	err = doca_argp_register_param(wait_timeout);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(err));
+		return err;
+	}
+
+	err = doca_argp_param_create(&wait_for_file);
+	if (err != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(err));
+		return err;
+	}
+	doca_argp_param_set_short_name(wait_for_file, "wait_file");
+	doca_argp_param_set_long_name(wait_for_file, "wait-for-file");
+	doca_argp_param_set_arguments(wait_for_file, "<path>");
+	doca_argp_param_set_description(
+		wait_for_file,
+		"Delay starting DPA stress kernels until this file exists (optional). Useful when an external orchestrator (e.g. network_diag) starts traffic and then creates the go-signal. Uses --wait-timeout-sec (default 60). Caller should remove the file before start.");
+	doca_argp_param_set_callback(wait_for_file, wait_for_file_param_callback);
+	doca_argp_param_set_type(wait_for_file, DOCA_ARGP_TYPE_STRING);
+	err = doca_argp_register_param(wait_for_file);
 	if (err != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(err));
 		return err;
@@ -510,6 +598,9 @@ static doca_error_t setup(struct dpa_nvqual_config *nvqual_argp_cfg, struct dpa_
 	flow_cfg.test_duration_sec = nvqual_argp_cfg->test_duration_sec;
 	flow_cfg.iteration_duration_sec = iteration_duration_sec_var;
 	flow_cfg.allocated_dpa_heap_size = DPA_NVQUAL_ALLOCATED_DPA_HEAP_SIZE;
+	flow_cfg.wait_timeout_sec = nvqual_argp_cfg->wait_timeout_sec;
+	strncpy(flow_cfg.wait_for_file, nvqual_argp_cfg->wait_for_file, DPA_NVQUAL_WAIT_FILE_PATH_SIZE - 1);
+	flow_cfg.wait_for_file[DPA_NVQUAL_WAIT_FILE_PATH_SIZE - 1] = '\0';
 
 	nvq->flow_cfg = flow_cfg;
 	nvq->dev_list = NULL;
@@ -742,12 +833,9 @@ static doca_error_t setup(struct dpa_nvqual_config *nvqual_argp_cfg, struct dpa_
 			(uint64_t)((nvq->flow_cfg.iteration_duration_sec * DPA_NVQUAL_SEC_TO_USEC) /
 				   (DPA_NVQUAL_COPY_BYTE_LATENCY_USEC * (float)DPA_NVQUAL_MEMORY_BYTES_PER_OP));
 
-		// Calculate num_ops for arithmetic kernel - accounting for the 100x multiplier in the kernel
-		// Divide by ARITHMETIC_OPS_MULTIPLIER since the kernel does (num_ops * 100) iterations
-		uint64_t num_ops_arithmetic =
-			(uint64_t)((nvq->flow_cfg.iteration_duration_sec * DPA_NVQUAL_SEC_TO_USEC *
-				    DPA_NVQUAL_DPA_FREQ) /
-				   (DPA_NVQUAL_ARITHMETIC_CYCLES_PER_OP * DPA_NVQUAL_ARITHMETIC_OPS_MULTIPLIER));
+		uint64_t num_ops_arithmetic = (uint64_t)((nvq->flow_cfg.iteration_duration_sec *
+							  DPA_NVQUAL_SEC_TO_USEC * DPA_NVQUAL_DPA_FREQ) /
+							 DPA_NVQUAL_ARITHMETIC_CYCLES_PER_OP);
 
 		htls.num_ops = is_memory_kernel ? num_ops_memory : num_ops_arithmetic;
 		htls.dev_se = nvq->dev_se;
@@ -901,6 +989,47 @@ static doca_error_t tear_down(struct dpa_nvqual *nvq)
 }
 
 /**
+ * @brief Block until a go-signal file exists
+ *
+ * Used to synchronize DPA stress start with an external orchestrator (e.g. network_diag).
+ * Ctrl-C during the wait returns DOCA_SUCCESS so the caller can terminate gracefully
+ * like the main run loop (print results and exit successfully).
+ *
+ * @path [in]: File path to wait for
+ * @timeout_sec [in]: Maximum seconds to wait
+ * @return: DOCA_SUCCESS when file appears or on Ctrl-C, DOCA_ERROR_TIME_OUT on timeout
+ */
+static doca_error_t wait_for_go_file(const char *path, uint64_t timeout_sec)
+{
+	struct timeval start;
+	long long timeout_usec = (long long)timeout_sec * DPA_NVQUAL_SEC_TO_USEC;
+
+	DOCA_LOG_INFO("Waiting for go-signal file '%s' (timeout=%lu sec)...", path, timeout_sec);
+	gettimeofday(&start, NULL);
+
+	while (!interrupted) {
+		struct timeval current;
+		long long elapsed;
+
+		if (access(path, F_OK) == 0) {
+			DOCA_LOG_INFO("Go-signal file '%s' detected, starting DPA kernels", path);
+			return DOCA_SUCCESS;
+		}
+
+		usleep(DPA_NVQUAL_WAIT_FILE_POLL_USEC);
+
+		gettimeofday(&current, NULL);
+		elapsed = (current.tv_sec - start.tv_sec) * DPA_NVQUAL_SEC_TO_USEC + (current.tv_usec - start.tv_usec);
+		if (elapsed >= timeout_usec) {
+			DOCA_LOG_ERR("Timed out after %lu sec waiting for go-signal file '%s'", timeout_sec, path);
+			return DOCA_ERROR_TIME_OUT;
+		}
+	}
+
+	return DOCA_SUCCESS;
+}
+
+/**
  * @brief Run sample's flow
  *
  * This function runs sample's flow
@@ -914,6 +1043,12 @@ static doca_error_t run_flow(struct dpa_nvqual *nvq)
 	doca_error_t doca_err = DOCA_SUCCESS;
 
 	long long time_left = nvq->flow_cfg.test_duration_sec * DPA_NVQUAL_SEC_TO_USEC;
+
+	if (nvq->flow_cfg.wait_for_file[0] != '\0') {
+		doca_err = wait_for_go_file(nvq->flow_cfg.wait_for_file, nvq->flow_cfg.wait_timeout_sec);
+		if (doca_err != DOCA_SUCCESS)
+			return doca_err;
+	}
 
 	while (time_left > 0) {
 		if (interrupted) {

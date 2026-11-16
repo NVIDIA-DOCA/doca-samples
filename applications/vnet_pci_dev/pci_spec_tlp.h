@@ -509,6 +509,10 @@ struct pci_device_config {
 	struct vnet_sriov_pf_state *sriov;
 };
 
+/* Longest --vf-queue-pairs list accepted: one count per VF slot of a PF. A
+ * shorter list is repeated across the remaining slots. */
+#define VNET_VF_QP_LIST_MAX 64
+
 /* Context structure for managing TLP channel and devices */
 struct tlp_context {
 	struct doca_dev *dev;
@@ -533,7 +537,11 @@ struct tlp_context {
 	uint16_t acg_queue_count;			    /* Number of ACG credits in queue */
 	uint16_t acg_queue_size;			    /* ACG queue capacity (from device cap) */
 	bool hotplug_mode;				    /* Hotplug mode: true for hotplug, false for static */
-	atomic_bool lu_standby_takeover_complete;	    /* Standby completed LU restore and now owns opened reps */
+	/* Follows the debug log level. Compares each host-visible register against
+	 * its shadow, so a divergence becomes a local error instead of a run that
+	 * quietly looks like a pass. */
+	bool recycle_self_check;
+	atomic_bool lu_standby_takeover_complete; /* Standby completed LU restore and now owns opened reps */
 	struct vnet_pci_device *virtio_dev;
 	struct vnet_pci_dev_controller *vnet_controller; /* VNet offload controller */
 	uint8_t mac_bytes_base[ETH_ALEN];
@@ -550,6 +558,10 @@ struct tlp_context {
 	uint16_t sriov_total_vfs;
 	uint16_t sriov_num_vf_msix;
 	uint16_t sriov_num_vf_db;
+	/* --vf-queue-pairs: queue pairs per VF slot, which size that VF's queues,
+	 * MSI-X and doorbells. Empty (len 0) gives every VF the PF geometry. */
+	uint16_t vf_qp_list[VNET_VF_QP_LIST_MAX];
+	uint8_t vf_qp_list_len;
 
 	/* Global SR-IOV dynamic-VF index pool. Each PF reserves a contiguous
 	 * range via vnet_sriov_pool_alloc_range() before create_rep_ex(); the

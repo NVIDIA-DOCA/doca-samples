@@ -66,7 +66,7 @@ DOCA_LOG_REGISTER(VERBS_MULTI_RAIL_SERVER_CLIENT::CORE);
 #define VERBS_MULTI_RAIL_DEFAULT_MIN_RNR_TIMER 1
 #define VERBS_MULTI_RAIL_DEFAULT_GID_INDEX 0
 
-#define VERBS_MULTI_RAIL_MAGIC 0x56444631u
+#define VERBS_MULTI_RAIL_MAGIC 0x56444632u
 #define VERBS_MULTI_RAIL_HOP_LIMIT 255
 #define VERBS_MULTI_RAIL_MIN_RQ_WR 4u
 #define VERBS_MULTI_RAIL_MAX_SEND_SEGS 1u
@@ -1631,6 +1631,18 @@ static doca_error_t exchange_probe_uc_oob(int sock_fd,
 	return DOCA_SUCCESS;
 }
 
+static doca_error_t exchange_ready_barrier(int sock_fd)
+{
+	uint8_t tx = 1;
+	uint8_t rx = 0;
+	doca_error_t status;
+
+	status = send_all(sock_fd, &tx, sizeof(tx));
+	if (status != DOCA_SUCCESS)
+		return status;
+	return recv_all(sock_fd, &rx, sizeof(rx));
+}
+
 static doca_error_t tcp_server_accept(uint16_t port, int *listen_fd_out, int *conn_fd_out)
 {
 	struct sockaddr_in addr = {};
@@ -3014,6 +3026,10 @@ doca_error_t verbs_multi_rail_run(struct verbs_multi_rail_cfg *cfg)
 				goto tcp_cleanup;
 		}
 	}
+
+	status = exchange_ready_barrier(sock_fd);
+	if (status != DOCA_SUCCESS)
+		goto tcp_cleanup;
 
 	recovery_ctx.sock_fd = sock_fd;
 	recovery_ctx.num_qps = cfg->num_qps;

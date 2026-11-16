@@ -23,6 +23,8 @@
  *
  */
 
+#include <limits.h>
+
 #include <doca_argp.h>
 #include <doca_log.h>
 
@@ -88,14 +90,14 @@ static doca_error_t nic_pci_address_callback(void *param, void *config)
 static doca_error_t time_interval_callback(void *param, void *config)
 {
 	struct sample_send_wait_cfg *sample_cfg = (struct sample_send_wait_cfg *)config;
-	uint32_t time_interval_ns = *((uint32_t *)param);
+	const int time_interval_ns = *((int *)param);
 
-	if (time_interval_ns == 0) {
-		DOCA_LOG_ERR("Time interval can't be 0");
+	if (time_interval_ns <= 0) {
+		DOCA_LOG_ERR("Invalid time interval %d ns, it must be between 1 and %d", time_interval_ns, INT_MAX);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	sample_cfg->time_interval_ns = time_interval_ns;
+	sample_cfg->time_interval_ns = (uint32_t)time_interval_ns;
 
 	return DOCA_SUCCESS;
 }
@@ -156,8 +158,8 @@ static doca_error_t register_sample_params(void)
 
 	doca_argp_param_set_short_name(time_param, "t");
 	doca_argp_param_set_long_name(time_param, "time");
-	doca_argp_param_set_arguments(time_param, "<Nanoseconds between sends>");
-	doca_argp_param_set_description(time_param, "Time interval in nanoseconds between sends");
+	doca_argp_param_set_arguments(time_param, "<Nanoseconds between bursts>");
+	doca_argp_param_set_description(time_param, "Time interval in nanoseconds between bursts (1-2147483647)");
 	doca_argp_param_set_callback(time_param, time_interval_callback);
 	doca_argp_param_set_type(time_param, DOCA_ARGP_TYPE_INT);
 	doca_argp_param_set_mandatory(time_param);
@@ -219,9 +221,24 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
+	/* In a multi-GPU system, ensure CUDA refers to the right GPU device */
+	cuda_ret = cudaDeviceGetByPCIBusId(&cuda_id, sample_cfg.gpu_pcie_addr);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("Invalid GPU bus id provided %s: %s",
+			     sample_cfg.gpu_pcie_addr,
+			     cudaGetErrorString(cuda_ret));
+		goto argp_cleanup;
+	}
+
+	cuda_ret = cudaSetDevice(cuda_id);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("Failed to set CUDA device %d: %s", cuda_id, cudaGetErrorString(cuda_ret));
+		goto argp_cleanup;
+	}
+
 	/*
 	 * A CUDA context must be initialized before calling GPUNetIO functions.
-	 * cudaFree(0) triggers the CUDA runtime initialization and report any errors.
+	 * cudaFree(0) triggers the CUDA runtime initialization on the selected GPU and report any errors.
 	 */
 	cuda_ret = cudaFree(0);
 	if (cuda_ret != cudaSuccess) {
@@ -229,16 +246,7 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
-	/* In a multi-GPU system, ensure CUDA refers to the right GPU device */
-	cuda_ret = cudaDeviceGetByPCIBusId(&cuda_id, sample_cfg.gpu_pcie_addr);
-	if (cuda_ret != cudaSuccess) {
-		DOCA_LOG_ERR("Invalid GPU bus id provided %s", sample_cfg.gpu_pcie_addr);
-		goto argp_cleanup;
-	}
-
-	cudaSetDevice(cuda_id);
-
-	DOCA_LOG_INFO("Sample configuration:\n\tGPU %s\n\tNIC %s\n\tTimeout %dns",
+	DOCA_LOG_INFO("Sample configuration:\n\tGPU %s\n\tNIC %s\n\tInterval between bursts %u ns",
 		      sample_cfg.gpu_pcie_addr,
 		      sample_cfg.nic_pcie_addr,
 		      sample_cfg.time_interval_ns);

@@ -228,3 +228,35 @@ This sample illustrates how to perform RDMA operations using DOCA Verbs API.
 - `doca_dpa/dpa_common.h`
 - `doca_dpa/dpa_common.c`
 - `doca_dpa/build_dpacc_samples.sh`
+
+# Event Channel
+
+This sample illustrates how a single DPA thread can service multiple DPA Completion Contexts through a thread event channel, waking on any completion and identifying which one raised it by the completion id the channel reports.
+
+A DPA thread is created with an event channel enabled and two DPA Completion Contexts attached to it. Each completion is raised from a DPA RPC (using `doca_dpa_dev_thread_notify()`), which wakes the thread. On each wake the thread reads the id of the completion that woke it with `doca_dpa_dev_thread_get_completion_id_from_event_channel()`, without polling each of the completions attached to it, and writes that id into the DPA memory it shares with the host. It then sets a DOCA Sync Event to tell the host it is done, and the host reads the reported id back. In a real application the completions would instead be produced by data-path activity (e.g. RDMA/DMA operations).
+
+## Program Flags
+
+- `-pf_dev, --pf-device <PF DOCA device name>` PF device name that supports DPA (optional). If not provided, then a random device will be chosen.
+
+## Sample Logic
+
+- Allocating DOCA DPA resources.
+- Querying event channel support and the maximum completions per event channel.
+- Creating a DPA Thread with event channel enabled and a maximum number of completions.
+- Creating two DPA Completion Contexts attached to the thread and retrieving their ids.
+- Creating a DOCA Sync Event for the thread to signal the host with once it is done.
+- Running the DPA Thread.
+- For each DPA Completion Context: a DPA RPC raises a completion; the thread wakes, reads the completion id from its event channel and reports it, and the host verifies that the reported id is the one of the raised completion.
+- Destroying all resources.
+
+## Reference
+
+- `doca_dpa/dpa_event_channel/dpa_event_channel_main.c`
+- `doca_dpa/dpa_event_channel/host/dpa_event_channel_sample.c`
+- `doca_dpa/dpa_event_channel/device/dpa_event_channel_kernels_dev.c`
+- `doca_dpa/dpa_event_channel/common/dpa_event_channel_common_defs.h`
+- `doca_dpa/dpa_event_channel/meson.build`
+- `doca_dpa/dpa_common.h`
+- `doca_dpa/dpa_common.c`
+- `doca_dpa/build_dpacc_samples.sh`

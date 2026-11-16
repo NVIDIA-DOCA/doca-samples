@@ -49,6 +49,8 @@ struct flow_switch_ctx {
 /*
  * Register DOCA Flow switch parameters
  *
+ * The config passed to doca_argp_init() must be a struct flow_switch_ctx or embed one as its first member.
+ *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise.
  */
 doca_error_t register_doca_flow_switch_params(void);

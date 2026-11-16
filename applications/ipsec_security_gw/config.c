@@ -24,9 +24,11 @@
  */
 
 #include <ctype.h>
+#include <string.h>
 #include <json-c/json.h>
 
 #include <rte_hash_crc.h>
+#include <rte_ether.h>
 
 #include <doca_argp.h>
 #include <doca_log.h>
@@ -40,6 +42,35 @@
 DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::CONFIG);
 
 #define MAX_CORES (32)
+
+/*
+ * Parse MAC address string (e.g. "aa:bb:cc:dd:ee:ff") to its byte representation
+ *
+ * An all-zero address is rejected, since it is the sentinel marking an override that was not set.
+ *
+ * @mac_str [in]: MAC address string
+ * @out [out]: parsed MAC address bytes
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t parse_mac_str(const char *mac_str, uint8_t out[RTE_ETHER_ADDR_LEN])
+{
+	struct rte_ether_addr addr;
+
+	if (mac_str == NULL) {
+		DOCA_LOG_ERR("MAC address string is missing");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	if (rte_ether_unformat_addr(mac_str, &addr) != 0) {
+		DOCA_LOG_ERR("Wrong format of MAC address: %s", mac_str);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	if (rte_is_zero_ether_addr(&addr)) {
+		DOCA_LOG_ERR("An all-zero MAC address cannot be set explicitly: %s", mac_str);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	memcpy(out, addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+	return DOCA_SUCCESS;
+}
 
 /*
  * Parse hex key string to array of uint8_t
@@ -662,9 +693,11 @@ static doca_error_t parse_json_encrypt_rules(struct json_object *json_rules, str
 			if (result != DOCA_SUCCESS)
 				return result;
 		}
-		result = create_port(cur_rule, "src-port", &app_cfg->app_rules.encrypt_rules[i].src_port);
-		if (result != DOCA_SUCCESS)
-			return result;
+		if (app_cfg->match_src_port) {
+			result = create_port(cur_rule, "src-port", &app_cfg->app_rules.encrypt_rules[i].src_port);
+			if (result != DOCA_SUCCESS)
+				return result;
+		}
 
 		result = create_port(cur_rule, "dst-port", &app_cfg->app_rules.encrypt_rules[i].dst_port);
 		if (result != DOCA_SUCCESS)
@@ -701,6 +734,7 @@ static doca_error_t parse_json_encrypt_rules(struct json_object *json_rules, str
 		if (result != DOCA_SUCCESS)
 			return result;
 	}
+
 	return DOCA_SUCCESS;
 }
 
@@ -1058,6 +1092,73 @@ static doca_error_t parse_icv_length(struct json_object *json_config, struct ips
 }
 
 /*
+ * Parse an ARP mode string into the corresponding enum value
+ *
+ * @arp_mode_str [in]: ARP mode string (default-miss, drop, forward-port)
+ * @arp_mode [out]: parsed ARP mode
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR_INVALID_VALUE otherwise
+ */
+static doca_error_t arp_mode_from_string(const char *arp_mode_str, enum ipsec_security_gw_arp_mode *arp_mode)
+{
+	if (strcmp(arp_mode_str, "default-miss") == 0)
+		*arp_mode = IPSEC_SECURITY_GW_ARP_MODE_DEFAULT_MISS;
+	else if (strcmp(arp_mode_str, "drop") == 0)
+		*arp_mode = IPSEC_SECURITY_GW_ARP_MODE_DROP;
+	else if (strcmp(arp_mode_str, "forward-port") == 0)
+		*arp_mode = IPSEC_SECURITY_GW_ARP_MODE_FORWARD_PORT;
+	else {
+		DOCA_LOG_ERR("Invalid ARP mode: %s (expected default-miss, drop, or forward-port)", arp_mode_str);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Parse json object for ARP handling mode
+ *
+ * @json_config [in]: json config object
+ * @app_cfg [out]: application configuration struct
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t parse_arp_mode(struct json_object *json_config, struct ipsec_security_gw_config *app_cfg)
+{
+	struct json_object *arp_mode;
+
+	if (!json_object_object_get_ex(json_config, "arp-mode", &arp_mode)) {
+		DOCA_LOG_DBG("Missing \"arp-mode\" parameter, ARP traffic is left to the default miss path");
+		return DOCA_SUCCESS;
+	}
+	if (json_object_get_type(arp_mode) != json_type_string) {
+		DOCA_LOG_ERR("Expecting a string value for \"arp-mode\"");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	return arp_mode_from_string(json_object_get_string(arp_mode), &app_cfg->arp_mode);
+}
+
+/*
+ * Parse json object for L4 source port matching in the encrypt pipes
+ *
+ * @json_config [in]: json config object
+ * @app_cfg [out]: application configuration struct
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t parse_match_src_port(struct json_object *json_config, struct ipsec_security_gw_config *app_cfg)
+{
+	struct json_object *match_src_port;
+
+	if (!json_object_object_get_ex(json_config, "match-src-port", &match_src_port)) {
+		DOCA_LOG_DBG("Missing \"match-src-port\" parameter, using true as default");
+		return DOCA_SUCCESS;
+	}
+	if (json_object_get_type(match_src_port) != json_type_boolean) {
+		DOCA_LOG_ERR("Expecting a bool value for \"match-src-port\"");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	app_cfg->match_src_port = json_object_get_boolean(match_src_port);
+	return DOCA_SUCCESS;
+}
+
+/*
  * Parse json object of the config
  *
  * @json_config [in]: json object of the config to parse
@@ -1111,6 +1212,14 @@ static doca_error_t parse_json_config(struct json_object *json_config, struct ip
 		return result;
 
 	result = parse_icv_length(json_config, app_cfg);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	result = parse_arp_mode(json_config, app_cfg);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	result = parse_match_src_port(json_config, app_cfg);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -1490,6 +1599,77 @@ static doca_error_t debug_mode_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - Handle DOCA Flow Tune data collection parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t enable_tune_callback(void *param, void *config)
+{
+	struct ipsec_security_gw_config *app_cfg = (struct ipsec_security_gw_config *)config;
+
+	app_cfg->enable_tune = *(bool *)param;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Set tunnel encap Ethernet source MAC
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t encap_src_mac_callback(void *param, void *config)
+{
+	struct ipsec_security_gw_config *app_cfg = (struct ipsec_security_gw_config *)config;
+
+	return parse_mac_str((const char *)param, app_cfg->encap_eth.src_mac);
+}
+
+/*
+ * ARGP Callback - Set tunnel encap Ethernet destination MAC
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t encap_dst_mac_callback(void *param, void *config)
+{
+	struct ipsec_security_gw_config *app_cfg = (struct ipsec_security_gw_config *)config;
+
+	return parse_mac_str((const char *)param, app_cfg->encap_eth.dst_mac);
+}
+
+/*
+ * ARGP Callback - Set tunnel decap Ethernet source MAC
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t decap_src_mac_callback(void *param, void *config)
+{
+	struct ipsec_security_gw_config *app_cfg = (struct ipsec_security_gw_config *)config;
+
+	return parse_mac_str((const char *)param, app_cfg->decap_eth.src_mac);
+}
+
+/*
+ * ARGP Callback - Set tunnel decap Ethernet destination MAC
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t decap_dst_mac_callback(void *param, void *config)
+{
+	struct ipsec_security_gw_config *app_cfg = (struct ipsec_security_gw_config *)config;
+
+	return parse_mac_str((const char *)param, app_cfg->decap_eth.dst_mac);
+}
+
+/*
  * ARGP Callback - Handle rules file parameter
  *
  * @param [in]: Input parameter
@@ -1564,7 +1744,8 @@ doca_error_t register_ipsec_security_gw_params(void)
 {
 	doca_error_t result;
 	struct doca_argp_param *secured_param, *unsecured_param, *config_param, *ipsec_mode, *socket_path,
-		*unsecured_rep_param, *nb_cores, *debug_mode;
+		*unsecured_rep_param, *nb_cores, *debug_mode, *enable_tune;
+	struct doca_argp_param *encap_src_mac_param, *encap_dst_mac_param, *decap_src_mac_param, *decap_dst_mac_param;
 
 	/* Create and register ingress device param */
 	result = doca_argp_param_create(&secured_param);
@@ -1698,6 +1879,83 @@ doca_error_t register_ipsec_security_gw_params(void)
 	doca_argp_param_set_callback(debug_mode, debug_mode_callback);
 	doca_argp_param_set_type(debug_mode, DOCA_ARGP_TYPE_BOOLEAN);
 	result = doca_argp_register_param(debug_mode);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* Create and register DOCA Flow Tune param */
+	result = doca_argp_param_create(&enable_tune);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(enable_tune, "enable-tune");
+	doca_argp_param_set_description(enable_tune, "Enable DOCA Flow Tune data collection and tune server");
+	doca_argp_param_set_callback(enable_tune, enable_tune_callback);
+	doca_argp_param_set_type(enable_tune, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(enable_tune);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* Optional L2 rewrite for ESP tunnel encap/decap (MAC addresses) */
+	result = doca_argp_param_create(&encap_src_mac_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(encap_src_mac_param, "encap-src-mac");
+	doca_argp_param_set_description(encap_src_mac_param, "Tunnel encap Ethernet src MAC (aa:bb:cc:dd:ee:ff)");
+	doca_argp_param_set_callback(encap_src_mac_param, encap_src_mac_callback);
+	doca_argp_param_set_type(encap_src_mac_param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(encap_src_mac_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&encap_dst_mac_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(encap_dst_mac_param, "encap-dst-mac");
+	doca_argp_param_set_description(encap_dst_mac_param, "Tunnel encap Ethernet dst MAC (aa:bb:cc:dd:ee:ff)");
+	doca_argp_param_set_callback(encap_dst_mac_param, encap_dst_mac_callback);
+	doca_argp_param_set_type(encap_dst_mac_param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(encap_dst_mac_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&decap_src_mac_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(decap_src_mac_param, "decap-src-mac");
+	doca_argp_param_set_description(decap_src_mac_param, "Tunnel decap Ethernet src MAC (aa:bb:cc:dd:ee:ff)");
+	doca_argp_param_set_callback(decap_src_mac_param, decap_src_mac_callback);
+	doca_argp_param_set_type(decap_src_mac_param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(decap_src_mac_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&decap_dst_mac_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(decap_dst_mac_param, "decap-dst-mac");
+	doca_argp_param_set_description(decap_dst_mac_param, "Tunnel decap Ethernet dst MAC (aa:bb:cc:dd:ee:ff)");
+	doca_argp_param_set_callback(decap_dst_mac_param, decap_dst_mac_callback);
+	doca_argp_param_set_type(decap_dst_mac_param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(decap_dst_mac_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
 		return result;

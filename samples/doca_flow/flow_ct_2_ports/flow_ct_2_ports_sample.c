@@ -355,6 +355,7 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 						      packets[i]->hash.rss,
 						      NULL,
 						      NULL,
+						      NULL /* tcp_window_validation */,
 						      NULL,
 						      NULL,
 						      0,
@@ -497,7 +498,7 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 	struct ct_port_cfg ct_port_cfg = {.ct_flags = DOCA_FLOW_CT_FLAG_NO_AGING,
 					  .zone_match_mask = {&o_zone_mask, &r_zone_mask},
 					  .modify_mask = {&o_modify_mask, &r_modify_mask}};
-	uint32_t nb_arm_queues = 1, nb_ctrl_queues = 1, nb_ipv4_sessions = 1024, nb_ipv6_sessions = 0; /* On BF2 should
+	uint32_t nb_ct_queues = 1, nb_ctrl_queues = 1, nb_ipv4_sessions = 1024, nb_ipv6_sessions = 0; /* On BF2 should
 													  always be 0 */
 	uint16_t ct_queue = nb_queues;
 	struct doca_flow_pipe_entry *counter_miss_entries[nb_ports];
@@ -541,8 +542,8 @@ doca_error_t flow_ct_2_ports(uint16_t nb_queues, struct flow_dev_ctx *ctx)
 	resource.nr_ct_counters = nb_ipv4_sessions + nb_ipv6_sessions;
 	resource.nr_rss = 1;
 
-	struct ct_init_cfg ct_cfg = {.ct_queues = nb_arm_queues, .ct_ctrl_queues = nb_ctrl_queues};
-	result = init_doca_flow_with_ct(nb_queues, "switch,hws", &resource, nr_shared_resources, &ct_cfg);
+	struct ct_init_cfg ct_cfg = {.ct_queues = nb_ct_queues, .ct_ctrl_queues = nb_ctrl_queues};
+	result = init_doca_flow_with_ct(nb_queues, "switch", &resource, nr_shared_resources, &ct_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -203,6 +203,7 @@ doca_error_t telemetry_export(void)
 	result = doca_telemetry_exporter_schema_add_type(doca_schema, "example_event", example_type, &example_index);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Cannot add type to doca_schema!");
+		doca_telemetry_exporter_type_destroy(example_type);
 		goto err_schema;
 	}
 

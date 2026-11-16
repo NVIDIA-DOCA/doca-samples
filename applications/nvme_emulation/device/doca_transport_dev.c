@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -195,11 +195,12 @@ static void handle_dbs(struct io_thread_arg *thread_arg)
 
 	if (num_dbs != 0) {
 		doca_dpa_dev_devemu_pci_db_completion_ack(thread_arg->dpa_db_comp, num_dbs);
-		doca_dpa_dev_devemu_pci_db_completion_request_notification(thread_arg->dpa_db_comp);
-	}
 
-	for (db_idx = 0; db_idx < num_dbs; db_idx++) {
-		handle_db(thread_arg, &dbs[db_idx]);
+		for (db_idx = 0; db_idx < num_dbs; db_idx++) {
+			handle_db(thread_arg, &dbs[db_idx]);
+		}
+
+		doca_dpa_dev_devemu_pci_db_completion_request_notification(thread_arg->dpa_db_comp);
 	}
 }
 

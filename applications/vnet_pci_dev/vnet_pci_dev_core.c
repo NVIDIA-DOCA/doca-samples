@@ -35,6 +35,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <net/if.h>
 #include <linux/if_ether.h>
 
 #include <doca_error.h>
@@ -54,6 +55,9 @@
 #include <infiniband/verbs.h>
 
 #include "common.h"
+#include "vnet_admin_dev_parts.h"
+#include "vnet_admin_queue.h"
+#include "vnet_admin_vf.h"
 #include "vnet_pci_dev_core.h"
 #include "vnet_pci_dev_lu.h"
 #include "vnet_pci_device.h"
@@ -72,9 +76,6 @@ DOCA_LOG_REGISTER(VNET_PCI_DEV_CORE);
 #define UNPLUG_PLUG_ACK_POLL_US 1000	   /* Poll interval while waiting for DLActive during unplug defer */
 #define VNET_CTRL_REQ_DELAY_USEC 400000	   /* One-time initial-stage ctrl_req delay */
 #define VNET_NSEC_PER_SEC 1000000000ULL
-#define VNET_ADMIN_CMD_OPCODES_ARR_LEN 64
-#define VNET_ADMIN_SUPPORTED_OPCODES ((1ULL << VIRTIO_ADMIN_CMD_LIST_QUERY) | (1ULL << VIRTIO_ADMIN_CMD_LIST_USE))
-
 /**
  * @brief Close stats log files during final cleanup
  *
@@ -361,6 +362,9 @@ static doca_error_t vnet_controllers_state_init(struct vnet_pci_dev_controller *
 	uint32_t i;
 
 	for (i = 0; i < num_controllers; i++) {
+		vnet_recycle_state_init(&controllers[i].recycle);
+		atomic_init(&controllers[i].vf_recycle_active, false);
+		atomic_init(&controllers[i].vf_hide_pending, false);
 		result = vnet_controller_state_init(&controllers[i]);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to initialize VNet controller state for EP %u: %s",
@@ -938,6 +942,51 @@ unlock_and_return:
 }
 
 /*
+ * Print one virtqueue's common Virtio counters (descriptor heads, doorbells, MSI-X)
+ * to a log file. These are direction-agnostic, so they are queried once per VQ index
+ * instead of per RX/TX branch. The accessor returns NULL for a VQ that is not mapped.
+ */
+static void print_vq_virtio_counters(FILE *log,
+				     struct doca_devemu_vnet_counters *counters,
+				     uint16_t vq_index,
+				     intmax_t ts)
+{
+	struct doca_devemu_virtio_queue_counters *virtio_cnt;
+	uint64_t doorbells_handled = 0;
+	uint64_t heads_completed = 0;
+	uint64_t heads_fetched = 0;
+	uint64_t msix_raised = 0;
+	int supported = 0;
+
+	virtio_cnt = doca_devemu_vnet_counters_vq_as_virtio_queue_counters(counters, vq_index);
+	if (virtio_cnt == NULL) {
+		DOCA_LOG_DBG("VQ%u has no Virtio queue counters sample", vq_index);
+		return;
+	}
+
+	/* Counters the backend does not report yield NOT_SUPPORTED and are left out of the line
+	 * rather than printed as zero, so a missing counter is not mistaken for an idle queue. */
+	fprintf(log, "[%" PRIdMAX "] INFO:   virtio stats:", ts);
+	if (doca_devemu_virtio_queue_counters_get_heads_fetched(virtio_cnt, &heads_fetched) == DOCA_SUCCESS) {
+		fprintf(log, " heads_fetched=%" PRIu64, heads_fetched);
+		supported++;
+	}
+	if (doca_devemu_virtio_queue_counters_get_heads_completed(virtio_cnt, &heads_completed) == DOCA_SUCCESS) {
+		fprintf(log, " heads_completed=%" PRIu64, heads_completed);
+		supported++;
+	}
+	if (doca_devemu_virtio_queue_counters_get_doorbells_handled(virtio_cnt, &doorbells_handled) == DOCA_SUCCESS) {
+		fprintf(log, " doorbells_handled=%" PRIu64, doorbells_handled);
+		supported++;
+	}
+	if (doca_devemu_virtio_queue_counters_get_msix_raised(virtio_cnt, &msix_raised) == DOCA_SUCCESS) {
+		fprintf(log, " msix_raised=%" PRIu64, msix_raised);
+		supported++;
+	}
+	fprintf(log, "%s\n", supported == 0 ? " none reported" : "");
+}
+
+/*
  * Print one virtqueue's RX/TX counters (packets, bytes, RX size bins, and the
  * RX/TX error stats) to a log file. Shared by the PF and per-VF collectors,
  * which differ only in their surrounding scaffolding (file lifecycle, throttle,
@@ -1042,6 +1091,8 @@ static void print_vq_counters(FILE *log, struct doca_devemu_vnet_counters *count
 	} else if (res != DOCA_ERROR_INVALID_VALUE) {
 		DOCA_LOG_DBG("TX VQ%u query failed: %s", vq_index, doca_error_get_descr(res));
 	}
+
+	print_vq_virtio_counters(log, counters, vq_index, ts);
 }
 
 /*
@@ -2250,26 +2301,129 @@ static void vnet_pci_dev_cleanup_io_context(struct vnet_pci_dev_controller *cont
 	DOCA_LOG_INFO("IO context destroyed");
 }
 
+/*
+ * Derive the queue-pair layout from the features the driver accepted, shared so
+ * the FEATURES_OK handler and the deferred replay cannot drift apart. @origin
+ * only labels the logs.
+ */
+static void vnet_controller_apply_queue_layout(struct vnet_pci_dev_controller *ctrl,
+					       struct vnet_pci_device *dev,
+					       const char *origin)
+{
+	bool has_cvq = !!(dev->driver_features & (1ULL << VIRTIO_NET_F_CTRL_VQ));
+	bool has_mq = !!(dev->driver_features & (1ULL << VIRTIO_NET_F_MQ));
+	bool has_admin_vq = !!(dev->driver_features & (1ULL << VNET_VIRTIO_F_ADMIN_VQ));
+
+	ctrl->mq_feature_negotiated = has_cvq && has_mq;
+	ctrl->admin_vq_negotiated = has_admin_vq && ctrl->admin_queue_num > 0;
+	DOCA_LOG_DBG("%s: device_features=0x%016llx, driver_features=0x%016llx, "
+		     "admin_bit=%u, admin_advertised=%d, admin_negotiated=%d, configured_aq=%u",
+		     origin,
+		     (unsigned long long)dev->device_features,
+		     (unsigned long long)dev->driver_features,
+		     VNET_VIRTIO_F_ADMIN_VQ,
+		     !!(dev->device_features & (1ULL << VNET_VIRTIO_F_ADMIN_VQ)),
+		     has_admin_vq,
+		     ctrl->admin_queue_num);
+
+	if (ctrl->mq_feature_negotiated) {
+		DOCA_LOG_INFO("%s: MQ features negotiated (F_CTRL_VQ + F_MQ)", origin);
+		atomic_store(&ctrl->num_active_qps, VNET_DEFAULT_QUEUE_PAIRS);
+		vnet_controller_set_desired_qps(ctrl, VNET_DEFAULT_QUEUE_PAIRS);
+		ctrl->max_queue_pairs = ctrl->tlp_ctx->max_queue_pairs;
+		atomic_store(&ctrl->deferred_mq.initial_data_qps_deferred,
+			     vnet_tlp_ctx_should_defer_mq_start(ctrl->tlp_ctx));
+	} else {
+		DOCA_LOG_INFO("%s: MQ features NOT negotiated (CTRL_VQ=%d, MQ=%d) - single QP mode",
+			      origin,
+			      has_cvq,
+			      has_mq);
+		atomic_store(&ctrl->num_active_qps, 1);
+		vnet_controller_set_desired_qps(ctrl, 1);
+		ctrl->max_queue_pairs = 1;
+		atomic_store(&ctrl->deferred_mq.initial_data_qps_deferred, false);
+	}
+}
+
+/*
+ * Run an initialisation FEATURES_OK asked for while the controller was busy: it
+ * is refused rather than queued mid-recycle, because the work would act on an
+ * engine about to go away, and the guest will not ask twice.
+ *
+ * @param[in] ctrl Controller to initialise
+ * @param[in] origin What was in the way, for logs
+ */
+static void vnet_controller_run_deferred_init(struct vnet_pci_dev_controller *ctrl, const char *origin)
+{
+	struct vnet_pci_device *dev;
+
+	if (ctrl == NULL || !atomic_load(&ctrl->deferred_init_pending))
+		return;
+
+	dev = atomic_load(&ctrl->virtio_device);
+	if (dev == NULL) {
+		DOCA_LOG_WARN("Deferred init skipped after %s - no active VirtIO device", origin);
+		atomic_store(&ctrl->deferred_init_pending, false);
+		return;
+	}
+
+	DOCA_LOG_INFO("Deferred init after %s: FEATURES_OK was refused earlier, initializing now", origin);
+	atomic_store(&ctrl->deferred_init_pending, false);
+	atomic_store(&ctrl->initialization_in_progress, true);
+	__sync_synchronize();
+
+	vnet_controller_apply_queue_layout(ctrl, dev, "Deferred init");
+
+	/* The same work items FEATURES_OK would have queued. */
+	if (!atomic_load(&ctrl->offload_engine_started)) {
+		DOCA_LOG_INFO("Deferred init: Submitting engine_start");
+		pci_cfg_workqueue_submit_engine_start(ctrl);
+	}
+	DOCA_LOG_INFO("Deferred init: Submitting initialize_vqs");
+	pci_cfg_workqueue_submit_initialize_vqs(ctrl);
+	DOCA_LOG_INFO("Deferred init: Submitting initialize_io_context");
+	pci_cfg_workqueue_submit_initialize_io_context(ctrl);
+
+	/* Also queue start_and_enable since DRIVER_OK is likely already set.
+	 * The function will check engine_enabled to avoid duplicate enable. */
+	DOCA_LOG_INFO("Deferred init: Submitting start_and_enable (DRIVER_OK likely set)");
+	pci_cfg_workqueue_submit_start_and_enable(ctrl, dev);
+}
+
 doca_error_t vnet_controller_cleanup(struct vnet_pci_dev_controller *ctrl, bool destroy_engine)
 {
 	struct doca_devemu_virtio_offload_engine *virtio_engine = NULL;
 	doca_error_t result = DOCA_SUCCESS;
 	bool has_vqs;
 	bool cleanup_incomplete = false;
+	int ep_idx;
 
 	if (!ctrl)
 		return DOCA_SUCCESS;
 
+	/* Controllers live in one array on the TLP context, so the index is the
+	 * offset. The steps below are bracketed by the begin and end lines rather
+	 * than labelled individually; one worker runs every endpoint's cleanup. */
+	ep_idx = (ctrl->tlp_ctx != NULL) ? (int)(ctrl - ctrl->tlp_ctx->vnet_controller) : -1;
+
 	/* Prevent double cleanup - use atomic CAS to ensure only one thread proceeds */
 	bool expected_cleanup = false;
 	if (!atomic_compare_exchange_strong(&ctrl->cleanup_running, &expected_cleanup, true)) {
-		DOCA_LOG_DBG("Cleanup already in progress, skipping");
+		/* A driver unbind queues one cleanup from the virtio reset and
+		 * another from the recycle behind it; when they overlap the second
+		 * collapses here, which is worth a line rather than a debug print. */
+		DOCA_LOG_INFO("EP[%d]: controller cleanup skipped - another cleanup is already running", ep_idx);
 		return DOCA_SUCCESS;
 	}
+
+	DOCA_LOG_INFO("EP[%d]: controller cleanup begin - %s",
+		      ep_idx,
+		      destroy_engine ? "offload engine will be destroyed" : "offload engine kept");
 
 	/* Flush & stop the management VQs first so no new work can appear */
 	DOCA_LOG_INFO("Cleanup: Stopping management VQs...");
 	vnet_controller_clear_deferred_mq_start(ctrl);
+	vnet_admin_queue_quiesce(&ctrl->admin_queue);
 	if (atomic_load(&ctrl->engine_enabled)) {
 		DOCA_ERROR_PROPAGATE(result, vnet_controller_disable_ctrl_vq(ctrl));
 		DOCA_ERROR_PROPAGATE(result, vnet_controller_disable_admin_vq(ctrl));
@@ -2285,8 +2439,9 @@ doca_error_t vnet_controller_cleanup(struct vnet_pci_dev_controller *ctrl, bool 
 		/* A management VQ that failed to stop is still bound to the IO context, so destroying
 		 * that context would strand both objects instead of releasing them.
 		 */
-		DOCA_LOG_ERR("CRITICAL: Management VQ teardown failed (%s) - stopping cleanup before IO context "
-			     "destroy to keep the bound VQs intact",
+		DOCA_LOG_ERR("EP[%d]: CRITICAL: Management VQ teardown failed (%s) - stopping cleanup before IO "
+			     "context destroy to keep the bound VQs intact",
+			     ep_idx,
 			     doca_error_get_descr(result));
 		atomic_store(&ctrl->cleanup_running, false);
 		return DOCA_ERROR_IN_PROGRESS; /* caller must NOT free the controller */
@@ -2301,6 +2456,7 @@ doca_error_t vnet_controller_cleanup(struct vnet_pci_dev_controller *ctrl, bool 
 	 * With dual PE: IO context is on PE2 (worker PE), so we drive PE2 ourselves
 	 * to drain and destroy the context. No impact on PE1 (main PE). */
 	vnet_pci_dev_cleanup_io_context(ctrl);
+	vnet_admin_queue_reset(&ctrl->admin_queue);
 
 	/* Join the MQ resize worker thread after no new worker can appear */
 	result = vnet_controller_wait_for_mq_resize(ctrl);
@@ -2308,8 +2464,9 @@ doca_error_t vnet_controller_cleanup(struct vnet_pci_dev_controller *ctrl, bool 
 		/* The resize worker can still dereference ctrl and its VQs, so quarantine
 		 * the controller instead of destroying resources underneath it.
 		 */
-		DOCA_LOG_ERR("CRITICAL: MQ resize worker failed to stop (%s) - stopping cleanup after "
+		DOCA_LOG_ERR("EP[%d]: CRITICAL: MQ resize worker failed to stop (%s) - stopping cleanup after "
 			     "management teardown to prevent UAF",
+			     ep_idx,
 			     doca_error_get_descr(result));
 		atomic_store(&ctrl->cleanup_running, false);
 		return DOCA_ERROR_IN_PROGRESS; /* caller must NOT free the controller */
@@ -2494,8 +2651,9 @@ doca_error_t vnet_controller_cleanup(struct vnet_pci_dev_controller *ctrl, bool 
 		 * This prevents resource leaks and teardown ordering violations.
 		 * Caller should NOT free the controller if this returns error. */
 		if (cleanup_incomplete) {
-			DOCA_LOG_ERR("CRITICAL: Cannot destroy engine - stats/counters resources "
-				     "not cleaned up. Aborting to prevent leaks.");
+			DOCA_LOG_ERR("EP[%d]: CRITICAL: Cannot destroy engine - stats/counters resources "
+				     "not cleaned up. Aborting to prevent leaks.",
+				     ep_idx);
 			atomic_store(&ctrl->cleanup_running, false);
 			return DOCA_ERROR_IN_PROGRESS;
 		}
@@ -2556,6 +2714,14 @@ cleanup_done:
 			goto reset_hold_done;
 		}
 
+		/* A driver unbind queues this cleanup and then starts a recycle.
+		 * The recycle finishes second and owns the hold, so releasing it
+		 * here would let the host back in with the TLP device stopped. */
+		if (vnet_recycle_in_progress(&ctrl->recycle)) {
+			DOCA_LOG_INFO("RESET: controller cleanup complete, reset hold stays with the function recycle");
+			goto reset_hold_done;
+		}
+
 		reset_hold_finished =
 			atomic_compare_exchange_strong(&ctrl->reset_status_state, &expected_state, next_state);
 		if (reset_hold_finished) {
@@ -2567,18 +2733,6 @@ cleanup_done:
 		}
 		if (reset_hold_finished && dev != NULL)
 			atomic_store(&dev->cancel_in_progress, false);
-
-		/* If this cleanup ran as part of an FLR sequence, lift the FLR
-		 * gate now that the heavy work is done. The host-visible
-		 * device_status transition (NEEDS_RESET -> 0) is still handled
-		 * by apply_reset_status_release on the next TLP cfg-write, so
-		 * the host driver sees the same re-init handshake as a normal
-		 * virtio reset. */
-		if (reset_hold_finished && dev != NULL && atomic_load(&dev->flr_in_progress)) {
-			atomic_store(&dev->flr_in_progress, false);
-			DOCA_LOG_INFO("EP[%d]: FLR cleanup complete, host-visible reset hold release queued",
-				      dev->pf_index);
-		}
 	}
 
 reset_hold_done:
@@ -2586,80 +2740,23 @@ reset_hold_done:
 	/* For reset case with incomplete cleanup, return error but allow re-initialization attempts.
 	 * Stats collection remains stopped to prevent use of leaked resources. */
 	if (!destroy_engine && cleanup_incomplete) {
-		DOCA_LOG_WARN("Reset cleanup incomplete - returning error (stats stopped, deferred init skipped)");
+		DOCA_LOG_WARN("EP[%d]: reset cleanup incomplete - returning error (stats stopped, deferred init "
+			      "skipped)",
+			      ep_idx);
 		return DOCA_ERROR_IN_PROGRESS;
 	}
 
 	if (result == DOCA_SUCCESS)
-		DOCA_LOG_INFO("Controller cleanup completed successfully");
+		DOCA_LOG_INFO("EP[%d]: controller cleanup completed successfully", ep_idx);
 	else
-		DOCA_LOG_WARN("Controller cleanup completed with errors");
+		DOCA_LOG_WARN("EP[%d]: controller cleanup completed with errors", ep_idx);
 
 	/* Check if FEATURES_OK arrived during cleanup and was deferred.
 	 * If so, trigger initialization now that cleanup is complete.
 	 * This handles the case where host doesn't retry status changes.
 	 * NOTE: Only execute if cleanup was complete (cleanup_incomplete == false). */
-	if (atomic_load(&ctrl->deferred_init_pending) && !destroy_engine && !cleanup_incomplete) {
-		bool has_cvq, has_mq, has_admin_vq;
-		struct vnet_pci_device *dev = atomic_load(&ctrl->virtio_device);
-
-		if (dev == NULL) {
-			DOCA_LOG_WARN("Deferred init skipped - no active VirtIO device");
-			atomic_store(&ctrl->deferred_init_pending, false);
-			return result;
-		}
-
-		DOCA_LOG_INFO("Deferred init: FEATURES_OK was skipped, starting initialization now");
-		atomic_store(&ctrl->deferred_init_pending, false);
-		atomic_store(&ctrl->initialization_in_progress, true);
-		__sync_synchronize();
-
-		/* Set up MQ features (same as FEATURES_OK handler) */
-		has_cvq = !!(dev->driver_features & (1ULL << VIRTIO_NET_F_CTRL_VQ));
-		has_mq = !!(dev->driver_features & (1ULL << VIRTIO_NET_F_MQ));
-		has_admin_vq = !!(dev->driver_features & (1ULL << VNET_VIRTIO_F_ADMIN_VQ));
-		ctrl->mq_feature_negotiated = (has_cvq && has_mq);
-		ctrl->admin_vq_negotiated = has_admin_vq && ctrl->admin_queue_num > 0;
-		DOCA_LOG_DBG("Deferred init: device_features=0x%016llx, driver_features=0x%016llx, "
-			     "admin_bit=%u, admin_advertised=%d, admin_negotiated=%d, configured_aq=%u",
-			     (unsigned long long)dev->device_features,
-			     (unsigned long long)dev->driver_features,
-			     VNET_VIRTIO_F_ADMIN_VQ,
-			     !!(dev->device_features & (1ULL << VNET_VIRTIO_F_ADMIN_VQ)),
-			     has_admin_vq,
-			     ctrl->admin_queue_num);
-
-		if (ctrl->mq_feature_negotiated) {
-			DOCA_LOG_INFO("Deferred init: MQ features negotiated (CVQ+MQ)");
-			atomic_store(&ctrl->num_active_qps, VNET_DEFAULT_QUEUE_PAIRS);
-			vnet_controller_set_desired_qps(ctrl, VNET_DEFAULT_QUEUE_PAIRS);
-			ctrl->max_queue_pairs = ctrl->tlp_ctx->max_queue_pairs;
-			atomic_store(&ctrl->deferred_mq.initial_data_qps_deferred,
-				     vnet_tlp_ctx_should_defer_mq_start(ctrl->tlp_ctx));
-		} else {
-			DOCA_LOG_INFO("Deferred init: MQ NOT negotiated - single QP mode");
-			atomic_store(&ctrl->num_active_qps, 1);
-			vnet_controller_set_desired_qps(ctrl, 1);
-			ctrl->max_queue_pairs = 1;
-			atomic_store(&ctrl->deferred_mq.initial_data_qps_deferred, false);
-		}
-
-		/* Queue initialization work items - same as FEATURES_OK handler.
-		 * We're on worker thread, so these will execute after this function returns. */
-		if (!ctrl->offload_engine_started) {
-			DOCA_LOG_INFO("Deferred init: Submitting engine_start");
-			pci_cfg_workqueue_submit_engine_start(ctrl);
-		}
-		DOCA_LOG_INFO("Deferred init: Submitting initialize_vqs");
-		pci_cfg_workqueue_submit_initialize_vqs(ctrl);
-		DOCA_LOG_INFO("Deferred init: Submitting initialize_io_context");
-		pci_cfg_workqueue_submit_initialize_io_context(ctrl);
-
-		/* Also queue start_and_enable since DRIVER_OK is likely already set.
-		 * The function will check engine_enabled to avoid duplicate enable. */
-		DOCA_LOG_INFO("Deferred init: Submitting start_and_enable (DRIVER_OK likely set)");
-		pci_cfg_workqueue_submit_start_and_enable(ctrl, dev);
-	}
+	if (!destroy_engine && !cleanup_incomplete)
+		vnet_controller_run_deferred_init(ctrl, "cleanup");
 
 	return result;
 }
@@ -2690,25 +2787,49 @@ static doca_error_t vnet_pci_dev_shutdown_device(struct vnet_pci_dev_controller 
 	return vnet_controller_cleanup(controller, true);
 }
 
-/**
- * @brief Print one offload engine's backing-SF representor info (vhca_id, netdev
- * ifindex, sf_index) to stdout on a single line, prefixed by a caller label.
- *
- * Writes to stdout (not the DOCA logger) so the 'sfinfo' command output stays
- * clean, without timestamp/module/file boilerplate. Resolves the SF representor
- * on demand via get_rep(); best-effort, prints a short marker when the engine is
- * absent or its representor cannot be resolved.
- *
- * @param[in] engine Offload engine (may be NULL for an idle slot)
- * @param[in] label  Caller label, e.g. "PF[0]" or "PF[0] VF[slot=3, vf_index=67]"
- */
-static void vnet_engine_display_rep_info(struct doca_devemu_vnet_offload_engine *engine, const char *label)
+/* Append the representor's vhca_id and sf_index to the current 'sfinfo' row. */
+static void vnet_engine_display_rep_ids(struct doca_devemu_vnet_offload_engine *engine)
 {
 	struct doca_devinfo_rep *devinfo_rep;
 	struct doca_dev_rep *rep = NULL;
 	uint32_t sf_index = 0;
-	uint32_t ifindex = 0;
 	uint16_t vhca_id = 0;
+	doca_error_t result;
+
+	result = doca_devemu_vnet_offload_engine_get_rep(engine, &rep);
+	if (result != DOCA_SUCCESS) {
+		printf(" <rep unavailable: %s>", doca_error_get_descr(result));
+		return;
+	}
+
+	devinfo_rep = doca_dev_rep_as_devinfo(rep);
+	if (devinfo_rep == NULL) {
+		printf(" <devinfo unavailable>");
+		return;
+	}
+
+	(void)doca_devinfo_rep_get_vhca_id(devinfo_rep, &vhca_id);
+	(void)doca_devinfo_rep_get_sf_index(devinfo_rep, &sf_index);
+	printf(" vhca_id=0x%04X sf_index=%u", vhca_id, sf_index);
+}
+
+/**
+ * @brief Print one 'sfinfo' row to stdout: the function's netdev name and ifindex, MSI-X and doorbell counts.
+ *
+ * @param[in] engine Offload engine (may be NULL for an idle slot)
+ * @param[in] num_msix MSI-X vectors the function holds
+ * @param[in] num_db Doorbells the function holds
+ * @param[in] label  Caller label, e.g. "PF[0]" or "PF[0] VF[slot=3, vf_index=67]"
+ * @param[in] verbose Also print the representor's vhca_id and sf_index
+ */
+static void vnet_engine_display_rep_info(struct doca_devemu_vnet_offload_engine *engine,
+					 uint16_t num_msix,
+					 uint16_t num_db,
+					 const char *label,
+					 bool verbose)
+{
+	char ifname[IF_NAMESIZE];
+	uint32_t ifindex = 0;
 	doca_error_t result;
 
 	if (engine == NULL) {
@@ -2716,48 +2837,120 @@ static void vnet_engine_display_rep_info(struct doca_devemu_vnet_offload_engine 
 		return;
 	}
 
-	result = doca_devemu_vnet_offload_engine_get_rep(engine, &rep);
+	result = doca_devemu_vnet_offload_engine_get_netdev_ifindex(engine, &ifindex);
 	if (result != DOCA_SUCCESS) {
-		printf("  %-32s <rep unavailable: %s>\n", label, doca_error_get_descr(result));
+		printf("  %-32s <ifindex unavailable: %s>\n", label, doca_error_get_descr(result));
 		return;
 	}
 
-	devinfo_rep = doca_dev_rep_as_devinfo(rep);
-	if (devinfo_rep == NULL) {
-		printf("  %-32s <devinfo unavailable>\n", label);
-		return;
-	}
+	if (if_indextoname(ifindex, ifname) == NULL)
+		snprintf(ifname, sizeof(ifname), "?");
 
-	(void)doca_devinfo_rep_get_vhca_id(devinfo_rep, &vhca_id);
-	(void)doca_devinfo_rep_get_iface_index(devinfo_rep, &ifindex);
-	(void)doca_devinfo_rep_get_sf_index(devinfo_rep, &sf_index);
-
-	printf("  %-32s vhca_id=0x%04X ifindex=%u sf_index=%u\n", label, vhca_id, ifindex, sf_index);
+	printf("  %-32s netdev=%s ifindex=%u msix=%u db=%u", label, ifname, ifindex, num_msix, num_db);
+	if (verbose)
+		vnet_engine_display_rep_ids(engine);
+	printf("\n");
 }
 
 /*
- * Dump backing-SF representor info for PF 'ep_index' and each of its active VFs
- * to stdout (clean, logger-free) for the 'sfinfo' command. Runs on the config
- * worker (serialized with engine create/destroy); the endpoint rwlock guards
- * sriov/vf_slots against a concurrent teardown that frees them.
+ * Print how much of the PF's VF envelope its VFs claimed. Only --vf-queue-pairs
+ * pools the envelope, and the VFs claim from it once, at bring-up, so anything
+ * left free stays idle. Caller holds the endpoint rwlock.
+ */
+static void vnet_display_dynamic_vf_pool(const struct pci_device_config *pf, uint32_t ep_index)
+{
+	struct doca_devemu_pci_ep *ep;
+	uint32_t msix_envelope;
+	uint32_t db_envelope;
+	uint16_t free_msix = 0;
+	uint16_t free_db = 0;
+	char label[48];
+	doca_error_t result;
+
+	if (pf->tlp_dev == NULL || pf->sriov == NULL || !pf->sriov->vf_res_pooled)
+		return;
+
+	snprintf(label, sizeof(label), "PF[%u] dynamic VF pool", ep_index);
+	ep = doca_devemu_pci_tlp_dev_as_ep(pf->tlp_dev);
+
+	result = doca_devemu_pci_ep_get_num_free_dynamic_vf_msix(ep, &free_msix);
+	if (result != DOCA_SUCCESS) {
+		printf("  %-32s <unavailable: %s>\n", label, doca_error_get_descr(result));
+		return;
+	}
+	(void)doca_devemu_pci_ep_get_num_free_dynamic_vf_db(ep, &free_db);
+
+	msix_envelope = (uint32_t)pf->sriov->total_vf * pf->sriov->vf_num_msix;
+	db_envelope = (uint32_t)pf->sriov->total_vf * pf->sriov->vf_num_db;
+
+	printf("  %-32s msix %u/%u db %u/%u claimed (%u msix, %u db free)\n",
+	       label,
+	       msix_envelope - free_msix,
+	       msix_envelope,
+	       db_envelope - free_db,
+	       db_envelope,
+	       free_msix,
+	       free_db);
+}
+
+/* True when the log level would show a debug message, so 'sfinfo' can add the
+ * resource accounting that only matters while investigating VF sizing. */
+static bool vnet_sf_info_verbose(void)
+{
+	return doca_log_level_get_global_upper_limit() >= DOCA_LOG_LEVEL_DEBUG;
+}
+
+/*
+ * Print the vectors and doorbells still unassigned device-wide. A VF draws from
+ * here as well as from its PF's pool, so both have to have room.
+ */
+static void vnet_display_device_free_resources(const struct tlp_context *tlp_ctx)
+{
+	uint32_t free_msix = 0;
+	uint32_t free_db = 0;
+	doca_error_t result;
+
+	result = vnet_sriov_device_free_resources(doca_dev_as_devinfo(tlp_ctx->dev), &free_msix, &free_db);
+	if (result != DOCA_SUCCESS) {
+		printf("  %-32s <unavailable: %s>\n", "device unassigned", doca_error_get_descr(result));
+		return;
+	}
+
+	printf("  %-32s msix=%u db=%u\n", "device unassigned", free_msix, free_db);
+}
+
+/*
+ * Dump the 'sfinfo' rows for PF 'ep_index' and its active VFs to stdout.
+ * A debug log level adds the representor IDs and resource accounting.
  */
 void vnet_dump_sf_info(struct tlp_context *tlp_ctx, uint32_t ep_index)
 {
 	struct vnet_pci_dev_controller *controller;
+	bool verbose = vnet_sf_info_verbose();
 	struct pci_device_config *pf;
-	char label[48];
+	uint16_t pf_msix = 0;
+	uint16_t pf_db = 0;
+	char label[80];
 	uint16_t total, i;
 
 	if (tlp_ctx == NULL || ep_index >= tlp_ctx->num_ep)
 		return;
 
-	printf("sfinfo PF[%u] (add each ifindex netdev to the OVS bridge for RX):\n", ep_index);
+	printf("sfinfo PF[%u] (add each netdev to the OVS bridge for RX):\n", ep_index);
 
 	controller = &tlp_ctx->vnet_controller[ep_index];
-	snprintf(label, sizeof(label), "PF[%u]", ep_index);
-	vnet_engine_display_rep_info(controller->offload_engine, label);
-
 	pf = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + ep_index];
+	if (pf->tlp_dev != NULL) {
+		struct doca_devemu_pci_ep *ep = doca_devemu_pci_tlp_dev_as_ep(pf->tlp_dev);
+
+		(void)doca_devemu_pci_ep_get_num_msix(ep, &pf_msix);
+		(void)doca_devemu_pci_ep_get_num_db(ep, &pf_db);
+	}
+	snprintf(label, sizeof(label), "PF[%u]", ep_index);
+	vnet_engine_display_rep_info(controller->offload_engine, pf_msix, pf_db, label, verbose);
+	if (verbose)
+		vnet_display_device_free_resources(tlp_ctx);
+
 	pthread_rwlock_rdlock(&pf->endpoint_lock);
 	if (pf->sriov == NULL || pf->sriov->vf_slots == NULL) {
 		pthread_rwlock_unlock(&pf->endpoint_lock);
@@ -2768,17 +2961,23 @@ void vnet_dump_sf_info(struct tlp_context *tlp_ctx, uint32_t ep_index)
 	total = pf->sriov->total_vf;
 	for (i = 0; i < total; i++) {
 		struct vnet_vf_slot *slot = &pf->sriov->vf_slots[i];
+		uint16_t vf_msix = 0;
+		uint16_t vf_db = 0;
 
 		if (slot->offload_engine == NULL)
 			continue;
+		vnet_sriov_vf_res(tlp_ctx, i, &vf_msix, &vf_db);
 		snprintf(label,
 			 sizeof(label),
-			 "PF[%u] VF[slot=%u, vf_index=%u]",
+			 "PF[%u] VF[slot=%u, vf_index=%u, qp=%u]",
 			 ep_index,
 			 (unsigned int)i,
-			 slot->vf_index);
-		vnet_engine_display_rep_info(slot->offload_engine, label);
+			 slot->vf_index,
+			 slot->vf_queue_pairs != 0 ? slot->vf_queue_pairs : tlp_ctx->max_queue_pairs);
+		vnet_engine_display_rep_info(slot->offload_engine, vf_msix, vf_db, label, verbose);
 	}
+	if (verbose)
+		vnet_display_dynamic_vf_pool(pf, ep_index);
 	pthread_rwlock_unlock(&pf->endpoint_lock);
 	fflush(stdout);
 }
@@ -2871,18 +3070,8 @@ doca_error_t vnet_pci_dev_apply_negotiated_features(struct doca_devemu_virtio_of
 	return DOCA_SUCCESS;
 }
 
-/**
- * @brief Validate Virtio Network specification feature dependencies.
- *
- * Checks that the negotiated feature set satisfies the inter-feature
- * dependencies mandated by the VirtIO 1.3 spec (section 5.1.3.1).
- *
- * @param[in] features The negotiated driver features.
- * @return true if all dependencies are satisfied, false otherwise.
- */
 static bool vnet_pci_dev_check_feature_deps(uint64_t features)
 {
-	/* CTRL_VQ is required by MQ, CTRL_RX, and CTRL_VLAN */
 	if ((features & (1ULL << VIRTIO_NET_F_MQ)) && !(features & (1ULL << VIRTIO_NET_F_CTRL_VQ))) {
 		DOCA_LOG_ERR("VIRTIO_NET_F_MQ requires VIRTIO_NET_F_CTRL_VQ");
 		return false;
@@ -2895,8 +3084,6 @@ static bool vnet_pci_dev_check_feature_deps(uint64_t features)
 		DOCA_LOG_ERR("VIRTIO_NET_F_CTRL_VLAN requires VIRTIO_NET_F_CTRL_VQ");
 		return false;
 	}
-
-	/* GUEST_CSUM is required by GUEST_TSO4, GUEST_TSO6, and GUEST_UFO */
 	if ((features & (1ULL << VIRTIO_NET_F_GUEST_TSO4)) && !(features & (1ULL << VIRTIO_NET_F_GUEST_CSUM))) {
 		DOCA_LOG_ERR("VIRTIO_NET_F_GUEST_TSO4 requires VIRTIO_NET_F_GUEST_CSUM");
 		return false;
@@ -2909,8 +3096,6 @@ static bool vnet_pci_dev_check_feature_deps(uint64_t features)
 		DOCA_LOG_ERR("VIRTIO_NET_F_GUEST_UFO requires VIRTIO_NET_F_GUEST_CSUM");
 		return false;
 	}
-
-	/* CSUM is required by HOST_TSO4, HOST_TSO6, HOST_UFO */
 	if ((features & (1ULL << VIRTIO_NET_F_HOST_TSO4)) && !(features & (1ULL << VIRTIO_NET_F_CSUM))) {
 		DOCA_LOG_ERR("VIRTIO_NET_F_HOST_TSO4 requires VIRTIO_NET_F_CSUM");
 		return false;
@@ -2923,21 +3108,16 @@ static bool vnet_pci_dev_check_feature_deps(uint64_t features)
 		DOCA_LOG_ERR("VIRTIO_NET_F_HOST_UFO requires VIRTIO_NET_F_CSUM");
 		return false;
 	}
-
-	/* GUEST_ECN requires GUEST_TSO4 or GUEST_TSO6 */
 	if ((features & (1ULL << VIRTIO_NET_F_GUEST_ECN)) &&
 	    !((features & (1ULL << VIRTIO_NET_F_GUEST_TSO4)) || (features & (1ULL << VIRTIO_NET_F_GUEST_TSO6)))) {
 		DOCA_LOG_ERR("VIRTIO_NET_F_GUEST_ECN requires VIRTIO_NET_F_GUEST_TSO4 or VIRTIO_NET_F_GUEST_TSO6");
 		return false;
 	}
-
-	/* HOST_ECN requires HOST_TSO4 or HOST_TSO6 */
 	if ((features & (1ULL << VIRTIO_NET_F_HOST_ECN)) &&
 	    !((features & (1ULL << VIRTIO_NET_F_HOST_TSO4)) || (features & (1ULL << VIRTIO_NET_F_HOST_TSO6)))) {
 		DOCA_LOG_ERR("VIRTIO_NET_F_HOST_ECN requires VIRTIO_NET_F_HOST_TSO4 or VIRTIO_NET_F_HOST_TSO6");
 		return false;
 	}
-
 	return true;
 }
 
@@ -2975,12 +3155,13 @@ static doca_error_t vnet_pci_dev_vnet_controller_init(struct vnet_pci_dev_resour
 {
 	const struct doca_devinfo *devinfo;
 	doca_error_t result;
+	uint32_t i;
 
 	/* Initialize all controllers in the array with atomic variables.
 	 * The stats_ref mutex and the MQ resize and fatal-error states are initialized in
 	 * init_tlp_context() immediately after allocation, so tlp_ctx_cleanup() can safely
 	 * destroy them on any failure path; their fields are owned by those initializers. */
-	for (uint32_t i = 0; i < resources->tlp_ctx->num_ep; i++) {
+	for (i = 0; i < resources->tlp_ctx->num_ep; i++) {
 		struct vnet_pci_dev_controller *ctrl = &resources->tlp_ctx->vnet_controller[i];
 		atomic_init(&ctrl->virtio_device, NULL);
 		atomic_init(&ctrl->shutting_down, false);
@@ -3006,6 +3187,13 @@ static doca_error_t vnet_pci_dev_vnet_controller_init(struct vnet_pci_dev_resour
 		ctrl->admin_vq_negotiated = false;
 		ctrl->admin_queue_index = 0;
 		ctrl->admin_queue_num = 0;
+		result = vnet_admin_queue_init(&ctrl->admin_queue);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to initialize admin queue state for controller %u", i);
+			while (i != 0)
+				vnet_admin_queue_fini(&resources->tlp_ctx->vnet_controller[--i].admin_queue);
+			return result;
+		}
 		/* worker_pe will be set after this function returns */
 	}
 
@@ -3097,12 +3285,11 @@ doca_error_t vnet_pci_dev_vf_engine_create(struct tlp_context *tlp_ctx, struct v
 {
 	struct doca_devemu_virtio_offload_engine *virtio_engine;
 	struct doca_devemu_pci_ep *pci_ep;
-	uint8_t mac_bytes[ETH_ALEN];
 	uint16_t total_vqs;
 	doca_error_t result;
 	doca_error_t destroy_result;
 
-	if (tlp_ctx == NULL || slot == NULL || slot->tlp_dev == NULL)
+	if (tlp_ctx == NULL || slot == NULL || slot->tlp_dev == NULL || slot->vf_dev == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
 
 	/* Idempotent: a re-entrant VFE 0->1 (or FLR restart) must not create a
@@ -3138,7 +3325,7 @@ doca_error_t vnet_pci_dev_vf_engine_create(struct tlp_context *tlp_ctx, struct v
 		goto destroy_engine;
 	}
 
-	result = doca_devemu_vnet_offload_engine_set_mtu(slot->offload_engine, tlp_ctx->mtu);
+	result = doca_devemu_vnet_offload_engine_set_mtu(slot->offload_engine, slot->vf_dev->vnet_cfg.mtu);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("SR-IOV: VF[vf_index=%u] set MTU failed: %s",
 			     slot->vf_index,
@@ -3146,11 +3333,9 @@ doca_error_t vnet_pci_dev_vf_engine_create(struct tlp_context *tlp_ctx, struct v
 		goto destroy_engine;
 	}
 
-	/* Per-VF MAC, derived the same way (and from the same globally-unique
-	 * vf_index) as the VF cfg-space template, so the engine MAC and the
-	 * host-visible device-config MAC always match. */
-	vnet_sriov_derive_vf_mac(tlp_ctx->mac_bytes_base, tlp_ctx->num_ep, slot->vf_index, mac_bytes);
-	result = doca_devemu_vnet_offload_engine_set_mac(slot->offload_engine, mac_bytes);
+	/* The shadow is initialized from the derived VF attributes and may later
+	 * contain restored device-parts creation attributes. */
+	result = doca_devemu_vnet_offload_engine_set_mac(slot->offload_engine, slot->vf_dev->vnet_cfg.mac);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("SR-IOV: VF[vf_index=%u] set MAC failed: %s",
 			     slot->vf_index,
@@ -3158,10 +3343,10 @@ doca_error_t vnet_pci_dev_vf_engine_create(struct tlp_context *tlp_ctx, struct v
 		goto destroy_engine;
 	}
 
-	/* A VF mirrors the PF queue geometry: up to max_queue_pairs data pairs
-	 * (RX + TX) plus a control VQ. Size the engine from the configured
-	 * max_queue_pairs so multi-queue VFs get all their VQs. */
-	total_vqs = VNET_TOTAL_VQS(tlp_ctx->max_queue_pairs);
+	/* Data pairs (RX + TX) plus a control VQ, sized from this VF's own queue
+	 * count with --vf-queue-pairs and from the PF geometry otherwise, so a
+	 * multi-queue VF gets all of its VQs. */
+	total_vqs = VNET_TOTAL_VQS(slot->vf_queue_pairs != 0 ? slot->vf_queue_pairs : tlp_ctx->max_queue_pairs);
 	result = doca_devemu_virtio_offload_engine_set_num_queues(virtio_engine, total_vqs);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("SR-IOV: VF[vf_index=%u] set num_queues failed: %s",
@@ -3173,7 +3358,7 @@ doca_error_t vnet_pci_dev_vf_engine_create(struct tlp_context *tlp_ctx, struct v
 	DOCA_LOG_INFO("SR-IOV: VF[vf_index=%u] offload engine created (idle, %u VQs, MTU=%u)",
 		      slot->vf_index,
 		      total_vqs,
-		      tlp_ctx->mtu);
+		      slot->vf_dev->vnet_cfg.mtu);
 
 	/* SF netdev ifindex (for OVS bridging) is not logged per-VF here: use the
 	 * 'sfinfo <pf_idx>' CLI command to dump it on demand and keep bring-up cheap. */
@@ -3191,8 +3376,9 @@ destroy_engine:
 }
 
 /* Disable a VF's VQs while its engine is still enabled (lets the engine disable
- * go straight to DISABLED). Covers every data queue pair plus the control VQ. */
-static void vnet_pci_dev_vf_disable_vqs(struct vnet_vf_slot *slot)
+ * go straight to DISABLED). Covers every data queue pair plus the control VQ,
+ * mirroring the PF vnet_controller_disable_all_vqs. */
+void vnet_pci_dev_vf_disable_vqs(struct vnet_vf_slot *slot)
 {
 	uint16_t i;
 
@@ -3215,17 +3401,25 @@ static void vnet_pci_dev_vf_disable_vqs(struct vnet_vf_slot *slot)
  * the engine stop/destroy and the FLR rebuild.
  * The unbind runs while slot->io_ctx is still valid (the IO
  * context is torn down after this in vnet_pci_dev_vf_engine_destroy). */
-static void vnet_pci_dev_vf_stop_vqs(struct vnet_vf_slot *slot)
+doca_error_t vnet_pci_dev_vf_stop_vqs_checked(struct vnet_vf_slot *slot)
 {
+	doca_error_t result = DOCA_SUCCESS;
+	doca_error_t stop_result;
 	uint16_t i;
 
 	if (slot->rx_vqs == NULL || slot->tx_vqs == NULL)
-		return;
+		return atomic_load(&slot->vqs_created) ? DOCA_ERROR_BAD_STATE : DOCA_SUCCESS;
 	for (i = 0; i < slot->max_queue_pairs; i++) {
-		if (slot->rx_vqs[i] != NULL)
-			(void)doca_devemu_virtio_vq_stop(doca_devemu_vnet_rx_vq_as_vq(slot->rx_vqs[i]));
-		if (slot->tx_vqs[i] != NULL)
-			(void)doca_devemu_virtio_vq_stop(doca_devemu_vnet_tx_vq_as_vq(slot->tx_vqs[i]));
+		if (slot->rx_vqs[i] != NULL) {
+			stop_result = doca_devemu_virtio_vq_stop(doca_devemu_vnet_rx_vq_as_vq(slot->rx_vqs[i]));
+			if (stop_result != DOCA_SUCCESS && stop_result != DOCA_ERROR_BAD_STATE)
+				DOCA_ERROR_PROPAGATE(result, stop_result);
+		}
+		if (slot->tx_vqs[i] != NULL) {
+			stop_result = doca_devemu_virtio_vq_stop(doca_devemu_vnet_tx_vq_as_vq(slot->tx_vqs[i]));
+			if (stop_result != DOCA_SUCCESS && stop_result != DOCA_ERROR_BAD_STATE)
+				DOCA_ERROR_PROPAGATE(result, stop_result);
+		}
 	}
 	if (slot->cvq != NULL) {
 		struct doca_devemu_virtio_vq *cvq_vq = doca_devemu_vnet_ctrl_vq_as_vq(slot->cvq);
@@ -3240,14 +3434,21 @@ static void vnet_pci_dev_vf_stop_vqs(struct vnet_vf_slot *slot)
 					atomic_store(&slot->cvq_bound, false);
 				}
 			}
-			(void)doca_devemu_virtio_vq_stop(cvq_vq);
+			stop_result = doca_devemu_virtio_vq_stop(cvq_vq);
+			if (stop_result != DOCA_SUCCESS && stop_result != DOCA_ERROR_BAD_STATE)
+				DOCA_ERROR_PROPAGATE(result, stop_result);
 		}
 	}
+	return result;
 }
 
-/* Bounded poll for the VF engine to reach DISABLED after disable() (worker
- * thread only). ~200ms cap; data VQs are HW-offloaded so the drain is
- * autonomous and normally completes in microseconds. */
+static void vnet_pci_dev_vf_stop_vqs(struct vnet_vf_slot *slot)
+{
+	(void)vnet_pci_dev_vf_stop_vqs_checked(slot);
+}
+
+/* Bounded poll for the VF engine to reach DISABLED after disable().
+ * Worker-side callers progress the owning PE while waiting. */
 #define VNET_VF_ENGINE_DISABLE_POLL_USEC 1000
 #define VNET_VF_ENGINE_DISABLE_POLL_MAX 200
 
@@ -3407,6 +3608,7 @@ doca_error_t vnet_pci_dev_vf_lu_quiesce(struct vnet_vf_slot *slot)
 {
 	doca_error_t tmp_result;
 	doca_error_t result = DOCA_SUCCESS;
+	uint16_t mi;
 
 	if (slot == NULL) {
 		result = DOCA_ERROR_INVALID_VALUE;
@@ -3425,7 +3627,7 @@ doca_error_t vnet_pci_dev_vf_lu_quiesce(struct vnet_vf_slot *slot)
 		}
 	}
 
-	for (uint16_t mi = 0; mi < 2; mi++) {
+	for (mi = 0; mi < 2; mi++) {
 		if (slot->vq_msix[mi] != NULL) {
 			tmp_result = doca_devemu_pci_msix_destroy(slot->vq_msix[mi]);
 			if (tmp_result != DOCA_SUCCESS) {
@@ -3515,31 +3717,9 @@ doca_error_t vnet_pci_dev_vf_lu_quiesce(struct vnet_vf_slot *slot)
 			atomic_store(&slot->engine_started, false);
 	}
 
-	if (slot->tlp_dev != NULL) {
-		tmp_result = doca_devemu_pci_tlp_dev_stop(slot->tlp_dev);
-		if (tmp_result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("SR-IOV LU: VF[vf_index=%u] tlp_dev stop failed: %s",
-				     slot->vf_index,
-				     doca_error_get_descr(tmp_result));
-			DOCA_ERROR_PROPAGATE(result, tmp_result);
-		}
-
-		tmp_result = doca_devemu_pci_tlp_dev_destroy(slot->tlp_dev);
-		if (tmp_result != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("SR-IOV LU: VF[vf_index=%u] tlp_dev destroy failed: %s",
-				     slot->vf_index,
-				     doca_error_get_descr(tmp_result));
-			DOCA_ERROR_PROPAGATE(result, tmp_result);
-			goto out;
-		}
-
-		slot->tlp_dev = NULL;
-		atomic_store(&slot->active, false);
-	}
-
 out:
 	if (slot != NULL && result == DOCA_SUCCESS)
-		DOCA_LOG_INFO("SR-IOV LU: VF[vf_index=%u] datapath quiesced", slot->vf_index);
+		DOCA_LOG_INFO("SR-IOV LU: VF[vf_index=%u] datapath quiesced; TLP responder retained", slot->vf_index);
 	return result;
 }
 
@@ -3559,8 +3739,9 @@ doca_error_t vnet_pci_dev_vf_vqs_create(struct tlp_context *tlp_ctx, struct vnet
 		return DOCA_SUCCESS;
 
 	/* A VF presents up to max_queue_pairs data queue pairs (plus a control VQ
-	 * when the guest negotiated F_CTRL_VQ + F_MQ), mirroring the PF geometry. */
-	max_qp = tlp_ctx->max_queue_pairs;
+	 * when the guest negotiated F_CTRL_VQ + F_MQ): its own count with
+	 * --vf-queue-pairs, otherwise the PF geometry. */
+	max_qp = slot->vf_queue_pairs != 0 ? slot->vf_queue_pairs : tlp_ctx->max_queue_pairs;
 
 	slot->rx_vqs = calloc(max_qp, sizeof(*slot->rx_vqs));
 	slot->tx_vqs = calloc(max_qp, sizeof(*slot->tx_vqs));
@@ -3643,6 +3824,8 @@ doca_error_t vnet_pci_dev_vf_vqs_destroy(struct vnet_vf_slot *slot)
 	free(slot->tx_vqs);
 	slot->tx_vqs = NULL;
 	slot->max_queue_pairs = 0;
+	/* vf_queue_pairs is provisioned geometry, not datapath state: it is fixed at
+	 * PF bring-up and has to survive a disable and re-enable. */
 
 	if (atomic_load(&slot->vqs_created)) {
 		atomic_store(&slot->vqs_created, false);
@@ -3705,6 +3888,7 @@ doca_error_t vnet_pci_dev_vf_set_conf_data_vq(struct vnet_vf_slot *slot,
 doca_error_t vnet_pci_dev_vf_start_vqs(struct vnet_vf_slot *slot)
 {
 	struct vnet_pci_device *vf;
+	uint16_t active_qps;
 	doca_error_t result;
 	uint16_t qp;
 
@@ -3724,9 +3908,12 @@ doca_error_t vnet_pci_dev_vf_start_vqs(struct vnet_vf_slot *slot)
 	if (!(vf->pci_cfg.device_status & VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK))
 		return DOCA_SUCCESS;
 
-	/* Apply + start each fully-configured VQ (single queue pair, no control
-	 * VQ). Mirrors the PF start_vqs: re-apply the snapshot then start. */
-	for (qp = 0; qp < slot->max_queue_pairs; qp++) {
+	active_qps = atomic_load(&slot->num_active_qps);
+	if (active_qps == 0 || active_qps > slot->max_queue_pairs)
+		return DOCA_ERROR_BAD_STATE;
+
+	/* Apply and start only the queue pairs selected by restored/guest MQ state. */
+	for (qp = 0; qp < active_qps; qp++) {
 		const uint16_t vq_idx[2] = {(uint16_t)(qp * 2), (uint16_t)(qp * 2 + 1)};
 		int k;
 
@@ -3831,6 +4018,7 @@ doca_error_t vnet_pci_dev_vf_enable_engine(struct vnet_vf_slot *slot)
 	}
 
 	atomic_store(&slot->engine_enabled, true);
+	atomic_store(&slot->admin_stopped, false);
 
 	/* Default active queue-pair count until the guest issues MQ_VQ_PAIRS_SET
 	 * (mirrors the virtio-net default curr_queue_pairs = 1). */
@@ -3870,82 +4058,14 @@ doca_error_t vnet_pci_dev_vf_start_and_enable(struct vnet_vf_slot *slot)
 		return DOCA_ERROR_BAD_STATE;
 	if (!(slot->vf_dev->pci_cfg.device_status & VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK))
 		return DOCA_SUCCESS;
+	if (atomic_load(&slot->num_active_qps) == 0)
+		atomic_store(&slot->num_active_qps, 1);
 
 	result = vnet_pci_dev_vf_start_vqs(slot);
 	if (result != DOCA_SUCCESS)
 		return result;
 
 	return vnet_pci_dev_vf_enable_engine(slot);
-}
-
-/*
- * Per-VF control-VQ request handler.
- *
- * Mirror of vnet_pci_dev_ctrl_req_handler() but for an SR-IOV VF: the bound
- * VQ user data is the vnet_vf_slot. A VF advertises up to max_queue_pairs data
- * queue pairs; all configured data VQs are started at DRIVER_OK, so
- * MQ_VQ_PAIRS_SET is validated against slot->max_queue_pairs and records the
- * active count (num_active_qps). MAC / RX-mode / VLAN commands are
- * backend-handled and acked OK.
- */
-static void vnet_pci_dev_vf_ctrl_req_handler(struct doca_devemu_vnet_ctrl_req *req,
-					     uint8_t cls,
-					     uint8_t cmd,
-					     void *user_data)
-{
-	struct vnet_vf_slot *slot;
-	uint8_t ack = VIRTIO_NET_OK;
-	(void)user_data;
-
-	slot = (struct vnet_vf_slot *)doca_devemu_vnet_ctrl_req_get_vq_user_data(req);
-	if (slot == NULL) {
-		DOCA_LOG_ERR("SR-IOV: VF ctrl_req with no slot user data");
-		doca_devemu_vnet_ctrl_req_complete(req, VIRTIO_NET_ERR, 0);
-		return;
-	}
-
-	switch (cls) {
-	case VIRTIO_NET_CTRL_MQ:
-		if (cmd == VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET) {
-			struct doca_buf *data_buf = doca_devemu_vnet_ctrl_req_get_data(req);
-			uint32_t data_len = doca_devemu_vnet_ctrl_req_get_data_len(req);
-			void *data_ptr = NULL;
-			uint16_t new_qps = 0;
-
-			if (data_len >= sizeof(uint16_t) && data_buf != NULL &&
-			    doca_buf_get_data(data_buf, &data_ptr) == DOCA_SUCCESS && data_ptr != NULL)
-				new_qps = *(uint16_t *)data_ptr;
-
-			/* Accept any active count within the advertised range; all
-			 * data VQs are already started, so this records the active
-			 * queue-pair count the guest selected. */
-			if (new_qps == 0 || new_qps > slot->max_queue_pairs) {
-				DOCA_LOG_WARN("SR-IOV: VF[vf_index=%u] MQ_VQ_PAIRS_SET %u rejected (max=%u)",
-					      slot->vf_index,
-					      new_qps,
-					      slot->max_queue_pairs);
-				ack = VIRTIO_NET_ERR;
-			} else {
-				atomic_store(&slot->num_active_qps, new_qps);
-				DOCA_LOG_INFO("SR-IOV: VF[vf_index=%u] MQ_VQ_PAIRS_SET %u", slot->vf_index, new_qps);
-			}
-		} else {
-			DOCA_LOG_WARN("SR-IOV: VF[vf_index=%u] unsupported MQ cmd %u", slot->vf_index, cmd);
-			ack = VIRTIO_NET_ERR;
-		}
-		break;
-	case VIRTIO_NET_CTRL_MAC:
-	case VIRTIO_NET_CTRL_RX:
-	case VIRTIO_NET_CTRL_VLAN:
-		/* Backend-handled; ack OK (parity with the PF ctrl_req handler). */
-		ack = VIRTIO_NET_OK;
-		break;
-	default:
-		DOCA_LOG_WARN("SR-IOV: VF[vf_index=%u] unsupported ctrl class %u", slot->vf_index, cls);
-		ack = VIRTIO_NET_ERR;
-	}
-
-	doca_devemu_vnet_ctrl_req_complete(req, ack, sizeof(uint8_t));
 }
 
 doca_error_t vnet_pci_dev_vf_initialize_io_context(struct tlp_context *tlp_ctx,
@@ -4010,7 +4130,7 @@ doca_error_t vnet_pci_dev_vf_initialize_io_context(struct tlp_context *tlp_ctx,
 	}
 
 	/* Handler must be registered while the IO ctx is idle (before start). */
-	result = doca_devemu_vnet_io_event_vnet_ctrl_req_register(slot->io_ctx, vnet_pci_dev_vf_ctrl_req_handler);
+	result = doca_devemu_vnet_io_event_vnet_ctrl_req_register(slot->io_ctx, vnet_admin_vf_ctrl_req_handler);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("SR-IOV: VF[vf_index=%u] ctrl_req register failed: %s",
 			     slot->vf_index,
@@ -4036,10 +4156,23 @@ destroy_io_ctx:
 	return result;
 }
 
-static doca_error_t vnet_pci_dev_vnet_controller_create(struct tlp_context *tlp_ctx, struct pci_device_config *endpoint)
+/*
+ * Create and configure the PF's offload engine on top of its started TLP device.
+ * Split out of controller creation because a recycle has to redo exactly this
+ * much, and nothing else: the engine is destroyed on suspend and has to exist
+ * again, freshly bound, before the guest's next FEATURES_OK.
+ *
+ * @param[in] allow_lu_import Consume a live-update export blob if one is
+ *            registered for this PF. True only on first create; a recycle needs
+ *            a fresh engine, not a re-imported pre-reset one.
+ */
+static doca_error_t vnet_controller_build_offload_engine(struct tlp_context *tlp_ctx,
+							 struct pci_device_config *endpoint,
+							 struct vnet_pci_dev_controller *controller,
+							 uint32_t pf_index,
+							 bool allow_lu_import)
 {
 	struct doca_devemu_virtio_offload_engine *virtio_engine;
-	struct vnet_pci_dev_controller *controller;
 	struct doca_devemu_pci_ep *pci_ep;
 	const void *import_desc = NULL;
 	size_t import_desc_len = 0;
@@ -4047,34 +4180,12 @@ static doca_error_t vnet_pci_dev_vnet_controller_create(struct tlp_context *tlp_
 	doca_error_t destroy_result;
 	doca_error_t result;
 	uint16_t total_vqs;
-	uint32_t pf_index;
 	uint8_t mac_bytes[ETH_ALEN];
 
-	doca_error_t ret = get_pf_index_for_device(tlp_ctx, endpoint, &pf_index);
-	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get PF index for device %02x:%02x.%x",
-			     endpoint->bus,
-			     endpoint->device,
-			     endpoint->function);
-		return DOCA_ERROR_EMPTY;
-	}
-
-	controller = &tlp_ctx->vnet_controller[pf_index];
-	/* Initialize atomic flags */
-	atomic_store(&controller->shutting_down, false);
-	atomic_store(&controller->stop_stats_collection, false);
-	/* Initialize dbg_state atomics */
-	atomic_store(&controller->dbg_state.stats_in_progress, false);
-	atomic_store(&controller->dbg_state.counters_in_progress, false);
-	atomic_store(&controller->dbg_state.last_stats_time, 0);
-	atomic_store(&controller->dbg_state.last_counters_time, 0);
-	atomic_store(&controller->stats_ref, NULL);
-	/* Link to existing components */
-	atomic_store(&controller->virtio_device, &tlp_ctx->virtio_dev[pf_index]);
-	controller->tlp_ctx = tlp_ctx;
 	pci_ep = doca_devemu_pci_tlp_dev_as_ep(endpoint->tlp_dev);
 
-	result = vnet_lu_get_import_desc(pf_index, &import_desc, &import_desc_len);
+	result = allow_lu_import ? vnet_lu_get_import_desc(pf_index, &import_desc, &import_desc_len) :
+				   DOCA_ERROR_NOT_FOUND;
 	if (result == DOCA_SUCCESS) {
 		result = doca_devemu_vnet_offload_engine_create_from_export(import_desc,
 									    import_desc_len,
@@ -4152,6 +4263,532 @@ static doca_error_t vnet_pci_dev_vnet_controller_create(struct tlp_context *tlp_
 		DOCA_LOG_INFO("VNet offload engine imported: MTU, MAC, num_queues already set from export blob");
 	}
 
+	return DOCA_SUCCESS;
+
+destroy_offload_engine:
+	/* Engine was just created and should not be started - destroy must succeed */
+	destroy_result = doca_devemu_vnet_offload_engine_destroy(controller->offload_engine);
+	if (destroy_result != DOCA_SUCCESS)
+		DOCA_LOG_ERR("Engine destroy failed during creation cleanup - library bug!");
+	controller->offload_engine = NULL;
+
+	return result;
+}
+
+/*
+ * PF side of the unified function recycle (see vnet_recycle.h): the callbacks
+ * describing what a PF is made of. All run on the worker thread.
+ */
+
+struct pci_device_config *vnet_controller_endpoint(struct vnet_pci_dev_controller *ctrl)
+{
+	struct vnet_pci_device *dev;
+
+	if (ctrl == NULL || ctrl->tlp_ctx == NULL)
+		return NULL;
+
+	dev = atomic_load(&ctrl->virtio_device);
+	if (dev == NULL || dev->pf_index < 0 || (uint32_t)dev->pf_index >= ctrl->tlp_ctx->num_ep)
+		return NULL;
+
+	return &ctrl->tlp_ctx->devs_config[FIRST_PF_IDX(ctrl->tlp_ctx) + dev->pf_index];
+}
+
+static doca_error_t vnet_pf_recycle_suspend_datapath(void *fn)
+{
+	struct vnet_pci_dev_controller *ctrl = fn;
+	doca_error_t result;
+
+	/* destroy_engine = true, unlike the plain virtio-reset path that keeps the
+	 * engine for a fast rebind: this reset invalidated the engine's mkey and
+	 * suspended its MSI-X, so reusing it gives back a dead datapath. */
+	result = vnet_controller_cleanup(ctrl, true);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	/* A cleanup already running collapses this call into success, and it may
+	 * have been asked to keep the engine. Only the engine being gone proves the
+	 * suspend happened, so retry rather than rebuild around a stale mkey. */
+	if (ctrl->offload_engine != NULL)
+		return DOCA_ERROR_IN_PROGRESS;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Stop and start hold the endpoint lock in read mode for the single SDK call: it
+ * only has to keep the tlp_dev alive, and write mode would block every host config
+ * access. The device object is never destroyed - a stopped one still answers.
+ */
+static doca_error_t vnet_pf_recycle_stop_tlp(void *fn)
+{
+	struct vnet_pci_dev_controller *ctrl = fn;
+	struct pci_device_config *ep = vnet_controller_endpoint(ctrl);
+	doca_error_t result;
+
+	if (ep == NULL)
+		return DOCA_ERROR_BAD_STATE;
+
+	pthread_rwlock_rdlock(&ep->endpoint_lock);
+	result = (ep->tlp_dev == NULL) ? DOCA_ERROR_BAD_STATE : doca_devemu_pci_tlp_dev_stop(ep->tlp_dev);
+	pthread_rwlock_unlock(&ep->endpoint_lock);
+
+	return result;
+}
+
+static doca_error_t vnet_pf_recycle_start_tlp(void *fn)
+{
+	struct vnet_pci_dev_controller *ctrl = fn;
+	struct pci_device_config *ep = vnet_controller_endpoint(ctrl);
+	doca_error_t result;
+
+	if (ep == NULL)
+		return DOCA_ERROR_BAD_STATE;
+
+	pthread_rwlock_rdlock(&ep->endpoint_lock);
+	if (ep->tlp_dev == NULL) {
+		result = DOCA_ERROR_BAD_STATE;
+	} else {
+		result = doca_devemu_pci_tlp_dev_start(ep->tlp_dev);
+		/* BAD_STATE means already started. Any other failure is retried by the
+		 * recycle, which marks the VFs on the attempt that succeeds. */
+		if (result == DOCA_SUCCESS || result == DOCA_ERROR_BAD_STATE)
+			vnet_sriov_note_pf_tlp_restart(ep);
+	}
+	pthread_rwlock_unlock(&ep->endpoint_lock);
+
+	return result;
+}
+
+static doca_error_t vnet_pf_recycle_rebuild_datapath(void *fn)
+{
+	struct vnet_pci_dev_controller *ctrl = fn;
+	struct pci_device_config *ep = vnet_controller_endpoint(ctrl);
+	struct vnet_pci_device *dev;
+	doca_error_t result;
+
+	if (ep == NULL)
+		return DOCA_ERROR_BAD_STATE;
+
+	if (ctrl->offload_engine != NULL) {
+		/* A previous attempt got this far; the engine is already fresh. */
+		return DOCA_SUCCESS;
+	}
+
+	dev = atomic_load(&ctrl->virtio_device);
+	if (dev == NULL)
+		return DOCA_ERROR_BAD_STATE;
+
+	/* Read lock for the whole build, not per call: the endpoint handle is used
+	 * across several firmware round-trips, so a hot-unplug landing in the
+	 * middle would pull the device out from under a half-built engine. */
+	pthread_rwlock_rdlock(&ep->endpoint_lock);
+	if (ep->tlp_dev == NULL)
+		result = DOCA_ERROR_BAD_STATE;
+	else
+		result = vnet_controller_build_offload_engine(ctrl->tlp_ctx, ep, ctrl, (uint32_t)dev->pf_index, false);
+	pthread_rwlock_unlock(&ep->endpoint_lock);
+
+	return result;
+}
+
+static bool vnet_pf_recycle_is_present(void *fn)
+{
+	struct vnet_pci_dev_controller *ctrl = fn;
+	struct pci_device_config *ep = vnet_controller_endpoint(ctrl);
+
+	if (ep == NULL || atomic_load(&ctrl->shutting_down))
+		return false;
+
+	return atomic_load(&ep->device_present) && ep->tlp_dev != NULL;
+}
+
+doca_error_t vnet_recycle_ops_for_pf(struct tlp_context *tlp_ctx, uint32_t pf_index, struct vnet_recycle_ops *ops)
+{
+	struct vnet_pci_dev_controller *ctrl;
+
+	if (tlp_ctx == NULL || ops == NULL || pf_index >= tlp_ctx->num_ep)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	ctrl = &tlp_ctx->vnet_controller[pf_index];
+
+	*ops = (struct vnet_recycle_ops){
+		.kind = "EP",
+		.index = pf_index,
+		.fn = ctrl,
+		.state = &ctrl->recycle,
+		.suspend_datapath = vnet_pf_recycle_suspend_datapath,
+		.stop_tlp = vnet_pf_recycle_stop_tlp,
+		.start_tlp = vnet_pf_recycle_start_tlp,
+		.rebuild_datapath = vnet_pf_recycle_rebuild_datapath,
+		.is_present = vnet_pf_recycle_is_present,
+	};
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * VF side of the same recycle. Unlike the PF callbacks these do no locking of
+ * their own: the VF slot array only exists while the owning PF's endpoint_lock is
+ * held, so every caller already holds it in read mode for the whole step.
+ */
+
+static doca_error_t vnet_vf_recycle_suspend_datapath(void *fn)
+{
+	return vnet_pci_dev_vf_engine_destroy((struct vnet_vf_slot *)fn);
+}
+
+static doca_error_t vnet_vf_recycle_stop_tlp(void *fn)
+{
+	struct vnet_vf_slot *slot = fn;
+
+	if (slot->tlp_dev == NULL)
+		return DOCA_ERROR_BAD_STATE;
+
+	return doca_devemu_pci_tlp_dev_stop(slot->tlp_dev);
+}
+
+static doca_error_t vnet_vf_recycle_start_tlp(void *fn)
+{
+	struct vnet_vf_slot *slot = fn;
+	doca_error_t result;
+
+	if (slot->tlp_dev == NULL)
+		return DOCA_ERROR_BAD_STATE;
+
+	result = doca_devemu_pci_tlp_dev_start(slot->tlp_dev);
+	if (result == DOCA_SUCCESS)
+		atomic_store(&slot->tlp_restart_owed, false);
+	return result;
+}
+
+/* A VF stops existing when the host clears VF Enable, which stops and releases
+ * the slot's TLP device long before the slot array itself is freed. */
+static bool vnet_vf_recycle_is_present(void *fn)
+{
+	struct vnet_vf_slot *slot = fn;
+
+	return atomic_load(&slot->active) && slot->tlp_dev != NULL;
+}
+
+doca_error_t vnet_recycle_ops_for_vf(struct pci_device_config *pf_endpoint,
+				     uint16_t slot_idx,
+				     struct vnet_recycle_ops *ops)
+{
+	struct vnet_vf_slot *slot;
+
+	if (pf_endpoint == NULL || ops == NULL || pf_endpoint->sriov == NULL || pf_endpoint->sriov->vf_slots == NULL ||
+	    slot_idx >= pf_endpoint->sriov->total_vf)
+		return DOCA_ERROR_NOT_FOUND;
+
+	slot = &pf_endpoint->sriov->vf_slots[slot_idx];
+
+	*ops = (struct vnet_recycle_ops){
+		.kind = "VF",
+		.index = slot->vf_index,
+		.fn = slot,
+		.state = &slot->recycle,
+		.suspend_datapath = vnet_vf_recycle_suspend_datapath,
+		.stop_tlp = vnet_vf_recycle_stop_tlp,
+		.start_tlp = vnet_vf_recycle_start_tlp,
+		/* No rebuild: a VF has no offload engine of its own until the
+		 * guest's FEATURES_OK builds one. */
+		.rebuild_datapath = NULL,
+		.is_present = vnet_vf_recycle_is_present,
+	};
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Bring up a VF whose FEATURES_OK / DRIVER_OK landed mid-recycle. VF counterpart
+ * of vnet_controller_run_deferred_init(): the guest drove the handshake into a
+ * function with no engine, was refused, and will not repeat itself.
+ */
+static void vnet_vf_run_deferred_setup(struct tlp_context *tlp_ctx,
+				       struct pci_device_config *ep,
+				       struct vnet_vf_slot *slot,
+				       uint16_t slot_idx)
+{
+	uint8_t status = slot->deferred_setup_status;
+
+	if (!atomic_load(&slot->deferred_setup_pending))
+		return;
+
+	/* Only the handshake bits are actionable; anything else means the recycle has
+	 * not reported yet. Consuming the request here would drop a bring-up the guest
+	 * does not ask for twice. */
+	if ((status & (VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK | VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK)) == 0) {
+		DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] deferred bring-up held (status=0x%02x)",
+			      slot_idx,
+			      slot->vf_index,
+			      status);
+		return;
+	}
+
+	/* Each bit is dropped once its work is queued, so a submit the pool refused
+	 * leaves the rest owed and the next sweep picks up where this left off. */
+	if (status & VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK) {
+		if (!pci_cfg_workqueue_submit_vf_engine_setup(tlp_ctx, ep, slot_idx))
+			return;
+		status &= ~VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK;
+		slot->deferred_setup_status = status;
+	}
+	if (status & VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK) {
+		if (!pci_cfg_workqueue_submit_vf_engine_enable(ep, slot_idx))
+			return;
+		status &= ~VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK;
+		slot->deferred_setup_status = status;
+	}
+
+	slot->deferred_setup_status = 0;
+	atomic_store(&slot->deferred_setup_pending, false);
+	DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] deferred bring-up queued after recycle",
+		      slot_idx,
+		      slot->vf_index);
+}
+
+/*
+ * Whether anything still owes the host a reset hold on this VF. An unbind puts
+ * a recycle and a guest-reset teardown in flight together, so neither may hand
+ * the function back on the other's behalf.
+ */
+static bool vnet_vf_reset_hold_owed(const struct vnet_vf_slot *slot)
+{
+	return vnet_vf_teardown_in_flight(slot) || vnet_recycle_has_pending_work(&slot->recycle);
+}
+
+/*
+ * Carry a guest-reset teardown forward, on the TLP thread: re-queue one that
+ * could not be submitted, since the host write that asked for it will not come
+ * again, and report one that failed rather than holding the host for good.
+ */
+static void vnet_vf_progress_teardown(struct pci_device_config *ep, struct vnet_vf_slot *slot, uint16_t slot_idx)
+{
+	unsigned int expected;
+
+	switch (atomic_load(&slot->teardown_state)) {
+	case VNET_VF_TEARDOWN_OWED:
+		expected = VNET_VF_TEARDOWN_OWED;
+		if (pci_cfg_workqueue_submit_vf_datapath_reset(ep, slot_idx))
+			atomic_compare_exchange_strong(&slot->teardown_state, &expected, VNET_VF_TEARDOWN_QUEUED);
+		break;
+	case VNET_VF_TEARDOWN_FAILED:
+		expected = VNET_VF_TEARDOWN_FAILED;
+		if (!atomic_compare_exchange_strong(&slot->teardown_state, &expected, VNET_VF_TEARDOWN_IDLE))
+			break;
+		DOCA_LOG_ERR(
+			"SR-IOV: VF[slot=%u, vf_index=%u] datapath teardown failed - publishing NEEDS_RESET instead of completing the reset",
+			slot_idx,
+			slot->vf_index);
+		vnet_pci_device_publish_needs_reset(slot->vf_dev);
+		/* That is the host's answer until it resets the function again,
+		 * so the hold is no longer owed back. */
+		atomic_store(&slot->reset_hold_release_owed, false);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * VF half of the progress-loop sweep. Same three duties as the PF, against the
+ * slot array of one PF, under its read lock. Gated by vf_recycle_active so the
+ * common case costs one atomic load rather than a lock round-trip.
+ */
+static void vnet_pci_dev_process_vf_recycles(struct pci_device_config *ep, struct vnet_pci_dev_controller *ctrl)
+{
+	bool any_pending = false;
+	uint16_t s;
+
+	if (!atomic_load(&ctrl->vf_recycle_active))
+		return;
+
+	pthread_rwlock_rdlock(&ep->endpoint_lock);
+	if (ep->sriov == NULL || ep->sriov->vf_slots == NULL)
+		goto out;
+
+	for (s = 0; s < ep->sriov->total_vf; s++) {
+		struct vnet_vf_slot *slot = &ep->sriov->vf_slots[s];
+		struct vnet_recycle_ops ops;
+
+		if (slot->vf_dev == NULL)
+			continue;
+
+		if (vnet_recycle_claim_hold_release(&slot->recycle)) {
+			/* Folded in rather than assigned: what the guest drove mid-recycle
+			 * was latched at the write, and the rebuild has since cleared the
+			 * shadow sampled here. */
+			slot->deferred_setup_status |= slot->vf_dev->pci_cfg.device_status;
+			atomic_store(&slot->reset_hold_release_owed, true);
+		}
+
+		if (vnet_recycle_claim_failure(&slot->recycle)) {
+			DOCA_LOG_ERR("SR-IOV: VF[slot=%u, vf_index=%u] recycle failed - publishing NEEDS_RESET",
+				     s,
+				     slot->vf_index);
+			vnet_pci_device_publish_needs_reset(slot->vf_dev);
+			/* Releasing the hold would clear the report just published. */
+			atomic_store(&slot->reset_hold_release_owed, false);
+			/* The guest is not getting the bring-up it asked for
+			 * mid-recycle; leaving the request latched would fire it
+			 * against a function that has since been reset again. */
+			slot->deferred_setup_status = 0;
+			atomic_store(&slot->deferred_setup_pending, false);
+		}
+
+		/* After the failure claim, so a rebuild that gave up abandons the request
+		 * before this can act on it. Outside the hold claim so a submit the pool
+		 * refused is retried, but not while the recycle runs. */
+		if (!vnet_recycle_in_progress(&slot->recycle))
+			vnet_vf_run_deferred_setup(ctrl->tlp_ctx, ep, slot, s);
+
+		/* Claim and release sit together on purpose: the slot is taken
+		 * by needs_step() and, if the work cannot be queued, given back
+		 * on the same line rather than somewhere inside the submit. */
+		if (vnet_recycle_ops_for_vf(ep, s, &ops) == DOCA_SUCCESS && vnet_recycle_needs_step(&ops) &&
+		    !pci_cfg_workqueue_submit_vf_recycle_step(ep, s))
+			vnet_recycle_release_step(&slot->recycle);
+
+		/* Before the release, so a teardown still owed is accounted for. */
+		vnet_vf_progress_teardown(ep, slot, s);
+
+		/* The single point the host is let back onto a held VF, so two
+		 * overlapping holders hand it back once, between them. A release
+		 * the other holder is not ready for falls to a later pass. */
+		if (atomic_load(&slot->reset_hold_release_owed) && !vnet_vf_reset_hold_owed(slot)) {
+			atomic_store(&slot->reset_hold_release_owed, false);
+			vnet_pci_device_release_reset_hold(slot->vf_dev);
+		}
+
+		any_pending = any_pending || vnet_recycle_has_pending_work(&slot->recycle) ||
+			      atomic_load(&slot->deferred_setup_pending) ||
+			      atomic_load(&slot->teardown_state) != VNET_VF_TEARDOWN_IDLE ||
+			      atomic_load(&slot->reset_hold_release_owed);
+	}
+
+out:
+	pthread_rwlock_unlock(&ep->endpoint_lock);
+
+	/* Closed only once every slot is quiet. has_pending_work() rather than
+	 * in_progress() keeps the gate open between a worker finishing and its
+	 * report being claimed, which would otherwise strand the reset hold. */
+	if (!any_pending)
+		atomic_store(&ctrl->vf_recycle_active, false);
+}
+
+/*
+ * The progress loop's recycle pass, on the TLP thread. The only place a step is
+ * queued, and the only place a recycle's host-visible outcome is published - by
+ * the thread that owns config space.
+ */
+void vnet_pci_dev_process_recycles(struct tlp_context *tlp_ctx)
+{
+	if (tlp_ctx == NULL)
+		return;
+
+	for (uint32_t i = 0; i < tlp_ctx->num_ep; i++) {
+		struct vnet_pci_dev_controller *ctrl = &tlp_ctx->vnet_controller[i];
+		struct pci_device_config *ep = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + i];
+		struct vnet_pci_device *dev = atomic_load(&ctrl->virtio_device);
+
+		vnet_pci_dev_process_vf_recycles(ep, ctrl);
+
+		/* An exhausted work pool dropped the cascade's hide. Retried here
+		 * because the trigger ran on a host write that will not come again. */
+		if (atomic_load(&ctrl->vf_hide_pending)) {
+			pthread_rwlock_rdlock(&ep->endpoint_lock);
+			if (vnet_pci_device_hide_pf_vfs(ep))
+				atomic_store(&ctrl->vf_hide_pending, false);
+			pthread_rwlock_unlock(&ep->endpoint_lock);
+		}
+
+		if (dev == NULL)
+			continue;
+
+		/* With nothing latched, nothing in flight and no report owed, every
+		 * claim below comes away empty, so skip the sweep entirely. */
+		if (vnet_recycle_has_pending_work(&ctrl->recycle)) {
+			struct vnet_recycle_ops ops;
+
+			/* A rebuilt function: drop the reset hold here rather than on
+			 * the next host config access, so a host waiting on the reset
+			 * before it touches the function again still sees it complete. */
+			if (vnet_recycle_claim_hold_release(&ctrl->recycle)) {
+				atomic_store(&ctrl->reset_status_state, VNET_RESET_STATUS_IDLE);
+				vnet_pci_device_release_reset_hold(dev);
+
+				/* A guest that reached FEATURES_OK while the function
+				 * was being rebuilt was refused rather than queued,
+				 * and will not ask again. */
+				vnet_controller_run_deferred_init(ctrl, "function recycle");
+			}
+
+			/* A function that could not be rebuilt. Telling the host is
+			 * the only way a driver waiting on it ever stops waiting. */
+			if (vnet_recycle_claim_failure(&ctrl->recycle)) {
+				DOCA_LOG_ERR("EP[%u]: function recycle failed - publishing NEEDS_RESET to host", i);
+				vnet_pci_device_publish_needs_reset(dev);
+				if (vnet_ensure_config_msix(ctrl) == DOCA_SUCCESS)
+					doca_devemu_pci_msix_raise(ctrl->config_msix);
+				/* Dropped for the same reason as the VF's: the deferred
+				 * bring-up was owed by a recycle that did not complete. */
+				atomic_store(&ctrl->deferred_init_pending, false);
+			}
+
+			if (vnet_recycle_ops_for_pf(tlp_ctx, i, &ops) == DOCA_SUCCESS &&
+			    vnet_recycle_needs_step(&ops) && !pci_cfg_workqueue_submit_recycle_step(ctrl))
+				vnet_recycle_release_step(&ctrl->recycle);
+		}
+
+		if (tlp_ctx->recycle_self_check) {
+			pthread_rwlock_rdlock(&ep->endpoint_lock);
+			vnet_pci_device_cfg_image_check(dev, ep);
+			pthread_rwlock_unlock(&ep->endpoint_lock);
+		}
+	}
+}
+
+static doca_error_t vnet_pci_dev_vnet_controller_create(struct tlp_context *tlp_ctx, struct pci_device_config *endpoint)
+{
+	struct vnet_pci_dev_controller *controller;
+	doca_error_t destroy_result;
+	doca_error_t result;
+	uint32_t pf_index;
+
+	doca_error_t ret = get_pf_index_for_device(tlp_ctx, endpoint, &pf_index);
+	if (ret != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get PF index for device %02x:%02x.%x",
+			     endpoint->bus,
+			     endpoint->device,
+			     endpoint->function);
+		return DOCA_ERROR_EMPTY;
+	}
+
+	controller = &tlp_ctx->vnet_controller[pf_index];
+	/* Initialize atomic flags */
+	atomic_store(&controller->shutting_down, false);
+	/* A hotplug slot is reused across plug cycles, so the function this
+	 * controller now represents must not inherit the recycle state of the
+	 * one that was unplugged from it. */
+	vnet_recycle_state_init(&controller->recycle);
+	atomic_store(&controller->vf_recycle_active, false);
+	atomic_store(&controller->vf_hide_pending, false);
+	atomic_store(&controller->stop_stats_collection, false);
+	/* Initialize dbg_state atomics */
+	atomic_store(&controller->dbg_state.stats_in_progress, false);
+	atomic_store(&controller->dbg_state.counters_in_progress, false);
+	atomic_store(&controller->dbg_state.last_stats_time, 0);
+	atomic_store(&controller->dbg_state.last_counters_time, 0);
+	atomic_store(&controller->stats_ref, NULL);
+	/* Link to existing components */
+	atomic_store(&controller->virtio_device, &tlp_ctx->virtio_dev[pf_index]);
+	controller->tlp_ctx = tlp_ctx;
+
+	result = vnet_controller_build_offload_engine(tlp_ctx, endpoint, controller, pf_index, true);
+	if (result != DOCA_SUCCESS)
+		return result;
+
 	/* Engine will be started on FIRST FEATURES_OK (not during init) */
 	atomic_init(&controller->offload_engine_started, false);
 	atomic_init(&controller->vqs_initialized, false);
@@ -4208,12 +4845,12 @@ free_rx_vqs:
 	free(controller->rx_vqs);
 	controller->rx_vqs = NULL;
 destroy_engine:
-destroy_offload_engine:
 	/* Engine was just created and should not be started - destroy must succeed */
 	destroy_result = doca_devemu_vnet_offload_engine_destroy(controller->offload_engine);
 	if (destroy_result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Engine destroy failed during creation cleanup - library bug!");
 	}
+	controller->offload_engine = NULL;
 
 	return result;
 }
@@ -4908,172 +5545,6 @@ complete:
 	doca_devemu_vnet_ctrl_req_complete(req, ack, sizeof(uint8_t));
 }
 
-static bool vnet_pci_dev_admin_req_validate_target(struct vnet_pci_dev_controller *ctrl,
-						   uint16_t opcode,
-						   uint16_t group_type,
-						   uint64_t group_member_id,
-						   uint16_t *status_qualifier)
-{
-	if (ctrl == NULL) {
-		DOCA_LOG_ERR("Admin request missing controller context");
-		*status_qualifier = VIRTIO_ADMIN_STATUS_Q_INVALID_COMMAND;
-		return false;
-	}
-
-	/* LIST_QUERY/LIST_USE are informational handshake commands.
-	 * Accept any group_type, but reject non-self group_member_id below.
-	 */
-	if (group_member_id != 0) {
-		DOCA_LOG_ERR("Unsupported Admin VQ group member %" PRIu64 " for opcode %u", group_member_id, opcode);
-		*status_qualifier = VIRTIO_ADMIN_STATUS_Q_INVALID_MEMBER;
-		return false;
-	}
-
-	return true;
-}
-
-static bool vnet_pci_dev_doca_buf_list_copy(struct doca_buf *buf, void *data, uint32_t len, bool to_buf)
-{
-	struct doca_buf *curr_buf = buf;
-	uint32_t processed = 0;
-	doca_error_t result;
-	size_t curr_len;
-	void *curr_data;
-	uint32_t chunk;
-
-	while (curr_buf != NULL && processed < len) {
-		result = doca_buf_get_data_len(curr_buf, &curr_len);
-		if (result != DOCA_SUCCESS)
-			break;
-		result = doca_buf_get_data(curr_buf, &curr_data);
-		if (result != DOCA_SUCCESS || curr_data == NULL)
-			break;
-
-		chunk = (len - processed < curr_len) ? (len - processed) : (uint32_t)curr_len;
-		if (to_buf)
-			memcpy(curr_data, (uint8_t *)data + processed, chunk);
-		else
-			memcpy((uint8_t *)data + processed, curr_data, chunk);
-		processed += chunk;
-
-		if (processed >= len)
-			break;
-
-		if (doca_buf_get_next_in_list(curr_buf, &curr_buf) != DOCA_SUCCESS)
-			break;
-	}
-
-	return processed == len;
-}
-
-static void vnet_pci_dev_admin_handle_list_query(struct doca_devemu_virtio_admin_req *req,
-						 uint16_t *status,
-						 uint16_t *status_qualifier,
-						 uint32_t *len)
-{
-	struct doca_buf *result_buf;
-	uint64_t supported_opcodes[VNET_ADMIN_CMD_OPCODES_ARR_LEN] = {0};
-	uint32_t result_len;
-	uint32_t write_len;
-
-	result_buf = doca_devemu_virtio_admin_req_get_cmd_specific_result(req);
-	result_len = doca_devemu_virtio_admin_req_get_cmd_specific_result_len(req);
-	/* LIST_QUERY returns a variable-length le64 opcode bitmap.
-	 * Accept any word-aligned buffer with at least one word, and cap writes to the provided length.
-	 */
-	if (result_buf == NULL || result_len < sizeof(uint64_t) || result_len % sizeof(uint64_t) != 0) {
-		DOCA_LOG_ERR("LIST_QUERY result buffer is invalid (buf=%p, len=%u, min=%zu, word=%zu)",
-			     (void *)result_buf,
-			     result_len,
-			     sizeof(uint64_t),
-			     sizeof(uint64_t));
-		*status = VIRTIO_ADMIN_STATUS_ERR;
-		*status_qualifier = VIRTIO_ADMIN_STATUS_Q_INVALID_FIELD;
-		return;
-	}
-
-	supported_opcodes[0] = htole64(VNET_ADMIN_SUPPORTED_OPCODES);
-	write_len = (result_len < sizeof(supported_opcodes)) ? result_len : (uint32_t)sizeof(supported_opcodes);
-
-	if (!vnet_pci_dev_doca_buf_list_copy(result_buf, supported_opcodes, write_len, true)) {
-		DOCA_LOG_ERR("Failed to get LIST_QUERY result buffer data (write_len=%u)", write_len);
-		*status = VIRTIO_ADMIN_STATUS_ERR;
-		*status_qualifier = VIRTIO_ADMIN_STATUS_Q_INVALID_FIELD;
-		return;
-	}
-
-	*status = VIRTIO_ADMIN_STATUS_OK;
-	*status_qualifier = VIRTIO_ADMIN_STATUS_Q_OK;
-	*len = write_len;
-	DOCA_LOG_INFO("LIST_QUERY completed (host_buf=%u, wrote=%u, supported_opcodes[0]=0x%llx)",
-		      result_len,
-		      write_len,
-		      (unsigned long long)VNET_ADMIN_SUPPORTED_OPCODES);
-}
-
-static void vnet_pci_dev_admin_handle_list_use(struct doca_devemu_virtio_admin_req *req,
-					       uint16_t *status,
-					       uint16_t *status_qualifier)
-{
-	struct doca_buf *data_buf;
-	uint64_t requested_opcodes;
-	uint64_t opcodes_arr[VNET_ADMIN_CMD_OPCODES_ARR_LEN] = {0};
-	uint32_t data_len;
-	size_t total_opcode_words;
-	size_t i;
-
-	data_buf = doca_devemu_virtio_admin_req_get_cmd_specific_data(req);
-	data_len = doca_devemu_virtio_admin_req_get_cmd_specific_data_len(req);
-	if (data_len < sizeof(requested_opcodes) || data_len % sizeof(requested_opcodes) != 0 || data_buf == NULL) {
-		DOCA_LOG_ERR("LIST_USE data buffer is invalid (buf=%p, len=%u)", (void *)data_buf, data_len);
-		*status = VIRTIO_ADMIN_STATUS_ERR;
-		*status_qualifier = VIRTIO_ADMIN_STATUS_Q_INVALID_FIELD;
-		return;
-	}
-
-	if (data_len > sizeof(opcodes_arr)) {
-		DOCA_LOG_ERR("LIST_USE data length %u exceeds supported limit %zu", data_len, sizeof(opcodes_arr));
-		*status = VIRTIO_ADMIN_STATUS_ERR;
-		*status_qualifier = VIRTIO_ADMIN_STATUS_Q_INVALID_FIELD;
-		return;
-	}
-
-	if (!vnet_pci_dev_doca_buf_list_copy(data_buf, opcodes_arr, data_len, false)) {
-		DOCA_LOG_ERR("Failed to get LIST_USE data buffer: expected=%u", data_len);
-		*status = VIRTIO_ADMIN_STATUS_ERR;
-		*status_qualifier = VIRTIO_ADMIN_STATUS_Q_INVALID_FIELD;
-		return;
-	}
-
-	total_opcode_words = data_len / sizeof(requested_opcodes);
-
-	requested_opcodes = le64toh(opcodes_arr[0]);
-	DOCA_LOG_INFO("LIST_USE opcodes: host=0x%llx, supported=0x%llx",
-		      (unsigned long long)requested_opcodes,
-		      (unsigned long long)VNET_ADMIN_SUPPORTED_OPCODES);
-
-	/* Extra opcode bitmap words are allowed by the spec only if all bits are zero for unsupported ranges. */
-	for (i = 1; i < total_opcode_words; i++) {
-		if (le64toh(opcodes_arr[i]) != 0) {
-			DOCA_LOG_ERR("LIST_USE requested unsupported extended opcode word %zu", i);
-			*status = VIRTIO_ADMIN_STATUS_ERR;
-			*status_qualifier = VIRTIO_ADMIN_STATUS_Q_INVALID_OPCODE;
-			return;
-		}
-	}
-
-	if (requested_opcodes & ~VNET_ADMIN_SUPPORTED_OPCODES) {
-		DOCA_LOG_ERR("LIST_USE requested unsupported opcodes");
-		*status = VIRTIO_ADMIN_STATUS_ERR;
-		*status_qualifier = VIRTIO_ADMIN_STATUS_Q_INVALID_OPCODE;
-		return;
-	}
-
-	*status = VIRTIO_ADMIN_STATUS_OK;
-	*status_qualifier = VIRTIO_ADMIN_STATUS_Q_OK;
-	DOCA_LOG_INFO("LIST_USE completed (host_opcodes=0x%llx)", (unsigned long long)requested_opcodes);
-}
-
 void vnet_pci_dev_admin_req_handler(struct doca_devemu_virtio_admin_req *req,
 				    uint16_t opcode,
 				    uint16_t group_type,
@@ -5081,31 +5552,34 @@ void vnet_pci_dev_admin_req_handler(struct doca_devemu_virtio_admin_req *req,
 				    void *user_data)
 {
 	struct vnet_pci_dev_controller *ctrl = doca_devemu_virtio_admin_req_get_vq_user_data(req);
-	uint16_t status = VIRTIO_ADMIN_STATUS_OK;
-	uint16_t status_qualifier = VIRTIO_ADMIN_STATUS_Q_OK;
-	uint32_t len = 0;
+	struct vnet_admin_cmd_result result = {0};
 
 	(void)user_data;
 
-	if (!vnet_pci_dev_admin_req_validate_target(ctrl, opcode, group_type, group_member_id, &status_qualifier)) {
-		doca_devemu_virtio_admin_req_complete(req, VIRTIO_ADMIN_STATUS_ERR, status_qualifier, 0);
-		return;
+	DOCA_LOG_INFO("Admin VQ request: opcode=0x%04x group_type=%u group_member=%" PRIu64
+		      " data_len=%u result_capacity=%u",
+		      opcode,
+		      group_type,
+		      group_member_id,
+		      doca_devemu_virtio_admin_req_get_cmd_specific_data_len(req),
+		      doca_devemu_virtio_admin_req_get_cmd_specific_result_len(req));
+	vnet_admin_queue_dispatch(ctrl, req, opcode, group_type, group_member_id, &result);
+	if (!result.deferred) {
+		DOCA_LOG_INFO("Admin VQ completion: opcode=0x%04x group_type=%u group_member=%" PRIu64
+			      " status=%u qualifier=%u result_len=%u",
+			      opcode,
+			      group_type,
+			      group_member_id,
+			      result.status,
+			      result.status_qualifier,
+			      result.len);
+		doca_devemu_virtio_admin_req_complete(req, result.status, result.status_qualifier, result.len);
+	} else {
+		DOCA_LOG_INFO("Admin VQ deferred: opcode=0x%04x group_type=%u group_member=%" PRIu64,
+			      opcode,
+			      group_type,
+			      group_member_id);
 	}
-
-	switch (opcode) {
-	case VIRTIO_ADMIN_CMD_LIST_QUERY:
-		vnet_pci_dev_admin_handle_list_query(req, &status, &status_qualifier, &len);
-		break;
-	case VIRTIO_ADMIN_CMD_LIST_USE:
-		vnet_pci_dev_admin_handle_list_use(req, &status, &status_qualifier);
-		break;
-	default:
-		status = VIRTIO_ADMIN_STATUS_ERR;
-		status_qualifier = VIRTIO_ADMIN_STATUS_Q_INVALID_OPCODE;
-		break;
-	}
-
-	doca_devemu_virtio_admin_req_complete(req, status, status_qualifier, len);
 }
 
 doca_error_t vnet_pci_dev_initialize_io_context(struct vnet_pci_dev_controller *controller)
@@ -5183,6 +5657,7 @@ doca_error_t vnet_pci_dev_initialize_io_context(struct vnet_pci_dev_controller *
 			goto destroy_io_ctx;
 		}
 		DOCA_LOG_INFO("admin_req handler registered for io_ctx=%p", (void *)controller->io_ctx);
+		vnet_admin_queue_resume(&controller->admin_queue);
 	}
 
 	result = doca_ctx_start(ctx);
@@ -5433,13 +5908,11 @@ static void virtio_net_ctrl_change_cb(struct vnet_pci_device *dev, void *arg)
 				return;
 			}
 
-			/* Skip early-return when FLR is in progress: even if there is
-			 * nothing to tear down (e.g., back-to-back FLR after the previous
-			 * FLR's cleanup already drained everything), we still need to go
-			 * through the HELD-state path so that vnet_controller_cleanup
-			 * clears flr_in_progress at the end. Otherwise flr_in_progress
-			 * would remain stuck and all subsequent FLRs would coalesce. */
-			if (!vnet_controller_has_reset_teardown_work(ctrl) && !atomic_load(&dev->flr_in_progress)) {
+			/* A recycle in flight owns this function's teardown and its
+			 * host-visible hold, so this path must not complete the
+			 * reset out from under it. */
+			if (!vnet_controller_has_reset_teardown_work(ctrl) &&
+			    !vnet_recycle_in_progress(&ctrl->recycle)) {
 				DOCA_LOG_DBG("RESET: no controller resources to tear down, completing immediately");
 				dev->prev_status = 0;
 				atomic_store(&dev->cancel_in_progress, false);
@@ -5524,7 +5997,6 @@ static void virtio_net_ctrl_change_cb(struct vnet_pci_device *dev, void *arg)
 				struct pci_device_config *endpoint =
 					&resources->tlp_ctx
 						 ->devs_config[FIRST_PF_IDX(resources->tlp_ctx) + dev->pf_index];
-				bool has_cvq, has_mq, has_admin_vq;
 				bool features_accepted = true;
 
 				/* Allow FEATURES_OK even when pending_unplug is set.
@@ -5549,11 +6021,13 @@ static void virtio_net_ctrl_change_cb(struct vnet_pci_device *dev, void *arg)
 					goto features_ok_done;
 				}
 
-				/* NON-BLOCKING: If cleanup is in progress, defer initialization.
-				 * Cleanup will check deferred_init_pending and trigger init when complete.
-				 * This keeps the callback responsive for TLP handling (< 1ms latency). */
-				if (atomic_load(&ctrl->cleanup_running)) {
-					DOCA_LOG_INFO("FEATURES_OK: Cleanup in progress - deferring init");
+				/* NON-BLOCKING: if the datapath is torn down or being
+				 * rebuilt, record the request for whoever is in the way
+				 * to honour; a recycle stays in the way past its cleanup. */
+				if (atomic_load(&ctrl->cleanup_running) || vnet_recycle_in_progress(&ctrl->recycle)) {
+					DOCA_LOG_INFO("FEATURES_OK: %s in progress - deferring init",
+						      atomic_load(&ctrl->cleanup_running) ? "cleanup" :
+											    "function recycle");
 					atomic_store(&ctrl->deferred_init_pending, true);
 					goto features_ok_done;
 				}
@@ -5564,39 +6038,7 @@ static void virtio_net_ctrl_change_cb(struct vnet_pci_device *dev, void *arg)
 				/* Mark initialization as in progress - DRIVER_OK will queue work after */
 				atomic_store(&ctrl->initialization_in_progress, true);
 
-				/* Check MQ feature negotiation (requires BOTH F_CTRL_VQ and F_MQ) */
-				has_cvq = !!(dev->driver_features & (1ULL << VIRTIO_NET_F_CTRL_VQ));
-				has_mq = !!(dev->driver_features & (1ULL << VIRTIO_NET_F_MQ));
-				has_admin_vq = !!(dev->driver_features & (1ULL << VNET_VIRTIO_F_ADMIN_VQ));
-
-				ctrl->mq_feature_negotiated = (has_cvq && has_mq);
-				ctrl->admin_vq_negotiated = has_admin_vq && ctrl->admin_queue_num > 0;
-				DOCA_LOG_DBG("FEATURES_OK: device_features=0x%016llx, driver_features=0x%016llx, "
-					     "admin_bit=%u, admin_advertised=%d, admin_negotiated=%d, configured_aq=%u",
-					     (unsigned long long)dev->device_features,
-					     (unsigned long long)dev->driver_features,
-					     VNET_VIRTIO_F_ADMIN_VQ,
-					     !!(dev->device_features & (1ULL << VNET_VIRTIO_F_ADMIN_VQ)),
-					     has_admin_vq,
-					     ctrl->admin_queue_num);
-
-				if (ctrl->mq_feature_negotiated) {
-					DOCA_LOG_INFO(
-						"MQ features negotiated: F_CTRL_VQ + F_MQ -- CVQ + MQ support enabled");
-					atomic_store(&ctrl->num_active_qps, VNET_DEFAULT_QUEUE_PAIRS);
-					vnet_controller_set_desired_qps(ctrl, VNET_DEFAULT_QUEUE_PAIRS);
-					ctrl->max_queue_pairs = resources->tlp_ctx->max_queue_pairs;
-					atomic_store(&ctrl->deferred_mq.initial_data_qps_deferred,
-						     vnet_tlp_ctx_should_defer_mq_start(resources->tlp_ctx));
-				} else {
-					DOCA_LOG_INFO("MQ features NOT negotiated (CTRL_VQ=%d, MQ=%d) - single QP mode",
-						      has_cvq,
-						      has_mq);
-					atomic_store(&ctrl->num_active_qps, 1);
-					vnet_controller_set_desired_qps(ctrl, 1);
-					ctrl->max_queue_pairs = 1;
-					atomic_store(&ctrl->deferred_mq.initial_data_qps_deferred, false);
-				}
+				vnet_controller_apply_queue_layout(ctrl, dev, "FEATURES_OK");
 
 				/* Log workqueue status before submitting work */
 				pci_cfg_workqueue_log_status();
@@ -5736,7 +6178,7 @@ struct cli_command {
  *   plug <ep_idx>            - Hotplug a device
  *   unplug <ep_idx>          - Remove a hotplugged device
  *   speed <ep_idx> <mbps>    - Change link speed with MSI-X notification
- *   sfinfo <pf_idx>          - Dump SF vhca_id/ifindex/sf_index for PF(s) and VFs
+ *   sfinfo <pf_idx>          - Dump SF info and MSI-X/doorbell sizing for PF(s) and VFs
  *
  * @max_ep [in]: Maximum endpoint count (for index validation)
  * @cmd [out]: Parsed command
@@ -6479,6 +6921,12 @@ static doca_error_t vnet_pci_dev_lu_reopen_active_vf_reps(struct tlp_context *tl
 			(void)doca_dev_rep_close(slot->rep);
 		slot->rep = exact_rep;
 		slot->vf_index = slots[i].vf_index;
+		vnet_recycle_state_init(&slot->recycle);
+		atomic_init(&slot->tlp_restart_owed, false);
+		atomic_init(&slot->deferred_setup_pending, false);
+		slot->deferred_setup_status = 0;
+		atomic_init(&slot->teardown_state, VNET_VF_TEARDOWN_IDLE);
+		atomic_init(&slot->reset_hold_release_owed, false);
 
 		if (slot->vf_dev == NULL) {
 			result = vnet_pci_device_init_vf(tlp_ctx, endpoint, slot->vf_index, &slot->vf_dev);
@@ -6491,6 +6939,36 @@ static doca_error_t vnet_pci_dev_lu_reopen_active_vf_reps(struct tlp_context *tl
 			      slots[i].rep_vhca_id);
 	}
 
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Set the PF's MSI-X and doorbell counts for the queues it runs: a doorbell per
+ * virtqueue and a vector per virtqueue plus one for config changes. Left at the
+ * type-wide maximum a PF holds vectors and doorbells it never touches, out of
+ * the same device budget every other function draws from.
+ *
+ * Takes effect when the endpoint is started.
+ */
+static doca_error_t set_pf_endpoint_msix_and_db(struct tlp_context *tlp_ctx, struct doca_devemu_pci_ep *ep)
+{
+	uint16_t num_db = (uint16_t)VNET_TOTAL_VQ_SLOTS(tlp_ctx->max_queue_pairs, tlp_ctx->num_admin_queues);
+	uint16_t num_msix = (uint16_t)(num_db + 1);
+	doca_error_t result;
+
+	result = doca_devemu_pci_ep_set_num_db(ep, num_db);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("PF failed to take %u doorbells: %s", num_db, doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_devemu_pci_ep_set_num_msix(ep, num_msix);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("PF failed to take %u MSI-X vectors: %s", num_msix, doca_error_get_descr(result));
+		return result;
+	}
+
+	DOCA_LOG_INFO("PF sized for qp=%u: %u doorbells, %u MSI-X vectors", tlp_ctx->max_queue_pairs, num_db, num_msix);
 	return DOCA_SUCCESS;
 }
 
@@ -6561,7 +7039,7 @@ static doca_error_t create_device(struct tlp_context *tlp_ctx,
 	}
 	endpoint->vhca_id = vhca_id_16;
 
-	if (lu_ep_vhca_id != 0) {
+	if (lu_ep_vhca_id != 0 && tlp_ctx->sriov_enabled) {
 		result = vnet_lu_sriov_get_pf_state(endpoint->vhca_id, &lu_sriov_entry, &lu_sriov_slots, &lu_sriov_vqs);
 		if (result != DOCA_SUCCESS && result != DOCA_ERROR_NOT_FOUND) {
 			DOCA_LOG_ERR("SR-IOV LU: failed to query sidecar PF state for ep_vhca=0x%x: %s",
@@ -6578,6 +7056,10 @@ static doca_error_t create_device(struct tlp_context *tlp_ctx,
 		DOCA_LOG_ERR("Failed to create TLP device: %s", doca_error_get_descr(result));
 		goto clean_rep;
 	}
+
+	result = set_pf_endpoint_msix_and_db(tlp_ctx, doca_devemu_pci_tlp_dev_as_ep(endpoint->tlp_dev));
+	if (result != DOCA_SUCCESS)
+		goto clean_dev;
 
 	/* Start TLP device */
 	result = doca_devemu_pci_tlp_dev_start(endpoint->tlp_dev);
@@ -6611,6 +7093,9 @@ static doca_error_t create_device(struct tlp_context *tlp_ctx,
 		 * same host-visible ID the PF presents. Deriving it from the
 		 * cfg_space_hdr placeholder yields an id the guest cannot bind. */
 		endpoint->sriov->vf_device_id = VIRTIO_PCI_DEVICE_ID_BASE + VNET_VIRTIO_NETWORK_DEVICE;
+		/* What the representor provisioned the VFs with. A VF sized for its own
+		 * queue count draws from the pool this adds up to, so it can also go
+		 * above this as long as its siblings stay below. */
 		endpoint->sriov->vf_num_msix = tlp_ctx->sriov_num_vf_msix;
 		endpoint->sriov->vf_num_db = tlp_ctx->sriov_num_vf_db;
 		endpoint->sriov->system_pg_size = 0x1; /* Default 4 KB */
@@ -6673,6 +7158,20 @@ static doca_error_t create_device(struct tlp_context *tlp_ctx,
 					     doca_error_get_descr(result));
 				goto destroy_controller;
 			}
+		} else {
+			/* Pool the VF MSI-X and doorbells while SR-IOV is off and no VF
+			 * device exists, so every VF can claim its own counts below. An LU
+			 * standby skips it: its VFs are live with the counts they were given. */
+			result = vnet_sriov_reset_vf_resources(tlp_ctx, endpoint);
+			if (result != DOCA_SUCCESS)
+				goto destroy_controller;
+
+			/* Bring up every VF device now, hidden from the host. A slot only
+			 * takes its MSI-X and doorbell counts while hidden, and the host
+			 * enable is what reveals it. */
+			result = vnet_sriov_provision_vf_slots(tlp_ctx, endpoint);
+			if (result != DOCA_SUCCESS)
+				goto destroy_controller;
 		}
 	}
 
@@ -6682,6 +7181,7 @@ static doca_error_t create_device(struct tlp_context *tlp_ctx,
 	return DOCA_SUCCESS;
 
 destroy_controller:
+	(void)vnet_pci_dev_vnet_controller_destroy(tlp_ctx, endpoint);
 	/* Free SR-IOV shadow if it was allocated above. */
 	if (endpoint->sriov != NULL) {
 		vnet_sriov_close_vf_reps(endpoint->sriov);
@@ -6689,7 +7189,6 @@ destroy_controller:
 		free(endpoint->sriov);
 		endpoint->sriov = NULL;
 	}
-	(void)vnet_pci_dev_vnet_controller_destroy(tlp_ctx, endpoint);
 stop_dev:
 	doca_devemu_pci_tlp_dev_stop(endpoint->tlp_dev);
 clean_dev:
@@ -6724,6 +7223,23 @@ static bool vnet_pci_dev_should_close_rep(const struct tlp_context *tlp_ctx, con
 	       !atomic_load_explicit(&tlp_ctx->lu_standby_takeover_complete, memory_order_acquire);
 }
 
+static doca_error_t vnet_pci_dev_stop_tlp_dev(struct doca_devemu_pci_tlp_dev *tlp_dev)
+{
+	uint8_t started = 1;
+	doca_error_t result;
+
+	/* A recycle interrupted by teardown may have stopped the device already. */
+	result = doca_devemu_pci_tlp_dev_is_started(tlp_dev, &started);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_WARN("Failed to query TLP device state: %s; attempting stop", doca_error_get_descr(result));
+	} else if (started == 0) {
+		return DOCA_SUCCESS;
+	}
+
+	result = doca_devemu_pci_tlp_dev_stop(tlp_dev);
+	return (result == DOCA_ERROR_BAD_STATE) ? DOCA_SUCCESS : result;
+}
+
 /*
  * Destroy endpoint device (for both hotplug and static modes)
  *
@@ -6742,6 +7258,8 @@ doca_error_t vnet_pci_dev_destroy_device(struct tlp_context *tlp_ctx, struct pci
 	bool pf_index_valid = get_pf_index_for_device(tlp_ctx, endpoint, &pf_index) == DOCA_SUCCESS;
 
 	DOCA_LOG_DBG("Destroying device: vhca_id=0x%x", endpoint->vhca_id);
+	if (pf_index_valid && vnet_admin_queue_prepare_endpoint_destroy(tlp_ctx, pf_index) != DOCA_SUCCESS)
+		return DOCA_ERROR_AGAIN;
 
 	/*
 	 * CRITICAL: Acquire write lock to synchronize with TLP request handlers.
@@ -6755,6 +7273,15 @@ doca_error_t vnet_pci_dev_destroy_device(struct tlp_context *tlp_ctx, struct pci
 	 * 4) Release write lock - new TLP requests will see tlp_dev=NULL and bail out
 	 * 5) Safely destroy tlp_dev and rep (no concurrent users possible)
 	 */
+	/* The function is going away, so a recycle queued against it has nothing
+	 * left to rebuild, and the bring-up it owed goes with it. Dropped before
+	 * the write lock so a worker step blocked on that lock sees it. */
+	if (pf_index_valid) {
+		vnet_recycle_abandon(&tlp_ctx->vnet_controller[pf_index].recycle);
+		atomic_store(&tlp_ctx->vnet_controller[pf_index].deferred_init_pending, false);
+		atomic_store(&tlp_ctx->vnet_controller[pf_index].vf_recycle_active, false);
+	}
+
 	pthread_rwlock_wrlock(&endpoint->endpoint_lock);
 
 	atomic_store(&endpoint->device_present, false);
@@ -6805,7 +7332,7 @@ doca_error_t vnet_pci_dev_destroy_device(struct tlp_context *tlp_ctx, struct pci
 
 	/* Stop and destroy TLP device */
 	if (tlp_dev_to_destroy != NULL) {
-		tmp_result = doca_devemu_pci_tlp_dev_stop(tlp_dev_to_destroy);
+		tmp_result = vnet_pci_dev_stop_tlp_dev(tlp_dev_to_destroy);
 		if (tmp_result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to stop TLP device: %s", doca_error_get_descr(tmp_result));
 			if (first_error == DOCA_SUCCESS)
@@ -6999,7 +7526,7 @@ static uint16_t vnet_pci_dev_pf_live_vf_count(struct pci_device_config *endpoint
 	pthread_rwlock_rdlock(&endpoint->endpoint_lock);
 	if (endpoint->sriov != NULL) {
 		if (vfe_set != NULL)
-			*vfe_set = (endpoint->sriov->control_shadow & SRIOV_CTRL_VFE) != 0;
+			*vfe_set = (endpoint->sriov->control_shadow & PCIE_SRIOV_CTRL_VFE) != 0;
 		if (endpoint->sriov->vf_slots != NULL)
 			for (uint16_t i = 0; i < endpoint->sriov->total_vf; i++)
 				if (atomic_load(&endpoint->sriov->vf_slots[i].active))
@@ -7668,6 +8195,9 @@ static void cleanup_virtio_network_device(struct vnet_pci_dev_resources *resourc
 	doca_error_t result;
 	uint16_t i;
 
+	for (i = 0; i < resources->tlp_ctx->num_ep; i++)
+		vnet_admin_queue_quiesce(&resources->tlp_ctx->vnet_controller[i].admin_queue);
+
 	/* Shutdown workqueue first - wait for pending work to complete.
 	 * This prevents UAF when work items reference dev->vqs that we're about to free. */
 	pci_cfg_workqueue_shutdown();
@@ -7964,6 +8494,8 @@ static void tlp_ctx_cleanup(struct tlp_context *tlp_ctx)
 
 	/* Free VNet controller array - destroy mutexes first */
 	if (tlp_ctx->vnet_controller != NULL) {
+		for (i = 0; i < tlp_ctx->num_ep; i++)
+			vnet_admin_queue_fini(&tlp_ctx->vnet_controller[i].admin_queue);
 		vnet_controllers_state_destroy(tlp_ctx->vnet_controller, tlp_ctx->num_ep);
 		free(tlp_ctx->vnet_controller);
 		tlp_ctx->vnet_controller = NULL;
@@ -8071,6 +8603,69 @@ static void drain_pending_slot_msi(struct tlp_context *tlp_ctx)
 	}
 }
 
+/* How long a live-update handover waits for in-flight recycles to finish: long
+ * enough for a recycle that is genuinely moving to complete, short enough not to
+ * matter inside an upgrade window. */
+#define VNET_LU_RECYCLE_DRAIN_BUDGET_MS 500
+
+static bool vnet_pci_dev_lu_function_recycling(struct vnet_pci_dev_controller *ctrl)
+{
+	return vnet_recycle_has_pending_work(&ctrl->recycle) || atomic_load(&ctrl->vf_recycle_active);
+}
+
+/*
+ * Decide whether a requested handover may proceed, and keep the loop running until
+ * it can: the sweep below is the only thing that advances a recycle. A function
+ * still recycling when the budget runs out is handed over without datapath state.
+ */
+static bool vnet_pci_dev_lu_drain_recycles(struct tlp_context *tlp_ctx, uint64_t *deadline_ns)
+{
+	struct timespec now_ts;
+	uint64_t now_ns;
+	uint32_t busy = 0;
+
+	for (uint32_t i = 0; i < tlp_ctx->num_ep; i++) {
+		if (vnet_pci_dev_lu_function_recycling(&tlp_ctx->vnet_controller[i]))
+			busy++;
+	}
+
+	if (busy == 0)
+		return true;
+
+	/* Without a clock there is no budget to enforce, and spinning here
+	 * indefinitely would be worse than an incomplete standby. */
+	if (clock_gettime(CLOCK_MONOTONIC, &now_ts) != 0)
+		return true;
+	now_ns = vnet_timespec_to_ns(&now_ts);
+
+	if (*deadline_ns == 0) {
+		*deadline_ns = now_ns + (uint64_t)VNET_LU_RECYCLE_DRAIN_BUDGET_MS * 1000000ULL;
+		DOCA_LOG_INFO("LU handover: %u function(s) still recycling - draining for up to %u ms",
+			      busy,
+			      VNET_LU_RECYCLE_DRAIN_BUDGET_MS);
+		return false;
+	}
+
+	if (now_ns < *deadline_ns)
+		return false;
+
+	for (uint32_t i = 0; i < tlp_ctx->num_ep; i++) {
+		struct vnet_pci_dev_controller *ctrl = &tlp_ctx->vnet_controller[i];
+
+		if (!vnet_pci_dev_lu_function_recycling(ctrl))
+			continue;
+
+		DOCA_LOG_WARN(
+			"LU handover: EP[%u] still in %s after %u ms - handing it over without datapath state. The "
+			"standby will present it post-reset and the guest will re-run its handshake",
+			i,
+			vnet_recycle_phase_name(atomic_load(&ctrl->recycle.phase)),
+			VNET_LU_RECYCLE_DRAIN_BUDGET_MS);
+	}
+
+	return true;
+}
+
 /*
  * Run the main progress loop
  *
@@ -8086,9 +8681,13 @@ static void drain_pending_slot_msi(struct tlp_context *tlp_ctx)
  */
 static doca_error_t run_progress_loop(struct vnet_pci_dev_resources *resources)
 {
+	struct timespec shutdown_wait_start = {0};
+	uint64_t lu_drain_deadline_ns = 0;
+	doca_error_t result = DOCA_SUCCESS;
 	bool shutdown_wait_logged = false;
 	bool shutdown_wait_started = false;
-	struct timespec shutdown_wait_start = {0};
+	bool lu_handover_running = false;
+	bool keep_pe_running;
 
 	vnet_pci_device_pin_main_thread();
 	DOCA_LOG_INFO("VNet device ready - waiting for host PCIe enumeration...");
@@ -8099,22 +8698,43 @@ static doca_error_t run_progress_loop(struct vnet_pci_dev_resources *resources)
 		bool quit_requested = *(resources->force_quit);
 		bool pending_hot_unplug = tlp_ctx_has_pending_unplug(resources->tlp_ctx);
 
-		if (quit_requested && !pending_hot_unplug)
+		if (quit_requested && !pending_hot_unplug && !lu_handover_running)
 			break;
 
-		/* Check if live update handover was requested via SIGUSR1 */
-		if (vnet_lu_handover_was_triggered()) {
-			DOCA_LOG_INFO("SIGUSR1 received -- exiting progress loop for handover");
-			break;
+		/* Check if live update handover was requested via SIGUSR1. The
+		 * drain has to gate coordinator startup rather than follow it: see
+		 * vnet_pci_dev_lu_drain_recycles(). */
+		if (!lu_handover_running && vnet_lu_handover_was_triggered() &&
+		    vnet_pci_dev_lu_drain_recycles(resources->tlp_ctx, &lu_drain_deadline_ns)) {
+			lu_handover_running = true;
+		}
+
+		if (lu_handover_running) {
+			result = vnet_lu_active_progress(resources, &keep_pe_running);
+			if (result != DOCA_SUCCESS)
+				goto out;
+			if (!keep_pe_running) {
+				DOCA_LOG_INFO("LU active: stopping main-loop PE1 progress for coordinator completion");
+				break;
+			}
 		}
 
 		/* Drive main PE (PE1) for TLP handling - no synchronization needed
 		 * Worker thread drives PE2 independently for heavy operations */
 		(void)doca_pe_progress(resources->tlp_ctx->pe);
 
+		/* During LU the coordinator owns all control work; PE1 only serves TLPs. */
+		if (lu_handover_running)
+			continue;
+
 		/* Workers only record a fatal error; publishing DEVICE_NEEDS_RESET writes
 		 * config space and raises the config MSI-X, both of which belong to PE1. */
 		vnet_process_pending_fatal_errors(resources->tlp_ctx);
+
+		/* Same split for function recycles: the worker rebuilds, PE1
+		 * publishes the result. Swept here rather than on a host config
+		 * access, since the host is often blocked on the reset. */
+		vnet_pci_dev_process_recycles(resources->tlp_ctx);
 
 		/* On the TLP thread (PE1), send the deferred slot-event MSI only for DSPs
 		 * flagged by a plug/unplug; the rest are skipped. Issuing it here keeps
@@ -8275,9 +8895,41 @@ skip_timeout_check:;
 		}
 	}
 
+out:
 	pci_cfg_workqueue_set_diag_collection(resources->tlp_ctx, false);
 	DOCA_LOG_INFO("Exiting progress loop...");
-	return DOCA_SUCCESS;
+	return result;
+}
+
+/*
+ * Seed each function's Bus Master shadow from the config image the handover
+ * restored. The guest keeps bus mastering enabled across the switch, so a shadow
+ * left at its power-on value would make the next drop look like no change.
+ */
+static void vnet_lu_seed_bme_shadows(struct tlp_context *tlp_ctx)
+{
+	struct vnet_recycle_ops ops;
+
+	for (uint32_t i = 0; i < tlp_ctx->num_ep; i++) {
+		struct pci_device_config *ep = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + i];
+		struct vnet_pci_device *dev = atomic_load(&tlp_ctx->vnet_controller[i].virtio_device);
+
+		if (dev != NULL && vnet_recycle_ops_for_pf(tlp_ctx, i, &ops) == DOCA_SUCCESS)
+			(void)vnet_recycle_note_bme(&ops, vnet_pci_device_bus_master_is_set(dev));
+
+		pthread_rwlock_rdlock(&ep->endpoint_lock);
+		if (ep->sriov != NULL && ep->sriov->vf_slots != NULL) {
+			for (uint16_t slot_idx = 0; slot_idx < ep->sriov->total_vf; slot_idx++) {
+				struct vnet_pci_device *vf_dev = ep->sriov->vf_slots[slot_idx].vf_dev;
+
+				if (vf_dev == NULL || vnet_recycle_ops_for_vf(ep, slot_idx, &ops) != DOCA_SUCCESS)
+					continue;
+
+				(void)vnet_recycle_note_bme(&ops, vnet_pci_device_bus_master_is_set(vf_dev));
+			}
+		}
+		pthread_rwlock_unlock(&ep->endpoint_lock);
+	}
 }
 
 /**
@@ -8294,6 +8946,7 @@ static void vnet_lu_standby_post_restore(struct vnet_pci_dev_config *config, str
 		DOCA_LOG_ERR("Failed to send DEV_ACK: %s (skipping channel LU)", doca_error_get_descr(result));
 		goto transition;
 	}
+	vnet_lu_seed_bme_shadows(resources->tlp_ctx);
 	atomic_store_explicit(&resources->tlp_ctx->lu_standby_takeover_complete, true, memory_order_release);
 
 	if (resources->tlp_ctx->hotplug_mode) {
@@ -8342,15 +8995,23 @@ doca_error_t vnet_pci_dev_run(struct vnet_pci_dev_config *config, volatile bool 
 		return result;
 	}
 
+	/* Sampled once: the check runs on every progress-loop pass, so the gate has
+	 * to be a plain load rather than a log-level query. */
+	resources.tlp_ctx->recycle_self_check = doca_log_level_get_global_lower_limit() >= DOCA_LOG_LEVEL_DEBUG;
+	if (resources.tlp_ctx->recycle_self_check)
+		DOCA_LOG_INFO("Host-visible config self-check enabled by debug log level");
+
 	/* Propagate SR-IOV settings to tlp_context BEFORE vnet_pci_dev_start():
 	 * vnet_pci_device_init() reads sriov_enabled to decide whether to declare
 	 * the SR-IOV PCIe extended cap on the PCI type, so it must be set before
 	 * the type is created. Per-VF MSI-X/doorbells are derived from the queue
-	 * count. */
+	 * count unless --vf-queue-pairs gives a count per VF slot. */
 	resources.tlp_ctx->sriov_enabled = config->sriov_enabled;
 	resources.tlp_ctx->sriov_total_vfs = config->sriov_total_vfs;
 	resources.tlp_ctx->sriov_num_vf_msix = VNET_SRIOV_VF_NUM_MSIX(config->max_queue_pairs);
 	resources.tlp_ctx->sriov_num_vf_db = VNET_SRIOV_VF_NUM_DB(config->max_queue_pairs);
+	memcpy(resources.tlp_ctx->vf_qp_list, config->vf_qp_list, sizeof(resources.tlp_ctx->vf_qp_list));
+	resources.tlp_ctx->vf_qp_list_len = config->vf_qp_list_len;
 
 	/* Parse MAC address */
 	result = parse_mac_address(config->mac_addr, mac_bytes);
@@ -8502,7 +9163,7 @@ doca_error_t vnet_pci_dev_run(struct vnet_pci_dev_config *config, volatile bool 
 		DOCA_LOG_INFO("Example: plug 0");
 	}
 
-	DOCA_LOG_INFO("Runtime command: sfinfo <pf_idx> - dump SF vhca_id/ifindex/sf_index for PF(s) and VFs");
+	DOCA_LOG_INFO("Runtime command: sfinfo <pf_idx> - dump SF info and MSI-X/doorbell sizing for PF(s) and VFs");
 
 	if (vnet_lu_is_standby(config->vnet_lu_mode))
 		vnet_lu_standby_post_restore(config, &resources);

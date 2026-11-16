@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -29,6 +29,7 @@ app_srcs = [
 	common_dir_path + '/packet_parser.c',
 	samples_dir_path + '/common.c',
 	samples_dir_path + '/doca_flow/flow_common.c',
+	samples_dir_path + '/doca_flow/flow_tune_common.c',
 ]
 
 app_inc_dirs += include_directories(samples_dir_path)

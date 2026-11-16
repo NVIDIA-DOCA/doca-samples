@@ -23,6 +23,8 @@
  *
  */
 
+#include <ctype.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -46,6 +48,33 @@
 #include "utils.h"
 
 DOCA_LOG_REGISTER(UTILS);
+
+/*
+ * Match a NUL terminated PCI address against a format pattern
+ *
+ * @pci_addr [in]: PCI address to check
+ * @format [in]: Pattern to match, where 'X' accepts any hex digit and any other character must match exactly
+ * @return: true if the address matches the pattern, false otherwise
+ */
+static bool pci_addr_matches_format(const char *pci_addr, const char *format)
+{
+	size_t i;
+
+	if (strlen(pci_addr) != strlen(format)) {
+		return false;
+	}
+
+	for (i = 0; format[i] != '\0'; i++) {
+		if (format[i] == 'X') {
+			if (!isxdigit((unsigned char)pci_addr[i]))
+				return false;
+		} else if (pci_addr[i] != format[i]) {
+			return false;
+		}
+	}
+
+	return true;
+}
 
 __NO_RETURN doca_error_t sdk_version_callback(void *param, void *doca_config)
 {
@@ -121,6 +150,14 @@ void linear_array_init_u16(uint16_t *array, uint16_t n)
 
 	for (i = 0; i < n; i++)
 		array[i] = i;
+}
+
+doca_error_t validate_pci_addr(const char *pci_addr)
+{
+	if (!pci_addr_matches_format(pci_addr, "XXXX:XX:XX.X") && !pci_addr_matches_format(pci_addr, "XX:XX.X")) {
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	return DOCA_SUCCESS;
 }
 
 #if !defined(DOCA_USE_LIBBSD) && !defined(DOCA_USE_LIBC_STRING_L_FUNC) && !defined(strlcpy)

@@ -111,20 +111,21 @@
 #define PCIE_EXT_CAP_END_REG_NUM_ACS_DSP (PCIE_EXT_CAP_REG_NUM_ACS_DSP + PCIE_EXT_CAP_LEN_ACS_DW)
 
 /* SR-IOV Capabilities register bits (DW1, PCIe Base Spec §9.3.3.2) */
-#define SRIOV_CAP_VF_MIGRATION 0x00000001u	      /* bit 0: VF Migration Capable */
-#define SRIOV_CAP_ARI_HIERARCHY_PRESERVED 0x00000002u /* bit 1: ARI Capable Hierarchy Preserved */
+#define PCIE_SRIOV_CAP_VF_MIGRATION 0x00000001u		   /* bit 0: VF Migration Capable */
+#define PCIE_SRIOV_CAP_ARI_HIERARCHY_PRESERVED 0x00000002u /* bit 1: ARI Capable Hierarchy Preserved */
 
 /* SR-IOV Control register bits (PCIe Base Spec §9.3.3.3.1) */
-#define SRIOV_CTRL_VFE 0x0001		    /* VF Enable */
-#define SRIOV_CTRL_VFM 0x0002		    /* VF Migration Enable */
-#define SRIOV_CTRL_VF_MIG_INT_ENABLE 0x0004 /* VF Migration Interrupt Enable */
-#define SRIOV_CTRL_VF_MSE 0x0008	    /* VF Memory Space Enable */
-#define SRIOV_CTRL_ARI_HIERARCHY 0x0010	    /* ARI Capable Hierarchy */
+#define PCIE_SRIOV_CTRL_VFE 0x0001		 /* VF Enable */
+#define PCIE_SRIOV_CTRL_VFM 0x0002		 /* VF Migration Enable */
+#define PCIE_SRIOV_CTRL_VF_MIG_INT_ENABLE 0x0004 /* VF Migration Interrupt Enable */
+#define PCIE_SRIOV_CTRL_VF_MSE 0x0008		 /* VF Memory Space Enable */
+#define PCIE_SRIOV_CTRL_ARI_HIERARCHY 0x0010	 /* ARI Capable Hierarchy */
 
 /* Aggregate RW-bit mask for the SR-IOV Control register (lo 16 bits of DW2).
  * All other bits are reserved per spec and must be preserved on host writes. */
 #define PCIE_SRIOV_CTRL_RW_MASK \
-	(SRIOV_CTRL_VFE | SRIOV_CTRL_VFM | SRIOV_CTRL_VF_MIG_INT_ENABLE | SRIOV_CTRL_VF_MSE | SRIOV_CTRL_ARI_HIERARCHY)
+	(PCIE_SRIOV_CTRL_VFE | PCIE_SRIOV_CTRL_VFM | PCIE_SRIOV_CTRL_VF_MIG_INT_ENABLE | PCIE_SRIOV_CTRL_VF_MSE | \
+	 PCIE_SRIOV_CTRL_ARI_HIERARCHY)
 
 /* W1C-bit mask for the SR-IOV Status register (hi 16 bits of DW2).
  * Only VF Migration Status (bit 0) is implemented (and it is W1C); all
@@ -137,6 +138,9 @@
  * Single source of truth used by both sriov_cap_read() (DW7 = RO) and the
  * SystemPageSize (DW8) cap-write validator. */
 #define PCIE_SRIOV_SUPPORTED_PAGE_SIZES 0x00000553u
+
+/* SystemPageSize out of reset: bit 0 set, meaning 4 KB. */
+#define PCIE_SRIOV_DEFAULT_PAGE_SIZE 0x1u
 
 /*
  * SR-IOV cap on-wire register layout — for documentation/reference only.

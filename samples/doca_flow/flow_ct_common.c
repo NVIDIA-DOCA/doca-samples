@@ -122,7 +122,7 @@ void cleanup_procedure(struct doca_flow_pipe *ct_pipe, int nb_ports, struct doca
 	if (result != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to stop doca flow ports: %s", doca_error_get_descr(result));
 
-	doca_flow_destroy();
+	destroy_doca_flow();
 }
 
 doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
@@ -302,6 +302,7 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 				  uint32_t hash_reply,
 				  const struct doca_flow_ct_actions *actions_origin,
 				  const struct doca_flow_ct_actions *actions_reply,
+				  const struct doca_flow_ct_tcp_window_validation *tcp_window_validation,
 				  const struct doca_flow_fwd *fwd_origin,
 				  const struct doca_flow_fwd *fwd_reply,
 				  uint32_t timeout_s,
@@ -315,6 +316,15 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Invalid input parameters");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
+
+	if ((prepare_flags & DOCA_FLOW_CT_ENTRY_FLAGS_TCP_WINDOW_VALIDATION) != 0 && tcp_window_validation == NULL) {
+		DOCA_LOG_ERR("TCP window-validation flag set without validation config");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	/* Prepare binds the TCP window-validation resource, so the flag has to be set before the entry exists */
+	if (tcp_window_validation != NULL)
+		prepare_flags |= DOCA_FLOW_CT_ENTRY_FLAGS_TCP_WINDOW_VALIDATION;
 
 	/* Allocate CT entry */
 	result = doca_flow_ct_entry_prepare(ct_queue,
@@ -331,8 +341,28 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 		return result;
 	}
 
-	if (conn_found)
-		return DOCA_SUCCESS;
+	if (conn_found) {
+		/* Prepare reports a found connection only through a duplicate filter */
+		if (prepare_flags &
+		    (DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_ORIGIN | DOCA_FLOW_CT_ENTRY_FLAGS_DUP_FILTER_REPLY))
+			return DOCA_SUCCESS;
+		DOCA_LOG_ERR("CT entry prepare found an existing connection without a duplicate filter");
+		*entry = NULL;
+		return DOCA_ERROR_UNEXPECTED;
+	}
+
+	/*
+	 * Write the bound resource's profile before add. Sync versus async follows
+	 * the port's TCP window-validation completion callback.
+	 */
+	if (tcp_window_validation != NULL) {
+		result = doca_flow_ct_tcp_window_validation_update(pipe, ct_queue, *entry, tcp_window_validation, true);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to update TCP window-validation profile: %s",
+				     doca_error_get_descr(result));
+			goto rollback;
+		}
+	}
 
 	/* Add CT entry */
 	result = doca_flow_ct_add_entry(ct_queue,
@@ -348,18 +378,8 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 					ct_status,
 					*entry);
 	if (result != DOCA_SUCCESS) {
-		doca_error_t rollback_result;
-
 		DOCA_LOG_ERR("Failed to add CT pipe an entry: %s", doca_error_get_descr(result));
-		if (*entry != NULL && (prepare_flags & DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS) != 0) {
-			rollback_result = doca_flow_ct_entry_prepare_rollback(ct_queue, pipe, *entry);
-			if (rollback_result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to rollback prepared CT entry: %s",
-					     doca_error_get_descr(rollback_result));
-			}
-			*entry = NULL;
-		}
-		return result;
+		goto rollback;
 	}
 
 	if ((entry_flags & DOCA_FLOW_CT_ENTRY_FLAGS_NO_WAIT) != 0) {
@@ -372,6 +392,53 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 	}
 
 	return DOCA_SUCCESS;
+
+rollback:
+	if (*entry != NULL && (prepare_flags & DOCA_FLOW_CT_ENTRY_FLAGS_ALLOC_ON_MISS) != 0) {
+		doca_error_t rollback_result;
+		doca_error_t process_result;
+		doca_error_t rm_result;
+
+		rollback_result = doca_flow_ct_entry_prepare_rollback(ct_queue, pipe, *entry);
+		if (rollback_result == DOCA_ERROR_AGAIN) {
+			process_result = doca_flow_ct_entries_process(port,
+								      ct_queue,
+								      CT_DEFAULT_QUEUE_DEPTH,
+								      CT_DEFAULT_QUEUE_DEPTH,
+								      NULL);
+			if (process_result != DOCA_SUCCESS)
+				DOCA_LOG_ERR("Failed to process CT queue while rolling back: %s",
+					     doca_error_get_descr(process_result));
+			else
+				rollback_result = doca_flow_ct_entry_prepare_rollback(ct_queue, pipe, *entry);
+		}
+		if (rollback_result == DOCA_ERROR_IN_PROGRESS || rollback_result == DOCA_ERROR_BAD_STATE) {
+			rm_result = doca_flow_ct_rm_entry(ct_queue, pipe, 0, *entry);
+			if (rm_result == DOCA_ERROR_IN_PROGRESS) {
+				process_result = doca_flow_ct_entries_process(port,
+									      ct_queue,
+									      CT_DEFAULT_QUEUE_DEPTH,
+									      CT_DEFAULT_QUEUE_DEPTH,
+									      NULL);
+				if (process_result != DOCA_SUCCESS)
+					DOCA_LOG_ERR("Failed to process CT queue while removing: %s",
+						     doca_error_get_descr(process_result));
+				else
+					rm_result = doca_flow_ct_rm_entry(ct_queue, pipe, 0, *entry);
+			}
+			if (rm_result == DOCA_ERROR_IN_PROGRESS)
+				return rm_result;
+			if (rm_result != DOCA_SUCCESS && rm_result != DOCA_ERROR_NOT_FOUND)
+				DOCA_LOG_ERR("Failed to remove CT entry while rolling back: %s",
+					     doca_error_get_descr(rm_result));
+		} else if (rollback_result == DOCA_ERROR_AGAIN) {
+			return rollback_result;
+		} else if (rollback_result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to rollback prepared CT entry: %s", doca_error_get_descr(rollback_result));
+		}
+		*entry = NULL;
+	}
+	return result;
 }
 
 doca_error_t flow_ct_queue_reserve(struct doca_flow_port *port,

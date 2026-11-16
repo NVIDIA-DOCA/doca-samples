@@ -517,7 +517,7 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_rss = num_of_entries;
 	resource.nr_encap = 1;
-	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "vnf", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return -1;
@@ -527,7 +527,7 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -537,7 +537,7 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -545,7 +545,7 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		miss_pipe = pipe;
@@ -554,7 +554,7 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -562,7 +562,7 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -570,7 +570,7 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -578,7 +578,7 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -586,14 +586,14 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
 		if (status.nb_processed != num_of_entries || status.failure) {
 			DOCA_LOG_ERR("Failed to process entries");
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return DOCA_ERROR_BAD_STATE;
 		}
 	}
@@ -608,6 +608,6 @@ doca_error_t flow_loopback(int nb_queues, uint8_t mac_addresses[2][6])
 	}
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

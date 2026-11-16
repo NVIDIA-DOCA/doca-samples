@@ -641,7 +641,7 @@ doca_error_t PSP_GatewayImpl::show_flow_counts(void)
 
 uint32_t PSP_GatewayImpl::next_crypto_id(void)
 {
-	if (next_crypto_serial_id_ > config->max_tunnels) {
+	if (next_crypto_serial_id_ >= pf->crypto_ids.size()) {
 		return UINT32_MAX;
 	}
 	return pf->crypto_ids[next_crypto_serial_id_++];

@@ -50,6 +50,16 @@
 #define ETHER_ADDR_LEN 6
 #define MAX_SQ_DESCR_NUM 8192
 #define SHARED_QP_BLOCKS 2
+#define MAX_CUDA_BLOCK_THREADS 1024 /* CUDA limit of threads per block */
+#define DEFAULT_CUDA_THREADS 512    /* Valid with and without shared QP */
+#define DEFAULT_EXEC_SCOPE 2	    /* DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK, numeric to be printed in the help */
+#define DEFAULT_CPU_PROXY 0	    /* CPU proxy mode disabled: the GPU rings the doorbell */
+#define DEFAULT_SHARED_QP 0	    /* Shared QP mode disabled */
+#define MAX_PKT_SIZE 9216	    /* Jumbo frame, the port MTU must allow it */
+#define DEFAULT_SRC_IP "192.168.1.1"
+#define DEFAULT_DST_IP "192.168.1.2"
+#define UDP_SRC_PORT 10000
+#define UDP_DST_PORT 5000
 
 #ifndef ACCESS_ONCE_64b
 #define ACCESS_ONCE_64b(x) (*(volatile uint64_t *)&(x))
@@ -67,11 +77,42 @@ struct ether_hdr {
 	uint16_t ether_type;		      /* Frame type */
 } __attribute__((__packed__));
 
+struct ipv4_hdr {
+	uint8_t version_ihl;	  /* Version and header length */
+	uint8_t type_of_service;  /* Type of service */
+	uint16_t total_length;	  /* Length of packet */
+	uint16_t packet_id;	  /* Packet ID */
+	uint16_t fragment_offset; /* Fragmentation offset */
+	uint8_t time_to_live;	  /* Time to live */
+	uint8_t next_proto_id;	  /* Protocol ID */
+	uint16_t hdr_checksum;	  /* Header checksum */
+	uint32_t src_addr;	  /* Source address */
+	uint32_t dst_addr;	  /* Destination address */
+} __attribute__((__packed__));
+
+struct udp_hdr {
+	uint16_t src_port;    /* UDP source port */
+	uint16_t dst_port;    /* UDP destination port */
+	uint16_t dgram_len;   /* UDP datagram length */
+	uint16_t dgram_cksum; /* UDP datagram checksum */
+} __attribute__((__packed__));
+
+/* Ethernet, IPv4 and UDP headers at the beginning of every packet */
+struct eth_ip_udp_hdr {
+	struct ether_hdr l2_hdr;
+	struct ipv4_hdr l3_hdr;
+	struct udp_hdr l4_hdr;
+} __attribute__((__packed__));
+
+#define MIN_PKT_SIZE ((int)sizeof(struct eth_ip_udp_hdr)) /* 42 bytes, the NIC pads to the Ethernet minimum */
+
 /* Application configuration structure */
 struct sample_simple_send_cfg {
 	char gpu_pcie_addr[MAX_PCI_ADDRESS_LEN];       /* GPU PCIe address */
 	char nic_pcie_addr[MAX_PCI_ADDRESS_LEN];       /* Network card PCIe address */
 	size_t pkt_size;			       /* Packet size to send */
+	uint32_t src_ip;			       /* IPv4 source address, network byte order */
+	uint32_t dst_ip;			       /* IPv4 destination address, network byte order */
 	uint32_t cuda_threads;			       /* Number of CUDA threads in CUDA send kernel */
 	bool shared_qp;				       /* Shared QP mode enabled/disabled */
 	uint32_t exec_scope;			       /* If shared QP mode is enabled, define the exec scope */
@@ -90,16 +131,18 @@ struct txq_queue {
 	struct doca_mmap *pkt_buff_mmap; /* DOCA mmap to send packet with DOCA Ethernet queue */
 	uint32_t pkt_buff_mkey;		 /* DOCA mmap memory key */
 	uint8_t *pkt_buff_addr;		 /* DOCA mmap GPU memory address */
-	int dmabuf_fd;			 /* GPU memory dmabuf descriptor */
-	struct doca_flow_port *port;	 /* DOCA Flow port */
+	int dmabuf_fd;			 /* GPU memory dmabuf descriptor, -1 if not used */
+	bool ctx_started;		 /* DOCA Ethernet send queue context started */
 	size_t pkt_size;		 /* Packet size to send */
 	uint32_t cuda_threads;		 /* Number of CUDA threads in CUDA send kernel */
+	uint32_t src_ip;		 /* IPv4 source address, network byte order */
+	uint32_t dst_ip;		 /* IPv4 destination address, network byte order */
 };
 
 /* CPU Proxy thread arguments */
 struct cpu_proxy_args {
 	struct doca_eth_txq *txq; /* DOCA Eth Txq handler to progress */
-	uint64_t *exit_flag;	  /* CPU thread exit flag */
+	uint64_t exit_flag;	  /* CPU thread exit flag */
 };
 
 /*

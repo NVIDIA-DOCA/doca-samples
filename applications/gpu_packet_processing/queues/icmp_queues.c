@@ -170,19 +170,19 @@ doca_error_t create_icmp_queues(struct rxq_icmp_queues *icmp_queues,
 			return DOCA_ERROR_BAD_STATE;
 		}
 
-		result = doca_eth_rxq_set_pkt_buf(icmp_queues->eth_rxq_cpu[idx],
-						  icmp_queues->pkt_buff_mmap[idx],
-						  0,
-						  cyclic_buffer_size);
+		result = doca_eth_rxq_set_packet_buf(icmp_queues->eth_rxq_cpu[idx],
+						     icmp_queues->pkt_buff_mmap[idx],
+						     0,
+						     cyclic_buffer_size);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set cyclic buffer  %s", doca_error_get_descr(result));
 			destroy_icmp_queues(icmp_queues);
 			return DOCA_ERROR_BAD_STATE;
 		}
 
-		icmp_queues->eth_rxq_ctx[idx] = doca_eth_rxq_as_doca_ctx(icmp_queues->eth_rxq_cpu[idx]);
+		icmp_queues->eth_rxq_ctx[idx] = doca_eth_rxq_as_ctx(icmp_queues->eth_rxq_cpu[idx]);
 		if (icmp_queues->eth_rxq_ctx[idx] == NULL) {
-			DOCA_LOG_ERR("Failed doca_eth_rxq_as_doca_ctx: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed doca_eth_rxq_as_ctx: %s", doca_error_get_descr(result));
 			destroy_icmp_queues(icmp_queues);
 			return DOCA_ERROR_BAD_STATE;
 		}
@@ -215,16 +215,16 @@ doca_error_t create_icmp_queues(struct rxq_icmp_queues *icmp_queues,
 			return DOCA_ERROR_BAD_STATE;
 		}
 
-		result = doca_eth_txq_set_l3_chksum_offload(icmp_queues->eth_txq_cpu[idx], 1);
+		result = doca_eth_txq_set_l3_checksum_offload(icmp_queues->eth_txq_cpu[idx], 1);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set eth_txq l3 offloads: %s", doca_error_get_descr(result));
 			destroy_icmp_queues(icmp_queues);
 			return DOCA_ERROR_BAD_STATE;
 		}
 
-		icmp_queues->eth_txq_ctx[idx] = doca_eth_txq_as_doca_ctx(icmp_queues->eth_txq_cpu[idx]);
+		icmp_queues->eth_txq_ctx[idx] = doca_eth_txq_as_ctx(icmp_queues->eth_txq_cpu[idx]);
 		if (icmp_queues->eth_txq_ctx[idx] == NULL) {
-			DOCA_LOG_ERR("Failed doca_eth_txq_as_doca_ctx: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed doca_eth_txq_as_ctx: %s", doca_error_get_descr(result));
 			destroy_icmp_queues(icmp_queues);
 			return DOCA_ERROR_BAD_STATE;
 		}

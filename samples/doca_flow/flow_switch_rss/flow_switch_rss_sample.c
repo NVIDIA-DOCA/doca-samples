@@ -129,25 +129,25 @@ static struct doca_flow_pipe_entry *ingress_entries[NB_INGRESS_ENTRIES];
 /* array for storing created ingress entries */
 static struct doca_flow_pipe_entry *vport_entries[NB_VPORT_ENTRIES];
 
-static void rx_success_cb(struct doca_eth_rxq_event_batch_managed_recv *event_batch,
+static void rx_success_cb(struct doca_eth_rxq_event_batch_managed_mempool_recv *event_batch,
 			  uint16_t packets_count,
-			  union doca_data event_batch_user_data,
 			  doca_error_t status,
-			  struct doca_buf **pkt_array)
+			  struct doca_buf **pkt_array,
+			  union doca_data event_batch_user_data)
 {
 	(void)event_batch;
 	(void)status;
 
 	DOCA_LOG_INFO("Received %d packets on queue %d", packets_count, (int)event_batch_user_data.u64);
 
-	doca_eth_rxq_event_batch_managed_recv_pkt_array_free(pkt_array);
+	doca_eth_rxq_event_batch_managed_mempool_recv_free_packet_array(pkt_array);
 }
 
-static void rx_error_cb(struct doca_eth_rxq_event_batch_managed_recv *event_batch,
+static void rx_error_cb(struct doca_eth_rxq_event_batch_managed_mempool_recv *event_batch,
 			uint16_t packets_count,
-			union doca_data event_batch_user_data,
 			doca_error_t status,
-			struct doca_buf **pkt_array)
+			struct doca_buf **pkt_array,
+			union doca_data event_batch_user_data)
 {
 	(void)event_batch;
 	(void)packets_count;
@@ -931,9 +931,9 @@ doca_error_t flow_switch_rss(int nb_queues,
 	resource.nr_counters = 2 * NB_TOTAL_ENTRIES; /* counter per entry */
 	resource.nr_rss = 10;
 	if (is_expert)
-		start_str = "switch,hws,hairpinq_num=4,expert";
+		start_str = "switch,hairpinq_num=4,expert";
 	else
-		start_str = "switch,hws,hairpinq_num=4";
+		start_str = "switch,hairpinq_num=4";
 	result = init_doca_flow(nb_queues, start_str, &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -1167,7 +1167,7 @@ doca_error_t flow_switch_rss(int nb_queues,
 full_cleanup:
 	stop_doca_flow_ports(nb_ports, ports);
 flow_and_eth_cleanup:
-	doca_flow_destroy();
+	destroy_doca_flow();
 dev_cleanup:
 	flow_eth_common_destroy_dev_resources(dev_ctx);
 pe_cleanup:

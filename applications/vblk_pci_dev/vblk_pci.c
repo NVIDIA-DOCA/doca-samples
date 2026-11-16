@@ -56,11 +56,6 @@ DOCA_LOG_REGISTER(VBLK_PCI);
 static struct vblk_tlp_context g_tlp_ctx;
 static struct pcie_virtio_dev virtio_dev;
 
-/* Round-level guard for PERST# handling: set on assert, cleared on deassert.
- * Drops repeat asserts inside the same round so firmware event retries do
- * not restart a recycle that is still in flight. */
-static _Atomic bool g_perst_round_in_progress;
-
 /* All complete_*() calls run on the TLP thread by design: doca_ctx is not
  * thread-safe and the doca lib's internal req_pool.acquire() happens BEFORE
  * the event callback fires, so no app-side lock can cover it anyway. The OE
@@ -425,6 +420,23 @@ static void bdf_map_remove(struct vblk_tlp_context *ctx, uint32_t tlp_type, uint
 static bool vblk_pci_sriov_is_vf_enabled(const struct vblk_sriov_pf_state *sriov, uint32_t vf_index)
 {
 	return (sriov->control_shadow & PCI_SRIOV_CTRL_VFE) != 0 && vf_index < sriov->num_vfs_shadow;
+}
+
+/*
+ * True while the host has SR-IOV live on this PF. A PF-level reset (FLR or a
+ * BME clear) clears VF Enable, which per SR-IOV 1.1 section 2.2.3 means the VFs
+ * no longer exist. Taking VFs away from a host that still has them assigned is
+ * unsupported, so the trigger is refused rather than half-served: the caller
+ * only logs it and starts no recycle, leaving the PF unreset as well.
+ *
+ * Deliberately keyed on the runtime SR-IOV shadows rather than total_vfs: a PF
+ * built with VF slots but left at sriov_numvfs == 0 has no live VF and must
+ * stay resettable.
+ */
+static bool vblk_pci_sriov_has_live_vfs(const struct pci_device_config *ep)
+{
+	return ep->sriov != NULL &&
+	       ((ep->sriov->control_shadow & PCI_SRIOV_CTRL_VFE) != 0 || ep->sriov->num_vfs_shadow != 0);
 }
 
 static void vblk_pci_sriov_sync_vf_presence(struct pci_device_config *ep, bool pf_present)
@@ -1646,6 +1658,17 @@ static void init_dsp_bridge(struct vblk_tlp_context *ctx, uint32_t i, bool hp)
 	DOCA_LOG_INFO("Initialized DSP[%u] (hotplug=%d)", i, hp);
 }
 
+static void vblk_pci_invalidate_bdf_cache(struct vblk_tlp_context *ctx)
+{
+	uint32_t i;
+
+	memset(ctx->bdf_map, 0, sizeof(ctx->bdf_map));
+	memset(ctx->bdf_entries, 0, ctx->num_devices * sizeof(*ctx->bdf_entries));
+
+	for (i = 0; i < ctx->num_devices; i++)
+		ctx->devs_config[i].is_bdf_set = false;
+}
+
 static doca_error_t vblk_pci_switch_init(struct vblk_tlp_context *ctx, uint32_t num_ep, bool hotplug)
 {
 	uint32_t num_sriov_vfs;
@@ -1917,6 +1940,27 @@ static struct pcie_virtio_dev vblk_pci_set_default_values(void)
 	return dev;
 }
 
+static void vblk_pci_reset_virtio_function(struct vblk_pci_virtio_dev *dev, struct pcie_virtio_dev *pcie_dev)
+{
+	pcie_dev->cfg.regs.command &= (uint16_t) ~(PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+	pcie_dev->cfg.msix_cap.msgctl &= (uint16_t) ~(PCI_MSIX_FLAGS_ENABLE | PCI_MSIX_FLAGS_MASKALL);
+	dev->pci_cfg.device_status = 0;
+	vblk_pci_virtio_dev_reset(dev);
+	/* Prevent rebuild until the host restores BME. */
+	atomic_store_explicit(&dev->bme_shadow, false, memory_order_release);
+}
+
+/* TLP thread: ask the OE thread to recycle this function. Arm the overlay before
+ * publishing the reason bits, so the OE thread cannot observe the request and
+ * complete the recycle - clearing the overlay - before the host can see
+ * NEEDS_RESET. */
+static void vblk_pci_request_recycle(struct vblk_pci_virtio_dev *dev, uint32_t reasons)
+{
+	atomic_store_explicit(&dev->status_overlay, VBLK_PCI_VIRTIO_DEVICE_STATUS_NEEDS_RESET, memory_order_release);
+	atomic_fetch_or_explicit(&dev->reason_bits, reasons, memory_order_release);
+	(void)vblk_pci_virtio_cfg_change_notify(dev);
+}
+
 static doca_error_t vblk_pci_sriov_reset_vf_slot(struct vblk_sriov_vf_slot *slot)
 {
 	struct vblk_pci_virtio_dev *vf_dev;
@@ -1928,21 +1972,10 @@ static doca_error_t vblk_pci_sriov_reset_vf_slot(struct vblk_sriov_vf_slot *slot
 	if (slot->vf_dev->pci_tlp_dev == NULL)
 		return DOCA_SUCCESS;
 
-	/* PCIe FLR resets the VF function. Scrub the guest-writable VF config
-	 * shadow on the TLP thread, which owns slot->pcie_dev, so reads during
-	 * the FLR window reflect reset state. Keep RO/HwInit fields intact. */
-	slot->pcie_dev.cfg.regs.command &= (uint16_t) ~(PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
-	slot->pcie_dev.cfg.msix_cap.msgctl &= (uint16_t) ~(PCI_MSIX_FLAGS_ENABLE | PCI_MSIX_FLAGS_MASKALL);
-
 	vf_dev = slot->vf_dev;
-	vf_dev->pci_cfg.device_status = 0;
-	vblk_pci_virtio_dev_reset(vf_dev);
-	atomic_store_explicit(&vf_dev->flr_kickoff, false, memory_order_release);
-	atomic_store_explicit(&vf_dev->flr_in_progress, true, memory_order_release);
-	if (!vblk_pci_virtio_cfg_change_notify(vf_dev))
-		atomic_store_explicit(&vf_dev->flr_in_progress, false, memory_order_release);
+	vblk_pci_reset_virtio_function(vf_dev, &slot->pcie_dev);
 
-	DOCA_LOG_INFO("SR-IOV: VF[%u] FLR reset VF PCI config and started VF datapath recycle", slot->dynamic_vf_index);
+	DOCA_LOG_INFO("SR-IOV: VF[%u] FLR reset VF PCI config", slot->dynamic_vf_index);
 	return DOCA_SUCCESS;
 }
 
@@ -1995,6 +2028,26 @@ doca_error_t vblk_pci_sriov_vf_tlp_dev_start(struct vblk_sriov_vf_slot *slot)
 
 	/* Started semantics on top of the shared resume: the slot lifecycle mark. */
 	slot->tlp_started = true;
+	return DOCA_SUCCESS;
+}
+
+doca_error_t vblk_pci_pf_tlp_dev_stop(struct vblk_pci_virtio_dev *dev)
+{
+	struct pci_device_config *ep;
+	doca_error_t result;
+
+	if (dev == NULL || dev->pci_tlp_dev == NULL)
+		return DOCA_SUCCESS;
+	if (dev->ep_index >= g_tlp_ctx.num_ep)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	ep = &g_tlp_ctx.devs_config[FIRST_PF_IDX(&g_tlp_ctx) + dev->ep_index];
+	vblk_pci_sriov_sync_vf_presence(ep, false);
+	result = vblk_pci_tlp_dev_suspend(dev->pci_tlp_dev, "PF EP", dev->ep_index);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	ep->device_present = false;
 	return DOCA_SUCCESS;
 }
 
@@ -2057,7 +2110,21 @@ static void vblk_pci_sriov_set_vf_datapath_wanted(struct pci_device_config *ep, 
 	}
 }
 
-static void vblk_pci_sriov_handle_pf_flr(struct pci_device_config *ep)
+static void vblk_pci_sriov_reset_vf_functions(struct vblk_sriov_pf_state *sriov)
+{
+	uint16_t i;
+
+	for (i = 0; i < sriov->total_vfs; i++) {
+		struct vblk_sriov_vf_slot *slot = &sriov->vf_slots[i];
+
+		if (slot->vf_dev == NULL)
+			continue;
+
+		vblk_pci_reset_virtio_function(slot->vf_dev, &slot->pcie_dev);
+	}
+}
+
+static void vblk_pci_sriov_reset_pf_state(struct pci_device_config *ep)
 {
 	struct vblk_sriov_pf_state *sriov;
 
@@ -2068,28 +2135,14 @@ static void vblk_pci_sriov_handle_pf_flr(struct pci_device_config *ep)
 	if (sriov->total_vfs == 0)
 		return;
 
-	/* A PF FLR resets the PF's SR-IOV capability in hardware. Model that by
-	 * resetting the control word (VFE|MSE), NumVFs, and System Page Size to their
-	 * power-on (disabled) state. Linux does not remove VF devices across a PF reset:
-	 * pci_reset_function() saves the PF config, including the SR-IOV cap, before
-	 * the FLR and restores it afterwards via pci_restore_state() ->
-	 * pci_restore_iov_state() -> sriov_restore_state(). The restore re-writes
-	 * NumVFs while VFE is still 0, then re-writes VFE|MSE.
-	 *
-	 * Clearing VFE gates VF config/MMIO and disables VF offload intent through
-	 * the same path as a host VFE 1->0 write. Keep VF TLP devices, vf_ctrl
-	 * objects, VF virtio shadows, and config callbacks alive; Linux restores the
-	 * PF SR-IOV cap and re-writes VFE|MSE, which re-enables VF offload through
-	 * the normal VFE 0->1 path. */
 	sriov->control_shadow &= (uint16_t) ~(PCI_SRIOV_CTRL_VFE | PCI_SRIOV_CTRL_MSE);
 	sriov->num_vfs_shadow = 0;
 	sriov->system_pg_size = VBLK_SRIOV_SUPPORTED_PAGE_SIZE_MASK;
-	/* Keep VF BAR shadows; Linux restores VFE over the existing VF resources. */
+	vblk_pci_sriov_sync_vf_presence(ep, false);
+	vblk_pci_sriov_reset_vf_functions(sriov);
 	vblk_pci_sriov_set_vf_datapath_wanted(ep, false);
 
-	DOCA_LOG_INFO("SR-IOV: PF[%u] FLR reset SR-IOV cap (VFE/MSE/NumVFs cleared); "
-		      "VF offload engines remain disabled until Linux restore re-enables VFE",
-		      vblk_pci_ep_index(ep));
+	DOCA_LOG_INFO("SR-IOV: PF[%u] reset SR-IOV capability state", vblk_pci_ep_index(ep));
 }
 
 void vblk_pci_virtio_dev_reset(struct vblk_pci_virtio_dev *dev)
@@ -2651,7 +2704,9 @@ static inline uint64_t vblk_pci_bar_offset(struct vblk_pci_virtio_dev *dev, cons
 static uint32_t vblk_pci_virtio_mmio_read32(struct vblk_pci_virtio_dev *dev, const uint64_t addr)
 {
 	uint64_t offset = vblk_pci_bar_offset(dev, addr);
+	const size_t device_status_offset = offsetof(struct vblk_pci_virtio_pci_common_cfg, device_status);
 	uint32_t *base;
+	uint32_t val;
 
 	DOCA_LOG_TRC("mmio read offset 0x%lx", offset);
 
@@ -2668,7 +2723,16 @@ static uint32_t vblk_pci_virtio_mmio_read32(struct vblk_pci_virtio_dev *dev, con
 		DOCA_LOG_ERR("mmio read - unsupported virtio bar offset 0x%lx", offset);
 		return 0xFAFAFAFA;
 	}
-	return base[offset / 4];
+	val = base[offset / 4];
+	if (base == (uint32_t *)&dev->pci_cfg && offset / 4 == device_status_offset / 4) {
+		uint8_t overlay = atomic_load_explicit(&dev->status_overlay, memory_order_acquire);
+
+		if (vblk_pci_recycle_reason_latched(dev))
+			overlay |= VBLK_PCI_VIRTIO_DEVICE_STATUS_NEEDS_RESET;
+		val |= (uint32_t)overlay << (8 * (device_status_offset % 4));
+	}
+
+	return val;
 }
 
 static inline uint32_t vblk_pci_feature_select(int n, uint64_t ftr)
@@ -2745,20 +2809,12 @@ static enum vblk_cfg_wr_notify_sched vblk_pci_virtio_pci_cfg_write32(struct vblk
 	struct vblk_pci_virtio_pci_common_cfg *pci_cfg = &dev->pci_cfg;
 	struct vblk_pci_virtio_pci_common_cfg prev_cfg;
 	uint32_t *base = (uint32_t *)pci_cfg;
-	const uint64_t status_offset = offsetof(struct vblk_pci_virtio_pci_common_cfg, device_status);
-	bool device_status_write = false;
 
 	/* save everything to handle ro fields and selectors */
 	memcpy(&prev_cfg, pci_cfg, sizeof(prev_cfg));
 
 	const uint32_t dw_offset = offset / 4;
 	const uint32_t orig_val = base[dw_offset];
-
-	if (offset <= status_offset && status_offset < offset + sizeof(uint32_t)) {
-		uint32_t status_mask = 0xffu << ((status_offset - offset) * 8);
-
-		device_status_write = (wr_mask & status_mask) != 0;
-	}
 
 	base[dw_offset] = (orig_val & ~wr_mask) | (val & wr_mask);
 	DOCA_LOG_TRC("pci_cfg+%ld: 0x%x <- 0x%x (val 0x%x & mask 0x%x)",
@@ -2827,20 +2883,6 @@ static enum vblk_cfg_wr_notify_sched vblk_pci_virtio_pci_cfg_write32(struct vblk
 			     pci_cfg->queue_select,
 			     prev_cfg.vq.queue_enable,
 			     pci_cfg->vq.queue_enable);
-	}
-
-	/*
-	 * If FLR is in progress, the device is already on its way to reset state.
-	 * A Linux reset write of device_status=0 must still read back NEEDS_RESET
-	 * until the async FLR tail has rebound io_ctxs. Nonzero restore writes are
-	 * preserved so the tail can replay the callback if Linux already reached
-	 * DRIVER_OK. Do not re-run vblk_pci_virtio_dev_reset or invoke
-	 * virtio_ctrl_change_cb here. */
-	if (atomic_load_explicit(&dev->flr_in_progress, memory_order_acquire)) {
-		if (device_status_write && pci_cfg->device_status == 0)
-			pci_cfg->device_status = VBLK_PCI_VIRTIO_DEVICE_STATUS_NEEDS_RESET;
-		DOCA_LOG_DBG("EP[%u]: ignoring common_cfg write during FLR cleanup", dev->ep_index);
-		return VBLK_CFG_WR_NO_NOTIFY;
 	}
 
 	/* Reset PCI config before notifying the application layer, so
@@ -3560,6 +3602,7 @@ static void vblk_pci_handle_cfg_write(struct doca_devemu_pci_tlp_channel_req *tl
 	struct pci_device_config *dc;
 	uint32_t m;
 	bool handle_flr_event = false;
+	uint32_t recycle_reasons = VBLK_RECYCLE_REASON_NONE;
 
 	dc = find_target_cfg_device(tlp_req_header, tlp_type);
 
@@ -3617,9 +3660,9 @@ static void vblk_pci_handle_cfg_write(struct doca_devemu_pci_tlp_channel_req *tl
 		bool handle_vf_flr = false;
 
 		/* Not present (VFE=0 or vf_index>=NumVFs): the VF does not exist on the
-		 * bus, so its config writes are dropped with Unsupported Request -
-		 * matching the read path and PCIe/SR-IOV. The VF TLP device stays alive
-		 * across VFE disable, so such a write can still reach SW. */
+		 * bus, so its config writes are dropped with Unsupported Request, matching
+		 * the read path. The VF TLP device stays alive across a VFE disable, so
+		 * such a write can still reach SW. */
 		if (!dc->device_present) {
 			DOCA_LOG_ERR("SR-IOV: config write (reg dw %u) to not-present VF[%u] - returning UR",
 				     reg,
@@ -3629,30 +3672,39 @@ static void vblk_pci_handle_cfg_write(struct doca_devemu_pci_tlp_channel_req *tl
 			return;
 		}
 
-		/* Type-0 config write: commit the standard RW bits into the VF's
-		 * emulated config image - the same image cfg reads serve from
-		 * (vblk_pci_handle_cfg_read reads pcie_config_read on slot->pcie_dev). */
 		if (reg == cmd_reg) {
-			/* Command/Status dword. Only the two Command RW bits the VF
-			 * datapath needs are writable: Memory Space Enable (decode the VF
-			 * BAR) and Bus Master Enable (the device needs BME to issue the
-			 * upstream MSI write that signals completions to the guest). Mask
-			 * out every other Command bit and the entire Status word (upper
-			 * 16b, RO/RW1C) so a wide dword write can't clobber them. This is a
-			 * deliberately narrower allow-list than the PF's
-			 * vblk_pci_ext_reg_wr_mask (a VF needs only MEM+BME), so it is
-			 * hardcoded here rather than reusing that helper. */
+			/* A VF needs only Memory Space Enable (decode the VF BAR) and Bus
+			 * Master Enable (issue the upstream MSI write that signals
+			 * completions). Every other Command bit and the whole Status word
+			 * are masked out so a wide dword write cannot clobber them. This is
+			 * a deliberately narrower allow-list than the PF's
+			 * vblk_pci_ext_reg_wr_mask, hence hardcoded instead of reusing it. */
 			const uint32_t cmd_rw_mask = (uint32_t)(PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 			uint32_t wr_mask = m & cmd_rw_mask;
 			uint32_t cur = pcie_config_read(vf_cfg, reg);
+			uint32_t new_cmd = (cur & ~wr_mask) | (td[0] & wr_mask);
 
-			pcie_config_write(vf_cfg, reg, (cur & ~wr_mask) | (td[0] & wr_mask));
+			pcie_config_write(vf_cfg, reg, new_cmd);
+			/* Keep bme_shadow mirroring the VF Command image: the recycle
+			 * machine rebuilds a suspended VF only once BME is set again. */
+			if (slot->vf_dev != NULL) {
+				bool bme = (new_cmd & PCI_COMMAND_MASTER) != 0;
+
+				atomic_store_explicit(&slot->vf_dev->bme_shadow, bme, memory_order_release);
+				/* BME 1->0; latch a recycle for this VF alone. */
+				if ((cur & PCI_COMMAND_MASTER) != 0 && !bme) {
+					if ((slot->vf_dev->pci_cfg.device_status &
+					     VBLK_PCI_VIRTIO_DEVICE_STATUS_DRIVER_OK) != 0)
+						DOCA_LOG_WARN("SR-IOV: VF[%u] BME clear while DRIVER_OK is unsupported",
+							      slot->dynamic_vf_index);
+					recycle_reasons |= VBLK_RECYCLE_REASON_BME;
+				}
+			}
 		} else if (reg == msix_reg) {
-			/* MSI-X capability control (msgctl in the upper 16b of this dword):
-			 * only MSI-X Enable and Function Mask are RW; the rest is RO.
+			/* Only MSI-X Enable and Function Mask are writable; the rest is RO.
 			 * Without Enable the VF stays MSI-X-disabled and completions never
-			 * interrupt the guest (I/O reaches the engine but the guest never
-			 * sees it done). */
+			 * interrupt the guest: I/O reaches the engine but the guest never
+			 * sees it finish. */
 			const uint32_t msix_rw_mask = (uint32_t)(PCI_MSIX_FLAGS_ENABLE | PCI_MSIX_FLAGS_MASKALL) << 16;
 			uint32_t cur = pcie_config_read(vf_cfg, reg);
 			uint32_t rw_mask = m & msix_rw_mask;
@@ -3671,9 +3723,13 @@ static void vblk_pci_handle_cfg_write(struct doca_devemu_pci_tlp_channel_req *tl
 				DOCA_LOG_WARN("SR-IOV: VF[%u] FLR reset failed: %s",
 					      slot->dynamic_vf_index,
 					      doca_error_get_descr(result));
+			else if (slot->vf_dev != NULL && slot->vf_dev->pci_tlp_dev != NULL)
+				recycle_reasons |= VBLK_RECYCLE_REASON_FLR;
 		}
 		vblk_pci_tlp_cfg_cpl_prep(tlp_req, TLP_FMT_3DW_NO_DATA, TLP_CPL_STATUS_SC, 0);
 		doca_devemu_pci_tlp_channel_req_complete_tlp(tlp_req, 1, dc->tlp_dev);
+		if (recycle_reasons != VBLK_RECYCLE_REASON_NONE)
+			vblk_pci_request_recycle(slot->vf_dev, recycle_reasons);
 		return;
 	}
 
@@ -3717,43 +3773,44 @@ static void vblk_pci_handle_cfg_write(struct doca_devemu_pci_tlp_channel_req *tl
 
 	pcie_config_write(TO_PCIE_RAW_CFG(&virtio_dev->pcie_dev), reg, wr);
 
-	/* For a supported PF FLR, run the synchronous portion (mark device as in-progress and
-	 * kick off the virtio reset callback that puts device_status into
-	 * NEEDS_RESET and transitions all VQs to UNBINDING/STOPPING) BEFORE
-	 * sending the SC.
-	 *
-	 * The asynchronous portion (VQ teardown by OE thread, io_ctx recycle,
-	 * engine re-enable) still completes after the SC is sent. */
+	/* Keep bme_shadow mirroring the Command image (shadow-before-latch:
+	 * updated before any trigger below is published). */
+	if (reg == offsetof(struct pcie_virtio_dev, cfg.regs.command) / 4) {
+		bool bme = (wr & PCI_COMMAND_MASTER) != 0;
+
+		atomic_store_explicit(&virtio_dev->bme_shadow, bme, memory_order_release);
+		/* Like PF FLR, unsupported with live VFs (they die too). */
+		if ((rd & PCI_COMMAND_MASTER) != 0 && !bme) {
+			if (vblk_pci_sriov_has_live_vfs(dc)) {
+				DOCA_LOG_WARN("EP[%u]: PF BME clear with %u VFs enabled is unsupported",
+					      virtio_dev->ep_index,
+					      dc->sriov->num_vfs_shadow);
+			} else {
+				if ((virtio_dev->pci_cfg.device_status & VBLK_PCI_VIRTIO_DEVICE_STATUS_DRIVER_OK) != 0)
+					DOCA_LOG_WARN("EP[%u]: BME clear while DRIVER_OK is unsupported",
+						      virtio_dev->ep_index);
+				recycle_reasons |= VBLK_RECYCLE_REASON_BME;
+			}
+		}
+	}
+
 	if (handle_flr_event) {
-		if (dc->sriov != NULL && dc->sriov->total_vfs != 0) {
-			DOCA_LOG_WARN("PF[%u] FLR with SR-IOV is unsupported; ignoring the request",
-				      virtio_dev->ep_index);
-		} else if (virtio_dev->flr_in_progress) {
-			/* Back-to-back FLR from the host while a prior FLR is
-			 * still being cleaned up. The completion is still sent
-			 * below so the host does not stall; the second FLR
-			 * coalesces into the in-flight one. */
-			DOCA_LOG_WARN("virtio_dev[%d] FLR in progress", virtio_dev->ep_index);
+		if (vblk_pci_sriov_has_live_vfs(dc)) {
+			DOCA_LOG_WARN("EP[%u]: PF FLR with %u VFs enabled is unsupported",
+				      virtio_dev->ep_index,
+				      dc->sriov->num_vfs_shadow);
 		} else {
+			vblk_pci_reset_virtio_function(virtio_dev, &virtio_dev->pcie_dev);
+			recycle_reasons |= VBLK_RECYCLE_REASON_FLR;
 			/* No-op for a non-SR-IOV PF (self-guards on ep->sriov / total_vfs). */
-			vblk_pci_sriov_handle_pf_flr(dc);
-			/* FLR returns the function to its reset state. Scrub the
-			 * guest-writable config bits and rebuild the virtio
-			 * common-cfg shadow on the TLP thread, which owns them.
-			 * Without this a later re-probe still reads the previous
-			 * driver's queue_enable/queue_desc and rejects the device.
-			 * Mirrors vblk_pci_sriov_reset_vf_slot() for the VF. */
-			virtio_dev->pcie_dev.cfg.regs.command &= (uint16_t) ~(PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
-			virtio_dev->pcie_dev.cfg.msix_cap.msgctl &=
-				(uint16_t) ~(PCI_MSIX_FLAGS_ENABLE | PCI_MSIX_FLAGS_MASKALL);
-			vblk_pci_virtio_dev_reset(virtio_dev);
-			virtio_dev->flr_in_progress = true;
-			(void)vblk_pci_virtio_cfg_change_notify(virtio_dev);
+			vblk_pci_sriov_reset_pf_state(dc);
 		}
 	}
 
 	vblk_pci_tlp_cfg_cpl_prep(tlp_req, TLP_FMT_3DW_NO_DATA, TLP_CPL_STATUS_SC, 0);
 	vblk_complete_tlp(tlp_req, 1, dc->tlp_dev);
+	if (recycle_reasons != VBLK_RECYCLE_REASON_NONE)
+		vblk_pci_request_recycle(virtio_dev, recycle_reasons);
 }
 
 /*
@@ -3906,35 +3963,6 @@ done:
 }
 
 /*
- * Recycle one PF EP on PERST# assert by driving the same reset sequence as
- * vblk_pci_sriov_reset_vf_slot() applies to a VF: the OE thread handles the
- * io_ctx destroy/rebuild (including the application payload dma_ctx and the
- * SDK-internal metadata dma_ctx) through the existing post-FLR chain.
- */
-static void vblk_pci_perst_recycle_ep(struct vblk_pci_virtio_dev *dev)
-{
-	if (dev == NULL)
-		return;
-
-	if (atomic_load_explicit(&dev->flr_in_progress, memory_order_acquire)) {
-		DOCA_LOG_INFO("PERST: EP[%u] FLR already in progress, skipping", dev->ep_index);
-		return;
-	}
-
-	dev->pci_cfg.device_status = 0;
-	vblk_pci_virtio_dev_reset(dev);
-	atomic_store_explicit(&dev->flr_kickoff, false, memory_order_release);
-	atomic_store_explicit(&dev->flr_in_progress, true, memory_order_release);
-	if (!vblk_pci_virtio_cfg_change_notify(dev)) {
-		atomic_store_explicit(&dev->flr_in_progress, false, memory_order_release);
-		DOCA_LOG_WARN("PERST: EP[%u] cfg change cb not registered, cannot recycle", dev->ep_index);
-		return;
-	}
-
-	DOCA_LOG_INFO("PERST: EP[%u] triggered controller recycle", dev->ep_index);
-}
-
-/*
  * PCI Event and TLP Dispatch
  */
 static void vblk_pci_handle_pci_event(struct doca_devemu_pci_tlp_channel_req *tlp_req)
@@ -3942,18 +3970,35 @@ static void vblk_pci_handle_pci_event(struct doca_devemu_pci_tlp_channel_req *tl
 	enum doca_devemu_pci_tlp_channel_req_pci_event_opmode pci_event_opmode =
 		doca_devemu_pci_tlp_channel_req_get_pci_event_opmode(tlp_req);
 	switch (pci_event_opmode) {
-	case DOCA_DEVEMU_PCI_TLP_CHANNEL_REQ_PCI_EVENT_OPMODE_PERST_ASSERT:
-		if (atomic_exchange_explicit(&g_perst_round_in_progress, true, memory_order_acq_rel)) {
-			DOCA_LOG_INFO("PERST# re-asserted while previous round still in progress, skipping");
+	case DOCA_DEVEMU_PCI_TLP_CHANNEL_REQ_PCI_EVENT_OPMODE_PERST_ASSERT: {
+		const uint32_t pf = FIRST_PF_IDX(&g_tlp_ctx);
+		uint32_t i;
+
+		/* Round-level guard: drop repeat asserts that firmware retries
+		 * before the previous round has been deasserted, so they cannot
+		 * restart a recycle that is still in flight. */
+		if (g_tlp_ctx.perst_asserted)
 			break;
+		g_tlp_ctx.perst_asserted = true;
+		DOCA_LOG_INFO("PERST# is asserted (enters reset) - recycling %u EP(s)", g_tlp_ctx.num_ep);
+		vblk_pci_invalidate_bdf_cache(&g_tlp_ctx);
+		for (i = 0; i < g_tlp_ctx.num_ep; i++) {
+			struct pci_device_config *dc = &g_tlp_ctx.devs_config[pf + i];
+			struct vblk_pci_virtio_dev *dev = virtio_dev_for_ep(dc);
+
+			if (dev == NULL || dev->pci_tlp_dev == NULL)
+				continue;
+			vblk_pci_reset_virtio_function(dev, &dev->pcie_dev);
+			vblk_pci_sriov_reset_pf_state(dc);
+			vblk_pci_request_recycle(dev, VBLK_RECYCLE_REASON_PERST);
 		}
-		DOCA_LOG_INFO("PERST# is asserted (enters reset) - recycling %u EP controller(s)", g_tlp_ctx.num_ep);
-		for (uint32_t i = 0; i < g_tlp_ctx.num_ep; i++)
-			vblk_pci_perst_recycle_ep(g_tlp_ctx.virtio_devs[i]);
 		break;
+	}
 	case DOCA_DEVEMU_PCI_TLP_CHANNEL_REQ_PCI_EVENT_OPMODE_PERST_DEASSERT:
+		if (!g_tlp_ctx.perst_asserted)
+			break;
+		g_tlp_ctx.perst_asserted = false;
 		DOCA_LOG_INFO("PERST# is deasserted (released from reset)");
-		atomic_store_explicit(&g_perst_round_in_progress, false, memory_order_release);
 		break;
 	default:
 		DOCA_LOG_WARN("Unknown PCI_EVENT opmode: %d", pci_event_opmode);
@@ -4399,6 +4444,12 @@ void vblk_pci_ack_host_reset(uint32_t ep_index)
 	pci_cfg = vblk_pci_virtio_get_pci_cfg(dev);
 	if (pci_cfg != NULL)
 		pci_cfg->device_status = 0;
+	/* Drop the reset hold as well: a status read ORs both the overlay and any
+	 * latched recycle reason into device_status, so leaving either set would
+	 * keep answering 0x40 and defeat the ack. The EP is about to be destroyed,
+	 * so no recycle can consume the reason anymore. */
+	atomic_store_explicit(&dev->status_overlay, 0, memory_order_release);
+	atomic_store_explicit(&dev->reason_bits, VBLK_RECYCLE_REASON_NONE, memory_order_release);
 }
 
 void vblk_pci_destroy_device(uint32_t ep_index)
@@ -4770,11 +4821,9 @@ void vblk_pci_virtio_dev_destroy(struct vblk_pci_virtio_dev *dev)
 		dev->msix = NULL;
 	}
 	if (dev->pci_tlp_dev && ep->device_present) {
-		vblk_pci_sriov_sync_vf_presence(ep, false);
-		result = doca_devemu_pci_tlp_dev_stop(dev->pci_tlp_dev);
+		result = vblk_pci_pf_tlp_dev_stop(dev);
 		if (result != DOCA_SUCCESS)
 			DOCA_LOG_ERR("Failed to stop TLP device: %s", doca_error_get_descr(result));
-		ep->device_present = false;
 	}
 	vblk_pci_sriov_free_pf_state(ep);
 	free(dev);

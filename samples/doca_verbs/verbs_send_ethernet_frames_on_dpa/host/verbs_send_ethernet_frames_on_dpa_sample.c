@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -253,8 +253,6 @@ destroy_dpa_context:
 	if (tmp_status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to destroy DPA context: %s", doca_error_get_descr(tmp_status));
 	}
-	return status;
-
 close_doca_dev:
 	tmp_status = doca_dev_close(*dev);
 	if (tmp_status != DOCA_SUCCESS) {
@@ -263,7 +261,7 @@ close_doca_dev:
 destroy_verbs_pd:
 	tmp_status = doca_verbs_pd_destroy(*verbs_pd);
 	if (tmp_status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to close DOCA dev: %s", doca_error_get_descr(tmp_status));
+		DOCA_LOG_ERR("Failed to destroy Verbs PD: %s", doca_error_get_descr(tmp_status));
 	}
 	return status;
 }

@@ -67,7 +67,22 @@ doca_error_t read_file(char const *path, char **out_bytes, size_t *out_bytes_len
  */
 void linear_array_init_u16(uint16_t *array, uint16_t n);
 
+/*
+ * Determine if a NULL terminated PCI address matches PCI BDF format (i.e. 0000:03:00.0 or 03:00.0).
+ *
+ * @pci_addr [in]: PCI address to check
+ * @return: DOCA_SUCCESS if it is valid, DOCA_ERROR_INVALID_VALUE
+ */
+doca_error_t validate_pci_addr(const char *pci_addr);
+
 #ifdef DOCA_USE_LIBBSD
+
+/* DPDK no longer links against libbsd, and defines strlcpy()/strlcat() as macros over its own
+ * fallbacks whenever libc lacks them. Drop the macros so that <bsd/string.h> declares the real
+ * functions instead of redeclaring rte_strlcpy()/rte_strlcat().
+ */
+#undef strlcpy
+#undef strlcat
 
 #include <bsd/string.h>
 

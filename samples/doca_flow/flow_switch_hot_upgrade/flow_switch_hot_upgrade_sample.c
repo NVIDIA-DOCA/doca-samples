@@ -542,7 +542,7 @@ doca_error_t flow_switch_hot_upgrade(int nb_queues,
 	result = init_hot_upgrade_ports(devs_manager, nb_devs, ports, nb_ports, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -558,7 +558,7 @@ doca_error_t flow_switch_hot_upgrade(int nb_queues,
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to init port control %u", switch_port_idx);
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 	}
@@ -569,7 +569,7 @@ doca_error_t flow_switch_hot_upgrade(int nb_queues,
 	if (signal_handler_register() < 0) {
 		DOCA_LOG_ERR("Failed to register signal handlers");
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return DOCA_ERROR_OPERATING_SYSTEM;
 	}
 
@@ -590,13 +590,13 @@ doca_error_t flow_switch_hot_upgrade(int nb_queues,
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to query port control %u", switch_port_idx);
 				stop_doca_flow_ports(nb_ports, ports);
-				doca_flow_destroy();
+				destroy_doca_flow();
 				return result;
 			}
 		}
 	}
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

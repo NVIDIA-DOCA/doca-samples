@@ -51,14 +51,14 @@ doca_error_t flow_entropy(struct flow_switch_ctx *ctx)
 {
 	const int nb_ports = 1;
 	uint32_t actions_mem_size[nb_ports];
-	struct flow_resources resource = {0};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
 	struct doca_flow_entropy_format header;
 	uint16_t entropy;
 	doca_error_t result;
 
-	result = init_doca_flow(1, "switch,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(1, "switch", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -73,7 +73,7 @@ doca_error_t flow_entropy(struct flow_switch_ctx *ctx)
 					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -112,6 +112,6 @@ doca_error_t flow_entropy(struct flow_switch_ctx *ctx)
 		DOCA_LOG_ERR("Failed to retrieve entropy: %s", doca_error_get_descr(result));
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -41,7 +41,7 @@ DOCA_LOG_REGISTER(FLOW_GTP);
 		if (result != DOCA_SUCCESS) { \
 			DOCA_LOG_ERR("Failed to " msg ": %s", doca_error_get_descr(result)); \
 			stop_doca_flow_ports(nb_ports, ports); \
-			doca_flow_destroy(); \
+			destroy_doca_flow(); \
 			return result; \
 		} \
 	} while (0)
@@ -226,7 +226,7 @@ destroy_pipe_cfg:
  */
 doca_error_t flow_gtp(int nb_queues)
 {
-	struct flow_resources resource = {0};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	uint32_t actions_mem_size[nb_ports];
 	struct doca_flow_pipe *modify_qfi_pipe, *gtp_pipe;
@@ -235,7 +235,7 @@ doca_error_t flow_gtp(int nb_queues)
 	doca_error_t result;
 	int port_id;
 
-	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "vnf", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -245,7 +245,7 @@ doca_error_t flow_gtp(int nb_queues)
 	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -268,6 +268,6 @@ doca_error_t flow_gtp(int nb_queues)
 	sleep(5);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

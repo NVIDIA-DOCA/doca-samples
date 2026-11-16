@@ -1,0 +1,79 @@
+#
+# Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+number_of_ports: 2
+min_supported_nic: ConnectX-10
+mode_args:
+  - vnf
+ports_description:
+  port_0: doca_dev
+  port_1: doca_dev
+description: "The sample requires a device that can place a Packet Window at an arbitrary parsed-header offset.
+              Earlier devices return DOCA_ERROR_NOT_SUPPORTED. A root BASIC dispatcher sends IPv4/UDP traffic with
+              destination port 1234 to the non-root BASIC Packet Window pipe. The OUTER_TCP_UDP_START + 8
+              configuration selects the first eight UDP payload
+              bytes.
+              The user entry matches payload tag PWOK and code 0x01, sets the tag to DONE, copies the code into the
+              next byte, adds one to the following byte, and forwards hits to the peer port. Hit payload bytes change
+              from PWOK/01/00/05/00 to DONE/01/01/06/00. Wrong tag or code traffic reaches the user pipe but is
+              dropped, while IPv4/UDP traffic with a different destination port and IPv6/UDP traffic are dropped by
+              the root pipe.
+              Sample Command Line: ./build/doca_flow_packet_window -- -a aux/2,dv_flow_en=2
+              -a aux/3,dv_flow_en=2 -l 60"
+use_cases:
+  - name: "Packet Window IPv4/UDP payload SET, COPY, and ADD"
+    args: ""
+    stages:
+      - name: "Match IPv4/UDP payload and apply Packet Window SET, COPY, and ADD"
+        # IPv4 packets use a zero UDP checksum; Scapy generates the mandatory checksum for IPv6 root misses.
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/UDP(sport=5678, dport=1234, chksum=0)/Raw(load=b'PWOK\x01\x00\x05\x00' + b'\x11' * 24)
+              - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/UDP(sport=5678, dport=1234, chksum=0)/Raw(load=b'PWNO\x01\x00\x05\x00' + b'\x12' * 24)
+              - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/UDP(sport=5678, dport=1234, chksum=0)/Raw(load=b'PWOK\x02\x00\x05\x00' + b'\x13' * 24)
+              - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/UDP(sport=5678, dport=1235, chksum=0)/Raw(load=b'Port 0 UDP destination-port miss')
+              - Ether()/IPv6(src='2001:db8::1', dst='2001:db8::2')/UDP(sport=5678, dport=1234)/Raw(load=b'PWOK\x01\x00\x05\x00' + b'\x31' * 24)
+          - receiving_port: 1
+            packets:
+              - Ether()/IP(src='5.6.7.8', dst='9.9.9.9')/UDP(sport=5679, dport=1234, chksum=0)/Raw(load=b'PWOK\x01\x00\x05\x00' + b'\x21' * 24)
+              - Ether()/IP(src='5.6.7.8', dst='9.9.9.9')/UDP(sport=5679, dport=1234, chksum=0)/Raw(load=b'PWNO\x01\x00\x05\x00' + b'\x22' * 24)
+              - Ether()/IP(src='5.6.7.8', dst='9.9.9.9')/UDP(sport=5679, dport=1234, chksum=0)/Raw(load=b'PWOK\x02\x00\x05\x00' + b'\x23' * 24)
+              - Ether()/IP(src='5.6.7.8', dst='9.9.9.9')/UDP(sport=5679, dport=1235, chksum=0)/Raw(load=b'Port 1 UDP destination-port miss')
+              - Ether()/IPv6(src='2001:db8::3', dst='2001:db8::4')/UDP(sport=5679, dport=1234)/Raw(load=b'PWOK\x01\x00\x05\x00' + b'\x41' * 24)
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/UDP(sport=5678, dport=1234, chksum=0)/Raw(load=b'DONE\x01\x01\x06\x00' + b'\x11' * 24)
+              - forwarding_port: 0
+                packets:
+                  - Ether()/IP(src='5.6.7.8', dst='9.9.9.9')/UDP(sport=5679, dport=1234, chksum=0)/Raw(load=b'DONE\x01\x01\x06\x00' + b'\x21' * 24)
+          - type: pattern
+            expected_pattern:
+              - 'Port 0 IPv4/UDP root entry: packets=3, bytes=[1-9][0-9]*'
+              - 'Port 0 Packet Window entry: packets=1, bytes=[1-9][0-9]*'
+              - 'Port 1 IPv4/UDP root entry: packets=3, bytes=[1-9][0-9]*'
+              - 'Port 1 Packet Window entry: packets=1, bytes=[1-9][0-9]*'

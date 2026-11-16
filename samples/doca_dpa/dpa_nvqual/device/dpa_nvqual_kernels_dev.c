@@ -115,9 +115,8 @@ __dpa_global__ void dpa_nvqual_memory_stress_kernel(void)
  * number of operations.
  *
  * After checks and experiments, this arithmetic stress function proposed to gain more arithmetic stress:
- * 	This arithmetic function performs 100 iterations of 10 arithmetic operations per iteration.
- * 	Each arithmetic operation is a complex arithmetic operation that is not easily optimized by the compiler.
- * 	Disabling compiler optimizations is used to avoid compiler optimizations and ensure memory barriers.
+ * 	Runs num_ops outer iterations of 10 arithmetic ops. Host sizes num_ops with
+ * 	DPA_NVQUAL_ARITHMETIC_CYCLES_PER_OP (includes watchdog margin under full HART load).
  *
  */
 __dpa_global__ void dpa_nvqual_arithmetic_stress_kernel(void)
@@ -136,7 +135,7 @@ __dpa_global__ void dpa_nvqual_arithmetic_stress_kernel(void)
 	volatile int sum = 0;
 
 	start_cycles = __dpa_thread_cycles();
-	for (uint64_t op_idx = 0; op_idx < num_ops * 100; op_idx++) {
+	for (uint64_t op_idx = 0; op_idx < num_ops; op_idx++) {
 		for (int j = 0; j < 10; ++j) {
 			// Prevent compiler optimizations
 			__dpa_compiler_barrier();

@@ -30,7 +30,7 @@
 #include <doca_error.h>
 #include <doca_log.h>
 
-#include <gpunetio_dma_common.h>
+#include "gpunetio_dma_common.h"
 
 DOCA_LOG_REGISTER(GPU_DMA_MEMCPY::MAIN);
 
@@ -45,10 +45,10 @@ static doca_error_t gpu_pci_address_callback(void *param, void *config)
 {
 	struct gpu_dma_config *gpu_dma_cfg = (struct gpu_dma_config *)config;
 	char *gpu_pci_address = (char *)param;
-	int len;
+	size_t len;
 
 	len = strnlen(gpu_pci_address, DOCA_DEVINFO_PCI_ADDR_SIZE);
-	if (len == DOCA_DEVINFO_PCI_ADDR_SIZE) {
+	if (len >= DOCA_DEVINFO_PCI_ADDR_SIZE) {
 		DOCA_LOG_ERR("PCI address too long. Max %d", DOCA_DEVINFO_PCI_ADDR_SIZE - 1);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
@@ -59,7 +59,7 @@ static doca_error_t gpu_pci_address_callback(void *param, void *config)
 }
 
 /*
- * ARGP Callback - Handle NIC PCIe address parameter
+ * ARGP Callback - Handle BlueField device PCIe address parameter
  *
  * @param [in]: Input parameter
  * @config [out]: Program configuration context
@@ -69,10 +69,10 @@ static doca_error_t nic_pci_address_callback(void *param, void *config)
 {
 	struct gpu_dma_config *gpu_dma_cfg = (struct gpu_dma_config *)config;
 	char *nic_pci_address = (char *)param;
-	int len;
+	size_t len;
 
 	len = strnlen(nic_pci_address, DOCA_DEVINFO_PCI_ADDR_SIZE);
-	if (len == DOCA_DEVINFO_PCI_ADDR_SIZE) {
+	if (len >= DOCA_DEVINFO_PCI_ADDR_SIZE) {
 		DOCA_LOG_ERR("PCI address too long. Max %d", DOCA_DEVINFO_PCI_ADDR_SIZE - 1);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
@@ -120,8 +120,8 @@ static doca_error_t register_gpu_dma_memcpy_sample_params(void)
 
 	doca_argp_param_set_short_name(nic_param, "n");
 	doca_argp_param_set_long_name(nic_param, "nic");
-	doca_argp_param_set_arguments(nic_param, "<NIC PCIe address>");
-	doca_argp_param_set_description(nic_param, "NIC PCIe address to be used by the sample");
+	doca_argp_param_set_arguments(nic_param, "<BlueField PCIe address>");
+	doca_argp_param_set_description(nic_param, "PCIe address of the BlueField device running the DMA copies");
 	doca_argp_param_set_callback(nic_param, nic_pci_address_callback);
 	doca_argp_param_set_type(nic_param, DOCA_ARGP_TYPE_STRING);
 	doca_argp_param_set_mandatory(nic_param);
@@ -184,9 +184,22 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
+	/* In a multi-GPU system, ensure CUDA refers to the right GPU device */
+	cuda_ret = cudaDeviceGetByPCIBusId(&cuda_id, cfg.gpu_pcie_addr);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("Invalid GPU bus id provided %s: %s", cfg.gpu_pcie_addr, cudaGetErrorString(cuda_ret));
+		goto argp_cleanup;
+	}
+
+	cuda_ret = cudaSetDevice(cuda_id);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("Failed to set CUDA device %d: %s", cuda_id, cudaGetErrorString(cuda_ret));
+		goto argp_cleanup;
+	}
+
 	/*
 	 * A CUDA context must be initialized before calling GPUNetIO functions.
-	 * cudaFree(0) triggers the CUDA runtime initialization and report any errors.
+	 * cudaFree(0) triggers the CUDA runtime initialization on the selected GPU and report any errors.
 	 */
 	cuda_ret = cudaFree(0);
 	if (cuda_ret != cudaSuccess) {
@@ -194,14 +207,7 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
-	/* In a multi-GPU system, ensure CUDA refers to the right GPU device */
-	cuda_ret = cudaDeviceGetByPCIBusId(&cuda_id, cfg.gpu_pcie_addr);
-	if (cuda_ret != cudaSuccess) {
-		DOCA_LOG_ERR("Invalid GPU bus id provided %s", cfg.gpu_pcie_addr);
-		goto argp_cleanup;
-	}
-
-	cudaSetDevice(cuda_id);
+	DOCA_LOG_INFO("Sample configuration:\n\tGPU %s\n\tBlueField %s", cfg.gpu_pcie_addr, cfg.nic_pcie_addr);
 
 	status = gpunetio_dma_memcpy(&cfg);
 	if (status != DOCA_SUCCESS) {

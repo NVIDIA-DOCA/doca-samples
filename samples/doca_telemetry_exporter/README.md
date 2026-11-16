@@ -156,3 +156,90 @@ your deployment requires.
 - `telemetry_export_metrics/telemetry_export_metrics_sample.c`
 - `telemetry_export_metrics/telemetry_export_metrics_main.c`
 - `telemetry_export_metrics/meson.build`
+
+---
+
+## Telemetry Export Metrics HFT/LFT (dual-rate)
+
+Demonstrates Phase 1 dual-rate collection through the public DOCA Telemetry Exporter API.
+The sample owns cadence with `doca_telemetry_exporter_sleep()` (thin wrap of CollectX
+`clx_api_sleep`). Dual-rate logic stays in `libclx_api`; HFT is enabled only via a DTS /
+CollectX management IPC `hft` command — the app does not parse HFT JSON or reimplement
+`keep_every`.
+
+**CollectX dependency:** requires a CollectX (`libclx-api`) build that provides
+`clx_api_sleep()` and Phase 1 dual-rate HFT support.
+
+### Exporter configuration through the public API
+Exporters are configured on the schema between `schema_init()` and `schema_start()` (the options
+are applied at `schema_start()`; the calls return `DOCA_ERROR_BAD_STATE` afterwards) with two calls:
+
+- `doca_telemetry_exporter_schema_set_exporter_option(schema, key, value)` — any CollectX exporter
+  option by its documented key, value as text; it takes precedence over the exporter's environment
+  variable. Examples: `("prometheus-endpoint", "http://0.0.0.0:9101")`, `("fluentbit-config-dir", dir)`,
+  `("open-telemetry-receiver", "http://127.0.0.1:4318")`, `("open-telemetry-transport", "grpc")`,
+  `("remote-write-receiver", url)`, `("influx-uri", url)`, `("telemetry-sink-address", "dns://0.0.0.0:5055")`,
+  `("exporters_dir", dir)` for the plugin exporters directory.
+- `doca_telemetry_exporter_schema_set_exporter_enabled(schema, name)` — `"prometheus"` (needs
+  `prometheus-endpoint`), `"fluentbit"`, or a plugin exporter library name without `lib`/`.so`:
+  `"open_telemetry_exporter"`, `"remote_write_exporter"`, `"influx_db_exporter"`, `"telemetry_sink_exporter"`.
+  While no plugin exporter is enabled, every plugin found in the exporters directory is loaded (CollectX
+  default); enabling one or more plugin exporters restricts loading to those. Enabling a built-in exporter
+  (`"prometheus"`, `"fluentbit"`) does not affect plugin loading. A plugin stays inactive until its
+  connection option (`*-receiver`, `influx-uri`, `telemetry-sink-address`) is set.
+
+The option keys are CollectX's; see the CollectX exporter documentation for the full list per
+exporter. This sample configures Prometheus this way.
+
+### Recommended loop
+```
+sample / add_metrics → metrics_flush → doca_telemetry_exporter_sleep(lft_us)
+```
+
+When HFT is off, sleep follows `lft_us`. When an `hft` command is applied, sleep follows
+HFT `period_us`; IPC/LFT continue at the reduced rate. Sleep always polls IPC commands
+after waking.
+
+### Sample setup
+- IPC enabled; sockets dir from `IPC_SOCKETS_DIR` (default DTS path).
+- LFT file writer under `LFT_DATA_ROOT` (default `/tmp/doca_lft_data`).
+- Stable source tag `doca_hft_metrics` for DTS `target_tag`.
+- One `metrics_flush` per iteration (one keep decision for the LFT reducer).
+
+### Env knobs
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `LFT_US` | `1000000` | Low-frequency period passed to sleep |
+| `IPC_SOCKETS_DIR` | `/opt/mellanox/doca/services/telemetry/ipc_sockets` | DTS IPC sockets |
+| `LFT_DATA_ROOT` | `/tmp/doca_lft_data` | Context file-writer root for LFT bins (must be a directory) |
+| `APP_PROM_PORT` | `9876` | Port of the sample's in-app Prometheus listener (`http://0.0.0.0:<port>`); change it when 9876 is taken |
+| `PROMETHEUS_ENDPOINT` | derived from `APP_PROM_PORT` | Full endpoint override (e.g. `http://127.0.0.1:9900`); when set, `APP_PROM_PORT` is ignored |
+
+### Enable / disable HFT (example)
+```json
+{
+  "ipc_command": {
+    "target_tag": "doca_hft_metrics",
+    "command": {
+      "hft": {
+        "enable": true,
+        "mode": "session",
+        "duration_ms": 30000,
+        "period_us": 10000,
+        "lft_period_us": 1000000,
+        "data_root": "/tmp/doca_hft_data",
+        "exporters": ["file"]
+      }
+    }
+  }
+}
+```
+
+Disable: `{"hft":{"enable":false}}`.
+
+Validate with `clx_read`: HFT median Δ ≈ `period_us`, LFT ≈ `lft_period_us`.
+
+### References
+- `telemetry_export_metrics_hft_lft/telemetry_export_metrics_hft_lft_sample.c`
+- `telemetry_export_metrics_hft_lft/telemetry_export_metrics_hft_lft_main.c`
+- `telemetry_export_metrics_hft_lft/meson.build`

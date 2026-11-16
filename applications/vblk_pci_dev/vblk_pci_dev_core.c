@@ -29,6 +29,7 @@
 #include <sched.h>
 #include <string.h>
 #include <poll.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <doca_error.h>
@@ -307,10 +308,40 @@ static doca_error_t app_wait_ctrl_enabled(void)
  *
  * @param[in] expected Number of IO context exits to wait for
  */
+/*
+ * Upper bound on each shutdown handshake. A thread that never reports in would
+ * otherwise strand the whole exit path, so vblk_pci_reset() -- which returns the
+ * PCI representors to firmware -- never runs and they stay allocated until the
+ * DPU is reset, making the next run fail with NO_RESOURCES. Proceeding past the
+ * deadline can race a thread that is still running, but a leaked representor is
+ * the worse outcome, so log loudly and continue.
+ */
+#define VBLK_APP_SHUTDOWN_WAIT_SEC 30
+
+static bool app_shutdown_wait_expired(const struct timespec *start)
+{
+	struct timespec now;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+		return false;
+	return (now.tv_sec - start->tv_sec) >= VBLK_APP_SHUTDOWN_WAIT_SEC;
+}
+
 static void app_wait_all_io_exited(uint8_t expected)
 {
-	while (vblk_app_io_exited < expected)
+	struct timespec start;
+
+	(void)clock_gettime(CLOCK_MONOTONIC, &start);
+	while (vblk_app_io_exited < expected) {
+		if (app_shutdown_wait_expired(&start)) {
+			DOCA_LOG_WARN("shutdown: only %u/%u IO threads reported exit after %us, proceeding",
+				      (unsigned int)vblk_app_io_exited,
+				      (unsigned int)expected,
+				      VBLK_APP_SHUTDOWN_WAIT_SEC);
+			return;
+		}
 		sched_yield();
+	}
 }
 
 /**
@@ -318,8 +349,17 @@ static void app_wait_all_io_exited(uint8_t expected)
  */
 static void app_wait_pci_stopped(void)
 {
-	while (vblk_app_pci_stopped == 0)
+	struct timespec start;
+
+	(void)clock_gettime(CLOCK_MONOTONIC, &start);
+	while (vblk_app_pci_stopped == 0) {
+		if (app_shutdown_wait_expired(&start)) {
+			DOCA_LOG_WARN("shutdown: TLP thread did not report stop after %us, proceeding",
+				      VBLK_APP_SHUTDOWN_WAIT_SEC);
+			return;
+		}
 		sched_yield();
+	}
 }
 
 /**
@@ -761,8 +801,13 @@ doca_error_t vblk_pci_dev_run(struct vblk_pci_dev_config *config)
 	if (err != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Progress context error: %s", doca_error_get_descr(err));
 
-	/* Cleanup resources in reverse order */
+	/* Cleanup resources in reverse order. Bracket the PCI teardown with logs:
+	 * it is what hands the representors back to firmware, so an exit that never
+	 * reaches the second line leaves them allocated and fails the next run with
+	 * NO_RESOURCES. */
+	DOCA_LOG_INFO("Releasing PCI resources");
 	vblk_pci_reset();
+	DOCA_LOG_INFO("PCI resources released");
 
 cleanup_vblk:
 	vblk_reset();

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2022-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -88,14 +88,12 @@ __dpa_global__ void db_handler(uint64_t __attribute__((__unused__)) thread_arg)
 	doca_dpa_dev_devemu_pci_db_t db;
 	doca_dpa_dev_uintptr_t user_data;
 	doca_dpa_dev_devemu_pci_db_completion_element_get_db_properties(db_comp, comp_element, &db, &user_data);
-
 	doca_dpa_dev_devemu_pci_db_completion_ack(db_comp, /*num_comp=*/1);
-	doca_dpa_dev_devemu_pci_db_completion_request_notification(db_comp);
 
 	doca_dpa_dev_devemu_pci_db_request_notification(db);
-
 	dbr_value = doca_dpa_dev_devemu_pci_db_get_value(db);
 	DOCA_DPA_DEV_LOG_INFO("Received Doorbell value is %u\n", dbr_value);
 
+	doca_dpa_dev_devemu_pci_db_completion_request_notification(db_comp);
 	doca_dpa_dev_thread_reschedule();
 }

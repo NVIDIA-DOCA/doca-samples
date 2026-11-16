@@ -316,8 +316,8 @@ base_app_inc_dirs = [
 samples_dir_path = '../../samples'
 
 app_list = [
-	    'app_shield_agent',
 	    'bifurcated_driver_model',
+	    'ct_firewall',
 	    'dma_copy',
 	    'dpa_all_to_all',
 	    'dpu_gpu_remote_offload',
@@ -327,6 +327,7 @@ app_list = [
 	    'gpu_packet_processing',
 	    'ip_frag',
 	    'ipsec_security_gw',
+	    'memos_fio_plugin',
 	    'nvme_emulation',
 	    'pcc',
 	    'psp_gateway',
@@ -342,10 +343,9 @@ app_list = [
 	    'urom_rdmo',
 	    'verbs_multi_rail_server_client',
 	    'virtiofs',
-	    'yara_inspection',
 ]
 if is_dpu
-	app_list += ['vblk_pci_dev', 'vnet_pci_dev']
+	app_list += ['memos_initiator_ref_app', 'vblk_pci_dev', 'vnet_pci_dev']
 endif
 
 fs = import('fs')

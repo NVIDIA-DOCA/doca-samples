@@ -141,6 +141,13 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
+	/* Register tune profile parameters */
+	result = register_flow_tune_profile_params();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register tune parameters: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
+
 	doca_argp_set_dpdk_program(flow_init_dpdk);
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {

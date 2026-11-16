@@ -28,12 +28,12 @@
 #include <rte_ethdev.h>
 
 #include <doca_argp.h>
-#include <doca_flow_tune_server.h>
 #include <doca_log.h>
 #include <doca_pe.h>
 #include <doca_dev.h>
 
 #include <dpdk_utils.h>
+#include <flow_tune_common.h>
 #include <pack.h>
 
 #include "config.h"
@@ -301,11 +301,11 @@ static void handle_packets_received(uint16_t port_id,
 			pkt_meta = *RTE_FLOW_DYNF_METADATA(packets[current_packet]);
 			encrypt = ((union security_gateway_pkt_meta)pkt_meta).encrypt;
 			if (encrypt)
-				port_id = ctx->ports[UNSECURED_IDX]->port_id;
+				port_id = UNSECURED_PORT_ID(ctx->ports);
 			else
-				port_id = ctx->ports[SECURED_IDX]->port_id;
+				port_id = SECURED_PORT_ID(ctx->ports);
 		}
-		if (port_id == (ctx->ports[UNSECURED_IDX])->port_id)
+		if (port_id == UNSECURED_PORT_ID(ctx->ports))
 			result = handle_unsecured_packets_received(&packets[current_packet], ctx);
 		else
 			result = handle_secured_packets_received(&packets[current_packet],
@@ -1086,6 +1086,10 @@ int main(int argc, char **argv)
 	app_cfg.nb_cores = DEFAULT_NB_CORES;
 	/* Per the RFC, the initial SN on the wire should be 1, so use it as the default value */
 	app_cfg.sn_initial = 1;
+	/* By default no ARP entry is added, so ARP keeps going to the kernel */
+	app_cfg.arp_mode = IPSEC_SECURITY_GW_ARP_MODE_DEFAULT_MISS;
+	/* Match src-port by default */
+	app_cfg.match_src_port = true;
 
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
@@ -1189,6 +1193,14 @@ int main(int argc, char **argv)
 		}
 	}
 
+	/* Resolve the L2 headers used for ESP tunnel encap/decap (defaults + optional user overrides) */
+	result = ipsec_security_gw_resolve_tunnel_l2(&app_cfg, ports);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to resolve tunnel L2 addresses");
+		exit_status = EXIT_FAILURE;
+		goto doca_flow_cleanup;
+	}
+
 	result = ipsec_security_gw_init_status(&app_cfg, dpdk_config.port_config.nb_queues);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init status entries");
@@ -1210,7 +1222,7 @@ int main(int argc, char **argv)
 
 	result = ipsec_security_gw_ids_get(ports, &app_cfg);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to bind encrypt and decrypt rules");
+		DOCA_LOG_ERR("Failed to allocate IDs for encrypt and decrypt rules");
 		exit_status = EXIT_FAILURE;
 		goto doca_flow_cleanup;
 	}
@@ -1282,9 +1294,9 @@ int main(int argc, char **argv)
 doca_flow_cleanup:
 	security_gateway_free_resources(&app_cfg);
 	/* Flow cleanup */
+	flow_tune_server_stop();
 	doca_flow_cleanup(nb_ports, ports);
 	security_gateway_free_status_entries(&app_cfg);
-	doca_flow_tune_server_destroy();
 dpdk_cleanup:
 	/* DPDK cleanup */
 	dpdk_queues_and_ports_fini(&dpdk_config);

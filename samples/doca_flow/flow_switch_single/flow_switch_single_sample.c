@@ -457,7 +457,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_switch_ctx *ct
 	resource.nr_counters = TOTAL_ENTRIES; /* counter per entry */
 	resource.nr_rss = 1;
 
-	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -472,7 +472,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_switch_ctx *ct
 					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -481,7 +481,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_switch_ctx *ct
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create rss pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -489,7 +489,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_switch_ctx *ct
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -497,7 +497,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_switch_ctx *ct
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create to_kernel pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -505,7 +505,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_switch_ctx *ct
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -513,7 +513,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_switch_ctx *ct
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -521,7 +521,7 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_switch_ctx *ct
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entries to the pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -529,14 +529,14 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_switch_ctx *ct
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
 	if (status.nb_processed != TOTAL_ENTRIES || status.failure) {
 		DOCA_LOG_ERR("Failed to process entries");
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return DOCA_ERROR_BAD_STATE;
 	}
 
@@ -548,6 +548,6 @@ doca_error_t flow_switch(int nb_queues, int nb_ports, struct flow_switch_ctx *ct
 	flow_wait_for_packets(15, print_switch_single_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

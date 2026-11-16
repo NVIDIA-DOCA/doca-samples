@@ -36,6 +36,8 @@
 #include <doca_log.h>
 #include <doca_bitfield.h>
 
+#include <flow_tune_common.h>
+
 #include "app_vnf.h"
 #include "simple_fwd.h"
 #include "simple_fwd_ft.h"
@@ -128,49 +130,15 @@ static void simple_fwd_check_for_valid_entry(struct doca_flow_pipe_entry *entry,
 	}
 }
 
-static doca_error_t configure_tune_server(struct doca_flow_cfg *flow_cfg, enum doca_flow_tune_profile profile)
-{
-	doca_error_t result = DOCA_SUCCESS;
-	struct doca_flow_tune_cfg *tune_cfg;
-
-	result = doca_flow_tune_cfg_create(&tune_cfg);
-	if (result != DOCA_SUCCESS) {
-		if (result == DOCA_ERROR_NOT_SUPPORTED) {
-			DOCA_LOG_INFO("DOCA Flow Tune Server isn't supported in this runtime version");
-			DOCA_LOG_INFO("Program will continue execution without activating the DOCA Flow Tune Server");
-			return DOCA_SUCCESS;
-		}
-
-		DOCA_LOG_ERR("Failed to create doca_flow_tune_cfg: %s", doca_error_get_descr(result));
-		goto out;
-	}
-
-	result = doca_flow_tune_cfg_set_profile(tune_cfg, profile);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_tune_cfg profile: %s", doca_error_get_descr(result));
-		goto cfg_destroy;
-	}
-
-	result = doca_flow_cfg_set_tune_cfg(flow_cfg, tune_cfg);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg tune_cfg: %s", doca_error_get_descr(result));
-		goto cfg_destroy;
-	}
-
-cfg_destroy:
-	doca_flow_tune_cfg_destroy(tune_cfg);
-out:
-	return result;
-}
-
 /*
  * Initialize DOCA Flow library
  *
  * @nb_queues [in]: number of queues the sample will use
  * @mode [in]: doca flow architecture mode
+ * @enable_tune [in]: whether or not to collect DOCA Flow Tune data
  * @return: 0 on success, negative errno value otherwise and error is set.
  */
-static int simple_fwd_init_doca_flow(int nb_queues, const char *mode)
+static int simple_fwd_init_doca_flow(int nb_queues, const char *mode, bool enable_tune)
 {
 	struct doca_flow_cfg *flow_cfg;
 	doca_error_t result, tmp_result;
@@ -205,10 +173,10 @@ static int simple_fwd_init_doca_flow(int nb_queues, const char *mode)
 		goto destroy_cfg;
 	}
 
-	result = configure_tune_server(flow_cfg, DOCA_FLOW_TUNE_PROFILE_FULL);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to configure tune server: %s", doca_error_get_descr(result));
-		goto destroy_cfg;
+	if (enable_tune) {
+		result = flow_tune_configure(flow_cfg, DOCA_FLOW_TUNE_PROFILE_FULL);
+		if (result != DOCA_SUCCESS)
+			goto destroy_cfg;
 	}
 
 	result = doca_flow_init(flow_cfg);
@@ -1210,7 +1178,7 @@ static int simple_fwd_init_ports_and_pipes(struct simple_fwd_port_cfg *port_cfg)
 	int port_id;
 	int result;
 
-	if (simple_fwd_init_doca_flow(port_cfg->nb_queues, "vnf,hws") < 0) {
+	if (simple_fwd_init_doca_flow(port_cfg->nb_queues, "vnf", port_cfg->enable_tune) < 0) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow");
 		simple_fwd_destroy_ins();
 		return -1;

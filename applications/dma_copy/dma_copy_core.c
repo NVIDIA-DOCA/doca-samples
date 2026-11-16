@@ -45,6 +45,8 @@
 
 #include "dma_copy_core.h"
 
+#include "../common/utils.h"
+
 #define CC_MAX_QUEUE_SIZE 10	   /* Max number of messages on Comm Channel queue */
 #define SLEEP_IN_NANOS (10 * 1000) /* Sample the task every 10 microseconds  */
 #define STATUS_SUCCESS true	   /* Successful status */
@@ -145,8 +147,15 @@ static doca_error_t dev_pci_addr_callback(void *param, void *config)
 	const char *dev_pci_addr = (char *)param;
 
 	if (strnlen(dev_pci_addr, DOCA_DEVINFO_PCI_ADDR_SIZE) == DOCA_DEVINFO_PCI_ADDR_SIZE) {
-		DOCA_LOG_ERR("Entered device PCI address exceeding the maximum size of %d",
-			     DOCA_DEVINFO_PCI_ADDR_SIZE - 1);
+		DOCA_LOG_ERR(
+			"Invalid value for --pci-addr: entered device PCI address exceeding the maximum size of %d",
+			DOCA_DEVINFO_PCI_ADDR_SIZE - 1);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (validate_pci_addr(dev_pci_addr) != DOCA_SUCCESS) {
+		DOCA_LOG_ERR(
+			"Invalid value for --pci-addr: expected PCI BDF format (for example 03:00.0 or 0000:03:00.0)");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -192,8 +201,15 @@ static doca_error_t rep_pci_addr_callback(void *param, void *config)
 
 	if (cfg->mode == DMA_COPY_MODE_DPU) {
 		if (strnlen(rep_pci_addr, DOCA_DEVINFO_REP_PCI_ADDR_SIZE) == DOCA_DEVINFO_REP_PCI_ADDR_SIZE) {
-			DOCA_LOG_ERR("Entered device representor PCI address exceeding the maximum size of %d",
-				     DOCA_DEVINFO_REP_PCI_ADDR_SIZE - 1);
+			DOCA_LOG_ERR(
+				"Invalid value for --rep-pci: entered device representor PCI address exceeding the maximum size of %d",
+				DOCA_DEVINFO_REP_PCI_ADDR_SIZE - 1);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+
+		if (validate_pci_addr(rep_pci_addr) != DOCA_SUCCESS) {
+			DOCA_LOG_ERR(
+				"Invalid value for --rep-pci: expected PCI BDF format (for example 03:00.0 or 0000:03:00.0)");
 			return DOCA_ERROR_INVALID_VALUE;
 		}
 

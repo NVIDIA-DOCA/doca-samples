@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -58,11 +58,6 @@ doca_error_t eth_flow_common_init_flow(void)
 		DOCA_LOG_ERR("Failed to set mode_args, err: %s", doca_error_get_name(result));
 		goto destroy_cfg;
 	}
-	result = doca_flow_cfg_set_nr_counters(flow_cfg, COUNTERS_NUM);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set nr_counters, err: %s", doca_error_get_name(result));
-		goto destroy_cfg;
-	}
 
 	result = doca_flow_init(flow_cfg);
 	if (result != DOCA_SUCCESS) {
@@ -100,6 +95,12 @@ static doca_error_t start_doca_flow_port(struct doca_dev *dev, uint16_t port_id,
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create doca_flow_port_cfg, err: %s", doca_error_get_name(status));
 		return status;
+	}
+
+	status = doca_flow_port_cfg_set_nr_resources(port_cfg, DOCA_FLOW_RESOURCE_COUNTER, COUNTERS_NUM);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg nr_resources: %s", doca_error_get_name(status));
+		goto destroy_port_cfg;
 	}
 
 	status = doca_flow_port_cfg_set_port_id(port_cfg, port_id);

@@ -26,6 +26,7 @@
 #include <orchestrator/comch_datapath.hpp>
 
 #include <math.h>
+#include <unistd.h>
 
 #include <doca_error.h>
 #include <doca_gpunetio.h>
@@ -38,6 +39,16 @@
 DOCA_LOG_REGISTER(ORCHESTRATOR::COMCH_DATAPATH);
 
 namespace {
+
+size_t get_page_size()
+{
+	auto ret = sysconf(_SC_PAGESIZE);
+	if (ret == -1) {
+		return 4096; // 4KB, default Linux page size
+	}
+
+	return (size_t)ret;
+}
 void doca_comch_producer_task_send_completion_cb(doca_comch_producer_task_send *task,
 						 doca_data task_user_data,
 						 doca_data ctx_user_data) noexcept
@@ -339,9 +350,14 @@ comch_datapath::thread_data::thread_data(doca_dev *dev,
 	auto next_exponent = ceil(log2(max_concurrent_messages));
 	auto num_buf_elements = static_cast<uint32_t>(pow(2, next_exponent));
 	/*
-	 * Create memory to store TCP requests and responses
+	 * Create memory to store TCP requests and responses, should be aligned to page size for dmabuf
 	 */
-	uint32_t io_memory_size = num_buf_elements * max_message_length;
+	size_t io_memory_size = static_cast<size_t>(num_buf_elements) * max_message_length;
+	auto page_size = get_page_size();
+	if (io_memory_size % page_size != 0) {
+		io_memory_size += page_size - (io_memory_size % page_size);
+	}
+
 	result = doca_gpu_mem_alloc(gpu, io_memory_size, 0, DOCA_GPU_MEM_TYPE_GPU, (void **)&m_io_memory, nullptr);
 	if (result != DOCA_SUCCESS || m_io_memory == nullptr) {
 		throw remote_offload::runtime_error{DOCA_ERROR_NO_MEMORY, "Failed to allocate TCP receive buffers"};
@@ -361,7 +377,16 @@ comch_datapath::thread_data::thread_data(doca_dev *dev,
 		throw remote_offload::runtime_error{result, "Failed to add doca_dev to doca_mmap"};
 	}
 
-	result = doca_mmap_set_memrange(m_io_mmap, m_io_memory, io_memory_size);
+	// Set the mmap memrange, prefer to use dmabuf, but fallback to nvidia-peermem legacy method
+	int dmabuf_fd;
+	result = doca_gpu_dmabuf_fd(gpu, m_io_memory, io_memory_size, &dmabuf_fd);
+	if (result != DOCA_SUCCESS) {
+		// If failed, use nvidia-peermem legacy method
+		result = doca_mmap_set_memrange(m_io_mmap, m_io_memory, io_memory_size);
+	} else {
+		result = doca_mmap_set_dmabuf_memrange(m_io_mmap, dmabuf_fd, m_io_memory, 0, io_memory_size);
+	}
+
 	if (result != DOCA_SUCCESS) {
 		throw remote_offload::runtime_error{result, "Failed to set doca_mmap memory range"};
 	}

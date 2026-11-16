@@ -40,6 +40,7 @@
 #include "vnet_pcie_defs.h"
 #include "vnet_virtio_types.h"
 #include "pci_spec_tlp.h"
+#include "vnet_recycle.h"
 
 /**
  * @brief Initialize VNet PCI Device Framework
@@ -100,6 +101,7 @@ void vnet_pci_device_configure_affinity(int tlp_core_idx, int worker_core_idx, i
 /* Forward declaration for controller type */
 struct vnet_pci_dev_controller;
 struct vnet_pci_device;
+struct vnet_admin_async_cmd;
 
 /**
  * @brief Shutdown the PCI config workqueue
@@ -120,6 +122,117 @@ void pci_cfg_workqueue_shutdown(void);
  * @param[in] destroy_engine true for app shutdown, false for RESET
  */
 void pci_cfg_workqueue_submit_controller_cleanup(struct vnet_pci_dev_controller *controller, bool destroy_engine);
+
+/**
+ * @brief Submit one step of a PF's function recycle (fire and forget).
+ *
+ * Call only after vnet_recycle_needs_step() has granted the step slot. On false
+ * the caller still owns that slot and must call vnet_recycle_release_step().
+ *
+ * @param[in] controller Controller whose PF is being recycled
+ * @return true if the step was queued
+ */
+bool pci_cfg_workqueue_submit_recycle_step(struct vnet_pci_dev_controller *controller);
+
+/**
+ * @brief Submit one step of a VF's function recycle (fire and forget).
+ *
+ * The slot is identified by (PF, index) rather than by pointer: the VF slot array
+ * is freed when SR-IOV is disabled, possibly while a step is queued. Same
+ * step-slot contract as the PF version.
+ *
+ * @param[in] pf_endpoint Endpoint of the PF owning the VF
+ * @param[in] slot_idx PF-relative VF slot index
+ * @return true if the step was queued
+ */
+bool pci_cfg_workqueue_submit_vf_recycle_step(struct pci_device_config *pf_endpoint, uint16_t slot_idx);
+
+/*
+ * Host-visible register publication. A PF's header lives both in
+ * pci_device_config::cfg_space_hdr and in the materialised dw_regs[] image the
+ * host reads back; these setters make mutating and publishing one operation.
+ */
+
+/**
+ * @brief Set the PCI Command register and publish it to the host-visible image.
+ *
+ * @param[in] dev VirtIO device owning the materialised config image
+ * @param[in] ep Endpoint owning the header shadow (may be NULL)
+ * @param[in] command New Command register value
+ */
+void vnet_pci_device_publish_command(struct vnet_pci_device *dev, struct pci_device_config *ep, uint16_t command);
+
+/**
+ * @brief Read the PCI Command register as the host currently sees it.
+ *
+ * @param[in] dev VirtIO device owning the materialised config image
+ * @return The Command register value
+ */
+uint16_t vnet_pci_device_command_get(struct vnet_pci_device *dev);
+
+/**
+ * @brief Whether the host currently has Bus Master Enable set on this function.
+ *
+ * @param[in] dev VirtIO device owning the materialised config image
+ * @return true if bus mastering is enabled
+ */
+bool vnet_pci_device_bus_master_is_set(struct vnet_pci_device *dev);
+
+/**
+ * @brief Return the function's host-visible config image to power-on defaults.
+ *
+ * Called on the reasons that reset the function architecturally (FLR, PERST#):
+ * the host clears its own view of the Command register, BARs, MSI-X and the
+ * SR-IOV capability, so the emulated image has to follow or it reads back stale.
+ *
+ * @param[in] dev VirtIO device owning the materialised config image
+ * @param[in] ep Endpoint owning the header shadow (may be NULL)
+ * @return true if this call took VF Enable down from set, which is the caller's
+ *         cue to cascade the reset onto the VFs. A repeated reset finds VF Enable
+ *         already clear and reports false.
+ */
+bool vnet_pci_device_publish_power_on_cfg(struct vnet_pci_device *dev, struct pci_device_config *ep);
+
+/**
+ * @brief Check that the published SR-IOV capability still matches its shadow.
+ *
+ * Debug self-check for the divergence class above: a mismatch means the host is
+ * reading something other than what the application believes it published, which
+ * is otherwise invisible from the DPU log.
+ *
+ * @param[in] dev VirtIO device owning the materialised config image
+ * @param[in] ep Endpoint owning the SR-IOV shadow
+ * @return true if the images agree, or if this endpoint has no SR-IOV
+ */
+bool vnet_pci_device_cfg_image_check(struct vnet_pci_device *dev, struct pci_device_config *ep);
+
+/**
+ * @brief Hide a PF's VFs after its reset cleared VF Enable.
+ *
+ * Call with the PF's endpoint_lock held for read.
+ *
+ * @param[in] ep Endpoint of the PF whose VFs are being hidden
+ * @return true if the hide was queued; false leaves it owed to the caller
+ */
+bool vnet_pci_device_hide_pf_vfs(struct pci_device_config *ep);
+
+/**
+ * @brief Drop the host-visible reset hold, publishing device_status 0.
+ *
+ * @param[in] dev VirtIO device to release
+ */
+void vnet_pci_device_release_reset_hold(struct vnet_pci_device *dev);
+
+/**
+ * @brief Publish DEVICE_NEEDS_RESET so a waiting driver gives up and re-probes.
+ *
+ * Used when a recycle exhausts its retry budget. Without it the guest sits in
+ * its FEATURES_OK wait until the virtio timeout fires, reporting a probe failure
+ * with no indication the device asked to be reset.
+ *
+ * @param[in] dev VirtIO device to mark
+ */
+void vnet_pci_device_publish_needs_reset(struct vnet_pci_device *dev);
 
 /**
  * @brief Submit engine start to async workqueue (fire and forget)
@@ -224,7 +337,8 @@ doca_error_t send_msi_via_memory_write_tlp(struct tlp_context *tlp_ctx, struct p
 /* CVQ index calculation: max_queue_pairs * 2 (RX+TX per QP) */
 #define VNET_CVQ_INDEX(max_qp) ((max_qp)*2)
 
-/* Total VQs = all data queue pairs + 1 CVQ */
+/* Total VQs = all data queue pairs + 1 CVQ. The admin VQ follows the CVQ, so it
+ * takes that index, and VQ_SLOTS is the full count: data pairs + CVQ + admin. */
 #define VNET_TOTAL_VQS(max_qp) (VNET_CVQ_INDEX(max_qp) + 1)
 #define VNET_ADMIN_VQ_INDEX(max_qp) VNET_TOTAL_VQS(max_qp)
 #define VNET_TOTAL_VQ_SLOTS(max_qp, admin_qs) (VNET_TOTAL_VQS(max_qp) + (admin_qs))
@@ -232,6 +346,9 @@ doca_error_t send_msi_via_memory_write_tlp(struct tlp_context *tlp_ctx, struct p
 #define VNET_DEFAULT_QUEUE_SIZE 1024 /* Default queue size */
 #define VNET_MIN_QUEUE_SIZE 32	     /* Minimum queue size */
 #define VNET_MAX_QUEUE_SIZE 4096     /* Maximum queue size */
+#define VNET_VF_CVQ_MAX_MAC_ENTRIES 64
+#define VNET_VF_CVQ_MAX_VLAN_ENTRIES 4096
+#define VNET_VF_CVQ_VLAN_BITMAP_WORDS (VNET_VF_CVQ_MAX_VLAN_ENTRIES / 64)
 
 /**
  * @brief VirtIO Device Memory Layout (BAR 0)
@@ -277,6 +394,10 @@ struct vnet_pci_device {
 	uint8_t device;
 	uint8_t function;
 	int pf_index;
+	/* Meaningful only when pf_index < 0, i.e. this device is a VF. Carried on
+	 * the device so a log site handed nothing else can still say which
+	 * function it means. */
+	uint32_t vf_index;
 	/* Per-device previous status for state tracking */
 	uint8_t prev_status;
 	/* Incremented on reset to reject stale async work */
@@ -288,25 +409,6 @@ struct vnet_pci_device {
 	 * early, bounding the maximum barrier wait to one sub-operation (~25-50ms) instead
 	 * of the full operation duration (seconds for 64-127 QPs). */
 	atomic_bool cancel_in_progress;
-
-	/* FLR (Function Level Reset) coalescing guard.
-	 *
-	 * Set by the TLP thread when host's FLR cfg-write is detected;
-	 * cleared by the controller-cleanup workqueue item once cleanup
-	 * completes (vnet_controller_cleanup, after the reset_status_state
-	 * HELD -> RELEASE_PENDING transition).
-	 *
-	 * Used purely to drop duplicate FLR requests that arrive while a
-	 * previous FLR is still being cleaned up.
-	 *
-	 * Note: post-FLR device-status handling, MMIO write protection, and
-	 * engine restart are driven entirely by the existing virtio reset
-	 * state machine (reset_status_state HELD/RELEASE_PENDING/IDLE,
-	 * vnet_pci_device_apply_reset_status_release, the cb's HELD re-assert
-	 * at line 3026 of vnet_pci_dev_core.c, and the FEATURES_OK rebind
-	 * path). FLR is just another trigger of that state machine.
-	 */
-	atomic_bool flr_in_progress;
 
 	/* emulated device with complete VirtIO capability chain */
 	struct pcie_virtio_dev pcie_dev;
@@ -363,6 +465,26 @@ struct doca_devemu_vnet_counters;
 struct doca_devemu_pci_msix;
 struct doca_devemu_vnet_io;
 
+/*
+ * VirtIO migration shadows only: the current vnet backend does not yet enforce
+ * MAC/VLAN filter tables, but their CVQ state is retained for device-parts LM.
+ */
+struct vnet_vf_cvq_state {
+	uint64_t vlan_bitmap[VNET_VF_CVQ_VLAN_BITMAP_WORDS];
+	uint8_t macs[VNET_VF_CVQ_MAX_MAC_ENTRIES][ETH_ALEN];
+	uint32_t mac_entries;
+	uint16_t vlan_entries;
+};
+
+/* How far a VF's guest-reset datapath teardown has got. The host stays held
+ * for as long as this is OWED or QUEUED. */
+enum vnet_vf_teardown_state {
+	VNET_VF_TEARDOWN_IDLE = 0, /* Nothing owed */
+	VNET_VF_TEARDOWN_OWED,	   /* Needed, but not queued yet; the sweep retries */
+	VNET_VF_TEARDOWN_QUEUED,   /* Work item in flight */
+	VNET_VF_TEARDOWN_FAILED,   /* Teardown failed; host told via NEEDS_RESET */
+};
+
 /* Per-VF runtime slot. One per VF in struct vnet_sriov_pf_state::vf_slots[],
  * populated by vnet_sriov_discover_vf_reps() with the opened representor and
  * the VF's globally-unique index. Beyond the rep/tlp_dev plumbing, each slot
@@ -378,9 +500,29 @@ struct vnet_vf_slot {
 	struct doca_devemu_vnet_tx_vq **tx_vqs;			/* [max_queue_pairs] per-VF TX VQs */
 	struct doca_devemu_vnet_ctrl_vq *cvq;			/* per-VF control VQ */
 	uint16_t max_queue_pairs;				/* size of rx_vqs/tx_vqs arrays */
-	uint32_t vf_index;				 /* Globally-unique VF id (pool base + PF-relative index) */
-	atomic_bool active;				 /* tlp_dev started; toggles with VFE */
-	atomic_bool flr_in_progress;			 /* per-VF FLR coalescing guard */
+	uint16_t vf_queue_pairs;				/* --vf-queue-pairs geometry (0 = inherit the PF's) */
+	uint32_t vf_index;  /* Globally-unique VF id (pool base + PF-relative index) */
+	atomic_bool active; /* answers host TLPs: VFE on, within NumVFs, has a device */
+	/* A VF is reset by the host exactly as a PF is, and the firmware
+	 * invalidates its crossed mkey just the same, so it runs the same
+	 * recycle. See vnet_recycle.h. */
+	struct vnet_recycle_state recycle;
+	/* PF was restarted after this slot's tlp_dev started; restart it on the next VFE 0->1 */
+	atomic_bool tlp_restart_owed;
+	/* The guest reached FEATURES_OK while this VF was recycling, so bring-up
+	 * was refused rather than queued against an engine that did not exist yet.
+	 * The recycle owes it a bring-up on the way out; the guest will not re-ask. */
+	atomic_bool deferred_setup_pending;
+	/* The handshake the guest had reached, sampled before the release clears it.
+	 * Bits are dropped as their work is queued, so a retry submits no more. */
+	uint8_t deferred_setup_status;
+	/* enum vnet_vf_teardown_state. The teardown runs off the TLP thread, so
+	 * device_status is pinned at NEEDS_RESET while it is still owed. */
+	atomic_uint teardown_state;
+	/* A hold this slot owes the host back. Kept apart from the holders: a
+	 * recycle and a teardown can hold the same VF, and neither releases for
+	 * the other. */
+	atomic_bool reset_hold_release_owed;
 	atomic_bool engine_started;			 /* offload engine created+started on VF FEATURES_OK */
 	atomic_bool vqs_created;			 /* per-VF VQ structures created */
 	atomic_bool engine_enabled;			 /* VQs started + engine enabled on VF DRIVER_OK */
@@ -397,7 +539,28 @@ struct vnet_vf_slot {
 	atomic_bool cvq_bound;		    /* CVQ bound to io_ctx */
 	bool mq_feature_negotiated;	    /* guest negotiated F_CTRL_VQ + F_MQ */
 	_Atomic uint16_t num_active_qps;    /* currently started data queue pairs */
+	struct vnet_vf_cvq_state cvq_state; /* app-owned CVQ MAC/VLAN shadow */
+	pthread_rwlock_t admin_config_lock; /* serializes AQ snapshots/mutations with guest MMIO */
+	bool admin_config_lock_initialized;
+	atomic_uint_fast64_t admin_cache_generation;	 /* FLR invalidates capture; PF resources survive */
+	atomic_uint_fast64_t admin_operation_generation; /* arbitrates admin work with VF reset */
+	atomic_bool admin_mutating;			 /* one mutating admin command per VF */
+	atomic_bool admin_stopped;			 /* device-parts LM mode */
+	atomic_bool admin_stop_requested;		 /* explicit LM stop blocks guest datapath bring-up */
+	atomic_bool admin_rebuild_required;		 /* SET retry must finish hardware rebuild */
 };
+
+/*
+ * Whether this VF's datapath can still reach the rings the guest is resetting
+ * away from. A failed teardown is not in flight: it is reported to the host
+ * rather than held for.
+ */
+static inline bool vnet_vf_teardown_in_flight(const struct vnet_vf_slot *slot)
+{
+	unsigned int state = atomic_load(&slot->teardown_state);
+
+	return state == VNET_VF_TEARDOWN_OWED || state == VNET_VF_TEARDOWN_QUEUED;
+}
 
 /*
  * Per-PF SR-IOV runtime state (up to 255 VFs via ARI).
@@ -445,6 +608,9 @@ struct vnet_sriov_pf_state {
 	 * destroy; false for LU-restored PFs that reattach without reserving. Explicit so
 	 * the release does not hinge on vf_slots being populated. */
 	bool owns_pool_range;
+	/* True once this PF's VF MSI-X/doorbells sit in its dynamic pool, which happens
+	 * once at bring-up, before the VF devices claim their own counts. */
+	bool vf_res_pooled;
 	struct vnet_vf_slot *vf_slots; /* Array of length total_vf; NULL until allocated */
 };
 
@@ -667,9 +833,8 @@ void pci_cfg_workqueue_submit_speed_change(struct vnet_pci_dev_controller *contr
 /**
  * @brief Submit an on-demand SF-info dump to the workqueue
  *
- * Queues the interactive 'sfinfo' dump for PF 'ep_index' (and its VFs) to the
- * worker thread, keeping the blocking representor queries off the PE progress
- * loop. "Dump all" is issued as one bounded work item per PF.
+ * Queues the 'sfinfo' dump for PF 'ep_index' and its VFs on the worker thread,
+ * off the PE progress loop.
  *
  * @param[in] tlp_ctx TLP context
  * @param[in] ep_index PF/endpoint index (0 .. num_ep-1)
@@ -689,7 +854,7 @@ void pci_cfg_workqueue_submit_dump_sf_info(struct tlp_context *tlp_ctx, uint32_t
  * @param[in] pf_endpoint Owning PF endpoint; valid until the worker drains.
  * @param[in] slot_idx Index into pf_endpoint->sriov->vf_slots[]; < total_vf.
  */
-void pci_cfg_workqueue_submit_vf_engine_setup(struct tlp_context *tlp_ctx,
+bool pci_cfg_workqueue_submit_vf_engine_setup(struct tlp_context *tlp_ctx,
 					      struct pci_device_config *pf_endpoint,
 					      uint16_t slot_idx);
 
@@ -721,7 +886,7 @@ void pci_cfg_workqueue_submit_vf_vq_config(struct tlp_context *tlp_ctx,
  * @param[in] pf_endpoint Owning PF endpoint; valid until the worker drains.
  * @param[in] slot_idx Index into pf_endpoint->sriov->vf_slots[]; < total_vf.
  */
-void pci_cfg_workqueue_submit_vf_engine_enable(struct pci_device_config *pf_endpoint, uint16_t slot_idx);
+bool pci_cfg_workqueue_submit_vf_engine_enable(struct pci_device_config *pf_endpoint, uint16_t slot_idx);
 
 /**
  * @brief Queue teardown of an SR-IOV VF's offload engine on a guest device reset.
@@ -734,20 +899,23 @@ void pci_cfg_workqueue_submit_vf_engine_enable(struct pci_device_config *pf_endp
  *
  * @param[in] pf_endpoint Owning PF endpoint; valid until the worker drains.
  * @param[in] slot_idx Index into pf_endpoint->sriov->vf_slots[]; < total_vf.
+ * @return true if the teardown was queued; false leaves it owed to the caller.
  */
-void pci_cfg_workqueue_submit_vf_datapath_reset(struct pci_device_config *pf_endpoint, uint16_t slot_idx);
+bool pci_cfg_workqueue_submit_vf_datapath_reset(struct pci_device_config *pf_endpoint, uint16_t slot_idx);
 
 /**
- * @brief Queue teardown of an SR-IOV VF's offload engine on a host-initiated FLR.
+ * @brief Queue a retained mutating admin command on the PCI worker
  *
- * Submitted from the VF config write path when the host sets the Initiate FLR
- * bit. The VF keeps answering the host while the teardown is pending, and the
- * guest's next FEATURES_OK rebuilds the datapath.
- *
- * @param[in] pf_endpoint Owning PF endpoint; valid until the worker drains.
- * @param[in] slot_idx Index into pf_endpoint->sriov->vf_slots[]; < total_vf.
- * @return true on success, false if the work item could not be queued.
+ * @param[in] cmd App-owned command context retained until worker completion
+ * @return true when queued, false when the workqueue cannot accept the command
  */
-bool pci_cfg_workqueue_submit_vf_flr_reset(struct pci_device_config *pf_endpoint, uint16_t slot_idx);
+bool pci_cfg_workqueue_submit_admin_cmd(struct vnet_admin_async_cmd *cmd);
+
+/**
+ * @brief Check whether the caller is the PCI configuration worker
+ *
+ * @return true when called by the workqueue worker thread
+ */
+bool pci_cfg_workqueue_is_worker_thread(void);
 
 #endif

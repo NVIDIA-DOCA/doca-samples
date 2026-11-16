@@ -40,12 +40,11 @@
 
 #include "common.h"
 
-#define DMA_MEMCPY_SIZE 1024
-#define ALIGN_SIZE(size, align) size = ((size + (align)-1) / (align)) * (align);
+#define DMA_MEMCPY_SIZE 1024 /* Bytes copied by each DMA copy */
 
 /* Sample configuration structure */
 struct gpu_dma_config {
-	char nic_pcie_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* NIC PCIe address */
+	char nic_pcie_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* PCIe address of the BlueField device running the copies */
 	char gpu_pcie_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* GPU PCIe address */
 };
 
@@ -62,17 +61,18 @@ extern "C" {
 #endif
 
 /*
- * Launch a CUDA kernel to read the GPU destination buffer.
+ * Launch a CUDA kernel that prints the GPU buffer filled by the CPU DMA copy, then posts the DMA copy of the GPU
+ * source buffer to the host destination buffer. The kernel doesn't wait for the copy to complete.
  *
  * @stream [in]: CUDA stream to launch the kernel
- * @gpu_buffer_addr [in]: GPU destination buffer address
+ * @gpu_buffer [in]: GPU buffer filled by the CPU DMA copy
  * @dma_gpu [in]: DMA GPU exported object
- * @src_gpu_buf_arr [in]: DOCA GPU src buffer array for DMA copy
- * @dst_gpu_buf_arr [in]: DOCA GPU dst buffer array for DMA copy
+ * @src_gpu_buf_arr [in]: DOCA GPU src buffer array for DMA copy, in GPU memory
+ * @dst_gpu_buf_arr [in]: DOCA GPU dst buffer array for DMA copy, in host memory
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t gpunetio_dma_memcpy_common_launch_kernel(cudaStream_t stream,
-						      uintptr_t gpu_buffer_addr,
+						      const char *gpu_buffer,
 						      struct doca_gpu_dma *dma_gpu,
 						      struct doca_gpu_buf_arr *src_gpu_buf_arr,
 						      struct doca_gpu_buf_arr *dst_gpu_buf_arr);

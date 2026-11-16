@@ -26,6 +26,10 @@
 #ifndef TELEMETRY_PHY_SAMPLE_H_
 #define TELEMETRY_PHY_SAMPLE_H_
 
+#ifndef DOCA_CTSD_COMPAT_VERSION
+#define DOCA_CTSD_COMPAT_VERSION DOCA_CTSD_COMPAT_VERSION_3 /* Set to latest version of the doca related libraries */
+#endif
+
 #include <stdlib.h>
 
 #include <doca_error.h>
@@ -44,9 +48,18 @@ struct telemetry_phy_sample_cfg {
 	uint8_t get_management_cable_single_page_info; /**< Retrieve management cable single page info */
 	uint8_t management_cable_page_id;	       /**< Page to retrieve with management cable single page info */
 	uint8_t get_management_cable_dump_info;	       /**< Retrieve management cable dump info */
-	uint8_t get_management_cable_ddm_info; /**< Retrieve management cable Digital Diagnostic Monitoring (DDM) info
-						*/
-	uint8_t get_system_temp_and_pwr_info;  /**< Retrieve system temperature and power info */
+	uint8_t get_management_cable_ddm_info;	/**< Retrieve management cable Digital Diagnostic Monitoring (DDM) info
+						 */
+	uint8_t get_system_temp_and_pwr_info;	/**< Retrieve system temperature and power info */
+	uint8_t get_system_temp_info;		/**< Retrieve system temperature info */
+	uint8_t get_system_pwr_info;		/**< Retrieve system power info */
+	uint8_t get_snr_info;			/**< Retrieve SNR samples info */
+	uint8_t get_laser_monitors_info;	/**< Retrieve laser monitors samples info */
+	uint8_t get_pam4_level_transition_info; /**< Retrieve PAM4 level transition samples info */
+	uint8_t get_pre_fec_ber_info;		/**< Retrieve pre-FEC BER samples info */
+	uint8_t get_ferc_info;			/**< Retrieve FERC samples info */
+	uint8_t get_sew_max_info;		/**< Retrieve SEW MAX samples info */
+	uint8_t vdm_read_and_clear;		/**< Reset pre-FEC BER, FERC, and SEW MAX samples info after a read */
 };
 
 /*

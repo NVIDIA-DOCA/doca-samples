@@ -1,0 +1,57 @@
+#
+# Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+number_of_ports: 1
+min_supported_nic:
+  - ConnectX-9
+mode_args:
+  - vnf
+fw_config:
+  FLEX_PARSER_PROFILE:
+    - 10
+ports_description:
+  port_0: doca_dev
+description: "This sample illustrates the DOCA Flow message queue in VNF mode.
+              It registers a two-field message format ('key', 'seq') as a programmable struct, binds a message type to it,
+              and starts the port with one message queue and a completion callback.
+              A MESSAGE-isolation classify pipe matches on 'key', SETs 'seq' to a constant, copies 'key' into pkt_meta with an action descriptor,
+              and forwards to a MESSAGE-isolation verdict pipe keyed on both written values, which drops as the isolation rules require.
+              The sample then attaches the message type to the classify pipe and injects hitting messages (buffered) and missing ones (unbuffered),
+              polls the completions, and reports the queue completion stats next to the two entry counters.
+              The sample sends no wire traffic: all messages originate in software, so the whole run is self-contained and needs no injected packets.
+              Root privileges are required for the message queue's DevX objects.
+              Sample Command Line: sudo ./build/doca_flow_message_queue -- -a aux/2,dv_flow_en=2 -l 60"
+use_cases:
+  - name: "Flow message queue use case"
+    args: ""
+    stages:
+      # The sample injects its own messages, so the stage sends no packets and the
+      # message queue stats and entry counters the sample logs are the observables.
+      - name: "Validating the messages injected from software"
+        validation:
+          - type: dump
+            expected_text:
+              - "Message queue 0: 6 completed, 0 failed"
+              - "Messages that matched the classify key: 4 messages"
+              - "Messages that carried the SET seq and the copied pkt_meta: 4 messages"

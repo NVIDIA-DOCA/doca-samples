@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -33,6 +33,7 @@
 #include <stdbool.h>
 #include <sched.h>
 #include <unistd.h>
+#include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <malloc.h>
@@ -160,20 +161,20 @@ static doca_error_t client_exchange(const char *server_name,
 
 connected:
 
-	ret = write(client_sockfd, &loc_datalen, sizeof(loc_datalen));
+	ret = send(client_sockfd, &loc_datalen, sizeof(loc_datalen), 0);
 	if (ret < 0 || (size_t)ret != sizeof(loc_datalen)) {
 		DOCA_LOG_ERR("Couldn't send local datalen");
 		return DOCA_ERROR_IO_FAILED;
 	}
 
-	ret = write(client_sockfd, loc_data, loc_datalen);
+	ret = send(client_sockfd, loc_data, loc_datalen, 0);
 	if (ret < 0 || (size_t)ret != loc_datalen) {
 		DOCA_LOG_ERR("Couldn't send local data");
 		return DOCA_ERROR_IO_FAILED;
 	}
 
 	*rem_datalen = 0;
-	ret = read(client_sockfd, rem_datalen, sizeof(*rem_datalen));
+	ret = recv(client_sockfd, rem_datalen, sizeof(*rem_datalen), 0);
 	if (ret < 0 || (size_t)ret != sizeof(*rem_datalen)) {
 		DOCA_LOG_ERR("Couldn't read/write remote datalen");
 		return DOCA_ERROR_IO_FAILED;
@@ -193,7 +194,7 @@ connected:
 		return DOCA_ERROR_NO_MEMORY;
 	}
 
-	ret = read(client_sockfd, data, *rem_datalen);
+	ret = recv(client_sockfd, data, *rem_datalen, 0);
 	if (ret < 0 || (size_t)ret != *rem_datalen) {
 		free(data);
 		DOCA_LOG_ERR("Couldn't read/write remote data");
@@ -711,20 +712,20 @@ static doca_error_t server_exchange(int port, void *loc_data, size_t loc_datalen
 	}
 
 connected:
-	ret = write(server_connfd, &loc_datalen, sizeof(loc_datalen));
+	ret = send(server_connfd, &loc_datalen, sizeof(loc_datalen), 0);
 	if (ret < 0 || (size_t)ret != sizeof(loc_datalen)) {
 		DOCA_LOG_ERR("Couldn't write local datalen");
 		return DOCA_ERROR_IO_FAILED;
 	}
 
-	ret = write(server_connfd, loc_data, loc_datalen);
+	ret = send(server_connfd, loc_data, loc_datalen, 0);
 	if (ret < 0 || (size_t)ret != loc_datalen) {
 		DOCA_LOG_ERR("Couldn't write local data");
 		return DOCA_ERROR_IO_FAILED;
 	}
 
 	*rem_datalen = 0;
-	ret = read(server_connfd, rem_datalen, sizeof(*rem_datalen));
+	ret = recv(server_connfd, rem_datalen, sizeof(*rem_datalen), 0);
 	if (ret < 0 || (size_t)ret != sizeof(*rem_datalen)) {
 		DOCA_LOG_ERR("%ld/%lu: Couldn't read remote data", ret, sizeof(*rem_datalen));
 		return DOCA_ERROR_IO_FAILED;
@@ -744,7 +745,7 @@ connected:
 		return DOCA_ERROR_NO_MEMORY;
 	}
 
-	ret = read(server_connfd, data, *rem_datalen);
+	ret = recv(server_connfd, data, *rem_datalen, 0);
 	if (ret < 0 || (size_t)ret != *rem_datalen) {
 		free(data);
 		DOCA_LOG_ERR("%ld/%lu: Couldn't read remote data", ret, *rem_datalen);

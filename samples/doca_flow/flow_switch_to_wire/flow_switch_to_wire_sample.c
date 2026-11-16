@@ -628,9 +628,9 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	resource.nr_counters = 2 * NB_TOTAL_ENTRIES; /* counter per entry */
 	resource.nr_rss = 1;
 	if (is_expert)
-		start_str = "switch,hws,hairpinq_num=4,expert";
+		start_str = "switch,hairpinq_num=4,expert";
 	else
-		start_str = "switch,hws,hairpinq_num=4";
+		start_str = "switch,hairpinq_num=4";
 	result = init_doca_flow(nb_queues, start_str, &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
@@ -646,7 +646,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -655,7 +655,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create rss pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -663,7 +663,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -672,7 +672,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create egress pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -680,7 +680,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add egress_entries to the pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -689,7 +689,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create vport pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -697,7 +697,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add vport_entries to the pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -706,7 +706,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ingress pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -714,7 +714,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add ingress_entries to the pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -722,14 +722,14 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to process egress_entries: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
 	if (status.nb_processed != NB_TOTAL_ENTRIES || status.failure) {
 		DOCA_LOG_ERR("Failed to process all entries");
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return DOCA_ERROR_BAD_STATE;
 	}
 
@@ -743,7 +743,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		DOCA_LOG_INFO("Egress Entry in index: %d", entry_idx);
@@ -756,7 +756,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query vport pipe entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		DOCA_LOG_INFO("Vport Entry in index: %d", entry_idx);
@@ -769,7 +769,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		DOCA_LOG_INFO("Ingress Entry in index: %d", entry_idx);
@@ -781,7 +781,7 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to query entry: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 	DOCA_LOG_INFO("RSS Entry in index: %d", entry_idx);
@@ -789,6 +789,6 @@ doca_error_t flow_switch_to_wire(int nb_queues, int nb_ports, struct flow_switch
 	DOCA_LOG_INFO("Total packets: %ld", query_stats.counter.total_pkts);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

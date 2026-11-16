@@ -125,7 +125,8 @@ static doca_error_t register_verbs_params(void)
 	}
 	doca_argp_param_set_short_name(iters_param, "i");
 	doca_argp_param_set_long_name(iters_param, "iters");
-	doca_argp_param_set_description(iters_param, "Number of iterations (optional)");
+	doca_argp_param_set_description(iters_param,
+					"Number of iterations, a multiple of the number of CUDA threads (optional)");
 	doca_argp_param_set_callback(iters_param, iters_callback);
 	doca_argp_param_set_type(iters_param, DOCA_ARGP_TYPE_INT);
 	status = doca_argp_register_param(iters_param);
@@ -237,6 +238,11 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(status));
 		goto argp_cleanup;
 	}
+
+	/* Single CUDA block: see gpunetio_verbs_two_sided_bw() */
+	status = verbs_validate_config(&cfg, 1, 0);
+	if (status != DOCA_SUCCESS)
+		goto argp_cleanup;
 
 	if (cfg.is_server) {
 		status = verbs_server(&cfg);

@@ -29,6 +29,7 @@
 #include <stdlib.h>
 
 #include <doca_argp.h>
+#include <doca_config.h>
 #include <doca_log.h>
 
 DOCA_LOG_REGISTER(TIME_SYNC::TIME_SYNC_COMMON);

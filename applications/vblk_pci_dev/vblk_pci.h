@@ -102,6 +102,43 @@ struct vblk_pci_virtio_dev;
 typedef void (*pci_cfg_change_cb_t)(struct vblk_pci_virtio_dev *dev, void *arg);
 typedef void (*pci_tlp_poll_cb_t)(void *arg);
 
+/*
+ * Function recycle machine. The OE thread is the sole writer of recycle_state;
+ * the TLP thread only reads it, through vblk_ctrl_reset_active().
+ */
+enum vblk_recycle_state {
+	/* No recycle in progress. */
+	VBLK_RECYCLE_IDLE = 0,
+
+	/* Tear down the datapath the host was served by until now. */
+	VBLK_RECYCLE_VQ_DRAIN,
+	VBLK_RECYCLE_IOCTX_TEARDOWN,
+	VBLK_RECYCLE_ENGINE_STOP,
+
+	/* The TLP device is suspended and no datapath is left. The rebuild waits
+	 * here until the host sets BME again, as tracked by bme_shadow. */
+	VBLK_RECYCLE_SUSPENDED,
+
+	/* Rebuild the datapath on top of the resumed TLP device. */
+	VBLK_RECYCLE_TLP_RESUME,
+	VBLK_RECYCLE_OE_START,
+	VBLK_RECYCLE_IOCTX_REBUILD,
+	VBLK_RECYCLE_REENABLE,
+};
+
+/* Why a recycle was asked for: set by the TLP thread on the trigger it handled,
+ * consumed by the OE thread when it starts the recycle. A reason bitmap is an
+ * axis of its own, not a state: a reason sits latched while recycle_state is
+ * still VBLK_RECYCLE_IDLE, and the machine runs on after the reason is
+ * consumed. */
+#define VBLK_RECYCLE_REASON_NONE 0u
+#define VBLK_RECYCLE_REASON_FLR (1u << 0)
+#define VBLK_RECYCLE_REASON_BME (1u << 1)
+#define VBLK_RECYCLE_REASON_PERST (1u << 2)
+/* VF-only: set on every VF by the last step of its PF's recycle, so each VF
+ * datapath is rebuilt against the PF's new TLP device too. */
+#define VBLK_RECYCLE_REASON_PF_RECYCLE (1u << 3)
+
 struct vblk_pci_virtio_dev {
 	LIST_ENTRY(vblk_pci_virtio_dev) entry;
 	struct doca_dev_rep *dev_rep;
@@ -114,14 +151,14 @@ struct vblk_pci_virtio_dev {
 	uint8_t function;
 	uint32_t ep_index;
 
-	/* flr_in_progress: true while FLR is in progress (TLP thread sets true
-	 * on FLR write; OE thread sets false after post-FLR cleanup chain */
-	_Atomic bool flr_in_progress;
-
-	/* flr_kickoff: one-shot signal raised by TLP/OE thread once all VQs
-	 * are destroyed during an FLR window, telling the OE thread to start
-	 * the post-FLR cleanup chain (fan out to per-io_ctx need_flr_teardown). */
-	_Atomic bool flr_kickoff;
+	_Atomic uint32_t reason_bits; /* VBLK_RECYCLE_REASON_* */
+	_Atomic bool bme_shadow;      /* Command.BME as held in the config image */
+	/* Device-owned NEEDS_RESET, ORed into a device_status read on top of the
+	 * value the TLP thread holds. A read also ORs NEEDS_RESET while any reason
+	 * bit is set, so a trigger racing the clear of this overlay still leaves the
+	 * host reading NEEDS_RESET; the OE thread re-arms the overlay before it
+	 * consumes the reason bits, so the two are never both clear mid-recycle. */
+	_Atomic uint8_t status_overlay;
 
 	/* emulated device */
 	struct pcie_virtio_dev pcie_dev;
@@ -148,6 +185,11 @@ struct vblk_pci_virtio_dev {
 	};
 };
 
+static inline bool vblk_pci_recycle_reason_latched(struct vblk_pci_virtio_dev *dev)
+{
+	return atomic_load_explicit(&dev->reason_bits, memory_order_acquire) != VBLK_RECYCLE_REASON_NONE;
+}
+
 /* consider: inheritance from the base ep */
 LIST_HEAD(vblk_pci_dev_list, vblk_pci_virtio_dev);
 
@@ -155,42 +197,12 @@ LIST_HEAD(vblk_pci_dev_list, vblk_pci_virtio_dev);
  * (upper layer, vblk_ctrl.c); the slot only holds a back-pointer to it. */
 struct vblk_ctrl;
 
-/*
- * VF datapath state machine. The OE thread owns state transitions; IO
- * threads only observe FLR_TEARDOWN/FLR_REBUILD to destroy or recreate
- * their per-thread VF io_ctx for a VF FLR.
- *
- * Normal VFE path:
- *
- *   DOWN -- VFE=1 / enable OE --> UP
- *    ^                            |
- *    +--- VFE=0 / disable OE -----+
- *
- * VF FLR datapath recycle:
- *
- *   DOWN or UP
- *      |
- *      | VF FLR
- *      v
- *   FLR_TEARDOWN -- all io_ctxs destroyed, OE recycled --> FLR_REBUILD
- *      ^                                                   |
- *      | new VF FLR while rebuilding                       |
- *      +---------------------------------------------------+
- *                                                          |
- *                  all io_ctxs rebuilt                     |
- *                  +-- dp_want_up=true  --> UP             |
- *                  +-- dp_want_up=false --> DOWN           |
- *
- * DOWN: VF ctrl exists, VF offload engine is disabled.
- * UP: VF ctrl exists, VF offload engine is enabled.
- * FLR_TEARDOWN: OE waits for each IO thread to destroy its VF io_ctx.
- * FLR_REBUILD: OE waits for each IO thread to recreate its VF io_ctx.
- */
+/* Whether this VF is serving I/O. The OE thread is the sole writer and follows
+ * the host's VF-Enable intent; how far a recycle of the VF has progressed is a
+ * separate axis, tracked by vf_ctrl->recycle_state. */
 enum vblk_sriov_vf_dp_state {
 	VBLK_SRIOV_VF_DP_DOWN = 0,
 	VBLK_SRIOV_VF_DP_UP,
-	VBLK_SRIOV_VF_DP_FLR_TEARDOWN,
-	VBLK_SRIOV_VF_DP_FLR_REBUILD,
 };
 
 /*
@@ -215,10 +227,6 @@ struct vblk_sriov_vf_slot {
 	struct vblk_ctrl *vf_ctrl; /* OE-owned; NULL until built or after final teardown */
 	_Atomic uint8_t dp_state;  /* OE -> IO: enum vblk_sriov_vf_dp_state */
 	_Atomic bool dp_want_up;   /* TLP -> OE: VF offload engine should be enabled */
-
-	/* VF-local datapath recycle progress. OE owns dp_state phase transitions; IO
-	 * threads report completion for their ctx_id here. */
-	_Atomic uint8_t flr_io_ctx_done;
 };
 
 /*
@@ -278,6 +286,7 @@ doca_error_t vblk_pci_sriov_vf_tlp_dev_stop(struct vblk_sriov_vf_slot *slot);
 doca_error_t vblk_pci_sriov_vf_tlp_dev_start(struct vblk_sriov_vf_slot *slot);
 doca_error_t vblk_pci_sriov_vf_tlp_dev_suspend(struct vblk_sriov_vf_slot *slot);
 doca_error_t vblk_pci_sriov_vf_tlp_dev_resume(struct vblk_sriov_vf_slot *slot);
+doca_error_t vblk_pci_pf_tlp_dev_stop(struct vblk_pci_virtio_dev *dev);
 doca_error_t vblk_pci_pf_tlp_dev_suspend(struct vblk_pci_virtio_dev *dev);
 doca_error_t vblk_pci_pf_tlp_dev_resume(struct vblk_pci_virtio_dev *dev);
 

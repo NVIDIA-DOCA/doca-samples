@@ -31,6 +31,7 @@ app_srcs = [
 	common_dir_path + '/flow_pipes_manager.c',
 	samples_dir_path + '/common.c',
 	samples_dir_path + '/doca_flow/flow_common.c',
+	samples_dir_path + '/doca_flow/flow_tune_common.c',
 	samples_dir_path + '/doca_flow/flow_switch_common.c',
 ]
 

@@ -39,7 +39,6 @@
 #include <doca_mmap.h>
 #include <doca_gpunetio.h>
 #include <doca_eth_txq.h>
-#include <doca_buf_array.h>
 #include <doca_gpunetio_eth_def.h>
 #include <doca_eth_txq_gpu_data_path.h>
 
@@ -56,7 +55,7 @@
 struct sample_send_wait_cfg {
 	char gpu_pcie_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* GPU PCIe address */
 	char nic_pcie_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* Network card PCIe address */
-	uint32_t time_interval_ns;			/* Nanoseconds between sends */
+	uint32_t time_interval_ns;			/* Nanoseconds between bursts */
 };
 
 /* Send queues objects */
@@ -71,16 +70,48 @@ struct txq_queue {
 	struct doca_mmap *pkt_buff_mmap; /* DOCA mmap to send packet with DOCA Ethernet queue */
 	uint32_t pkt_buff_mkey;		 /* DOCA mmap memory key */
 	uint8_t *pkt_buff_addr;		 /* DOCA mmap GPU memory address */
-	int dmabuf_fd;			 /* GPU memory dmabuf descriptor */
-	struct doca_flow_port *port;	 /* DOCA Flow port */
+	int dmabuf_fd;			 /* GPU memory dmabuf descriptor, -1 if not used */
+	bool ctx_started;		 /* DOCA Ethernet send queue context started */
 	size_t pkt_size;		 /* Packet size to send */
-	uint32_t cuda_threads;		 /* Number of CUDA threads in CUDA send kernel */
+	uint32_t pkt_num;		 /* Number of packets in the packet buffer */
+};
+
+/* Wait on time value of every burst, passed by value to the CUDA kernel */
+struct burst_wait_times {
+	uint64_t wait_on_time[NUM_BURST_SEND]; /* Values returned by doca_eth_txq_calculate_timestamp() */
 };
 
 struct ether_hdr {
 	uint8_t d_addr_bytes[ETHER_ADDR_LEN]; /* Destination addr bytes in tx order */
 	uint8_t s_addr_bytes[ETHER_ADDR_LEN]; /* Source addr bytes in tx order */
 	uint16_t ether_type;		      /* Frame type */
+} __attribute__((__packed__));
+
+struct ipv4_hdr {
+	uint8_t version_ihl;	  /* Version and header length */
+	uint8_t type_of_service;  /* Type of service */
+	uint16_t total_length;	  /* Length of packet */
+	uint16_t packet_id;	  /* Packet ID */
+	uint16_t fragment_offset; /* Fragmentation offset */
+	uint8_t time_to_live;	  /* Time to live */
+	uint8_t next_proto_id;	  /* Protocol ID */
+	uint16_t hdr_checksum;	  /* Header checksum */
+	uint32_t src_addr;	  /* Source address */
+	uint32_t dst_addr;	  /* Destination address */
+} __attribute__((__packed__));
+
+struct udp_hdr {
+	uint16_t src_port;    /* UDP source port */
+	uint16_t dst_port;    /* UDP destination port */
+	uint16_t dgram_len;   /* UDP datagram length */
+	uint16_t dgram_cksum; /* UDP datagram checksum */
+} __attribute__((__packed__));
+
+/* Ethernet, IPv4 and UDP headers at the beginning of every packet */
+struct eth_ip_udp_hdr {
+	struct ether_hdr l2_hdr;
+	struct ipv4_hdr l3_hdr;
+	struct udp_hdr l4_hdr;
 } __attribute__((__packed__));
 
 /*
@@ -96,14 +127,20 @@ extern "C" {
 #endif
 
 /*
- * Launch a CUDA kernel to send packets with wait on time feature.
+ * Launch a CUDA kernel to send packets with wait on time feature. The kernel queues all the bursts at once, the NIC
+ * holds each one until its time, then the kernel waits for the completion of every burst.
  *
  * @stream [in]: CUDA stream to launch the kernel
  * @txq [in]: DOCA Eth Tx queue to use to send packets
- * @intervals_gpu [in]: at which time each burst of packet must be sent
+ * @wait_times [in]: at which time each burst of packet must be sent
+ * @bursts_done_gpu [in/out]: GPU pointer to the number of bursts sent without error. The caller sets it to 0, and
+ * the CUDA kernel updates it after each burst
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t kernel_send_wait_on_time(cudaStream_t stream, struct txq_queue *txq, uint64_t *intervals_gpu);
+doca_error_t kernel_send_wait_on_time(cudaStream_t stream,
+				      struct txq_queue *txq,
+				      const struct burst_wait_times *wait_times,
+				      uint32_t *bursts_done_gpu);
 
 #ifdef __cplusplus
 }

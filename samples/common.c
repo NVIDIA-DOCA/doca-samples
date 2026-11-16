@@ -23,9 +23,11 @@
  *
  */
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 
 #include <doca_buf.h>
 #include <doca_buf_inventory.h>
@@ -789,5 +791,80 @@ destroy_dbuf:
 	}
 	*dbuf = NULL;
 
+	return result;
+}
+
+doca_error_t socket_recv(int fd, void *buf, size_t len, int flags, size_t *bytes_received)
+{
+	doca_error_t result = DOCA_SUCCESS;
+	size_t total = 0;
+	ssize_t ret;
+
+	if (bytes_received != NULL)
+		*bytes_received = 0;
+
+	if (fd < 0 || buf == NULL || len == 0) {
+		DOCA_LOG_ERR("Failed to recv: invalid parameter, fd=%d, buf=%p, len=%zu", fd, buf, len);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if ((flags & MSG_PEEK) != 0) {
+		DOCA_LOG_ERR("Failed to recv: MSG_PEEK is not supported, fd=%d, flags=0x%x", fd, (unsigned int)flags);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	while (total < len) {
+		ret = recv(fd, (uint8_t *)buf + total, len - total, flags);
+		if (ret > 0) {
+			total += (size_t)ret;
+			continue;
+		}
+
+		if (ret == 0) {
+			DOCA_LOG_ERR("Connection closed by peer after %zu of %zu bytes, fd=%d", total, len, fd);
+			result = DOCA_ERROR_NOT_CONNECTED;
+			goto out;
+		}
+
+		switch (errno) {
+		case EINTR:
+			continue;
+		case EAGAIN:
+#if EWOULDBLOCK != EAGAIN
+		case EWOULDBLOCK:
+#endif
+			DOCA_LOG_DBG("No data available on fd=%d, received %zu of %zu bytes", fd, total, len);
+			result = DOCA_ERROR_AGAIN;
+			goto out;
+		case ECONNRESET:
+			DOCA_LOG_ERR("Failed to recv on fd=%d: connection reset by peer", fd);
+			result = DOCA_ERROR_CONNECTION_RESET;
+			goto out;
+		case ENOTCONN:
+			DOCA_LOG_ERR("Failed to recv on fd=%d: socket is not connected", fd);
+			result = DOCA_ERROR_NOT_CONNECTED;
+			goto out;
+		default: {
+			char err_buf[128];
+			int err = errno;
+			const char *err_str;
+
+#if defined(_GNU_SOURCE) && defined(__GLIBC__)
+			err_str = strerror_r(err, err_buf, sizeof(err_buf));
+#else
+			if (strerror_r(err, err_buf, sizeof(err_buf)) != 0)
+				strcpy(err_buf, "unknown error");
+			err_str = err_buf;
+#endif
+			DOCA_LOG_ERR("Failed to recv on fd=%d: %s, errno=%d", fd, err_str, err);
+			result = DOCA_ERROR_OPERATING_SYSTEM;
+			goto out;
+		}
+		}
+	}
+
+out:
+	if (bytes_received != NULL)
+		*bytes_received = total;
 	return result;
 }

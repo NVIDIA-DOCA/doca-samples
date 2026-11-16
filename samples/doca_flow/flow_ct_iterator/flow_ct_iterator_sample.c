@@ -224,6 +224,7 @@ static doca_error_t create_ct_entries(uint32_t n_ct_entries,
 					   i,
 					   &action,
 					   &action,
+					   NULL /* tcp_window_validation */,
 					   NULL,
 					   NULL,
 					   0,
@@ -291,6 +292,7 @@ void iterate_cb(uint16_t pipe_queue,
 					   hash_reply,
 					   &action,
 					   &action,
+					   NULL /* tcp_window_validation */,
 					   NULL,
 					   NULL,
 					   0,
@@ -458,7 +460,7 @@ doca_error_t flow_ct_iterator(uint32_t n_ct_entries, struct flow_dev_ctx *ctx, b
 	}
 
 	struct ct_init_cfg ct_cfg = {.ct_queues = 1, .ct_ctrl_queues = 0};
-	result = init_doca_flow_with_ct(1, "switch,hws", &resource, nr_shared_resources, &ct_cfg);
+	result = init_doca_flow_with_ct(1, "switch", &resource, nr_shared_resources, &ct_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;

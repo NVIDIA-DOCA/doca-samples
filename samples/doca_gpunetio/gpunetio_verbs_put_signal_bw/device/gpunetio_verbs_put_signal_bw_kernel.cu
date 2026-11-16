@@ -37,7 +37,6 @@ DOCA_LOG_REGISTER(GPU_VERBS_PUT_SIGNAL::CUDA_KERNEL);
 template <enum doca_gpu_dev_verbs_exec_scope scope>
 __global__ void put_signal_bw(struct doca_gpu_dev_verbs_qp *qp,
 			      uint32_t num_iters,
-			      uint32_t iter_thread,
 			      uint32_t data_size,
 			      uint8_t *src_buf,
 			      uint32_t src_buf_mkey,
@@ -49,7 +48,6 @@ __global__ void put_signal_bw(struct doca_gpu_dev_verbs_qp *qp,
 			      uint32_t dst_flag_mkey)
 {
 	uint32_t tidx = threadIdx.x + (blockIdx.x * blockDim.x);
-	uint64_t final_val;
 
 	for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < num_iters; idx += (blockDim.x * gridDim.x)) {
 		doca_gpu_dev_verbs_put_signal<DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
@@ -66,23 +64,6 @@ __global__ void put_signal_bw(struct doca_gpu_dev_verbs_qp *qp,
 			doca_gpu_dev_verbs_addr{.addr = (uint64_t)(&prev_flag_buf[tidx]),
 						.key = (uint32_t)prev_flag_buf_mkey},
 			(uint64_t)1);
-	}
-
-	// Check signal atomic fetch add correctness: wait until all atomic flags have been updated locally by threads.
-	// Can reuse previous flag value where the atomic operation assigns (updated_value - 1).
-	if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD) {
-		do {
-			final_val = doca_gpu_dev_verbs_atomic_read<uint64_t, DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(&prev_flag_buf[tidx]);
-			doca_gpu_dev_verbs_fence_acquire<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS>();
-		} while ((final_val != (iter_thread - 1)) && (final_val != ((iter_thread * 2) - 1)));
-	} else {
-		if (doca_gpu_dev_verbs_get_lane_id() == 0) {
-			do {
-				final_val = doca_gpu_dev_verbs_atomic_read<uint64_t, DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(&prev_flag_buf[tidx]);
-				doca_gpu_dev_verbs_fence_acquire<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS>();
-			} while ((final_val != (iter_thread - 1)) && (final_val != ((iter_thread * 2) - 1)));
-		}
-		__syncwarp();
 	}
 
 	// Poll CQE to ensure writes are ok
@@ -123,7 +104,6 @@ doca_error_t gpunetio_verbs_put_signal_bw(cudaStream_t stream,
 		put_signal_bw<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>
 			<<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
 								   num_iters,
-								   num_iters / (cuda_blocks * cuda_threads),
 								   data_size,
 								   src_buf,
 								   src_buf_mkey,
@@ -137,7 +117,6 @@ doca_error_t gpunetio_verbs_put_signal_bw(cudaStream_t stream,
 		put_signal_bw<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP>
 			<<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
 								   num_iters,
-								   num_iters / (cuda_blocks * cuda_threads),
 								   data_size,
 								   src_buf,
 								   src_buf_mkey,

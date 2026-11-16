@@ -27,6 +27,7 @@
 
 #include <doca_log.h>
 #include <doca_comch.h>
+#include <doca_config.h>
 #include <doca_sync_event.h>
 
 #include <common.h>

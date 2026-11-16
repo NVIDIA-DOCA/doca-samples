@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -58,6 +58,8 @@ int main(int argc, char **argv)
 	nvqual_argp_cfg.excluded_eus_size = 0;
 	nvqual_argp_cfg.test_duration_sec = 0;
 	nvqual_argp_cfg.user_factor = 0;
+	nvqual_argp_cfg.wait_timeout_sec = DPA_NVQUAL_WAIT_TIMEOUT_SEC;
+	nvqual_argp_cfg.wait_for_file[0] = '\0';
 
 	err = doca_log_backend_create_standard();
 	if (err != DOCA_SUCCESS)

@@ -185,6 +185,106 @@ free_counters:
 }
 
 /*
+ * Get and print counter groups from an algo slot
+ *
+ * @pcc [in]: pcc telemetry context
+ * @slot [in]: algo slot to parse
+ * @return: DOCA_SUCCESS on success, DOCA_ERROR otherwise.
+ */
+static doca_error_t get_counter_groups(struct doca_telemetry_pcc *pcc, uint8_t slot)
+{
+	uint32_t max_counter_groups_per_slot, num_counter_groups, max_counters, counters_populated, i, j;
+	uint32_t *counter_groups, *counters;
+	doca_error_t result;
+
+	/* Ignore counter groups if PCC has no support - this is not an error */
+	result = doca_telemetry_pcc_cap_counter_group_is_supported(pcc);
+	if (result == DOCA_ERROR_NOT_SUPPORTED) {
+		return DOCA_SUCCESS;
+	} else if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to check counter group cap: Error=%s", doca_error_get_name(result));
+		return result;
+	}
+
+	result = doca_telemetry_pcc_get_max_counter_groups_per_slot(pcc, &max_counter_groups_per_slot);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get max counter groups per slot: Error=%s", doca_error_get_name(result));
+		return result;
+	}
+
+	/* A single counter group will have displayed as main counter so only proceed if there is more than one */
+	if (max_counter_groups_per_slot <= 1)
+		return DOCA_SUCCESS;
+
+	counter_groups = (uint32_t *)malloc(sizeof(uint32_t) * max_counter_groups_per_slot);
+	if (counter_groups == NULL) {
+		DOCA_LOG_ERR("Failed to allocate array for counter groups");
+		return DOCA_ERROR_NO_MEMORY;
+	}
+
+	result = doca_telemetry_pcc_get_counter_groups_per_slot(pcc, slot, &num_counter_groups, counter_groups);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get counter groups per slot: Error=%s", doca_error_get_name(result));
+		goto free_counter_groups;
+	}
+
+	if (num_counter_groups <= 1) {
+		result = DOCA_SUCCESS;
+		goto free_counter_groups;
+	}
+
+	printf("-------------------------------------\n");
+
+	printf("Number of counter groups found is %u\n", num_counter_groups);
+
+	result = doca_telemetry_pcc_get_max_num_counters(pcc, &max_counters);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get max num counters (counter groups): Error=%s", doca_error_get_name(result));
+		goto free_counter_groups;
+	}
+
+	counters = (uint32_t *)malloc(sizeof(uint32_t) * max_counters);
+	if (counters == NULL) {
+		DOCA_LOG_ERR("Failed to allocate array for counters (counter groups)");
+		result = DOCA_ERROR_NO_MEMORY;
+		goto free_counter_groups;
+	}
+
+	for (i = 0; i < num_counter_groups; i++) {
+		result = doca_telemetry_pcc_get_counter_group(pcc,
+							      slot,
+							      counter_groups[i],
+							      &counters_populated,
+							      counters);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get counters (counter groups): Error=%s", doca_error_get_name(result));
+			goto free_counters;
+		}
+
+		if (counters_populated == 0) {
+			DOCA_LOG_ERR("Failed to get counters (counter groups): 0 counters returned");
+			result = DOCA_ERROR_INVALID_VALUE;
+			goto free_counters;
+		}
+
+		printf("Counter Group %u: ", counter_groups[i]);
+		for (j = 0; j < counters_populated - 1; j++) {
+			printf("%u, ", counters[j]);
+		}
+		printf("%u\n", counters[counters_populated - 1]);
+	}
+
+	printf("-------------------------------------\n");
+
+free_counters:
+	free(counters);
+free_counter_groups:
+	free(counter_groups);
+
+	return result;
+}
+
+/*
  * Get and print histogram information from an algo slot
  *
  * @pcc [in]: pcc telemetry context
@@ -460,6 +560,14 @@ doca_error_t telemetry_pcc_sample_run(const struct telemetry_pcc_sample_cfg *cfg
 			result = get_counter_information(pcc, dev, (uint8_t)slot);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to get counters on slot %u: Error=%s",
+					     slot,
+					     doca_error_get_name(result));
+				goto stop_pcc;
+			}
+
+			result = get_counter_groups(pcc, (uint8_t)slot);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to get counter groups on slot %u: Error=%s",
 					     slot,
 					     doca_error_get_name(result));
 				goto stop_pcc;

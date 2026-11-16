@@ -56,16 +56,17 @@ struct doca_flow_port *init_doca_flow(struct doca_dev *dev, uint16_t port_id, ui
 		return NULL;
 	}
 
-	ret = doca_flow_cfg_set_mode_args(rxq_flow_cfg, "vnf,hws");
+	ret = doca_flow_cfg_set_mode_args(rxq_flow_cfg, "vnf");
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg mode_args: %s", doca_error_get_descr(ret));
 		doca_flow_cfg_destroy(rxq_flow_cfg);
 		return NULL;
 	}
 
-	ret = doca_flow_cfg_set_nr_counters(rxq_flow_cfg, FLOW_NB_COUNTERS);
+	/* Counters are requested per port (doca_flow_port_cfg_set_nr_resources) */
+	ret = doca_flow_cfg_set_resource_mode(rxq_flow_cfg, DOCA_FLOW_RESOURCE_MODE_PORT);
 	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg nr_counters: %s", doca_error_get_descr(ret));
+		DOCA_LOG_ERR("Failed to set doca_flow_cfg resource mode: %s", doca_error_get_descr(ret));
 		doca_flow_cfg_destroy(rxq_flow_cfg);
 		return NULL;
 	}
@@ -88,6 +89,13 @@ struct doca_flow_port *init_doca_flow(struct doca_dev *dev, uint16_t port_id, ui
 	result = doca_flow_port_cfg_set_port_id(port_cfg, port_id);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg port_id: %s", doca_error_get_descr(result));
+		doca_flow_port_cfg_destroy(port_cfg);
+		return NULL;
+	}
+
+	result = doca_flow_port_cfg_set_nr_resources(port_cfg, DOCA_FLOW_RESOURCE_COUNTER, FLOW_NB_COUNTERS);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set doca_flow_port_cfg nr_resources: %s", doca_error_get_name(result));
 		doca_flow_port_cfg_destroy(port_cfg);
 		return NULL;
 	}

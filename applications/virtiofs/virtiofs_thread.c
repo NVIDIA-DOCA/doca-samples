@@ -26,6 +26,7 @@
 #define _GNU_SOURCE 1
 #include <pthread.h>
 #include <sched.h>
+#include <doca_config.h>
 #include <doca_pe.h>
 #include <doca_log.h>
 

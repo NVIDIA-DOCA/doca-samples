@@ -388,9 +388,9 @@ doca_error_t switch_init(struct application_dpdk_config *app_dpdk_config, struct
 	nb_ports = app_dpdk_config->port_config.nb_ports;
 
 	if (ctx->is_expert)
-		start_str = "switch,hws,expert";
+		start_str = "switch,expert";
 	else
-		start_str = "switch,hws";
+		start_str = "switch";
 
 	result = init_doca_flow(app_dpdk_config->port_config.nb_queues, start_str, &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {

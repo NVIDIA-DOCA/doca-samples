@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include <doca_argp.h>
+#include <doca_config.h>
 #include <doca_error.h>
 #include <doca_dev.h>
 #include <doca_log.h>
@@ -39,7 +40,8 @@ DOCA_LOG_REGISTER(DEVEMU_PCI_DEVICE_DB_DPU::MAIN);
 doca_error_t devemu_pci_device_db_dpu(const char *pci_address,
 				      const char *emulated_dev_vuid,
 				      uint16_t db_region_idx,
-				      uint32_t db_id);
+				      uint32_t db_id,
+				      bool db_on_dpu);
 
 /* Configuration struct */
 struct devemu_pci_cfg {
@@ -47,6 +49,7 @@ struct devemu_pci_cfg {
 	char vuid[DOCA_DEVINFO_REP_VUID_SIZE];	      /* VUID of emulated device with DB regions */
 	uint16_t db_region_idx;			      /* Index of DB region to listen on */
 	uint32_t db_id;				      /* The DB ID of the DB to listen on */
+	bool db_on_dpu;				      /* Listen on DBs from DPU (true) or DPA (false) */
 };
 
 #ifdef DOCA_ARCH_DPU
@@ -190,6 +193,52 @@ static doca_error_t register_db_id_param(void)
 }
 
 /*
+ * ARGP Callback - Handle DB datapath flag parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t db_on_dpu_callback(void *param, void *config)
+{
+	struct devemu_pci_cfg *conf = (struct devemu_pci_cfg *)config;
+
+	conf->db_on_dpu = *(bool *)param;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Register DB datapath flag command line parameter
+ *
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t register_db_on_dpu_param(void)
+{
+	struct doca_argp_param *param;
+	doca_error_t result;
+
+	result = doca_argp_param_create(&param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(param, "db-on-dpu");
+	doca_argp_param_set_description(
+		param,
+		"Listen on DBs from the DPU. If not set, DBs are listened on from the DPA (default)");
+	doca_argp_param_set_callback(param, db_on_dpu_callback);
+	doca_argp_param_set_type(param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+/*
  * Register the command line parameters for the sample
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -216,7 +265,7 @@ static doca_error_t register_devemu_pci_params(void)
 	if (result != DOCA_SUCCESS)
 		return result;
 
-	return DOCA_SUCCESS;
+	return register_db_on_dpu_param();
 }
 
 #endif // DOCA_ARCH_DPU
@@ -240,6 +289,7 @@ int main(int argc, char **argv)
 	strcpy(devemu_pci_cfg.vuid, "");
 	devemu_pci_cfg.db_region_idx = 0;
 	devemu_pci_cfg.db_id = 0;
+	devemu_pci_cfg.db_on_dpu = false;
 
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
@@ -281,7 +331,8 @@ int main(int argc, char **argv)
 	result = devemu_pci_device_db_dpu(devemu_pci_cfg.pci_address,
 					  devemu_pci_cfg.vuid,
 					  devemu_pci_cfg.db_region_idx,
-					  devemu_pci_cfg.db_id);
+					  devemu_pci_cfg.db_id,
+					  devemu_pci_cfg.db_on_dpu);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("devemu_pci_device_db_dpu() encountered an error: %s", doca_error_get_descr(result));
 		goto argp_cleanup;

@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023-2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -46,26 +46,58 @@ else
 	enable_tx_counter_sampling = 'false'
 endif
 
-# Compile DOCA PCC Reaction Point RTT Template DPA program
-pcc_app_name = 'pcc_rp_rtt_template_app'
-pcc_dev_stubs_keep_dir_path = app_device_build_dir + '/' + pcc_app_name
-run_command(app_builds, pcc_app_dev_src_dir, app_device_build_dir, doca_lib_dir, pcc_app_name,
-	pcc_dev_stubs_keep_dir_path, enable_tx_counter_sampling, dpacc_mcpu_flag, check: true)
-pcc_rp_rtt_template_app = meson.get_compiler('c').find_library(pcc_app_name, dirs : pcc_dev_stubs_keep_dir_path, static: true)
+# The DPA programs to compile:
+#  * DOCA PCC Reaction Point RTT Template
+#  * DOCA PCC Reaction Point Switch Telemetry
+#  * DOCA PCC Notification Point Switch Telemetry
+# Each entry holds the program name and the device sources it is built from. The sources are
+# listed so that ninja rebuilds the program when they change - the build script selects the
+# actual file list by program name.
+pcc_dpa_apps = [
+	['pcc_rp_rtt_template_app', files([
+		'device/rp/rtt_template/rp_rtt_template_dev_main.c',
+		'device/rp/rtt_template/algo/rtt_template.c',
+	])],
+	['pcc_rp_switch_telemetry_app', files([
+		'device/rp/switch_telemetry/rp_switch_telemetry_dev_main.c',
+		'device/rp/switch_telemetry/algo/telem_template.c',
+	])],
+	['pcc_np_switch_telemetry_app', files([
+		'device/np/switch_telemetry/np_switch_telemetry_dev_main.c',
+	])],
+]
 
-# Compile DOCA PCC Reaction Point Switch Telemetry DPA program
-pcc_app_name = 'pcc_rp_switch_telemetry_app'
-pcc_dev_stubs_keep_dir_path = app_device_build_dir + '/' + pcc_app_name
-run_command(app_builds, pcc_app_dev_src_dir, app_device_build_dir, doca_lib_dir, pcc_app_name,
-	pcc_dev_stubs_keep_dir_path, enable_tx_counter_sampling, dpacc_mcpu_flag, check: true)
-pcc_rp_switch_telemetry_app = meson.get_compiler('c').find_library(pcc_app_name, dirs : pcc_dev_stubs_keep_dir_path, static: true)
+# Headers and attributes shared by all of the DPA programs. The build script adds
+# applications/common/device to the device include path, so utils.h is listed here too - the
+# target has no depfile, so every header the device code pulls in must be named explicitly.
+pcc_dpa_common_deps = files([
+	common_dir_path + '/device/utils.h',
+	'device/dpa_app_attributes.yaml',
+	'device/pcc_common_dev.h',
+	'device/rp/rtt_template/algo/rtt_template.h',
+	'device/rp/rtt_template/algo/rtt_template_algo_params.h',
+	'device/rp/rtt_template/algo/rtt_template_ctxt.h',
+	'device/rp/switch_telemetry/algo/telem_template.h',
+	'device/rp/switch_telemetry/algo/telem_template_algo_params.h',
+	'device/rp/switch_telemetry/algo/telem_template_ctxt.h',
+])
 
-# Compile DOCA PCC Notification Point Switch Telemetry DPA program
-pcc_app_name = 'pcc_np_switch_telemetry_app'
-pcc_dev_stubs_keep_dir_path = app_device_build_dir + '/' + pcc_app_name
-run_command(app_builds, pcc_app_dev_src_dir, app_device_build_dir, doca_lib_dir, pcc_app_name,
-	pcc_dev_stubs_keep_dir_path, enable_tx_counter_sampling, dpacc_mcpu_flag, check: true)
-pcc_np_switch_telemetry_app = meson.get_compiler('c').find_library(pcc_app_name, dirs : pcc_dev_stubs_keep_dir_path, static: true)
+# Compile the DPA programs. These are custom targets rather than configuration-time commands so
+# that ninja runs them in parallel with each other and with the host compilation, and re-runs
+# them only when the device code changes.
+pcc_dpa_archives = []
+foreach pcc_dpa_app : pcc_dpa_apps
+	pcc_app_name = pcc_dpa_app[0]
+	pcc_dev_stubs_keep_dir_path = app_device_build_dir + '/' + pcc_app_name
+	pcc_dpa_archives += custom_target(pcc_app_name,
+		input : pcc_dpa_app[1],
+		output : pcc_app_name + '.a',
+		depend_files : pcc_dpa_common_deps,
+		command : [app_builds, pcc_app_dev_src_dir, app_device_build_dir, doca_lib_dir,
+			pcc_app_name, pcc_dev_stubs_keep_dir_path, enable_tx_counter_sampling,
+			dpacc_mcpu_flag, '@OUTPUT@'],
+	)
+endforeach
 
 # Build executable
 doca_pcc_test = executable(DOCA_PREFIX + APP_NAME,
@@ -73,6 +105,7 @@ doca_pcc_test = executable(DOCA_PREFIX + APP_NAME,
 	c_args : base_c_args,
 	include_directories: [app_inc_dirs, './host'],
 	install_dir : app_install_dir,
-	dependencies : [app_dependencies, pcc_rp_rtt_template_app, pcc_rp_switch_telemetry_app, pcc_np_switch_telemetry_app],
+	dependencies : [app_dependencies],
+	link_with : pcc_dpa_archives,
 	install: install_apps
 )

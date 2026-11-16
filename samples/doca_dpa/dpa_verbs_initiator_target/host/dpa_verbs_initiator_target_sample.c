@@ -28,6 +28,7 @@
 #include <infiniband/verbs.h>
 #include <infiniband/mlx5dv.h>
 
+#include <doca_config.h>
 #include <doca_rdma_bridge.h>
 #include <doca_verbs.h>
 #include <doca_verbs_bridge.h>
@@ -1167,7 +1168,8 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
-	if (recv(resources->conn_socket, &resources->remote_dpa_buff_addr, sizeof(uint64_t), 0) < 0) {
+	if (socket_recv(resources->conn_socket, &resources->remote_dpa_buff_addr, sizeof(uint64_t), 0, NULL) !=
+	    DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to receive remote buffer address ");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
@@ -1177,8 +1179,9 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
-	if (recv(resources->conn_socket, &resources->remote_dpa_mmap_handle, sizeof(uint32_t), 0) < 0) {
-		DOCA_LOG_ERR("Failed to receive remote MKEY, err = %s", strerror(errno));
+	if (socket_recv(resources->conn_socket, &resources->remote_dpa_mmap_handle, sizeof(uint32_t), 0, NULL) !=
+	    DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to receive remote MKEY");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
@@ -1187,8 +1190,9 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
-	if (recv(resources->conn_socket, &resources->remote_qp_number, sizeof(uint32_t), 0) < 0) {
-		DOCA_LOG_ERR("Failed to receive remote QP number, err = %s", strerror(errno));
+	if (socket_recv(resources->conn_socket, &resources->remote_qp_number, sizeof(uint32_t), 0, NULL) !=
+	    DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to receive remote QP number");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
@@ -1197,8 +1201,9 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
-	if (recv(resources->conn_socket, &resources->remote_gid.raw, sizeof(resources->gid.raw), 0) < 0) {
-		DOCA_LOG_ERR("Failed to receive remote GID address, err = %s", strerror(errno));
+	if (socket_recv(resources->conn_socket, &resources->remote_gid.raw, sizeof(resources->gid.raw), 0, NULL) !=
+	    DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to receive remote GID address");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 

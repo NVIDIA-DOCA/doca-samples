@@ -36,7 +36,6 @@
 #include "vnet_pci_device.h" /* VNET_TOTAL_VQS, VNET_CTRL_MAX_QUEUES_PAIRS */
 
 /* Forward declarations */
-struct doca_devemu_vnet_offload_engine;
 struct doca_devemu_pci_type;
 struct vnet_pci_dev_resources;
 struct vnet_pci_dev_config;
@@ -75,13 +74,13 @@ static inline bool vnet_lu_is_standby(enum vnet_lu_mode mode)
 #define VNET_LU_ACCEPT_TIMEOUT_SEC 300
 
 /** Active ACK timeout (seconds) */
-#define VNET_LU_ACK_TIMEOUT_SEC 300
+#define VNET_LU_ACK_TIMEOUT_SEC 600
 
 /** Standby idle timeout (seconds) */
-#define VNET_LU_STANDBY_IDLE_TIMEOUT_SEC 300
+#define VNET_LU_STANDBY_IDLE_TIMEOUT_SEC 1800
 
 /** Active ready-signal timeout (seconds) */
-#define VNET_LU_READY_TIMEOUT_SEC 300
+#define VNET_LU_READY_TIMEOUT_SEC 900
 
 /** SCM_RIGHTS marker byte (not part of the enum-based protocol) */
 #define VNET_LU_MSG_CMD_FD 'F'
@@ -309,7 +308,10 @@ struct vnet_lu_channel_config {
 /** @brief Init active mode: register SIGUSR1 handler + create listen socket */
 doca_error_t vnet_lu_active_init(void);
 
-/** @brief Post-loop: run handover if SIGUSR1 was received, then cleanup */
+/** @brief Start/progress active handover coordination while PE1 keeps serving TLPs */
+doca_error_t vnet_lu_active_progress(struct vnet_pci_dev_resources *resources, bool *keep_pe_running);
+
+/** @brief Post-loop: join a triggered handover coordinator, then cleanup */
 bool vnet_lu_active_post_loop(struct vnet_pci_dev_resources *resources);
 
 /** @brief Export all device state and offload engine blobs to SHM */
@@ -400,9 +402,6 @@ bool vnet_lu_handover_was_triggered(void);
 
 /** @brief Check whether a LU handover completed successfully */
 bool vnet_lu_handover_was_completed(void);
-
-/** @brief Query the persistent SF vhca_id from an offload engine's representor */
-doca_error_t vnet_lu_get_sf_vhca_id(struct doca_devemu_vnet_offload_engine *engine, uint16_t *vhca_id_out);
 
 /** @brief Find and open an existing representor by vhca_id (for rep reattach) */
 doca_error_t vnet_lu_find_existing_rep(struct doca_devemu_pci_type *pci_type,

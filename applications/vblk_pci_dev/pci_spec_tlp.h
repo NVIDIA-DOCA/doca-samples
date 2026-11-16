@@ -536,6 +536,7 @@ struct vblk_tlp_context {
 	struct bdf_map_entry *bdf_map[BDF_MAP_SIZE];
 	struct bdf_map_entry *bdf_entries;
 	bool hotplug_mode;
+	bool perst_asserted;
 	struct vblk_pci_virtio_dev **virtio_devs;
 	struct vblk_ctrl *vblk_ctrls;
 	uint16_t num_queues;

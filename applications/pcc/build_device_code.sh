@@ -24,7 +24,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-set -e -x
+set -e
 
 # This script uses the dpacc tool (located in /opt/mellanox/doca/tools/dpacc) to compile DPA kernels device code (for DPA samples).
 # This script takes the following arguments:
@@ -34,8 +34,8 @@ set -e -x
 # arg4: Name of compiled DPA program
 # arg5: Absolute paths of directory to keep host stubs
 # arg6: Flag to indicate enabling TX counter sampling
-# arg7: Flag to indicate enabling updating CC rate from notification point RX bytes
-# arg8: DPACC MCPU flag
+# arg7: DPACC MCPU flag
+# arg8: Absolute path to copy the resulting host stubs archive to (optional)
 
 ####################
 ## Configurations ##
@@ -48,6 +48,14 @@ PCC_APP_NAME=$4
 PCC_DEV_STUBS_KEEP_DIR=$5
 ENABLE_TX_COUNTER_SAMPLING=$6
 DPACC_MCPU_FLAG=$7
+PCC_APP_ARCHIVE_OUT=$8
+
+# Resolve the output path while we are still in the caller's directory, as the build changes
+# directories on its way
+if [ -n "${PCC_APP_ARCHIVE_OUT}" ] && [ "${PCC_APP_ARCHIVE_OUT#/}" = "${PCC_APP_ARCHIVE_OUT}" ]
+then
+	PCC_APP_ARCHIVE_OUT="$(pwd)/${PCC_APP_ARCHIVE_OUT}"
+fi
 
 # Tools location - DPACC, DPA compiler
 MLNX_INSTALL_PATH="/opt/mellanox"
@@ -74,7 +82,7 @@ then
         PCC_APP_DEVICE_ALGO_SRCS=`ls ${PCC_DEV_RP_RTT_TEMPLATE_DIR}/algo/*.c`
         PCC_DEVICE_SRC_FILES="${PCC_APP_DEVICE_SRCS} ${PCC_APP_DEVICE_ALGO_SRCS}"
         APP_INC_LIST="${DOCA_INC_LIST} -I${PCC_DEV_RP_RTT_TEMPLATE_DIR}/algo"
-        if [ ${AMALGAMATION_BUILD_MODE} = "true" ]; then
+        if [ "${AMALGAMATION_BUILD_MODE:-false}" = "true" ]; then
                 APP_INC_LIST="${APP_INC_LIST} -I${DOCA_PCC_DIR}/device/include/rp -I${DOCA_PCC_DIR}/device/adb_gen/"
         fi
 elif [ ${PCC_APP_NAME} = "pcc_rp_switch_telemetry_app" ]
@@ -85,7 +93,7 @@ then
         PCC_APP_DEVICE_ALGO_SRCS=`ls ${PCC_DEV_RP_SWITCH_TELEM_DIR}/algo/*.c`
         PCC_DEVICE_SRC_FILES="${PCC_APP_DEVICE_SRCS} ${PCC_APP_DEVICE_ALGO_SRCS}"
         APP_INC_LIST="${DOCA_INC_LIST} -I${PCC_DEV_RP_SWITCH_TELEM_DIR}/algo"
-        if [ ${AMALGAMATION_BUILD_MODE} = "true" ]; then
+        if [ "${AMALGAMATION_BUILD_MODE:-false}" = "true" ]; then
                 APP_INC_LIST="${APP_INC_LIST} -I${DOCA_PCC_DIR}/device/include/rp -I${DOCA_PCC_DIR}/device/adb_gen/"
         fi
 elif [ ${PCC_APP_NAME} = "pcc_np_switch_telemetry_app" ]
@@ -95,7 +103,7 @@ then
         PCC_APP_DEVICE_SRCS=${PCC_DEV_NP_SWITCH_TELEM_DIR}/np_switch_telemetry_dev_main.c
         PCC_DEVICE_SRC_FILES="${PCC_APP_DEVICE_SRCS}"
         APP_INC_LIST="${DOCA_INC_LIST}"
-        if [ ${AMALGAMATION_BUILD_MODE} = "true" ]; then
+        if [ "${AMALGAMATION_BUILD_MODE:-false}" = "true" ]; then
                 APP_INC_LIST="${APP_INC_LIST} -I${DOCA_PCC_DIR}/device/include/np"
         fi
 fi
@@ -172,3 +180,9 @@ $PCC_DEVICE_SRC_FILES \
 
 # generate device application program from auto-generated host stubs
 generate_prog_from_stubs "${PCC_DEVICE_SRC_FILES}"
+
+# Publish the archive where the caller asked for it (used by meson to track this build as a target)
+if [ -n "${PCC_APP_ARCHIVE_OUT}" ]
+then
+	cp "${PCC_DEV_STUBS_KEEP_DIR}/${PCC_APP_NAME}.a" "${PCC_APP_ARCHIVE_OUT}"
+fi

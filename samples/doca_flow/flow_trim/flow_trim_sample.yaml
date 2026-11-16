@@ -26,14 +26,12 @@ number_of_ports: 2
 ports_description:
   port_0: doca_dev
   port_1: doca_dev/doca_rep_dev
-description: "This sample exercises the DOCA Flow shared trim resource. On each port it allocates a trim shared
-              resource whose target is a per-port \"post-trim\" pipe, configures an ingress pipe that forwards every
-              IPv4 packet to that trim resource (FWD_TRIM), and demonstrates two post-trim destinations:
-              packets with IPv4 dst 8.8.8.8 are forwarded to the peer port (FWD_PORT), and packets with IPv4 dst
-              9.9.9.9 are forwarded to RSS queue 0. A worker dequeues the RSS-routed trimmed packets, logs the L4
-              type, the original packet size (IPv4 total_length + L2 header) and the actual (post-trim) packet size.
-              At the end of the run, the sample queries and logs the counters of the ingress trim pipe and both
-              post-trim entries.
+description: "Exercises the DOCA Flow shared trim resource with the pkt_length definitions-API field: a root
+              'copy pkt_length' pipe (IPv4 dst 8.8.8.8) copies the read-only pkt_length into metadata and an
+              'is-gt' control pipe trims packets longer than trim-size while shorter ones skip the trim; all
+              other traffic (e.g. dst 9.9.9.9 in switch mode) is always trimmed and zero-padded when small.
+              Switch mode also forwards a second destination to RSS queue 0, where a worker logs the L4 type
+              and original/post-trim sizes.
               VNF Sample Command Line: ./build/doca_flow_trim -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60
               Switch Sample Command Line: ./build/doca_flow_trim -- --switch-mode -a pci/08:00.0 -r pci/08:00.0,pf0sf0"
 use_cases:
@@ -42,55 +40,70 @@ use_cases:
       - vnf
     args: "--trim-size 128"
     stages:
-      - name: "Sending packets to demonstrate FWD_PORT and FWD_RSS branches"
+      - name: "8.8.8.8 pkt_length logic: large packets are trimmed, small packets skip the trim"
         packets_to_send:
           - receiving_port: 0
             packets:
+              # large (> trim-size): pkt_length logic sends it to the trim -> trimmed to 128 bytes
               - Ether()/IP(src="1.2.3.4", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 ' + b'A'*256)
-              - Ether()/IP(src="1.2.3.4", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 padded with \x00')
+              # small (<= trim-size): pkt_length logic skips the trim -> forwarded unchanged (not padded)
+              - Ether()/IP(src="1.2.3.4", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, skips trim, forwarded from port 1 unchanged')
           - receiving_port: 1
             packets:
               - Ether()/IP(src="5.6.7.8", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 ' + b'C'*256)
+              - Ether()/IP(src="5.6.7.8", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, skips trim, forwarded from port 0 unchanged')
         validation:
           - type: packet
             expected_packets:
               - forwarding_port: 1
                 packets:
+                  # trimmed to 128 bytes (54 B headers + 74 B payload)
                   - Ether()/IP(dst='8.8.8.8', src='1.2.3.4')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 AAAAAAAAAAAAAAA')
-                  - Ether()/IP(dst='8.8.8.8', src='1.2.3.4')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 padded with \x00\x00\x00')
+                  # skipped the trim: forwarded exactly as sent
+                  - Ether()/IP(dst='8.8.8.8', src='1.2.3.4')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 0, skips trim, forwarded from port 1 unchanged')
               - forwarding_port: 0
                 packets:
                   - Ether()/IP(dst='8.8.8.8', src='5.6.7.8')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 CCCCCCCCCCCCCCC')
+                  - Ether()/IP(dst='8.8.8.8', src='5.6.7.8')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 1, skips trim, forwarded from port 0 unchanged')
   - name: "Switch Flow trim use case"
     mode_args:
       - switch
     args: "--switch-mode --trim-size 128"
     stages:
-      - name: "Sending packets to demonstrate FWD_PORT and FWD_RSS branches"
+      - name: "8.8.8.8 pkt_length logic (trim/skip) and 9.9.9.9 always-trim (trim/zero-pad)"
         packets_to_send:
           - receiving_port: 0
             packets:
+              # 8.8.8.8 large -> pkt_length logic -> trimmed to 128 -> peer port
               - Ether()/IP(src="1.2.3.4", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 ' + b'A'*256)
-              - Ether()/IP(src="1.2.3.4", dst="8.8.8.8")/UDP(sport=1234, dport=4789)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 ' + b'B'*256)
+              # 8.8.8.8 small -> pkt_length logic -> skips trim -> forwarded unchanged
+              - Ether()/IP(src="1.2.3.4", dst="8.8.8.8")/UDP(sport=1234, dport=4789)/Raw(load=b'Sent to port 0, skips trim, forwarded from port 1')
+              # 9.9.9.9 large -> always trimmed to 128 -> RSS
               - Ether()/IP(src="1.2.3.4", dst="9.9.9.9")/UDP(sport=1234, dport=4789)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded to RSS ' + b'B'*256)
+              # 9.9.9.9 small -> always trimmed -> zero-padded up to 128 -> RSS
+              - Ether()/IP(src="1.2.3.4", dst="9.9.9.9")/UDP(sport=1234, dport=4789)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded to RSS padded with \x00')
           - receiving_port: 1
             packets:
               - Ether()/IP(src="5.6.7.8", dst="8.8.8.8")/TCP(sport=1234, dport=80)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 ' + b'C'*256)
+              - Ether()/IP(src="5.6.7.8", dst="8.8.8.8")/TCP(sport=1234, dport=4789)/Raw(load=b'Sent to port 1, skips trim, forwarded from port 0 unchanged')
               - Ether()/IP(src="5.6.7.8", dst="9.9.9.9")/UDP(sport=1234, dport=4789)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded to RSS ' + b'D'*256)
-              - Ether()/IP(src="5.6.7.8", dst="8.8.8.8")/UDP(sport=1234, dport=4789)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 padded with \x00')
+              - Ether()/IP(src="5.6.7.8", dst="9.9.9.9")/UDP(sport=1234, dport=4789)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded to RSS padded with \x00')
         validation:
           - type: packet
             expected_packets:
               - forwarding_port: 1
                 packets:
+                  # 8.8.8.8 large: trimmed to 128 bytes
                   - Ether()/IP(dst='8.8.8.8', src='1.2.3.4')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 AAAAAAAAAAAAAAA')
-                  - Ether()/IP(dst='8.8.8.8', src='1.2.3.4')/UDP(dport=4789, sport=1234)/Raw(load=b'Sent to port 0, hit trim pipe match, forwarded from port 1 BBBBBBBBBBBBBBBBBBBBBBBBBBB')
+                  # 8.8.8.8 small: skipped the trim, forwarded exactly as sent
+                  - Ether()/IP(dst='8.8.8.8', src='1.2.3.4')/UDP(dport=4789, sport=1234)/Raw(load=b'Sent to port 0, skips trim, forwarded from port 1')
               - forwarding_port: 0
                 packets:
                   - Ether()/IP(dst='8.8.8.8', src='5.6.7.8')/TCP(dport=80, sport=1234)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 CCCCCCCCCCCCCCC')
-                  - Ether()/IP(dst='8.8.8.8', src='5.6.7.8')/UDP(dport=4789, sport=1234)/Raw(load=b'Sent to port 1, hit trim pipe match, forwarded from port 0 padded with \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
+                  - Ether()/IP(dst='8.8.8.8', src='5.6.7.8')/TCP(dport=4789, sport=1234)/Raw(load=b'Sent to port 1, skips trim, forwarded from port 0 unchanged')
           - type: pattern
             expected_pattern:
-              - counter\[port=0 post post_trim_pipe\(9.9.9.9->FWD_RSS\)\]: total_pkts=1 total_bytes=128
-              - counter\[port=1 post post_trim_pipe\(9.9.9.9->FWD_RSS\)\]: total_pkts=1 total_bytes=128
-
+              # 9.9.9.9 is always trimmed: both the large (trimmed) and the small (zero-padded) packet
+              # leave the post-trim pipe at exactly trim-size (128 bytes).
+              - counter\[port=0 post post_trim_pipe\(9.9.9.9->FWD_RSS\)\]: total_pkts=2 total_bytes=256
+              - counter\[port=1 post post_trim_pipe\(9.9.9.9->FWD_RSS\)\]: total_pkts=2 total_bytes=256

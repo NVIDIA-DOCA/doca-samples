@@ -469,7 +469,7 @@ static void *run_producer(void *context)
 							total_tasks);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to configure producer send tasks: %s", doca_error_get_descr(result));
-		goto destroy_pe;
+		goto destroy_producer;
 	}
 
 	/* Add user data to update context from callbacks */
@@ -477,13 +477,13 @@ static void *run_producer(void *context)
 	result = doca_ctx_set_user_data(doca_comch_producer_as_ctx(producer), ctx_user_data);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set producer user data: %s", doca_error_get_descr(result));
-		goto destroy_pe;
+		goto destroy_producer;
 	}
 
 	result = doca_ctx_start(doca_comch_producer_as_ctx(producer));
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to start producer: %s", doca_error_get_descr(result));
-		goto destroy_pe;
+		goto destroy_producer;
 	}
 
 	/* Allocate a single buffer from registered local memory */
@@ -748,7 +748,7 @@ static void *run_consumer(void *context)
 							     total_tasks);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to configure consumer send tasks: %s", doca_error_get_descr(result));
-		goto destroy_pe;
+		goto destroy_consumer;
 	}
 
 	/* Add user data to update context from callbacks */
@@ -756,13 +756,13 @@ static void *run_consumer(void *context)
 	result = doca_ctx_set_user_data(doca_comch_consumer_as_ctx(consumer), ctx_user_data);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set consumer user data: %s", doca_error_get_descr(result));
-		goto destroy_pe;
+		goto destroy_consumer;
 	}
 
 	result = doca_ctx_start(doca_comch_consumer_as_ctx(consumer));
 	if (result != DOCA_ERROR_IN_PROGRESS) {
 		DOCA_LOG_ERR("Failed to start consumer: %s", doca_error_get_descr(result));
-		goto destroy_pe;
+		goto destroy_consumer;
 	}
 
 	/* Wait for consumer start to complete */

@@ -1,0 +1,62 @@
+#
+# Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+number_of_ports: 3
+min_supported_nic:
+  - ConnectX-10
+mode_args:
+  - switch
+ports_description:
+  port_0: doca_dev
+  port_1: doca_rep_dev
+  port_2: doca_rep_dev
+description: "This sample demonstrates packet generation through three templates in one ordered-list pipe:
+              a selected prefill plus 2-byte inline data in one generate action, a 14-byte inline-only Ethernet frame,
+              and a selected prefill plus 16-byte inline data across two chained generate actions.
+              Original packets are forwarded to logical port 1 and generated packets to logical port 2.
+              Sample Command Line: ./build/doca_flow_packet_generate -- -l 60 -r pci/08:00.0,pf0sf[0-1]"
+use_cases:
+  - name: "Packet-generation ordered-list templates"
+    args: ""
+    stages:
+      - name: "Send one trigger for each packet-generation template"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='1.2.3.4', dst='8.8.8.8')/UDP(sport=1234, dport=80)/Raw(load=b'case-80')
+              - Ether(dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='1.2.3.4', dst='8.8.8.8')/UDP(sport=1234, dport=81)/Raw(load=b'case-81')
+              - Ether(dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='1.2.3.4', dst='8.8.8.8')/UDP(sport=1234, dport=82)/Raw(load=b'case-82')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='1.2.3.4', dst='8.8.8.8')/UDP(sport=1234, dport=80)/Raw(load=b'case-80')
+                  - Ether(dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='1.2.3.4', dst='8.8.8.8')/UDP(sport=1234, dport=81)/Raw(load=b'case-81')
+                  - Ether(dst='00:00:5e:00:01:01', src='9c:63:c0:9c:09:9e')/IP(src='1.2.3.4', dst='8.8.8.8')/UDP(sport=1234, dport=82)/Raw(load=b'case-82')
+              - forwarding_port: 2
+                packets:
+                  - Ether(dst='00:00:00:50:aa:bb', src='aa:bb:aa:bb:aa:bb', type=0xaabb)/Raw(load=b'\xaa\xbb'*121 + b'\x00\x50')
+                  - Ether(dst='00:51:ff:ff:ff:ff', src='ff:ff:ff:ff:ff:ff', type=0xffff)
+                  - Ether(dst='00:00:00:52:aa:bb', src='aa:bb:aa:bb:aa:bb', type=0xaabb)/Raw(load=b'\xaa\xbb'*121 + b'\x00\x52'*8)

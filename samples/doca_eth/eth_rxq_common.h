@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -41,7 +41,16 @@
 doca_error_t get_pkt_headroom(struct doca_buf *pkt, uint16_t *headroom_size);
 
 /*
- * Get DOCA buf packet tailroom size for ETH RXQ sample
+ * Get the data length of a received packet for ETH RXQ sample, summed over its buffer list
+ *
+ * @pkt [in]: DOCA buf packet for ETH RXQ
+ * @data_len [out]: packet data length
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t get_pkt_data_len(struct doca_buf *pkt, size_t *data_len);
+
+/*
+ * Get DOCA buf packet tailroom size for ETH RXQ sample, from whichever buffer of the packet's list carries it
  *
  * @pkt [in]: DOCA buf packet for ETH RXQ
  * @tailroom_size [out]: packet tailroom size

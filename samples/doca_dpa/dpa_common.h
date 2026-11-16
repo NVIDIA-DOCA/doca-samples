@@ -112,6 +112,8 @@ struct dpa_thread_obj {
 	doca_dpa_dev_uintptr_t tls_dev_ptr;    /**< DPA thread local storage device memory pointer */
 	struct doca_dpa_thread *thread;	       /**< Created DPA thread */
 	struct doca_dpa_eu_affinity *affinity; /**< DPA thread affinity */
+	bool event_channel_enabled;	       /**< Whether event channel is enabled */
+	uint32_t max_completions;	       /**< Maximum number of completions for the thread */
 };
 
 /**

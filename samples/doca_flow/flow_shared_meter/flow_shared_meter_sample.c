@@ -384,7 +384,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_meters = 2;
 
-	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "vnf", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -394,7 +394,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -414,7 +414,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to get shared meter id from port %d", port_id);
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		result = doca_flow_port_shared_resource_set_cfg(ports[port_id],
@@ -424,7 +424,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to configure shared meter to port %d", port_id);
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -440,7 +440,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create color pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -452,7 +452,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -463,7 +463,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -471,7 +471,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create color pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -483,7 +483,7 @@ doca_error_t flow_shared_meter(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -494,21 +494,21 @@ doca_error_t flow_shared_meter(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		result = create_control_pipe(ports[port_id], &pipe);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create control pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
 		result = add_control_pipe_entries(pipe, tcp_pipe, udp_pipe, &status);
 		if (result != DOCA_SUCCESS) {
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -516,14 +516,14 @@ doca_error_t flow_shared_meter(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
 		if (status.nb_processed != num_of_entries || status.failure) {
 			DOCA_LOG_ERR("Failed to process entries");
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return DOCA_ERROR_BAD_STATE;
 		}
 	}
@@ -532,6 +532,6 @@ doca_error_t flow_shared_meter(int nb_queues)
 	sleep(5);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

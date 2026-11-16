@@ -23,6 +23,7 @@
  *
  */
 
+#include <doca_config.h>
 #include <doca_ctx.h>
 #include <doca_error.h>
 #include <doca_log.h>

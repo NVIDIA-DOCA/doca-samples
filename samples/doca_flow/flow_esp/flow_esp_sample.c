@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -259,7 +259,7 @@ static doca_error_t add_comparison_pipe_entry(struct doca_flow_pipe *pipe,
 doca_error_t flow_esp(int nb_queues)
 {
 	int nb_ports = 2;
-	struct flow_resources resource = {0};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
@@ -271,7 +271,7 @@ doca_error_t flow_esp(int nb_queues)
 	doca_error_t result;
 	int port_id;
 
-	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "vnf", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -281,7 +281,7 @@ doca_error_t flow_esp(int nb_queues)
 	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -292,7 +292,7 @@ doca_error_t flow_esp(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create GT comparison pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -300,7 +300,7 @@ doca_error_t flow_esp(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add GT comparison pipe entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -308,7 +308,7 @@ doca_error_t flow_esp(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create LT comparison pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -316,7 +316,7 @@ doca_error_t flow_esp(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add LT comparison pipe entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -324,7 +324,7 @@ doca_error_t flow_esp(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create root pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -332,7 +332,7 @@ doca_error_t flow_esp(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add root pipe entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -340,7 +340,7 @@ doca_error_t flow_esp(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 	}
@@ -349,6 +349,6 @@ doca_error_t flow_esp(int nb_queues)
 	sleep(WAITING_TIME);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

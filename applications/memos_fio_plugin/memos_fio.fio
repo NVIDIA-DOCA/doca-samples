@@ -1,0 +1,123 @@
+#
+# Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+# =============================================================================
+# memos_fio_plugin — example fio job file
+# =============================================================================
+# Loads the DOCA KV emulation fio plugin (libdoca_memos_fio_plugin.so). The
+# engine uses the NVMe kernel KV stack (doca_kv_nvme_kernel_dev / doca_kv_io).
+#
+# Workload type comes from standard fio options rw= and rwmixread=:
+#   read / randread  -> KV retrieve
+#   write / randwrite -> KV store
+#   rw / randrw      -> mixed (use rwmixread= for read percentage)
+#
+# Engine-specific options (kv_iovcnt, fio-log-level, doca-log-level) are only
+# understood after fio loads the ioengine. Put them in the job file (or ensure
+# --ioengine= points at the .so first) so fio does not reject unknown options.
+#
+# filename (required): colon-separated NVMe character device paths, e.g.
+#   /dev/ng0n1
+#   /dev/ng0n1:/dev/ng0n0
+# The plugin opens each path, reads the namespace NGUID from the device, and
+# creates one KV device per path (up to 8). Each fio file name must match one
+# of those paths (see open_file).
+#
+# size= is required. A KV namespace reports no usable capacity, so size= sets
+# the key range: size / bs keys. Keep it within what the target can hold.
+#
+# numjobs maps to parallel KV I/O threads (each with its own progress engine).
+# Validation requires numjobs <= online logical CPU count and numjobs <= 32.
+#
+# Keys are 8 bytes from fio byte offset; hash selected by hash_type (default 2=splitmix64).
+# =============================================================================
+
+[global]
+# Path to the plugin, or ioengine=memos_fio when installed on fio's plugin path.
+ioengine=/ABS/PATH/TO/libdoca_memos_fio_plugin.so
+
+# mem: allocate per-thread I/O buffers from huge pages (MAP_HUGETLB). Reduces TLB
+# pressure for large bs × iodepth. The memos_fio ioengine must advertise
+# FIO_MEMALIGN; otherwise fio can under-size the mmap region and
+# crash in small_content_scramble on writes. Use mem=malloc if hugepages are unavailable.
+mem=mmaphuge
+# hugepage-size: page size for mem=mmaphuge / mem=shmhuge (must match host hugetlb config).
+hugepage-size=2M
+
+# Colon-separated NVMe KV namespace device paths (required for plugin init), e.g. /dev/ng0n1:/dev/ng0n2
+# filename=/dev/ng0n1
+
+# thread=1: each fio job runs in its own pthread (typical for concurrent clients).
+thread=1
+
+# direct=1: O_DIRECT-style hint; the engine is diskless (FIO_DISKLESSIO) and does
+# not use POSIX read/write on a block fd, but this matches common NVMe job files.
+direct=1
+
+# bs: fio block size per io_u. KV key = hash(hash_type, byte offset); see hash_type engine option.
+# hash_type: 1=xxh64, 2=splitmix64 (default), 3=murmur3_64
+# bs must not exceed the namespace's maximum value length (MXVL).
+bs=4k
+
+# size: key range in bytes (size / bs keys). Use the same size= for store and
+# retrieve runs so reads cover the stored keys.
+size=512k
+
+group_reporting=1
+
+# Wall-clock benchmark window (seconds if no unit); fio loops over the key range.
+time_based=1
+runtime=15
+
+# Example workloads (pick one):
+# rw=randread
+# rw=randwrite
+rw=randrw
+# rwmixread=70
+
+# Reads of keys that were never stored complete with ENOENT; keep going instead
+# of aborting the job. Needed for any read or mixed workload.
+continue_on_error=read
+ignore_error=ENOENT
+
+[job1]
+# Per-file device path; must match one entry from the colon-separated filename=# /dev/ng0n1:/dev/ng0n2
+# in [global] (or this section if you override filename there).
+filename=/dev/ng0n1
+
+# Number of iovecs per KV store/retrieve (1-56). Each io_u buffer is split into
+# that many evenly sized chunks, so bs must be at least kv_iovcnt bytes.
+kv_iovcnt=1
+
+# Parallel fio threads / KV I/O contexts (must be <= online CPU count).
+numjobs=1
+
+# Per-thread queue depth (DOCA task pool size per namespace I/O context).
+iodepth=8
+
+# Optional logging (numeric doca_log_level; 0 = plugin default).
+# fio-log-level: lower limit for DOCA_LOG_* from this plugin.
+fio-log-level=60
+# doca-log-level: SDK log limit (doca_log_level_set_global_sdk_limit).
+# doca-log-level=60

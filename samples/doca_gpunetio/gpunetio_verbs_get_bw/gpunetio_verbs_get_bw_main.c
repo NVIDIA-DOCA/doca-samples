@@ -72,7 +72,7 @@ static doca_error_t register_verbs_params(void)
 		return status;
 	}
 	doca_argp_param_set_short_name(nic_handler_param, "n");
-	doca_argp_param_set_long_name(nic_handler_param, "nic handler");
+	doca_argp_param_set_long_name(nic_handler_param, "nic-handler");
 	doca_argp_param_set_arguments(
 		nic_handler_param,
 		"<NIC handler type (0: AUTO, 1: CPU Proxy 2: GPU DB 3: BlueFlame 4: GPU DB no DBR 5: CPU Proxy no DBR)>");
@@ -144,7 +144,8 @@ static doca_error_t register_verbs_params(void)
 	}
 	doca_argp_param_set_short_name(iters_param, "i");
 	doca_argp_param_set_long_name(iters_param, "iters");
-	doca_argp_param_set_description(iters_param, "Number of iterations (optional)");
+	doca_argp_param_set_description(iters_param,
+					"Number of iterations, a multiple of the number of CUDA threads (optional)");
 	doca_argp_param_set_callback(iters_param, iters_callback);
 	doca_argp_param_set_type(iters_param, DOCA_ARGP_TYPE_INT);
 	status = doca_argp_register_param(iters_param);
@@ -237,6 +238,17 @@ int main(int argc, char **argv)
 	status = doca_argp_start(argc, argv);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(status));
+		goto argp_cleanup;
+	}
+
+	status = verbs_validate_config(&cfg, VERBS_CUDA_BLOCK, 0);
+	if (status != DOCA_SUCCESS)
+		goto argp_cleanup;
+
+	/* The bandwidth kernels have no BlueFlame submit path: -n 3 would ring regular GPU DBs on a BlueFlame UAR */
+	if (cfg.nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF) {
+		DOCA_LOG_ERR("NIC handler BlueFlame (-n 3) is not supported by this sample");
+		status = DOCA_ERROR_NOT_SUPPORTED;
 		goto argp_cleanup;
 	}
 

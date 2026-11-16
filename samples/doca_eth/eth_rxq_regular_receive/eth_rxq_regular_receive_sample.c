@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -42,7 +42,7 @@
 DOCA_LOG_REGISTER(ETH_RXQ_REGULAR_RECEIVE);
 
 #define SLEEP_IN_NANOS (10 * 1000)  /* sample the task every 10 microseconds  */
-#define MAX_BURST_SIZE 256	    /* Max burst size to set for eth_rxq */
+#define MAX_INFLIGHT_PACKETS 256    /* Max inflight packets to set for eth_rxq */
 #define MAX_PKT_SIZE 1600	    /* Max packet size to set for eth_rxq */
 #define BUFS_NUM 1		    /* Number of DOCA buffers */
 #define TASKS_NUM 1		    /* Tasks number */
@@ -82,14 +82,14 @@ static void task_recv_common_cb(struct doca_eth_rxq_task_recv *task_recv,
 	state->inflight_tasks--;
 	DOCA_LOG_INFO("Receive task user data is 0x%lx", task_user_data.u64);
 
-	status = doca_eth_rxq_task_recv_get_pkt(task_recv, &pkt);
+	status = doca_eth_rxq_task_recv_get_packet(task_recv, &pkt);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get packet of a receive task, err: %s", doca_error_get_name(status));
-		doca_task_free(doca_eth_rxq_task_recv_as_doca_task(task_recv));
+		doca_task_free(doca_eth_rxq_task_recv_as_task(task_recv));
 		return;
 	}
 
-	task_status = doca_task_get_status(doca_eth_rxq_task_recv_as_doca_task(task_recv));
+	task_status = doca_task_get_status(doca_eth_rxq_task_recv_as_task(task_recv));
 
 	if (task_status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to receive a packet, err: %s", doca_error_get_name(task_status));
@@ -125,7 +125,7 @@ static void task_recv_common_cb(struct doca_eth_rxq_task_recv *task_recv,
 	if (status != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to free packet buf, err: %s", doca_error_get_name(status));
 
-	doca_task_free(doca_eth_rxq_task_recv_as_doca_task(task_recv));
+	doca_task_free(doca_eth_rxq_task_recv_as_task(task_recv));
 }
 
 /*
@@ -199,7 +199,7 @@ static doca_error_t destroy_eth_rxq_packet_buffers(struct eth_rxq_sample_objects
  */
 static void destroy_eth_rxq_tasks(struct eth_rxq_sample_objects *state)
 {
-	doca_task_free(doca_eth_rxq_task_recv_as_doca_task(state->recv_task));
+	doca_task_free(doca_eth_rxq_task_recv_as_task(state->recv_task));
 }
 
 /*
@@ -232,7 +232,7 @@ static doca_error_t create_eth_rxq_ctx(struct eth_rxq_sample_objects *state)
 	union doca_data user_data;
 
 	status = doca_eth_rxq_create(state->core_resources.core_objs.dev,
-				     MAX_BURST_SIZE,
+				     MAX_INFLIGHT_PACKETS,
 				     MAX_PKT_SIZE,
 				     &(state->eth_rxq));
 	if (status != DOCA_SUCCESS) {
@@ -270,7 +270,7 @@ static doca_error_t create_eth_rxq_ctx(struct eth_rxq_sample_objects *state)
 		goto destroy_eth_rxq;
 	}
 
-	state->core_resources.core_objs.ctx = doca_eth_rxq_as_doca_ctx(state->eth_rxq);
+	state->core_resources.core_objs.ctx = doca_eth_rxq_as_ctx(state->eth_rxq);
 	if (state->core_resources.core_objs.ctx == NULL) {
 		DOCA_LOG_ERR("Failed to retrieve DOCA ETH RXQ context as DOCA context, err: %s",
 			     doca_error_get_name(status));
@@ -330,7 +330,7 @@ static doca_error_t submit_eth_rxq_tasks(struct eth_rxq_sample_objects *state)
 {
 	doca_error_t status;
 
-	status = doca_task_submit(doca_eth_rxq_task_recv_as_doca_task(state->recv_task));
+	status = doca_task_submit(doca_eth_rxq_task_recv_as_task(state->recv_task));
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to submit receive task, err: %s", doca_error_get_name(status));
 		return status;
@@ -353,8 +353,7 @@ static doca_error_t create_eth_rxq_tasks(struct eth_rxq_sample_objects *state)
 	union doca_data user_data;
 
 	user_data.u64 = RECV_TASK_USER_DATA;
-	status =
-		doca_eth_rxq_task_recv_allocate_init(state->eth_rxq, state->packet_buf, user_data, &(state->recv_task));
+	status = doca_eth_rxq_task_recv_alloc_init(state->eth_rxq, state->packet_buf, user_data, &(state->recv_task));
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to allocate receive task, err: %s", doca_error_get_name(status));
 		return status;
@@ -434,16 +433,16 @@ static void eth_rxq_cleanup(struct eth_rxq_sample_objects *state)
 static doca_error_t check_device(struct doca_devinfo *devinfo)
 {
 	doca_error_t status;
-	uint32_t max_supported_burst_size;
+	uint32_t max_supported_inflight_packets;
 	uint32_t max_supported_packet_size;
 
-	status = doca_eth_rxq_cap_get_max_burst_size(devinfo, &max_supported_burst_size);
+	status = doca_eth_rxq_cap_get_max_inflight_packets(devinfo, &max_supported_inflight_packets);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get supported max burst size, err: %s", doca_error_get_name(status));
+		DOCA_LOG_ERR("Failed to get supported max inflight packets, err: %s", doca_error_get_name(status));
 		return status;
 	}
 
-	if (max_supported_burst_size < MAX_BURST_SIZE)
+	if (max_supported_inflight_packets < MAX_INFLIGHT_PACKETS)
 		return DOCA_ERROR_NOT_SUPPORTED;
 
 	status = doca_eth_rxq_cap_get_max_packet_size(devinfo, &max_supported_packet_size);

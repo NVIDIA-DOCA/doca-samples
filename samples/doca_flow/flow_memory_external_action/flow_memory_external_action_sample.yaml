@@ -1,0 +1,376 @@
+#
+# Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+number_of_ports: 2
+min_supported_nic:
+  - ConnectX-9
+mode_args:
+  - vnf
+ports_description:
+  port_0: doca_dev
+  port_1: doca_dev
+description: "This sample shows how to use the DOCA Flow memory external action with a
+              selectable operation (--operation). It creates a 16-entry 64-bit external memory and
+              seeds slot i with a distinct 64-bit value (0x1122334455667700 + i), then builds a
+              classifier -> memory ordered-list -> egress pipeline on port 0. The classifier
+              copies the packet source IP into the high 32 bits and destination IP into the low
+              32 bits of a metadata register pair (the input for STORE/ADD/XOR/OR/AND); the
+              selected memory operation acts on the addressed slot and leaves its return value
+              (defined per-operation - see doca_flow_external_action_memory_operation) in the
+              register pair. Both modes select the slot per packet from the low
+              log2(num_resources) bits of the L4 source port: by default the classifier matches
+              the port and forwards to a per-slot memory entry, while --use-access-index copies
+              the port into the access_index register instead. The egress pipe writes the
+              operation's return value back onto the packet, so a forwarded IPv4 packet leaves
+              port 1 carrying that value. The injected packet uses L4 source port 1234, which
+              selects slot 2 (1234 & 0xf), seeded 0x1122334455667702. For the first packet of a
+              fresh run, LOAD/STORE/ADD/XOR/OR/AND all return the same value (the seed) since
+              there is no prior operation on the slot to distinguish them; FFS_ID_MSB/LSB and
+              FIND_FIRST_SET_AND_RESET_ID_MSB/LSB return the found bit's index (from LSB, see the
+              programming guide for the exact register layout); FFS_SET_BITMAP_MSB/LSB and
+              FIND_FIRST_SET_AND_RESET_BITMAP_MSB/LSB return a one-hot bitmask of the found bit.
+              The memory is read back through the host read API before and after so the 64-bit
+              effect is observable.
+              Sample Command Line: ./build/doca_flow_memory_external_action -- -a pci/08:00.0 -a pci/08:00.1 --operation add"
+use_cases:
+  - name: "Memory external action LOAD"
+    args: "--operation load"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action LOAD sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='17.34.51.68', dst='85.102.119.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action LOAD sample')
+  - name: "Memory external action STORE"
+    args: "--operation store"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action STORE sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='17.34.51.68', dst='85.102.119.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action STORE sample')
+      - name: "Sending packets iteration 2"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action STORE sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action STORE sample')
+  - name: "Memory external action ADD (port-selected slot)"
+    args: "--operation add"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action ADD sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='17.34.51.68', dst='85.102.119.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action ADD sample')
+      - name: "Sending packets iteration 2"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action ADD sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='18.35.52.69', dst='87.104.121.4')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action ADD sample')
+  - name: "Memory external action ADD (access_index register)"
+    args: "--operation add --use-access-index"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action ADD sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='17.34.51.68', dst='85.102.119.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action ADD sample')
+      - name: "Sending packets iteration 2"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action ADD sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='18.35.52.69', dst='87.104.121.4')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action ADD sample')
+  - name: "Memory external action XOR"
+    args: "--operation xor"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action XOR sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='17.34.51.68', dst='85.102.119.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action XOR sample')
+      - name: "Sending packets iteration 2"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action XOR sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='16.35.50.69', dst='87.100.117.0')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action XOR sample')
+  - name: "Memory external action OR"
+    args: "--operation or"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action OR sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='17.34.51.68', dst='85.102.119.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action OR sample')
+      - name: "Sending packets iteration 2"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action OR sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='17.35.51.69', dst='87.102.119.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action OR sample')
+  - name: "Memory external action AND"
+    args: "--operation and"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action AND sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='17.34.51.68', dst='85.102.119.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action AND sample')
+      - name: "Sending packets iteration 2"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action AND sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.0.1.0', dst='0.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action AND sample')
+  - name: "Memory external action FFS_ID_MSB"
+    args: "--operation ffs-id-msb"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_ID_MSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='240.0.0.0', dst='0.0.0.0')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_ID_MSB sample')
+  - name: "Memory external action FFS_BITMAP_MSB"
+    args: "--operation ffs-bitmap-msb"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_BITMAP_MSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='16.0.0.0', dst='0.0.0.0')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_BITMAP_MSB sample')
+  - name: "Memory external action FFS_ID_LSB"
+    args: "--operation ffs-id-lsb"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_ID_LSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='4.0.0.0', dst='0.0.0.0')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_ID_LSB sample')
+  - name: "Memory external action FFS_BITMAP_LSB"
+    args: "--operation ffs-bitmap-lsb"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_BITMAP_LSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='0.0.0.0', dst='0.0.0.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_BITMAP_LSB sample')
+  - name: "Memory external action FFS_RESET_ID_MSB"
+    args: "--operation ffs-reset-id-msb"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_ID_MSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='240.0.0.0', dst='0.0.0.0')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_ID_MSB sample')
+      - name: "Sending packets iteration 2"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_ID_MSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='224.0.0.0', dst='0.0.0.0')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_ID_MSB sample')
+  - name: "Memory external action FFS_RESET_BITMAP_MSB"
+    args: "--operation ffs-reset-bitmap-msb"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_BITMAP_MSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='16.0.0.0', dst='0.0.0.0')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_BITMAP_MSB sample')
+      - name: "Sending packets iteration 2"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_BITMAP_MSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.0.0.0', dst='0.0.0.0')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_BITMAP_MSB sample')
+  - name: "Memory external action FFS_RESET_ID_LSB"
+    args: "--operation ffs-reset-id-lsb"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_ID_LSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='4.0.0.0', dst='0.0.0.0')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_ID_LSB sample')
+      - name: "Sending packets iteration 2"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_ID_LSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='32.0.0.0', dst='0.0.0.0')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_ID_LSB sample')
+  - name: "Memory external action FFS_RESET_BITMAP_LSB"
+    args: "--operation ffs-reset-bitmap-lsb"
+    stages:
+      - name: "Sending packets iteration 1"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_BITMAP_LSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='0.0.0.0', dst='0.0.0.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_BITMAP_LSB sample')
+      - name: "Sending packets iteration 2"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='1.1.1.1', dst='2.2.2.2')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_BITMAP_LSB sample')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether(src='aa:bb:cc:dd:ee:ff')/IP(src='0.0.0.0', dst='0.0.1.0')/UDP(sport=1234, dport=80)/Raw(load=b'memory external action FFS_RESET_BITMAP_LSB sample')

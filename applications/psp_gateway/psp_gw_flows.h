@@ -231,11 +231,11 @@ private:
 	void init_status(psp_gw_app_config *app_cfg);
 
 	/**
-	 * @brief handles the binding of the shared resources to ports
+	 * @brief allocates the shared-resource IDs for the PF port
 	 *
 	 * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
 	 */
-	doca_error_t bind_shared_resources(void);
+	doca_error_t get_shared_resource_ids(void);
 
 	/**
 	 * @brief handles the setup of the packet flooding shared resources

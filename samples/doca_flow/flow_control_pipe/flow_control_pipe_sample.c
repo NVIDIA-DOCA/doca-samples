@@ -854,7 +854,7 @@ static void print_control_pipe_stats(int nb_ports,
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query shared counter resource: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return;
 		}
 	}
@@ -908,7 +908,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 2;
 	resource.nr_decap = 5;
-	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "vnf", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -918,7 +918,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -932,7 +932,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to get shared counter id from port %d", port_id);
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		/* config and bind shared counter to port */
@@ -943,7 +943,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to configure shared counter to port %d", port_id);
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -951,7 +951,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add vxlan pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -959,7 +959,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add vxlan pipe entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		num_of_entries++;
@@ -968,7 +968,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add vxlan gpe pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -976,7 +976,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add vxlan gpe pipe entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		num_of_entries++;
@@ -985,7 +985,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add mpls pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -993,7 +993,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add mpls pipe entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		num_of_entries++;
@@ -1002,7 +1002,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add gre pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -1010,7 +1010,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add gre pipe entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		num_of_entries++;
@@ -1019,7 +1019,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add gre pipe or entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -1027,7 +1027,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create control pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -1042,7 +1042,7 @@ doca_error_t flow_control_pipe(int nb_queues)
 						  shared_counter_ids[port_id]);
 		if (result != DOCA_SUCCESS) {
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -1050,14 +1050,14 @@ doca_error_t flow_control_pipe(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
 		if (status.nb_processed != num_of_entries || status.failure) {
 			DOCA_LOG_ERR("Failed to process entries");
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return DOCA_ERROR_BAD_STATE;
 		}
 	}
@@ -1071,6 +1071,6 @@ doca_error_t flow_control_pipe(int nb_queues)
 	flow_wait_for_packets(10, print_control_pipe_stats_wrapper, &ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

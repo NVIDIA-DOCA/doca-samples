@@ -93,14 +93,16 @@ static doca_error_t handle_stdin_command(bool hotplug, uint32_t num_ep, struct v
 	uint32_t dsp_idx = (uint32_t)val;
 
 	if (strcmp(cmd, "plug") == 0) {
+		const uint8_t phase = atomic_load_explicit(&hp[dsp_idx].io_ctx_phase, memory_order_acquire);
+
 		/* plug_msi_pending also implies a plug is in progress: controller is
 		 * already enabled and OE is retrying to send the hotplug MSI. Accepting
 		 * a new "plug" here would re-create the virtio_dev on top of the
 		 * existing one. */
-		if (hp[dsp_idx].enabled || hp[dsp_idx].plug_requested || hp[dsp_idx].need_io_ctx ||
+		if (hp[dsp_idx].enabled || hp[dsp_idx].plug_requested || phase == VBLK_IO_CTX_CREATE ||
 		    hp[dsp_idx].plug_msi_pending) {
 			DOCA_LOG_WARN("EP %u already plugged or plug in progress", dsp_idx);
-		} else if (hp[dsp_idx].unplug_requested || hp[dsp_idx].need_io_ctx_shutdown) {
+		} else if (hp[dsp_idx].unplug_requested || phase == VBLK_IO_CTX_SHUTDOWN) {
 			DOCA_LOG_WARN("EP %u is still unplugging, wait for unplug to complete", dsp_idx);
 		} else {
 			DOCA_LOG_INFO("Queuing plug for DSP[%u] to OE thread", dsp_idx);

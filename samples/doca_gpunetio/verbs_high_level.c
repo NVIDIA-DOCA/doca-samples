@@ -46,14 +46,16 @@ static doca_error_t create_uar(struct doca_dev *dev,
 	if (nic_handler != DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF) {
 		status = doca_uar_create(dev, DOCA_UAR_ALLOCATION_TYPE_NONCACHE_DEDICATED, external_uar);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to doca_uar_create NC DEDICATED");
 #if CUDA_VERSION >= 12020
+			DOCA_LOG_WARN("Failed to doca_uar_create NC DEDICATED, trying NC");
 			status = doca_uar_create(dev, DOCA_UAR_ALLOCATION_TYPE_NONCACHE, external_uar);
 			if (status != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to doca_uar_create NC");
 			} else {
-				DOCA_LOG_ERR("UAR created with DOCA_UAR_ALLOCATION_TYPE_NONCACHE_DEDICATED");
+				DOCA_LOG_INFO("UAR created with DOCA_UAR_ALLOCATION_TYPE_NONCACHE");
 			}
+#else
+			DOCA_LOG_ERR("Failed to doca_uar_create NC DEDICATED");
 #endif
 		} else
 			return DOCA_SUCCESS;
@@ -62,7 +64,7 @@ static doca_error_t create_uar(struct doca_dev *dev,
 	if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF) {
 		status = doca_uar_create(dev, DOCA_UAR_ALLOCATION_TYPE_BLUEFLAME, external_uar);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to doca_uar_create NC");
+			DOCA_LOG_ERR("Failed to doca_uar_create BF");
 			return status;
 		}
 	}
@@ -70,7 +72,7 @@ static doca_error_t create_uar(struct doca_dev *dev,
 	if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO && status != DOCA_SUCCESS) {
 		status = doca_uar_create(dev, DOCA_UAR_ALLOCATION_TYPE_BLUEFLAME, external_uar);
 		if (status != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("Failed to doca_uar_create NC");
+			DOCA_LOG_ERR("Failed to doca_uar_create BF");
 			return status;
 		}
 	}
@@ -126,8 +128,9 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 	}
 
 	external_umem_size = calc_cq_external_umem_size(ncqes);
-	if (status != DOCA_SUCCESS) {
+	if (external_umem_size == 0) {
 		DOCA_LOG_ERR("Failed to calc external umem size");
+		status = DOCA_ERROR_INVALID_VALUE;
 		goto destroy_resources;
 	}
 
@@ -159,6 +162,7 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 	status_cuda = cudaMemcpy((*gpu_umem_dev_ptr), (void *)(cq_ring_haddr), external_umem_size, cudaMemcpyDefault);
 	if (status_cuda != cudaSuccess) {
 		DOCA_LOG_ERR("Failed to cudaMempy gpu cq ring buffer ret %d", status_cuda);
+		status = DOCA_ERROR_DRIVER;
 		goto destroy_resources;
 	}
 
@@ -232,6 +236,7 @@ static doca_error_t create_cq(struct doca_gpu *gpu_dev,
 	}
 
 	status = doca_verbs_cq_attr_destroy(verbs_cq_attr);
+	verbs_cq_attr = NULL;
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to destroy doca verbs cq attributes: %s", doca_error_get_descr(status));
 		goto destroy_resources;
@@ -325,6 +330,7 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 		status = doca_verbs_device_attr_get_is_cqe_inline_supported(verbs_device_attr);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("CQE inline resp not supported by this device: %s", doca_error_get_descr(status));
+			doca_verbs_device_attr_free(verbs_device_attr);
 			return status;
 		}
 	}
@@ -337,8 +343,15 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 			DOCA_LOG_ERR(
 				"Send DBR mode ext not supported by this device: %s. NO_DBR mode can't be used here.",
 				doca_error_get_descr(status));
+			doca_verbs_device_attr_free(verbs_device_attr);
 			return status;
 		}
+	}
+
+	status = doca_verbs_device_attr_free(verbs_device_attr);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to free device attributes: %s", doca_error_get_descr(status));
+		return status;
 	}
 
 	status = doca_verbs_qp_init_attr_create(&verbs_qp_init_attr);
@@ -404,6 +417,7 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 		*gpu_umem_dbr_dev_ptr = calloc(dbr_umem_align_sz, sizeof(uint8_t));
 		if (*gpu_umem_dbr_dev_ptr == NULL) {
 			DOCA_LOG_ERR("Failed to alloc gpu memory for external umem qp");
+			status = DOCA_ERROR_NO_MEMORY;
 			goto destroy_resources;
 		}
 
@@ -516,15 +530,13 @@ static doca_error_t create_qp(struct doca_gpu *gpu_dev,
 	}
 
 	status = doca_verbs_qp_init_attr_destroy(verbs_qp_init_attr);
+	verbs_qp_init_attr = NULL;
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to destroy doca verbs QP attributes: %s", doca_error_get_descr(status));
 		goto destroy_resources;
 	}
 
 	*verbs_qp = new_qp;
-
-	// Immediately close dmabuf_fd after registration.
-	// if (dmabuf_fd > 0) close(dmabuf_fd);
 
 	return DOCA_SUCCESS;
 
@@ -706,87 +718,10 @@ doca_error_t doca_gpu_verbs_create_qp_hl(struct doca_gpu_verbs_qp_init_attr_hl *
 	return DOCA_SUCCESS;
 
 exit_error:
-	if (qp_->qp != NULL) {
-		tmp_status = doca_verbs_qp_destroy(qp_->qp);
-		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy doca verbs QP: %s", doca_error_get_descr(tmp_status));
-	}
-
-	if (qp_->qp_umem != NULL) {
-		tmp_status = doca_umem_destroy(qp_->qp_umem);
-		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu qp umem: %s", doca_error_get_descr(tmp_status));
-	}
-
-	if (qp_->qp_umem_gpu_ptr != 0) {
-		tmp_status = doca_gpu_mem_free(qp_->gpu_dev, qp_->qp_umem_gpu_ptr);
-		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu memory of qp ring buffer: %s",
-				     doca_error_get_descr(tmp_status));
-	}
-
-	if (qp_->qp_umem_dbr != NULL) {
-		tmp_status = doca_umem_destroy(qp_->qp_umem_dbr);
-		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu qp dbr umem: %s", doca_error_get_descr(tmp_status));
-	}
-
-	if (qp_->qp_umem_dbr_gpu_ptr != 0) {
-		if (qp_->nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY) {
-			free(qp_->qp_umem_dbr_gpu_ptr);
-		} else {
-			tmp_status = doca_gpu_mem_free(qp_->gpu_dev, qp_->qp_umem_dbr_gpu_ptr);
-			if (tmp_status != DOCA_SUCCESS)
-				DOCA_LOG_ERR("Failed to destroy gpu memory of qp dbr buffer: %s",
-					     doca_error_get_descr(tmp_status));
-		}
-	}
-
-	if (qp_->external_uar != NULL) {
-		tmp_status = doca_uar_destroy(qp_->external_uar);
-		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy doca verbs UAR: %s", doca_error_get_descr(tmp_status));
-	}
-
-	if (qp_->cq_rq != NULL) {
-		tmp_status = doca_verbs_cq_destroy(qp_->cq_rq);
-		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy doca verbs rq cq: %s", doca_error_get_descr(tmp_status));
-	}
-
-	if (qp_->cq_rq_umem != NULL) {
-		tmp_status = doca_umem_destroy(qp_->cq_rq_umem);
-		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu rq cq ring buffer umem: %s",
-				     doca_error_get_descr(tmp_status));
-	}
-
-	if (qp_->cq_rq_umem_gpu_ptr != 0) {
-		tmp_status = doca_gpu_mem_free(qp_->gpu_dev, qp_->cq_rq_umem_gpu_ptr);
-		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu memory of rq cq ring buffer: %s",
-				     doca_error_get_descr(tmp_status));
-	}
-
-	if (qp_->cq_sq != NULL) {
-		tmp_status = doca_verbs_cq_destroy(qp_->cq_sq);
-		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy doca verbs sq cq: %s", doca_error_get_descr(tmp_status));
-	}
-
-	if (qp_->cq_sq_umem != NULL) {
-		tmp_status = doca_umem_destroy(qp_->cq_sq_umem);
-		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu sq cq ring buffer umem: %s",
-				     doca_error_get_descr(tmp_status));
-	}
-
-	if (qp_->cq_sq_umem_gpu_ptr != 0) {
-		tmp_status = doca_gpu_mem_free(qp_->gpu_dev, qp_->cq_sq_umem_gpu_ptr);
-		if (tmp_status != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to destroy gpu memory of sq cq ring buffer: %s",
-				     doca_error_get_descr(tmp_status));
-	}
+	/* Also unexports the QP if the failure came after doca_gpu_verbs_export_qp(), and destroys the UAR last */
+	tmp_status = doca_gpu_verbs_destroy_qp_hl(qp_);
+	if (tmp_status != DOCA_SUCCESS)
+		DOCA_LOG_ERR("Failed to destroy high-level qp: %s", doca_error_get_descr(tmp_status));
 
 	free(qp_);
 	return status;
@@ -987,6 +922,7 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 	/********** Create main QP **********/
 
 	qpg_->qp_main.gpu_dev = qp_init_attr->gpu_dev;
+	qpg_->qp_main.nic_handler = qp_init_attr->nic_handler;
 
 	status = create_uar(qp_init_attr->dev, qpg_->qp_main.nic_handler, &qpg_->qp_main.external_uar);
 	if (status != DOCA_SUCCESS) {
@@ -1030,8 +966,6 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 			goto exit_error;
 		}
 	}
-
-	qpg_->qp_main.nic_handler = qp_init_attr->nic_handler;
 
 	status = create_qp(qpg_->qp_main.gpu_dev,
 			   qp_init_attr->dev,
@@ -1185,20 +1119,12 @@ doca_error_t doca_gpu_verbs_create_qp_group_hl(struct doca_gpu_verbs_qp_init_att
 	return DOCA_SUCCESS;
 
 exit_error:
+	/* The shared UAR is owned by the main QP and destroyed after both QPs and their CQs */
+	tmp_status = doca_gpu_verbs_destroy_qp_group_hl(qpg_);
+	if (tmp_status != DOCA_SUCCESS)
+		DOCA_LOG_ERR("Failed to destroy high-level qp group: %s", doca_error_get_descr(tmp_status));
 
-	if (qpg_) {
-		if (qpg_->qp_main.external_uar != NULL) {
-			tmp_status = doca_uar_destroy(qpg_->qp_main.external_uar);
-			if (tmp_status != DOCA_SUCCESS)
-				DOCA_LOG_ERR("Failed to destroy doca verbs UAR: %s", doca_error_get_descr(tmp_status));
-			qpg_->qp_main.external_uar = NULL;
-			qpg_->qp_companion.external_uar = NULL;
-		}
-
-		doca_gpu_verbs_destroy_qp_group_hl(qpg_);
-		free(qpg_);
-	}
-
+	free(qpg_);
 	return status;
 }
 
@@ -1210,16 +1136,20 @@ doca_error_t doca_gpu_verbs_destroy_qp_group_hl(struct doca_gpu_verbs_qp_group_h
 	if (qpg == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
 
-	status = doca_gpu_verbs_destroy_qp_hl(&qpg->qp_main);
-	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to destroy QP group main QP: %s", doca_error_get_descr(status));
-		DOCA_ERROR_PROPAGATE(result, status);
-	}
-
+	/*
+	 * The companion QP and its CQs use the UAR owned by the main QP: destroy the companion first, without
+	 * the UAR, so that the UAR is released last together with the main QP.
+	 */
 	qpg->qp_companion.external_uar = NULL;
 	status = doca_gpu_verbs_destroy_qp_hl(&qpg->qp_companion);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to destroy QP group companion QP: %s", doca_error_get_descr(status));
+		DOCA_ERROR_PROPAGATE(result, status);
+	}
+
+	status = doca_gpu_verbs_destroy_qp_hl(&qpg->qp_main);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to destroy QP group main QP: %s", doca_error_get_descr(status));
 		DOCA_ERROR_PROPAGATE(result, status);
 	}
 

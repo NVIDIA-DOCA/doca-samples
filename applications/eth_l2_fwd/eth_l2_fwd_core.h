@@ -54,8 +54,8 @@ struct eth_l2_fwd_cfg {
 	uint16_t pkt_max_process_time;		 /* Packet max process time for ETH RXQ memory buffer size estimation */
 	uint16_t number_cores;			 /* Number of cores used for forwarding */
 	uint16_t batch_size;			 /* Batch size for tasks/events */
-	uint16_t tx_depth;			 /*  Max burst size for DOCA ETH TXQ contexts creation */
-	uint16_t rx_depth;			 /* Max burst size for DOCA ETH RXQ contexts creation */
+	uint16_t tx_depth;			 /*  Max inflight packets for DOCA ETH TXQ contexts creation */
+	uint16_t rx_depth;			 /* Max inflight packets for DOCA ETH RXQ contexts creation */
 	uint8_t one_sided_fwd;			 /* One-sided forwarding flag:
 						  * 0 - two-sided forwarding
 						  * 1 - device 1 -> device 2

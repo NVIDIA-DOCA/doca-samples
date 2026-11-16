@@ -457,19 +457,22 @@ exit:
 doca_error_t flow_custom_header_bind(struct application_graph_config *graph_config, struct flow_dev_ctx *flow_dev_ctx)
 {
 	doca_error_t err;
+	doca_error_t unbind_err;
 	int i;
 
 	for (i = 0; i < flow_dev_ctx->nb_devs; i++) {
 		err = doca_flow_custom_header_graph_bind(graph_config->graph, flow_dev_ctx->devs_manager[i].doca_dev);
 		if (DOCA_IS_ERROR(err)) {
 			DOCA_LOG_ERR("Failed to bind parse graph to device (%s)", doca_error_get_descr(err));
-			err = doca_flow_custom_header_graph_unbind(graph_config->graph);
-			if (DOCA_IS_ERROR(err))
-				DOCA_LOG_ERR("Failed to unbind parse graph (%s)", doca_error_get_descr(err));
-			break;
+			goto unbind;
 		}
 	}
 
+	return DOCA_SUCCESS;
+unbind:
+	unbind_err = doca_flow_custom_header_graph_unbind(graph_config->graph);
+	if (DOCA_IS_ERROR(unbind_err))
+		DOCA_LOG_ERR("Failed to unbind parse graph (%s)", doca_error_get_descr(unbind_err));
 	return err;
 };
 
@@ -963,7 +966,7 @@ doca_error_t flow_twamp_header(int nb_queues)
 {
 	struct doca_flow_definitions *defs = NULL;
 	const int nb_ports = 1;
-	struct flow_resources resource = {0};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct process_packet_context wait_ctx = {.nb_ports = nb_ports};
 	struct doca_flow_port *ports[nb_ports];
@@ -984,7 +987,7 @@ doca_error_t flow_twamp_header(int nb_queues)
 		return result;
 	}
 
-	result = init_doca_flow_with_defs(nb_queues, "vnf,hws", &resource, nr_shared_resources, defs);
+	result = init_doca_flow_with_defs(nb_queues, "vnf", &resource, nr_shared_resources, defs);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow with definitions: %s", doca_error_get_descr(result));
 		goto exit;
@@ -1066,7 +1069,7 @@ doca_error_t flow_twamp_header(int nb_queues)
 stop:
 	stop_doca_flow_ports(nb_ports, ports);
 exit:
-	doca_flow_destroy();
+	destroy_doca_flow();
 	doca_flow_definitions_destroy(defs);
 	return result;
 }

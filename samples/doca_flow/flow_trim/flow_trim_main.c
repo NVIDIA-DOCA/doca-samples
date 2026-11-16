@@ -43,6 +43,7 @@ DOCA_LOG_REGISTER(FLOW_TRIM_MAIN);
 #define STR(s) #s
 #define FLOW_TRIM_DEFAULT_TRIM_SIZE 128
 #define FLOW_TRIM_DEFAULT_TRIM_SIZE_STR STR(FLOW_TRIM_DEFAULT_TRIM_SIZE)
+#define FLOW_TRIM_MIN_IP_PKT_SZ (34)
 
 doca_error_t flow_trim(int nb_queues,
 		       bool is_switch_mode,
@@ -85,6 +86,14 @@ static doca_error_t trim_size_callback(void *param, void *config)
 	if (trim_size < 0) {
 		DOCA_LOG_ERR("Trim size must be non-negative, got %d", trim_size);
 		return DOCA_ERROR_INVALID_VALUE;
+	}
+	if (trim_size > UINT16_MAX) {
+		DOCA_LOG_ERR("Trim size %d exceeds UINT16_MAX; pkt_length match is limited to 16 bits", trim_size);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+	if (trim_size < FLOW_TRIM_MIN_IP_PKT_SZ) {
+		DOCA_LOG_WARN("Trim size %d trims the IPv4 dst_ip, pkts will miss post_trim_pipe and go to kernel",
+			      trim_size);
 	}
 
 	app_config->trim_size = (uint32_t)trim_size;
@@ -191,6 +200,13 @@ int main(int argc, char **argv)
 	}
 
 	doca_argp_set_dpdk_program(flow_init_dpdk);
+
+	/* Register tune profile parameters */
+	result = register_flow_tune_profile_params();
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register tune parameters: %s", doca_error_get_descr(result));
+		goto argp_cleanup;
+	}
 
 	result = doca_argp_start(argc, argv);
 	if (result != DOCA_SUCCESS) {

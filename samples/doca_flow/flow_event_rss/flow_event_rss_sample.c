@@ -357,7 +357,7 @@ doca_error_t flow_event_rss(int nb_queues, int nb_ports, struct flow_switch_ctx 
 	}
 	if (nb_devs < nb_ports) {
 		DOCA_LOG_ERR("Insufficient DOCA devices: need %d ports, have %d devices", nb_ports, nb_devs);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -374,7 +374,7 @@ doca_error_t flow_event_rss(int nb_queues, int nb_ports, struct flow_switch_ctx 
 							 NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA switch ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 	event_rss_cqe_ctx.port = ports[0];
@@ -480,6 +480,6 @@ cleanup:
 		doca_flow_pipe_destroy(pipe_pop_vlan);
 
 	stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

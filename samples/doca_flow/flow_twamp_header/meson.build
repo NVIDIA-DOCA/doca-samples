@@ -62,6 +62,7 @@ sample_srcs = [
 	'../../common.c',
 	# Common code for the DOCA library samples
 	'../flow_common.c',
+	'../flow_tune_common.c',
 	# Common code for all DOCA applications
 	'../../../applications/common/dpdk_utils.c',
 ]

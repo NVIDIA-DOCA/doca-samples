@@ -103,12 +103,12 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 			ret = doca_gpu_dev_semaphore_get_status(sem_http, sem_http_idx, &status);
 			if (ret != DOCA_SUCCESS) {
 				if (lane_id == 0) {
-					#if ENABLE_KERNEL_DEBUG_PRINTS == 1
+#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 					printf("HTTP server semaphore wait error %d Block %d error %d\n",
 					       ret,
 					       warp_id,
 					       ret);
-					#endif
+#endif
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 				}
 				break;
@@ -119,12 +119,12 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 										  sem_http_idx,
 										  (void **)&http_global);
 				if (ret != DOCA_SUCCESS) {
-					#if ENABLE_KERNEL_DEBUG_PRINTS == 1
+#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 					printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n",
 					       ret,
 					       warp_id,
 					       lane_id);
-					#endif
+#endif
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 					break;
 				}
@@ -159,24 +159,30 @@ __global__ void cuda_kernel_http_server(uint32_t *exit_cond,
 					BYTE_SWAP32(BYTE_SWAP32(http_global->tcp_sent_seq) + prev_pkt_sz);
 				hdr->l4_hdr.cksum = 0;
 
-				// DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA: this CUDA kernel has only 1 CUDA block, each warp a different QP
-				// DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD: Not all threads in the warp may get an HTTP message to send
+				// DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA: this CUDA kernel has only 1 CUDA block, each warp a
+				// different QP DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD: Not all threads in the warp may get
+				// an HTTP message to send
 				doca_gpu_dev_eth_txq_send<DOCA_GPUNETIO_ETH_RESOURCE_SHARING_MODE_CTA,
-										DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA,
-										DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
-										DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD>(txq, buf_addr, buf_mkey, base_pkt_len + nbytes_page,
-											DOCA_GPUNETIO_ETH_SEND_FLAG_NONE, &out_ticket);
+							  DOCA_GPUNETIO_ETH_SYNC_SCOPE_CTA,
+							  DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO,
+							  DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD>(
+					txq,
+					buf_addr,
+					buf_mkey,
+					base_pkt_len + nbytes_page,
+					DOCA_GPUNETIO_ETH_SEND_FLAG_NONE,
+					&out_ticket);
 
 				ret = doca_gpu_dev_semaphore_set_status(sem_http,
 									sem_http_idx,
 									DOCA_GPU_SEMAPHORE_STATUS_DONE);
 				if (ret != DOCA_SUCCESS) {
-					#if ENABLE_KERNEL_DEBUG_PRINTS == 1
+#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 					printf("Error %d doca_gpu_dev_eth_txq_send_enqueue_strong block %d thread %d\n",
 					       ret,
 					       warp_id,
 					       lane_id);
-					#endif
+#endif
 					DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 					break;
 				}

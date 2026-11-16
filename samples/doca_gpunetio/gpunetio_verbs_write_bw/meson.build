@@ -49,6 +49,8 @@ sample_dependencies += doca_gpu_dep
 sample_dependencies += dependency('doca-argp')
 sample_dependencies += dependency('doca-verbs')
 sample_dependencies += dependency('libibverbs')
+# verbs_common.c calls mlx5dv for Data Direct
+sample_dependencies += dependency('libmlx5')
 
 cuda = import('unstable-cuda')
 nvcc = meson.get_compiler('cuda')
@@ -65,6 +67,12 @@ nvcc_flags += ['-gencode', 'arch=compute_80,code=sm_80']
 nvcc_flags += ['-gencode', 'arch=compute_90,code=sm_90']
 if cuda_version.version_compare('>= 12-8')
 	nvcc_flags += ['-gencode', 'arch=compute_100,code=sm_100']
+endif
+if cuda_version.version_compare('>= 13-0')
+	nvcc_flags += ['-gencode', 'arch=compute_103,code=sm_103']
+	nvcc_flags += ['-gencode', 'arch=compute_110,code=sm_110']
+	nvcc_flags += ['-gencode', 'arch=compute_120,code=sm_120']
+	nvcc_flags += ['-gencode', 'arch=compute_121,code=sm_121']
 endif
 add_project_arguments(nvcc_flags, language: 'cuda')
 
@@ -84,6 +92,12 @@ nvcc_flags_link += ['-gencode=arch=compute_80,code=sm_80']
 nvcc_flags_link += ['-gencode=arch=compute_90,code=sm_90']
 if cuda_version.version_compare('>= 12-8')
 	nvcc_flags_link += ['-gencode=arch=compute_100,code=sm_100']
+endif
+if cuda_version.version_compare('>= 13-0')
+	nvcc_flags_link += ['-gencode=arch=compute_103,code=sm_103']
+	nvcc_flags_link += ['-gencode=arch=compute_110,code=sm_110']
+	nvcc_flags_link += ['-gencode=arch=compute_120,code=sm_120']
+	nvcc_flags_link += ['-gencode=arch=compute_121,code=sm_121']
 endif
 add_project_link_arguments(nvcc_flags_link, language: 'cuda')
 

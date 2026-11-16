@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -37,6 +37,7 @@
 
 #include <doca_rdma_bridge.h>
 
+#include "common.h"
 #include "verbs_server_client_common.h"
 
 #define VERBS_SAMPLE_CTRL_SEG_OPCODE_RDMA_SEND 0xA
@@ -786,8 +787,8 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 	}
 
 	/* Receive remote buffer address from remote peer */
-	if (recv(resources->conn_socket, &resources->remote_buf, sizeof(uint64_t), 0) < 0) {
-		DOCA_LOG_ERR("Failed to receive remote buffer address, err = %s", strerror(errno));
+	if (socket_recv(resources->conn_socket, &resources->remote_buf, sizeof(uint64_t), 0, NULL) != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to receive remote buffer address");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
@@ -798,8 +799,8 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 	}
 
 	/* Receive remote MKEY from remote peer */
-	if (recv(resources->conn_socket, &resources->remote_mkey, sizeof(uint32_t), 0) < 0) {
-		DOCA_LOG_ERR("Failed to receive remote MKEY, err = %s", strerror(errno));
+	if (socket_recv(resources->conn_socket, &resources->remote_mkey, sizeof(uint32_t), 0, NULL) != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to receive remote MKEY");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
@@ -810,8 +811,9 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 	}
 
 	/* Receive remote QP number from remote peer */
-	if (recv(resources->conn_socket, &resources->remote_qp_number, sizeof(uint32_t), 0) < 0) {
-		DOCA_LOG_ERR("Failed to receive remote QP number, err = %s", strerror(errno));
+	if (socket_recv(resources->conn_socket, &resources->remote_qp_number, sizeof(uint32_t), 0, NULL) !=
+	    DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to receive remote QP number");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
@@ -822,8 +824,9 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 	}
 
 	/* Receive remote GID address from remote peer */
-	if (recv(resources->conn_socket, &resources->remote_gid.raw, sizeof(resources->gid.raw), 0) < 0) {
-		DOCA_LOG_ERR("Failed to receive remote GID address, err = %s", strerror(errno));
+	if (socket_recv(resources->conn_socket, &resources->remote_gid.raw, sizeof(resources->gid.raw), 0, NULL) !=
+	    DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to receive remote GID address");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
@@ -834,8 +837,9 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 	}
 
 	/* Receive remote LID address from remote peer */
-	if (recv(resources->conn_socket, &resources->remote_lid, sizeof(resources->remote_lid), 0) < 0) {
-		DOCA_LOG_ERR("Failed to receive remote LID address, err = %s", strerror(errno));
+	if (socket_recv(resources->conn_socket, &resources->remote_lid, sizeof(resources->remote_lid), 0, NULL) !=
+	    DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to receive remote LID address");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
@@ -859,7 +863,7 @@ static doca_error_t sync_remote_peer(struct verbs_resources *resources)
 	}
 
 	/* Receive ack from remote peer */
-	if (recv(resources->conn_socket, &receive_ack, sizeof(int), 0) < 0) {
+	if (socket_recv(resources->conn_socket, &receive_ack, sizeof(int), 0, NULL) != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to receive ack ");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}

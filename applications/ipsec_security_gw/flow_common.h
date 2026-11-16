@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -36,9 +36,17 @@
 extern "C" {
 #endif
 
-#define QUEUE_DEPTH (512)	    /* DOCA Flow queue depth */
-#define SECURED_IDX (0)		    /* Index for secured network port in ports array */
-#define UNSECURED_IDX (1)	    /* Index for unsecured network port in ports array */
+#define QUEUE_DEPTH (512) /* DOCA Flow queue depth */
+#define SECURED_IDX (0)	  /* Index for secured network port in ports array */
+#define UNSECURED_IDX (1) /* Index for unsecured network port in ports array */
+/* Default destination MAC used for ESP tunnel encap/decap when the user does not provide one */
+#define DEFAULT_TUNNEL_DST_MAC \
+	{ \
+		0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff \
+	}
+#define PORT_ID(ports, idx) ((ports)[(idx)]->port_id)
+#define SECURED_PORT_ID(ports) (PORT_ID(ports, SECURED_IDX))
+#define UNSECURED_PORT_ID(ports) (PORT_ID(ports, UNSECURED_IDX))
 #define DEFAULT_TIMEOUT_US (10000)  /* default timeout for processing entries */
 #define DEF_EXPECTED_ENTRIES (1024) /* default expected entries in the pipe */
 #define SET_L4_PORT(layer, port, value) \
@@ -133,7 +141,7 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 doca_error_t ipsec_security_gw_init_status(struct ipsec_security_gw_config *app_cfg, int nb_queues);
 
 /*
- * Binding encrypt and decrypt rules
+ * Allocate shared-resource IDs for encrypt and decrypt rules
  *
  * @ports [in]: initialized DOCA Flow ports
  * @app_cfg [in]: application configuration structure
@@ -213,6 +221,39 @@ void create_hairpin_pipe_fwd(struct ipsec_security_gw_config *app_cfg,
 			     uint16_t *rss_queues,
 			     uint32_t rss_flags,
 			     struct doca_flow_fwd *fwd);
+
+/*
+ * Resolve the L2 headers used for ESP tunnel encap/decap.
+ * For any address the user did not provide, fills the default: src = local port MAC,
+ * dst = DEFAULT_TUNNEL_DST_MAC. Only relevant in tunnel mode; if MAC overrides are
+ * provided outside tunnel mode this returns an error.
+ *
+ * @app_cfg [in/out]: application configuration struct (encap_eth/decap_eth are filled in)
+ * @ports [in]: application ports map (used for the default src MACs)
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t ipsec_security_gw_resolve_tunnel_l2(struct ipsec_security_gw_config *app_cfg,
+						 struct ipsec_security_gw_ports_map *ports[]);
+
+/*
+ * Add an ARP handling entry to a control pipe according to the configured ARP mode.
+ * The caller is responsible for only calling this when ARP handling is enabled
+ * (arp_mode != IPSEC_SECURITY_GW_ARP_MODE_DEFAULT_MISS).
+ *
+ * @control_pipe [in]: control pipe to add the entry to
+ * @fwd_port_id [in]: port to forward ARP packets to when mode is forward-port
+ * @arp_mode [in]: configured ARP handling mode
+ * @debug_mode [in]: true if running in debug mode
+ * @monitor_ptr [in]: monitor with counter for debug, or NULL
+ * @entry_name [in]: entry name used for debug statistics
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t add_arp_control_entry(struct security_gateway_pipe_info *control_pipe,
+				   uint16_t fwd_port_id,
+				   enum ipsec_security_gw_arp_mode arp_mode,
+				   bool debug_mode,
+				   struct doca_flow_monitor *monitor_ptr,
+				   const char *entry_name);
 
 /*
  * Remove trailing zeros from ipv4/ipv6 payload.

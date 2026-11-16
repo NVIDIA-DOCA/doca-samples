@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -38,7 +38,7 @@
 DOCA_LOG_REGISTER(FLOW_ETH_COMMON);
 
 #define ETH_MAX_PKT_SIZE 1600
-#define ETH_MAX_BURST_SIZE 128
+#define ETH_MAX_INFLIGHT_PACKETS 128
 #define ETH_PKT_RATE_MBPS 12500
 #define ETH_MAX_PKT_PROC_TIME_US 1
 #define ETH_LOG_MAX_LRO 1
@@ -103,7 +103,7 @@ static void destroy_single_rxq(struct flow_eth_common_rxq *rxq_arr)
 {
 	struct doca_ctx *ctx = NULL;
 	if (rxq_arr->rxq) {
-		ctx = doca_eth_rxq_as_doca_ctx(rxq_arr->rxq);
+		ctx = doca_eth_rxq_as_ctx(rxq_arr->rxq);
 		if (ctx)
 			doca_ctx_stop(ctx);
 		doca_eth_rxq_destroy(rxq_arr->rxq);
@@ -141,7 +141,7 @@ static doca_error_t create_eth_rxqs(struct doca_dev *dev,
 						       ETH_PKT_RATE_MBPS,
 						       ETH_MAX_PKT_PROC_TIME_US,
 						       ETH_MAX_PKT_SIZE,
-						       ETH_MAX_BURST_SIZE,
+						       ETH_MAX_INFLIGHT_PACKETS,
 						       ETH_LOG_MAX_LRO,
 						       0 /* headroom */,
 						       0 /* tailroom */,
@@ -164,7 +164,7 @@ static doca_error_t create_eth_rxqs(struct doca_dev *dev,
 		void *buf = NULL;
 		union doca_data user_data;
 
-		result = doca_eth_rxq_create(dev, ETH_MAX_BURST_SIZE, ETH_MAX_PKT_SIZE, &rxq);
+		result = doca_eth_rxq_create(dev, ETH_MAX_INFLIGHT_PACKETS, ETH_MAX_PKT_SIZE, &rxq);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create RXQ %d: %s", i, doca_error_get_descr(result));
 			goto error_cleanup;
@@ -183,7 +183,7 @@ static doca_error_t create_eth_rxqs(struct doca_dev *dev,
 			goto error_cleanup_rxq;
 		}
 
-		result = doca_eth_rxq_set_pkt_buf(rxq, mmap, 0 /* offset */, per_queue_buf_size);
+		result = doca_eth_rxq_set_packet_buf(rxq, mmap, 0 /* offset */, per_queue_buf_size);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set packet buffer: %s", doca_error_get_descr(result));
 			goto error_cleanup_mmap;
@@ -209,18 +209,18 @@ static doca_error_t create_eth_rxqs(struct doca_dev *dev,
 		else
 			user_data = cfg->rx_user_data;
 
-		result = doca_eth_rxq_event_batch_managed_recv_register(rxq,
-									DOCA_EVENT_BATCH_EVENTS_NUMBER_16,
-									DOCA_EVENT_BATCH_EVENTS_NUMBER_1,
-									user_data,
-									cfg->rx_success_cb,
-									cfg->rx_error_cb);
+		result = doca_eth_rxq_event_batch_managed_mempool_recv_register(rxq,
+										DOCA_EVENT_BATCH_EVENTS_NUMBER_16,
+										DOCA_EVENT_BATCH_EVENTS_NUMBER_1,
+										user_data,
+										cfg->rx_success_cb,
+										cfg->rx_error_cb);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to register event: %s", doca_error_get_descr(result));
 			goto error_cleanup_mmap;
 		}
 
-		ctx = doca_eth_rxq_as_doca_ctx(rxq);
+		ctx = doca_eth_rxq_as_ctx(rxq);
 		if (ctx == NULL) {
 			DOCA_LOG_ERR("Failed to get context from RXQ");
 			result = DOCA_ERROR_BAD_STATE;
@@ -321,8 +321,8 @@ doca_error_t flow_eth_common_destroy_dev_resources(struct flow_eth_common_dev_co
 void flow_eth_common_set_dev_cfg(uint16_t nb_queues,
 				 bool enable_metadata,
 				 union doca_data rx_user_data,
-				 doca_eth_rxq_event_batch_managed_recv_handler_cb_t rx_success_cb,
-				 doca_eth_rxq_event_batch_managed_recv_handler_cb_t rx_error_cb,
+				 doca_eth_rxq_event_batch_managed_mempool_recv_handler_cb_t rx_success_cb,
+				 doca_eth_rxq_event_batch_managed_mempool_recv_handler_cb_t rx_error_cb,
 				 struct flow_eth_common_rx_cfg *cfg)
 {
 	cfg->nb_rxqs = nb_queues;

@@ -192,12 +192,12 @@ static doca_error_t batch_size_callback(void *param, void *config)
 	}
 
 	if (*batch_size > 128) {
-		DOCA_LOG_ERR("Burst size parameter must be smaller or equal to 128");
+		DOCA_LOG_ERR("Batch size parameter must be smaller or equal to 128");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
 	if (!is_power_of_two(*batch_size)) {
-		DOCA_LOG_ERR("Burst size parameter must be a power of 2");
+		DOCA_LOG_ERR("Batch size parameter must be a power of 2");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -512,7 +512,7 @@ static doca_error_t register_eth_l2_fwd_params(void)
 		return result;
 	}
 
-	/* Create and register burst size param */
+	/* Create and register batch size param */
 	result = doca_argp_param_create(&batch_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
@@ -543,7 +543,7 @@ static doca_error_t register_eth_l2_fwd_params(void)
 	doca_argp_param_set_arguments(tx_depth, "<tx-depth>");
 	doca_argp_param_set_description(
 		tx_depth,
-		"Set TX depth, default is 4096, TX depth refers to the burst_size argument used in ETH TXQ creation, must be power of 2.");
+		"Set TX depth, default is 4096, TX depth refers to the inflight_packets argument used in ETH TXQ creation, must be power of 2.");
 	doca_argp_param_set_callback(tx_depth, tx_depth_callback);
 	doca_argp_param_set_type(tx_depth, DOCA_ARGP_TYPE_INT);
 	result = doca_argp_register_param(tx_depth);
@@ -563,7 +563,7 @@ static doca_error_t register_eth_l2_fwd_params(void)
 	doca_argp_param_set_arguments(rx_depth, "<rx-depth>");
 	doca_argp_param_set_description(
 		rx_depth,
-		"Set RX depth, default is 2048, RX depth refers to the burst_size argument used in ETH RXQ creation, must be power of 2.");
+		"Set RX depth, default is 2048, RX depth refers to the inflight_packets argument used in ETH RXQ creation, must be power of 2.");
 	doca_argp_param_set_callback(rx_depth, rx_depth_callback);
 	doca_argp_param_set_type(rx_depth, DOCA_ARGP_TYPE_INT);
 	result = doca_argp_register_param(rx_depth);

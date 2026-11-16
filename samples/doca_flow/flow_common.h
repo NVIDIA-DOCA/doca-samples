@@ -153,15 +153,22 @@ struct flow_resources {
 	uint32_t nr_psp;		   /* number of PSP to configure */
 	uint32_t nr_event_rss;		   /* number of event RSS resources to configure */
 	uint32_t nr_trim;		   /* number of trim shared resources to configure */
+	uint32_t nr_packet_generate;	   /* number of packet-generation resources to configure */
+	uint32_t nr_tcp_window_validation; /* number of TCP window-validation resources to configure */
 };
 
 struct ct_port_cfg {
-	uint32_t ct_flags;			   /**< CT behavior flags (0 if CT not used) */
-	uint32_t ct_actions_mem_size;		   /**< CT actions memory size in bytes */
-	uint32_t ct_aging_core;			   /**< CT aging core (0 to skip) */
-	bool match_inner[2];			   /**< Match inner headers */
-	struct doca_flow_meta *zone_match_mask[2]; /**< Zone match mask */
-	struct doca_flow_ct_meta *modify_mask[2];  /**< Modify mask */
+	uint32_t ct_flags;			      /**< CT behavior flags (0 if CT not used) */
+	uint32_t ct_actions_mem_size;		      /**< CT actions memory size in bytes */
+	uint32_t ct_aging_core;			      /**< CT aging core (0 to skip) */
+	bool match_inner[2];			      /**< Match inner headers */
+	struct doca_flow_meta *zone_match_mask[2];    /**< Zone match mask */
+	struct doca_flow_ct_meta *modify_mask[2];     /**< Modify mask */
+	doca_flow_ct_stats_update_cb stats_update_cb; /**< CT session counters update callback (NULL to skip) */
+#if LIB_FLOW_VERSION >= LIB_FLOW_VERSION_3
+	doca_flow_ct_tcp_window_validation_comp_cb tcp_window_validation_comp_cb;
+	/**< CT TCP window-validation async query/update completion callback (NULL = synchronous update and query) */
+#endif
 };
 
 struct flow_devs_manager {
@@ -267,6 +274,14 @@ doca_error_t init_doca_flow_with_ct(int nb_queues,
 				    struct flow_resources *resource,
 				    uint32_t nr_shared_resources[],
 				    struct ct_init_cfg *ct_cfg);
+
+/*
+ * Destroy DOCA Flow, stopping the Tune server first
+ *
+ * Samples call this instead of doca_flow_destroy() so that a sample accepting --tune-profile tears
+ * the server down on every teardown path. Stopping is a no-op when no server was started.
+ */
+void destroy_doca_flow(void);
 
 /*
  * Initialize DOCA Flow ports
@@ -467,6 +482,13 @@ doca_error_t close_doca_dev_reps(struct doca_dev_rep *dev_reps[], uint16_t nb_re
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t register_flow_stats_params(void);
+
+/*
+ * Register the --tune-profile parameter
+ *
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t register_flow_tune_profile_params(void);
 
 /*
  * Get the current statistics interval value

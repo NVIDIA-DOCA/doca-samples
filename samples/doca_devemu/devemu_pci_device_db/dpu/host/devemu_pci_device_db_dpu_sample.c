@@ -35,6 +35,7 @@
 #include <doca_dev.h>
 #include <doca_error.h>
 #include <doca_log.h>
+#include <doca_pe.h>
 #include <doca_dpa.h>
 
 #include <common.h>
@@ -139,6 +140,79 @@ doca_error_t create_db_dpa_comp(struct devemu_resources *resources)
 }
 
 /*
+ * DPU DB handler callback
+ *
+ * @db_comp [in]: The DPU DB completion context that produced the completion
+ * @db [in]: The DB that produced the completion
+ * @db_value [in]: The DB value written by the Host
+ * @db_user_data [in]: The user data provided on DB creation, holding the DB ID
+ * @ctx_user_data [in]: The user data set on the completion context
+ */
+static void dpu_db_handler_cb(struct doca_devemu_pci_dpu_db_completion *db_comp,
+			      struct doca_devemu_pci_db *db,
+			      uint32_t db_value,
+			      union doca_data db_user_data,
+			      union doca_data ctx_user_data)
+{
+	(void)db_comp;
+	(void)db;
+	(void)ctx_user_data;
+
+	DOCA_LOG_INFO("Received DB with value %u on DB ID %u", db_value, (uint32_t)db_user_data.u64);
+}
+
+/*
+ * Create a DB DPU completion context
+ *
+ * @resources [in]: The sample resources
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+doca_error_t create_db_dpu_comp(struct devemu_resources *resources)
+{
+	doca_error_t result;
+	struct doca_ctx *ctx;
+	union doca_data ctx_user_data;
+
+	result = doca_devemu_pci_dpu_db_completion_create(resources->dev, &resources->dpu_db_comp);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create DB completion context to be used in DPU: %s",
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_devemu_pci_dpu_db_completion_handler_register(resources->dpu_db_comp, dpu_db_handler_cb);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register DB handler: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	ctx = doca_devemu_pci_dpu_db_completion_as_ctx(resources->dpu_db_comp);
+
+	ctx_user_data.ptr = (void *)resources;
+	result = doca_ctx_set_user_data(ctx, ctx_user_data);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to set DB completion context user data: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* DBs are reported by the same progress engine used for device events */
+	result = doca_pe_connect_ctx(resources->pe, ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to connect DB completion context to progress engine: %s",
+			     doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_ctx_start(ctx);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to start DB completion context: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	return DOCA_SUCCESS;
+}
+
+/*
  * Initialize DPA app context
  *
  * @resources [in]: The sample resources
@@ -193,7 +267,7 @@ doca_error_t uninit_dpa_app_ctx(struct devemu_resources *resources)
 }
 
 /*
- * Create a DB object for the given resource ID and initialize it on DPA
+ * Create a DB object for the given resource ID, and initialize it on DPA in case it is listened on from there
  *
  * @resources [in]: The sample resources
  * @db_region_idx [in]: Index of the configured DB region
@@ -206,28 +280,50 @@ doca_error_t create_db_object(struct devemu_resources *resources, uint16_t db_re
 
 	const struct bar_db_region_config *db_region_cfg = &db_configs[db_region_idx];
 
-	result = doca_devemu_pci_ep_create_db_on_dpa(doca_devemu_pci_dev_as_ep(resources->pci_dev),
-						     resources->db_comp,
-						     db_region_cfg->region.bar_id,
-						     db_region_cfg->region.start_address,
-						     db_id,
-						     0,
-						     &resources->data_path.db);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create DB for use in DPA: %s", doca_error_get_descr(result));
-		return result;
-	}
+	if (resources->dpu_db_comp != NULL) {
+		union doca_data db_user_data;
 
-	result = doca_devemu_pci_db_get_dpa_handle(resources->data_path.db, &resources->data_path.db_handle);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get DB DPA handle: %s", doca_error_get_descr(result));
-		return result;
-	}
+		/* Reported back to the handler along with every value of this DB */
+		db_user_data.u64 = db_id;
 
-	/* To prevent DBs from reaching DB completion before binding, need to first bind the DB and then start the DB */
-	result = init_dpa_app_ctx(resources);
-	if (result != DOCA_SUCCESS)
-		return result;
+		result = doca_devemu_pci_ep_create_db(doca_devemu_pci_dev_as_ep(resources->pci_dev),
+						      resources->dpu_db_comp,
+						      db_region_cfg->region.bar_id,
+						      db_region_cfg->region.start_address,
+						      db_id,
+						      db_user_data,
+						      &resources->data_path.db);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create DB for use in DPU: %s", doca_error_get_descr(result));
+			return result;
+		}
+	} else {
+		result = doca_devemu_pci_ep_create_db_on_dpa(doca_devemu_pci_dev_as_ep(resources->pci_dev),
+							     resources->db_comp,
+							     db_region_cfg->region.bar_id,
+							     db_region_cfg->region.start_address,
+							     db_id,
+							     0,
+							     &resources->data_path.db);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to create DB for use in DPA: %s", doca_error_get_descr(result));
+			return result;
+		}
+
+		result = doca_devemu_pci_db_get_dpa_handle(resources->data_path.db, &resources->data_path.db_handle);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get DB DPA handle: %s", doca_error_get_descr(result));
+			return result;
+		}
+
+		/*
+		 * To prevent DBs from reaching DB completion before binding, need to first bind the DB and then start
+		 * the DB.
+		 */
+		result = init_dpa_app_ctx(resources);
+		if (result != DOCA_SUCCESS)
+			return result;
+	}
 
 	result = doca_devemu_pci_db_start(resources->data_path.db);
 	if (result != DOCA_SUCCESS) {
@@ -239,7 +335,7 @@ doca_error_t create_db_object(struct devemu_resources *resources, uint16_t db_re
 }
 
 /*
- * Destroy the DB object and uninitialize it on DPA
+ * Destroy the DB object, and uninitialize it on DPA in case it was listened on from there
  *
  * @resources [in]: The sample resources
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -254,9 +350,11 @@ doca_error_t destroy_db_object(struct devemu_resources *resources)
 		return result;
 	}
 
-	result = uninit_dpa_app_ctx(resources);
-	if (result != DOCA_SUCCESS)
-		return result;
+	if (resources->dpu_db_comp == NULL) {
+		result = uninit_dpa_app_ctx(resources);
+		if (result != DOCA_SUCCESS)
+			return result;
+	}
 
 	result = doca_devemu_pci_db_destroy(resources->data_path.db);
 	if (result != DOCA_SUCCESS) {
@@ -400,12 +498,14 @@ static doca_error_t register_to_ctx_state_change_events(struct devemu_resources 
  * @emulated_dev_vuid [in]: VUID of the emulated device
  * @db_region_idx [in]: Index of the DB region
  * @db_id [in]: DB ID of the DB
+ * @db_on_dpu [in]: If true, listen on DBs from the DPU instead of the DPA
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t devemu_pci_device_db_dpu(const char *pci_address,
 				      const char *emulated_dev_vuid,
 				      uint16_t db_region_idx,
-				      uint32_t db_id)
+				      uint32_t db_id,
+				      bool db_on_dpu)
 {
 	doca_error_t result;
 	struct timespec ts = {
@@ -473,30 +573,39 @@ doca_error_t devemu_pci_device_db_dpu(const char *pci_address,
 		return result;
 	}
 
-	/* Initialize DPA context */
-	result = init_dpa(&resources, devemu_pci_sample_app);
-	if (result != DOCA_SUCCESS) {
-		devemu_resources_cleanup(&resources, destroy_rep);
-		return result;
-	}
+	if (db_on_dpu) {
+		/* No DPA resources are needed, the completion context owns its arming thread internally */
+		result = create_db_dpu_comp(&resources);
+		if (result != DOCA_SUCCESS) {
+			devemu_resources_cleanup(&resources, destroy_rep);
+			return result;
+		}
+	} else {
+		/* Initialize DPA context */
+		result = init_dpa(&resources, devemu_pci_sample_app);
+		if (result != DOCA_SUCCESS) {
+			devemu_resources_cleanup(&resources, destroy_rep);
+			return result;
+		}
 
-	result = init_dpa_db_thread(&resources);
-	if (result != DOCA_SUCCESS) {
-		devemu_resources_cleanup(&resources, destroy_rep);
-		return result;
-	}
+		result = init_dpa_db_thread(&resources);
+		if (result != DOCA_SUCCESS) {
+			devemu_resources_cleanup(&resources, destroy_rep);
+			return result;
+		}
 
-	result = create_db_dpa_comp(&resources);
-	if (result != DOCA_SUCCESS) {
-		devemu_resources_cleanup(&resources, destroy_rep);
-		return result;
-	}
+		result = create_db_dpa_comp(&resources);
+		if (result != DOCA_SUCCESS) {
+			devemu_resources_cleanup(&resources, destroy_rep);
+			return result;
+		}
 
-	result = doca_dpa_thread_run(resources.dpa_thread);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to run DPA thread: %s", doca_error_get_descr(result));
-		devemu_resources_cleanup(&resources, destroy_rep);
-		return result;
+		result = doca_dpa_thread_run(resources.dpa_thread);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to run DPA thread: %s", doca_error_get_descr(result));
+			devemu_resources_cleanup(&resources, destroy_rep);
+			return result;
+		}
 	}
 
 	/* Find existing emulated device */
@@ -515,12 +624,14 @@ doca_error_t devemu_pci_device_db_dpu(const char *pci_address,
 		return result;
 	}
 
-	result = doca_ctx_set_datapath_on_dpa(doca_devemu_pci_dev_as_ctx(resources.pci_dev), resources.dpa);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set PCI emulated device context datapath on DPA: %s",
-			     doca_error_get_descr(result));
-		devemu_resources_cleanup(&resources, destroy_rep);
-		return result;
+	if (!db_on_dpu) {
+		result = doca_ctx_set_datapath_on_dpa(doca_devemu_pci_dev_as_ctx(resources.pci_dev), resources.dpa);
+		if (result != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to set PCI emulated device context datapath on DPA: %s",
+				     doca_error_get_descr(result));
+			devemu_resources_cleanup(&resources, destroy_rep);
+			return result;
+		}
 	}
 
 	result = register_to_ctx_state_change_events(&resources);
@@ -560,9 +671,9 @@ doca_error_t devemu_pci_device_db_dpu(const char *pci_address,
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	DOCA_LOG_INFO("Listening on DB with ID %u", db_id);
+	DOCA_LOG_INFO("Listening on DB with ID %u from the %s", db_id, db_on_dpu ? "DPU" : "DPA");
 
-	/* Listen on FLR events while DPA listens on DBs */
+	/* On DPU the DBs are reported by this progress engine, on DPA only the FLR events are */
 	while (!force_quit) {
 		if (doca_pe_progress(resources.pe) == 0)
 			nanosleep(&ts, &ts);

@@ -100,6 +100,7 @@ static doca_error_t create_memory_local_remote_server(int oob_sock_fd,
 	cuda_err = cudaMemsetAsync(server_local_buf_A_gpu[conn_idx], 0x1, GPU_BUF_NUM * GPU_BUF_SIZE_A, stream);
 	if (cuda_err != cudaSuccess) {
 		DOCA_LOG_ERR("Can't CUDA memset buffer A: %d", cuda_err);
+		result = DOCA_ERROR_DRIVER;
 		goto error;
 	}
 
@@ -237,6 +238,7 @@ static doca_error_t create_memory_local_remote_client(int oob_sock_fd,
 	cuda_err = cudaMemsetAsync(client_local_buf_B_gpu[conn_idx], 0x2, GPU_BUF_NUM * GPU_BUF_SIZE_B, stream);
 	if (cuda_err != cudaSuccess) {
 		DOCA_LOG_ERR("Can't CUDA memset buffer B: %d", cuda_err);
+		result = DOCA_ERROR_DRIVER;
 		goto error;
 	}
 
@@ -269,6 +271,7 @@ static doca_error_t create_memory_local_remote_client(int oob_sock_fd,
 	cuda_err = cudaMemsetAsync(client_local_buf_C_gpu[conn_idx], 0x3, GPU_BUF_NUM * GPU_BUF_SIZE_C, stream);
 	if (cuda_err != cudaSuccess) {
 		DOCA_LOG_ERR("Can't CUDA memset buffer C: %d", cuda_err);
+		result = DOCA_ERROR_DRIVER;
 		goto error;
 	}
 
@@ -970,6 +973,8 @@ doca_error_t rdma_write_client(struct rdma_config *cfg)
 				    (void **)&gpu_exit_flag,
 				    (void **)&cpu_exit_flag);
 	if (result != DOCA_SUCCESS || gpu_exit_flag == NULL || cpu_exit_flag == NULL) {
+		if (result == DOCA_SUCCESS)
+			result = DOCA_ERROR_NO_MEMORY;
 		DOCA_LOG_ERR("Function doca_gpu_mem_alloc returned %s", doca_error_get_descr(result));
 		goto close_connection;
 	}

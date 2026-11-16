@@ -66,6 +66,21 @@ void rdma_cm_connect_request_cb(struct doca_rdma_connection *connection, union d
 }
 
 /*
+ * Check if the first connection slot is still pending an outcome
+ *
+ * The sample opens at most two CM connections; an outcome fills the first still-pending slot.
+ * Outcome flags are never cleared once set (not even on disconnect), so a slot is consumed
+ * at most once and a later outcome cannot be misrouted into it.
+ *
+ * @resource [in]: RDMA resources holding the connection slots
+ * @return: true if the first slot is neither established nor in error
+ */
+static bool rdma_cm_first_slot_pending(const struct rdma_resources *resource)
+{
+	return !resource->connection_established && !resource->connection_error;
+}
+
+/*
  * RDMA CM connect_established callback
  *
  * @connection [in]: RDMA Connection
@@ -78,17 +93,14 @@ void rdma_cm_connect_established_cb(struct doca_rdma_connection *connection,
 {
 	(void)connection_user_data;
 	struct rdma_resources *resource = (struct rdma_resources *)ctx_user_data.ptr;
-	static int is_first_connection_established = 0;
 
-	if (is_first_connection_established == 0) {
+	if (rdma_cm_first_slot_pending(resource)) {
 		resource->connection = connection;
 		resource->connection_established = true;
 	} else {
 		resource->connection2 = connection;
 		resource->connection2_established = true;
 	}
-
-	is_first_connection_established = 1;
 }
 
 /*
@@ -105,17 +117,16 @@ void rdma_cm_connect_failure_cb(struct doca_rdma_connection *connection,
 	(void)connection;
 	(void)connection_user_data;
 	struct rdma_resources *resource = (struct rdma_resources *)ctx_user_data.ptr;
-	static int is_first_connection_failure = 0;
 
-	if (is_first_connection_failure == 0) {
+	if (rdma_cm_first_slot_pending(resource)) {
+		DOCA_LOG_ERR("RDMA CM connect failure on first connection");
 		resource->connection_established = false;
 		resource->connection_error = true;
 	} else {
+		DOCA_LOG_ERR("RDMA CM connect failure on second connection");
 		resource->connection2_established = false;
 		resource->connection2_error = true;
 	}
-
-	is_first_connection_failure = 1;
 }
 
 /*
@@ -140,7 +151,12 @@ void rdma_cm_disconnect_cb(struct doca_rdma_connection *connection,
 		return;
 	}
 
-	resource->connection_established = false;
+	/* Null only the owning slot's pointer so destroy doesn't disconnect it again; the outcome
+	 * flags must stay set - slot selection in the CM callbacks relies on them never clearing */
+	if (connection == resource->connection)
+		resource->connection = NULL;
+	else if (connection == resource->connection2)
+		resource->connection2 = NULL;
 }
 
 /*

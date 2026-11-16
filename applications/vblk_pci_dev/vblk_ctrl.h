@@ -67,16 +67,6 @@ struct vblk_vq {
 	_Atomic enum vblk_vq_state state;
 	uint16_t io_ctx_id;
 	struct vblk_pci_virtq_pci_cfg cfg; /* cached config from TLP thread */
-	/* Set when host reset arrives while this VQ is in BINDING (bind in flight,
-	 * possible post-DRIVER_OK IO). Teardown is deferred until the IO thread
-	 * completes bind, then it drives the standard UNBINDING path. */
-	_Atomic bool reset_deferred;
-
-	/* One-token flag: true while this VQ holds exactly one unit in
-	 * ctrl->pending_vqs. Set (and pending_vqs++) when teardown starts,
-	 * cleared (and pending_vqs--) at DESTROYED, both via atomic exchange, so
-	 * each VQ contributes at most once even under concurrent threads. */
-	_Atomic bool pending_counted;
 };
 
 /*
@@ -141,11 +131,16 @@ struct vblk_ctrl_io_ctx {
 	struct vblk_poll_state poll;
 	uint32_t stats_ios;
 	bool stats_wip;
-	_Atomic bool need_flr_teardown; /* OE -> IO: shutdown + destroy this io_ctx on its owning thread */
 };
 
 struct vblk_ctrl {
 	struct vblk_pci_virtio_dev *vblk_pci_dev;
+	/* enum vblk_recycle_state: the OE thread is the sole writer; the TLP
+	 * thread reads it (via vblk_ctrl_reset_active) for the VQ-start gate. */
+	_Atomic uint8_t recycle_state;
+	/* Separate teardown/rebuild acknowledgment masks isolate late rebuild acknowledgments. */
+	_Atomic uint16_t recycle_io_ctx_teardown_ack_mask;
+	_Atomic uint16_t recycle_io_ctx_rebuild_ack_mask;
 	struct doca_devemu_vblk_offload_engine *vq_engine;
 	struct vblk_ctrl_io_ctx io_ctxs[VBLK_APP_BF3_MAX_IO_CORES];
 	struct vblk_vq *vqs;
@@ -163,22 +158,12 @@ struct vblk_ctrl {
 	 * Flag to defer stats list destruction to IO thread (avoid blocking TLP thread)
 	 */
 	_Atomic bool stats_destroy_pending;
-	/*
-	 * Last observed virtio device_status (for edge-triggered reset handling on TLP thread)
-	 */
+	/* Last observed virtio device_status for edge-triggered reset handling. */
 	uint8_t last_device_status;
-	/*
-	 * Count of VQs pending cleanup during reset. Includes queues in any non-DESTROYED
-	 * state (including STARTING/BINDING from unfinished startup).
-	 * Atomic: TLP increments during reset begin, offload engine decrements on VQ destroy.
-	 */
-	_Atomic uint16_t pending_vqs;
-
-	/* Host reset arrived while DRIVER_OK/bind handling may still be in flight.
-	 * While set, IO threads complete bind then tear down instead of RUNNING.
-	 * Cleared when all counted VQs reach DESTROYED. */
+	/* Host reset arrived; every owner thread drives its own VQs to DESTROYED
+	 * instead of RUNNING. Cleared by vblk_ctrl_reset_complete() once all VQs
+	 * are DESTROYED and no recycle is still holding the function down. */
 	_Atomic bool reset_pending;
-
 	/*
 	 * Queue state transitions which are to be done by the offload engine are
 	 * acknowledged when the pending counter for that engine is incremented.
@@ -197,6 +182,7 @@ struct vblk_ctrl {
 	 * mid-FLR) has its engine already disabled, and calling disable again makes
 	 * the SDK log a spurious "offload engine is not enabled" error. */
 	bool engine_enabled;
+	bool engine_started;
 	uint8_t indirect_enabled;
 	uint32_t ep_index;
 	uint16_t seg_max;
@@ -241,17 +227,21 @@ doca_error_t vblk_ctrl_init_io_ctx_on_thread(struct vblk_ctrl *ctrl,
 /* Enable the virtio offload engine once all IO contexts are created and started */
 doca_error_t vblk_ctrl_enable(struct vblk_ctrl *ctrl);
 doca_error_t vblk_ctrl_disable(struct vblk_ctrl *ctrl);
+doca_error_t vblk_ctrl_engine_start(struct vblk_ctrl *ctrl);
+/* pe drives the async engine-stop drain; it must be the PE the engine is bound to. */
+doca_error_t vblk_ctrl_engine_stop(struct vblk_ctrl *ctrl, struct doca_pe *pe);
 
 /* Stop queues and IO contexts for a given ctx_id (must be invoked on the managing thread) */
 doca_error_t vblk_ctrl_shutdown_io_ctx_on_thread(struct vblk_ctrl *ctrl, uint16_t ctx_id);
 
 doca_error_t vblk_wait_ctx_idle(struct doca_pe *pe, struct doca_ctx *ctx, const char *name, int max_iters);
-/* Must be invoked on the offload-engine thread (never blocks, progresses queue lifecycle) */
 void vblk_ctrl_io_ctx_reset(struct vblk_ctrl_io_ctx *io_ctx, bool owns_mpool);
 struct vblk_poll_state *vblk_ctrl_engine_poll(struct vblk_ctrl *ctrl);
 void vblk_ctrl_offload_engine_progress(struct vblk_ctrl *ctrl);
+void vblk_ctrl_reset_complete(struct vblk_ctrl *ctrl);
+bool vblk_ctrl_reset_active(struct vblk_ctrl *ctrl);
+bool vblk_ctrl_all_vqs_destroyed(struct vblk_ctrl *ctrl);
 doca_error_t vblk_ctrl_recycle_vq_backends(struct vblk_ctrl *ctrl);
-void vblk_ctrl_replay_enabled_vqs(struct vblk_ctrl *ctrl);
 struct vblk_poll_state *vblk_ctrl_io_ctx_poll(struct vblk_ctrl *ctrl, uint8_t ctx_id);
 struct doca_pe *vblk_ctrl_io_ctx_dma_pe(struct vblk_ctrl *ctrl, uint8_t ctx_id);
 void vblk_ctrl_io_context_progress(struct vblk_ctrl *vblk_ctrl, uint8_t core_id);

@@ -140,12 +140,16 @@ doca_error_t create_ct_root_pipe(struct doca_flow_port *port,
  * @hash_reply [in]: Reply hash
  * @actions_origin [in]: Origin actions
  * @actions_reply [in]: Reply actions
- * @fwd_origin [in]: Origin fwd (NULL for no changeable fwd)
- * @fwd_reply [in]: Reply fwd (NULL for no changeable fwd)
+ * @tcp_window_validation [in]: TCP window-validation profile to bind to the entry, NULL for none;
+ *   sets DOCA_FLOW_CT_ENTRY_FLAGS_TCP_WINDOW_VALIDATION, which is rejected in prepare_flags when NULL
+ * @fwd_origin [in]: Origin fwd (NULL for no changeable fwd, overridden when tcp_window_validation is set)
+ * @fwd_reply [in]: Reply fwd (NULL for no changeable fwd, overridden when tcp_window_validation is set)
  * @timeout_s [in]: Timeout
  * @ct_status [in]: CT status
- * @entry [in]: CT entry
- * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ * @entry [out]: CT entry
+ * @return: DOCA_SUCCESS on success (also when a duplicate filter finds an existing connection: nothing is added and
+ * *entry is that connection's entry); DOCA_ERROR_UNEXPECTED if prepare finds a connection without a duplicate filter;
+ * DOCA_ERROR otherwise
  */
 doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 				  uint16_t ct_queue,
@@ -158,6 +162,7 @@ doca_error_t flow_ct_create_entry(struct doca_flow_port *port,
 				  uint32_t hash_reply,
 				  const struct doca_flow_ct_actions *actions_origin,
 				  const struct doca_flow_ct_actions *actions_reply,
+				  const struct doca_flow_ct_tcp_window_validation *tcp_window_validation,
 				  const struct doca_flow_fwd *fwd_origin,
 				  const struct doca_flow_fwd *fwd_reply,
 				  uint32_t timeout_s,

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -42,6 +42,7 @@ struct simple_fwd_config {
 	uint64_t stats_timer; /* The time between periodic stats prints */
 	bool is_hairpin;      /* Number of hairpin queues */
 	bool age_thread;      /* Whether or not to use a dedicated thread to handle aged flows */
+	bool enable_tune;     /* Collect DOCA Flow Tune data and serve it over the tune server */
 };
 
 /* Simple FWD VNF parameters to be passed when starting processing packets */

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -105,7 +105,6 @@ __global__ void gpu_proc(volatile bool *stop_flag,
 	uint32_t recv_len;
 	uint64_t user_msg_id;
 
-
 	/* Submit initial post_recv buffers */
 	for (size_t i = 0; i < max_concurrent_messages; i++) {
 		doca_gpu_dev_buf_get_buf(buf_arr, i, &buf);
@@ -196,10 +195,7 @@ doca_error_t start_gpu_processing(uint32_t num_threads,
 				  const uint32_t max_message_size,
 				  const uint32_t max_concurrent_messages)
 {
-	gpu_proc<<<1, num_threads, 0>>>(gpu_stop_flag,
-					thread_data,
-					max_message_size,
-					max_concurrent_messages);
+	gpu_proc<<<1, num_threads, 0>>>(gpu_stop_flag, thread_data, max_message_size, max_concurrent_messages);
 
 	return DOCA_SUCCESS;
 }

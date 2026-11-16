@@ -25,12 +25,14 @@
 #include <stdlib.h>
 
 #include <rte_ethdev.h>
+#include <rte_ether.h>
 #include <rte_bitops.h>
 
 #include <doca_log.h>
 #include <doca_flow.h>
-#include <doca_flow_tune_server.h>
 #include <doca_bitfield.h>
+
+#include <flow_tune_common.h>
 
 #include "utils.h"
 #include "flow_common.h"
@@ -200,41 +202,6 @@ destroy_port_cfg:
 	return result;
 }
 
-static doca_error_t configure_tune_server(struct doca_flow_cfg *flow_cfg, enum doca_flow_tune_profile profile)
-{
-	doca_error_t result = DOCA_SUCCESS;
-	struct doca_flow_tune_cfg *tune_cfg;
-
-	result = doca_flow_tune_cfg_create(&tune_cfg);
-	if (result != DOCA_SUCCESS) {
-		if (result == DOCA_ERROR_NOT_SUPPORTED) {
-			DOCA_LOG_INFO("DOCA Flow Tune Server isn't supported in this runtime version");
-			DOCA_LOG_INFO("Program will continue execution without activating the DOCA Flow Tune Server");
-			return DOCA_SUCCESS;
-		}
-
-		DOCA_LOG_ERR("Failed to create doca_flow_tune_cfg: %s", doca_error_get_descr(result));
-		goto out;
-	}
-
-	result = doca_flow_tune_cfg_set_profile(tune_cfg, profile);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_tune_cfg profile: %s", doca_error_get_descr(result));
-		goto cfg_destroy;
-	}
-
-	result = doca_flow_cfg_set_tune_cfg(flow_cfg, tune_cfg);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg tune_cfg: %s", doca_error_get_descr(result));
-		goto cfg_destroy;
-	}
-
-cfg_destroy:
-	doca_flow_tune_cfg_destroy(tune_cfg);
-out:
-	return result;
-}
-
 doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_config *app_cfg,
 					      int nb_queues,
 					      struct ipsec_security_gw_ports_map *ports[])
@@ -245,7 +212,6 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 	struct doca_dev *dev;
 	struct doca_dev_rep *rep;
 	struct doca_flow_cfg *flow_cfg;
-	struct doca_flow_tune_server_cfg *server_cfg;
 	char *mode_args;
 	doca_error_t result;
 	bool sn_offload_disable;
@@ -266,9 +232,9 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 		return result;
 	}
 	if (app_cfg->flow_mode == IPSEC_SECURITY_GW_VNF)
-		mode_args = "vnf,hws";
+		mode_args = "vnf";
 	else
-		mode_args = "switch,hws,expert";
+		mode_args = "switch,expert";
 	result = doca_flow_cfg_set_mode_args(flow_cfg, mode_args);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to set doca_flow_cfg mode_args: %s", doca_error_get_descr(result));
@@ -295,11 +261,12 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 		return result;
 	}
 
-	result = configure_tune_server(flow_cfg, DOCA_FLOW_TUNE_PROFILE_FULL);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to configure tune server: %s", doca_error_get_descr(result));
-		doca_flow_cfg_destroy(flow_cfg);
-		return result;
+	if (app_cfg->enable_tune) {
+		result = flow_tune_configure(flow_cfg, DOCA_FLOW_TUNE_PROFILE_FULL);
+		if (result != DOCA_SUCCESS) {
+			doca_flow_cfg_destroy(flow_cfg);
+			return result;
+		}
 	}
 
 	if (result != DOCA_SUCCESS) {
@@ -382,25 +349,13 @@ doca_error_t ipsec_security_gw_init_doca_flow(const struct ipsec_security_gw_con
 			return DOCA_ERROR_INITIALIZATION;
 		}
 	}
-	/* Init DOCA Flow Tune Server */
-	result = doca_flow_tune_server_cfg_create(&server_cfg);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create flow tune server configuration");
-		doca_flow_cleanup(nb_ports, ports);
-		return result;
-	}
-	result = doca_flow_tune_server_init(server_cfg);
-	if (result != DOCA_SUCCESS) {
-		if (result == DOCA_ERROR_NOT_SUPPORTED) {
-			DOCA_LOG_DBG("DOCA Flow Tune Server isn't supported in this runtime version");
-		} else {
-			DOCA_LOG_ERR("Failed to initialize the flow tune server");
-			doca_flow_tune_server_cfg_destroy(server_cfg);
+	if (app_cfg->enable_tune) {
+		result = flow_tune_server_start(DOCA_FLOW_TUNE_PROFILE_FULL);
+		if (result != DOCA_SUCCESS) {
 			doca_flow_cleanup(nb_ports, ports);
 			return result;
 		}
 	}
-	doca_flow_tune_server_cfg_destroy(server_cfg);
 	return DOCA_SUCCESS;
 }
 
@@ -427,7 +382,9 @@ doca_error_t ipsec_security_gw_ids_get(struct ipsec_security_gw_ports_map *ports
 {
 	struct doca_flow_port *secured_port;
 	doca_error_t result;
-	uint32_t total_ids = app_cfg->app_rules.nb_encrypt_rules + app_cfg->app_rules.nb_decrypt_rules;
+	uint32_t total_ids = app_cfg->socket_ctx.socket_conf ?
+				     MAX_NB_RULES * 2 :
+				     app_cfg->app_rules.nb_encrypt_rules + app_cfg->app_rules.nb_decrypt_rules;
 
 	allocated_ipsec_id = (uint32_t *)malloc(total_ids * sizeof(uint32_t));
 	if (allocated_ipsec_id == NULL) {
@@ -442,16 +399,18 @@ doca_error_t ipsec_security_gw_ids_get(struct ipsec_security_gw_ports_map *ports
 	}
 	result = get_encrypt_ids(app_cfg->app_rules.nb_encrypt_rules, secured_port);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to bind IDs: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to allocate IDs: %s", doca_error_get_descr(result));
 		free(allocated_ipsec_id);
+		allocated_ipsec_id = NULL;
 		return result;
 	}
 
 	result =
 		get_decrypt_ids(app_cfg->app_rules.nb_decrypt_rules, app_cfg->app_rules.nb_encrypt_rules, secured_port);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to bind IDs: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to allocate IDs: %s", doca_error_get_descr(result));
 		free(allocated_ipsec_id);
+		allocated_ipsec_id = NULL;
 		return result;
 	}
 	return result;
@@ -819,7 +778,7 @@ static doca_error_t add_switch_port_meta_entries(struct ipsec_security_gw_ports_
 	app_cfg->secured_status[0].entries_in_queue = num_of_entries;
 
 	/* forward the packets from the unsecured port to encryption */
-	match.parser_meta.port_id = ports[UNSECURED_IDX]->port_id;
+	match.parser_meta.port_id = UNSECURED_PORT_ID(ports);
 
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = encrypt_root;
@@ -840,7 +799,7 @@ static doca_error_t add_switch_port_meta_entries(struct ipsec_security_gw_ports_
 	}
 
 	/* forward the packets from the secured port to decryption */
-	match.parser_meta.port_id = ports[SECURED_IDX]->port_id;
+	match.parser_meta.port_id = SECURED_PORT_ID(ports);
 
 	fwd.type = DOCA_FLOW_FWD_PIPE;
 	fwd.next_pipe = decrypt_root;
@@ -1004,7 +963,7 @@ static doca_error_t add_switch_pkt_meta_entries(struct ipsec_security_gw_ports_m
 	meta.decrypt = 1;
 	match.meta.pkt_meta = DOCA_HTOBE32(meta.u32);
 	fwd.type = DOCA_FLOW_FWD_PORT;
-	fwd.port_id = ports[UNSECURED_IDX]->port_id;
+	fwd.port_id = UNSECURED_PORT_ID(ports);
 
 	if (app_cfg->debug_mode) {
 		snprintf(pipe_info->entries_info[pipe_info->nb_entries].name, MAX_NAME_LEN, "decrypt");
@@ -1080,6 +1039,97 @@ doca_error_t create_switch_egress_root_pipes(struct ipsec_security_gw_ports_map 
 		DOCA_LOG_ERR("Failed to add pkt meta pipe entries: %s", doca_error_get_descr(result));
 		return result;
 	}
+	return DOCA_SUCCESS;
+}
+
+doca_error_t ipsec_security_gw_resolve_tunnel_l2(struct ipsec_security_gw_config *app_cfg,
+						 struct ipsec_security_gw_ports_map *ports[])
+{
+	static const uint8_t default_dst_mac[RTE_ETHER_ADDR_LEN] = DEFAULT_TUNNEL_DST_MAC;
+	static const uint8_t zero_mac[RTE_ETHER_ADDR_LEN] = {0};
+	bool macs_provided = memcmp(app_cfg->encap_eth.src_mac, zero_mac, RTE_ETHER_ADDR_LEN) != 0 ||
+			     memcmp(app_cfg->encap_eth.dst_mac, zero_mac, RTE_ETHER_ADDR_LEN) != 0 ||
+			     memcmp(app_cfg->decap_eth.src_mac, zero_mac, RTE_ETHER_ADDR_LEN) != 0 ||
+			     memcmp(app_cfg->decap_eth.dst_mac, zero_mac, RTE_ETHER_ADDR_LEN) != 0;
+
+	/* MAC overrides only make sense for ESP tunnel encap/decap */
+	if (app_cfg->mode != IPSEC_SECURITY_GW_TUNNEL) {
+		if (macs_provided) {
+			DOCA_LOG_ERR("encap/decap MAC overrides are only supported in tunnel mode");
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+		return DOCA_SUCCESS;
+	}
+
+	/* Fill any address the user did not set: src = local port MAC, dst = default */
+	if (memcmp(app_cfg->encap_eth.src_mac, zero_mac, RTE_ETHER_ADDR_LEN) == 0)
+		memcpy(app_cfg->encap_eth.src_mac, ports[SECURED_IDX]->eth_header.src_mac, RTE_ETHER_ADDR_LEN);
+	if (memcmp(app_cfg->encap_eth.dst_mac, zero_mac, RTE_ETHER_ADDR_LEN) == 0)
+		memcpy(app_cfg->encap_eth.dst_mac, default_dst_mac, RTE_ETHER_ADDR_LEN);
+
+	if (memcmp(app_cfg->decap_eth.src_mac, zero_mac, RTE_ETHER_ADDR_LEN) == 0)
+		memcpy(app_cfg->decap_eth.src_mac, ports[UNSECURED_IDX]->eth_header.src_mac, RTE_ETHER_ADDR_LEN);
+	if (memcmp(app_cfg->decap_eth.dst_mac, zero_mac, RTE_ETHER_ADDR_LEN) == 0)
+		memcpy(app_cfg->decap_eth.dst_mac, default_dst_mac, RTE_ETHER_ADDR_LEN);
+
+	return DOCA_SUCCESS;
+}
+
+doca_error_t add_arp_control_entry(struct security_gateway_pipe_info *control_pipe,
+				   uint16_t fwd_port_id,
+				   enum ipsec_security_gw_arp_mode arp_mode,
+				   bool debug_mode,
+				   struct doca_flow_monitor *monitor_ptr,
+				   const char *entry_name)
+{
+	struct doca_flow_match match;
+	struct doca_flow_fwd fwd;
+	struct doca_flow_pipe_entry **entry = NULL;
+	doca_error_t result;
+
+	memset(&match, 0, sizeof(match));
+	memset(&fwd, 0, sizeof(fwd));
+
+	match.outer.eth.type = rte_cpu_to_be_16(DOCA_FLOW_ETHER_TYPE_ARP);
+
+	switch (arp_mode) {
+	case IPSEC_SECURITY_GW_ARP_MODE_DROP:
+		fwd.type = DOCA_FLOW_FWD_DROP;
+		break;
+	case IPSEC_SECURITY_GW_ARP_MODE_FORWARD_PORT:
+		fwd.type = DOCA_FLOW_FWD_PORT;
+		fwd.port_id = fwd_port_id;
+		break;
+	default:
+		DOCA_LOG_ERR("Unsupported ARP mode: %d", arp_mode);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	if (debug_mode && control_pipe->entries_info != NULL) {
+		snprintf(control_pipe->entries_info[control_pipe->nb_entries].name, MAX_NAME_LEN, "%s", entry_name);
+		entry = &control_pipe->entries_info[control_pipe->nb_entries++].entry;
+	}
+
+	/* Matching on the ARP ethertype cannot overlap the L3 forwarding entries, so they share a priority */
+	result = doca_flow_pipe_control_add_entry(0,
+						  control_pipe->pipe,
+						  &match,
+						  NULL,
+						  NULL,
+						  NULL,
+						  NULL,
+						  NULL,
+						  monitor_ptr,
+						  0,
+						  &fwd,
+						  NULL,
+						  entry);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to add ARP control entry '%s': %s", entry_name, doca_error_get_descr(result));
+		return result;
+	}
+
+	DOCA_LOG_INFO("Added ARP control entry '%s' (mode: %d)", entry_name, arp_mode);
 	return DOCA_SUCCESS;
 }
 
@@ -1195,8 +1245,10 @@ static void security_gateway_free_switch_pipes_resources(struct switch_pipes *sw
  */
 static void security_gateway_free_allocated_ipsec_ids(void)
 {
-	if (allocated_ipsec_id)
+	if (allocated_ipsec_id) {
 		free(allocated_ipsec_id);
+		allocated_ipsec_id = NULL;
+	}
 }
 
 void security_gateway_free_status_entries(struct ipsec_security_gw_config *app_cfg)

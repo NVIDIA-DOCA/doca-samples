@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -54,28 +54,63 @@ doca_error_t get_pkt_headroom(struct doca_buf *pkt, uint16_t *headroom_size)
 	return DOCA_SUCCESS;
 }
 
+doca_error_t get_pkt_data_len(struct doca_buf *pkt, size_t *data_len)
+{
+	doca_error_t status;
+
+	*data_len = 0;
+
+	/* Above 8KB a packet may arrive as two buffers, so its data is the sum over the list */
+	while (pkt != NULL) {
+		size_t element_data_len;
+
+		status = doca_buf_get_data_len(pkt, &element_data_len);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to get doca_buf data length, err: %s", doca_error_get_name(status));
+			return status;
+		}
+		*data_len += element_data_len;
+
+		status = doca_buf_get_next_in_list(pkt, &pkt);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to walk the packet's buffer list, err: %s", doca_error_get_name(status));
+			return status;
+		}
+	}
+
+	return DOCA_SUCCESS;
+}
+
 doca_error_t get_pkt_tailroom(struct doca_buf *pkt, uint16_t *tailroom_size)
 {
 	size_t pkt_len, pkt_data_len;
 	doca_error_t status;
 	uint16_t headroom_size;
+	struct doca_buf *last;
 
-	status = get_pkt_headroom(pkt, &headroom_size);
+	/* The tailroom sits behind the packet's last byte, which above 8KB may be in a second buffer */
+	status = doca_buf_get_last_in_list(pkt, &last);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to get the last buffer of the packet, err: %s", doca_error_get_name(status));
+		return status;
+	}
+
+	status = get_pkt_headroom(last, &headroom_size);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get packet headroom size, err: %s", doca_error_get_name(status));
 		return status;
 	}
-	status = doca_buf_get_len(pkt, &pkt_len);
+	status = doca_buf_get_len(last, &pkt_len);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get doca_buf length, err: %s", doca_error_get_name(status));
 		return status;
 	}
-	status = doca_buf_get_data_len(pkt, &pkt_data_len);
+	status = doca_buf_get_data_len(last, &pkt_data_len);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get doca_buf data length, err: %s", doca_error_get_name(status));
 		return status;
 	}
-	*tailroom_size = pkt_len - pkt_data_len - headroom_size;
+	*tailroom_size = (uint16_t)(pkt_len - pkt_data_len - headroom_size);
 
 	return DOCA_SUCCESS;
 }

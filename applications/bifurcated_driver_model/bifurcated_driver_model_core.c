@@ -632,10 +632,8 @@ doca_error_t bifurcated_driver_model_init(struct application_dpdk_config *app_dp
 	resource.nr_counters = num_entries + 1; /* +1 for ingress pipe miss counter */
 
 	/* Initialize DOCA Flow */
-	result = init_doca_flow(app_dpdk_config->port_config.nb_queues,
-				"switch,hws,expert",
-				&resource,
-				nr_shared_resources);
+	result =
+		init_doca_flow(app_dpdk_config->port_config.nb_queues, "switch,expert", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;

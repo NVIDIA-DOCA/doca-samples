@@ -32,6 +32,8 @@
 #include <signal.h>
 #include <sched.h>
 #include <inttypes.h>
+#include <errno.h>
+#include <sys/resource.h>
 
 #include <doca_argp.h>
 #include <doca_log.h>
@@ -402,7 +404,60 @@ static doca_error_t sriov_total_vfs_callback(void *param, void *config)
 }
 
 /*
- * Register --total-vfs, the single SR-IOV switch.
+ * ARGP callback for --vf-queue-pairs: queue pairs per VF slot of a PF, given as
+ * a comma-separated list and repeated across the remaining slots. Every PF hands
+ * out the same list to its own VFs, letting the VFs of one PF differ in size.
+ */
+static doca_error_t sriov_vf_queue_pairs_callback(void *param, void *config)
+{
+	struct vnet_pci_dev_config *vnet_cfg = (struct vnet_pci_dev_config *)config;
+	const char *list = (const char *)param;
+	const char *cursor = list;
+	uint16_t qps[VNET_VF_QP_LIST_MAX];
+	uint8_t len = 0;
+
+	while (*cursor != '\0') {
+		char *end = NULL;
+		long qp;
+
+		if (len == VNET_VF_QP_LIST_MAX) {
+			DOCA_LOG_ERR("Invalid --vf-queue-pairs '%s': at most %u entries are accepted",
+				     list,
+				     VNET_VF_QP_LIST_MAX);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+
+		qp = strtol(cursor, &end, 10);
+		/* Every element is a number, and a separator has to be followed by one. */
+		if (end == cursor || (*end != '\0' && (*end != ',' || end[1] == '\0'))) {
+			DOCA_LOG_ERR("Invalid --vf-queue-pairs '%s': expected a comma-separated list of queue "
+				     "pair counts",
+				     list);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+		if (qp < 1 || qp > VNET_CTRL_MAX_QUEUES_PAIRS) {
+			DOCA_LOG_ERR("Invalid --vf-queue-pairs '%s': queue pairs must be between 1 and %u",
+				     list,
+				     VNET_CTRL_MAX_QUEUES_PAIRS);
+			return DOCA_ERROR_INVALID_VALUE;
+		}
+
+		qps[len++] = (uint16_t)qp;
+		cursor = (*end == ',') ? end + 1 : end;
+	}
+
+	if (len == 0) {
+		DOCA_LOG_ERR("Invalid --vf-queue-pairs: at least one queue pair count is required");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	memcpy(vnet_cfg->vf_qp_list, qps, len * sizeof(qps[0]));
+	vnet_cfg->vf_qp_list_len = len;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * Register the SR-IOV switches: --total-vfs and --vf-queue-pairs.
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
@@ -426,6 +481,25 @@ static doca_error_t register_sriov_params(void)
 	result = doca_argp_register_param(param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register --total-vfs: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(param, "vf-queue-pairs");
+	doca_argp_param_set_description(
+		param,
+		"Queue pairs per VF, comma-separated (e.g. 1,2,3,4), applied to each PF's VF slots in turn and "
+		"repeated as needed. Must fit what --total-vfs x -q reserves. Requires --total-vfs; default "
+		"gives every VF the PF's queue pairs");
+	doca_argp_param_set_callback(param, sriov_vf_queue_pairs_callback);
+	doca_argp_param_set_type(param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register --vf-queue-pairs: %s", doca_error_get_descr(result));
 		return result;
 	}
 
@@ -827,6 +901,63 @@ static doca_error_t register_vnet_pci_dev_params(void)
 	return DOCA_SUCCESS;
 }
 
+/* Rough per-emulated-function fd cost (SF + EQ/CQ + doorbells + VQ event fds),
+ * used only to warn at startup when the fd limit looks too low for the requested
+ * fan-out. Observed ~3/function; kept slightly higher for headroom. */
+#define VNET_EST_FDS_PER_FUNCTION 4
+#define VNET_FD_BASE_HEADROOM 512
+
+/*
+ * Raise the open-file soft limit to the hard limit. Each emulated function (the PF
+ * and every VF) holds several fds, so the default interactive soft limit (often
+ * 1024) is exhausted well before a large VF count, surfacing as engine-create
+ * failures mid bring-up. The controller daemon gets this via systemd
+ * LimitNOFILE=1000000; do the equivalent here so the app behaves the same however
+ * it is launched (shell, systemd, container). Best-effort: log and continue.
+ */
+static void vnet_pci_dev_raise_fd_limit(const struct vnet_pci_dev_config *cfg)
+{
+	struct rlimit lim;
+
+	if (getrlimit(RLIMIT_NOFILE, &lim) != 0) {
+		DOCA_LOG_WARN("Could not query open-file limit (RLIMIT_NOFILE): %s", strerror(errno));
+		return;
+	}
+
+	if (lim.rlim_cur < lim.rlim_max) {
+		struct rlimit want = lim;
+
+		want.rlim_cur = lim.rlim_max;
+		if (setrlimit(RLIMIT_NOFILE, &want) == 0)
+			lim.rlim_cur = want.rlim_cur;
+		else
+			DOCA_LOG_WARN("Could not raise open-file soft limit to %ju: %s",
+				      (uintmax_t)lim.rlim_max,
+				      strerror(errno));
+	}
+
+	if (lim.rlim_cur == RLIM_INFINITY) {
+		DOCA_LOG_INFO("  Open-file limit (RLIMIT_NOFILE): unlimited");
+		return;
+	}
+
+	DOCA_LOG_INFO("  Open-file limit (RLIMIT_NOFILE): %ju", (uintmax_t)lim.rlim_cur);
+
+	if (cfg->sriov_enabled) {
+		uint32_t num_ep = cfg->num_ep ? cfg->num_ep : 1;
+		uint64_t functions = (uint64_t)num_ep * (1u + cfg->sriov_total_vfs);
+		uint64_t needed = functions * VNET_EST_FDS_PER_FUNCTION + VNET_FD_BASE_HEADROOM;
+
+		if ((uint64_t)lim.rlim_cur < needed)
+			DOCA_LOG_WARN("Open-file limit %ju may be too low for %u PF x %u VF (~%ju fds); raise it "
+				      "(ulimit -n or systemd LimitNOFILE) to avoid engine-create failures mid bring-up",
+				      (uintmax_t)lim.rlim_cur,
+				      num_ep,
+				      cfg->sriov_total_vfs,
+				      (uintmax_t)needed);
+	}
+}
+
 /*
  * VirtIO Net PCI Device application main function
  *
@@ -906,6 +1037,17 @@ int main(int argc, char **argv)
 		DOCA_LOG_WARN("Admin queues are not supported in LU mode; disabling AQ");
 		config.admin_queue_num = 0;
 	}
+	if (config.vf_qp_list_len != 0 && !config.sriov_enabled) {
+		DOCA_LOG_ERR("vf-queue-pairs sizes VFs, so it requires --total-vfs > 0");
+		goto destroy_argp;
+	}
+	/* A shorter list repeats across the remaining slots, but entries past the
+	 * last slot are never handed out, so say so rather than drop them quietly. */
+	if (config.vf_qp_list_len > config.sriov_total_vfs)
+		DOCA_LOG_WARN("vf-queue-pairs has %u entries for %u VFs; the last %u are unused",
+			      config.vf_qp_list_len,
+			      config.sriov_total_vfs,
+			      config.vf_qp_list_len - config.sriov_total_vfs);
 
 	/* PCI address is now set with default value "03:00.0" */
 
@@ -944,14 +1086,37 @@ int main(int argc, char **argv)
 		      config.vnet_lu_mode == VNET_LU_MODE_ACTIVE  ? "active" :
 		      config.vnet_lu_mode == VNET_LU_MODE_STANDBY ? "standby" :
 								    "none");
-	if (config.sriov_enabled)
+	if (!config.sriov_enabled)
+		DOCA_LOG_INFO("  SR-IOV: disabled");
+	else if (config.vf_qp_list_len == 0)
 		DOCA_LOG_INFO("  SR-IOV: enabled (total_vfs=%u, vf_msix=%u, vf_db=%u derived from %u queue pairs)",
 			      config.sriov_total_vfs,
 			      VNET_SRIOV_VF_NUM_MSIX(config.max_queue_pairs),
 			      VNET_SRIOV_VF_NUM_DB(config.max_queue_pairs),
 			      config.max_queue_pairs);
-	else
-		DOCA_LOG_INFO("  SR-IOV: disabled");
+	else {
+		char res_str[VNET_VF_QP_LIST_MAX * 7];
+		size_t used = 0;
+		uint8_t i;
+
+		for (i = 0; i < config.vf_qp_list_len && used < sizeof(res_str); i++)
+			used += (size_t)snprintf(res_str + used,
+						 sizeof(res_str) - used,
+						 "%s%u",
+						 i == 0 ? "" : ",",
+						 config.vf_qp_list[i]);
+
+		DOCA_LOG_INFO("  SR-IOV: enabled (total_vfs=%u, PF pool %u vf_msix and %u vf_db per VF, "
+			      "from %u queue pairs, VF queue pairs %s)",
+			      config.sriov_total_vfs,
+			      VNET_SRIOV_VF_NUM_MSIX(config.max_queue_pairs),
+			      VNET_SRIOV_VF_NUM_DB(config.max_queue_pairs),
+			      config.max_queue_pairs,
+			      res_str);
+	}
+
+	/* Provision fds for the requested fan-out before opening any device resources. */
+	vnet_pci_dev_raise_fd_limit(&config);
 
 	/* Run the core VirtIO Net PCI device logic */
 	result = vnet_pci_dev_run(&config, &force_quit);

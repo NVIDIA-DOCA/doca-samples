@@ -87,6 +87,7 @@ static doca_error_t plug_ep_ctrl(struct vblk_io_ctx_cfg *cfg, uint32_t ep)
 		DOCA_LOG_ERR("Failed to init ctrl for EP %u: %s", ep, doca_error_get_descr(err));
 		return err;
 	}
+	cfg->ctrls[ep].recycle_state = VBLK_RECYCLE_IDLE;
 	cfg->ctrls[ep].ios_period = cfg->stats_ios_period;
 	return DOCA_SUCCESS;
 }
@@ -116,7 +117,8 @@ static void oe_check_plug_requests(struct vblk_io_ctx_cfg *cfg)
 		if (!hp[ep].plug_requested)
 			continue;
 
-		if (hp[ep].unplug_requested || hp[ep].need_io_ctx_shutdown) {
+		if (hp[ep].unplug_requested ||
+		    atomic_load_explicit(&hp[ep].io_ctx_phase, memory_order_acquire) == VBLK_IO_CTX_SHUTDOWN) {
 			DOCA_LOG_INFO("OE: deferring plug for EP %u — unplug still in progress", ep);
 			continue;
 		}
@@ -149,21 +151,28 @@ static void oe_check_plug_requests(struct vblk_io_ctx_cfg *cfg)
 				vblk_ctrl_cleanup(&cfg->ctrls[ep], cfg->pe);
 				vblk_pci_destroy_device(ep);
 				hp[ep].enabled = false;
-				hp[ep].need_io_ctx = false;
-				hp[ep].io_ctx_ready = 0;
+				atomic_store_explicit(&hp[ep].io_ctx_phase, VBLK_IO_CTX_IDLE, memory_order_release);
 				for (uint8_t i = 0; i < cfg->num_io_ctx; i++)
 					hp[ep].io_ctx_created[i] = false;
 				continue;
 			}
 		}
 
-		hp[ep].io_ctx_ready = 0;
 		for (uint8_t i = 0; i < cfg->num_io_ctx; i++)
 			hp[ep].io_ctx_created[i] = false;
-		hp[ep].need_io_ctx = true;
+		atomic_store_explicit(&hp[ep].io_ctx_shutdown_ack_mask, 0, memory_order_release);
+		atomic_store_explicit(&hp[ep].io_ctx_phase, VBLK_IO_CTX_CREATE, memory_order_release);
 		hp[ep].plug_requested = false;
 		processed++;
 	}
+}
+
+static bool io_ctx_create_complete(const struct vblk_io_ctx_cfg *cfg, uint32_t ep)
+{
+	for (uint8_t i = 0; i < cfg->num_io_ctx; i++)
+		if (!atomic_load_explicit(&cfg->hp_states[ep].io_ctx_created[i], memory_order_acquire))
+			return false;
+	return true;
 }
 
 /*
@@ -238,9 +247,10 @@ static void oe_check_io_ctx_complete(struct vblk_io_ctx_cfg *cfg)
 	doca_error_t err;
 
 	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-		if (!hp[ep].need_io_ctx || hp[ep].enabled || hp[ep].plug_msi_pending)
+		if (atomic_load_explicit(&hp[ep].io_ctx_phase, memory_order_acquire) != VBLK_IO_CTX_CREATE ||
+		    hp[ep].enabled || hp[ep].plug_msi_pending)
 			continue;
-		if (hp[ep].io_ctx_ready < cfg->num_io_ctx)
+		if (!io_ctx_create_complete(cfg, ep))
 			continue;
 
 		if (cfg->hotplug_mode && oe_count_inflight_plug(cfg) >= VBLK_OE_MAX_INFLIGHT_PLUG)
@@ -253,7 +263,7 @@ static void oe_check_io_ctx_complete(struct vblk_io_ctx_cfg *cfg)
 			continue;
 		}
 
-		hp[ep].need_io_ctx = false;
+		atomic_store_explicit(&hp[ep].io_ctx_phase, VBLK_IO_CTX_IDLE, memory_order_release);
 
 		if (cfg->hotplug_mode) {
 			/* Hand off MSI send to the TLP thread. 'enabled' stays false
@@ -348,9 +358,9 @@ static void oe_check_host_power_off(struct vblk_io_ctx_cfg *cfg)
 		DOCA_LOG_INFO("OE: host powered OFF DSP[%u] — destroying IO contexts", ep);
 		ep_cfg->host_power_off = false;
 		ep_cfg->pending_unplug = false;
-		hp[ep].enabled = false;
-		hp[ep].io_ctx_shutdown_done = 0;
-		hp[ep].need_io_ctx_shutdown = true;
+		atomic_store_explicit(&hp[ep].enabled, false, memory_order_release);
+		atomic_store_explicit(&hp[ep].io_ctx_shutdown_ack_mask, 0, memory_order_release);
+		atomic_store_explicit(&hp[ep].io_ctx_phase, VBLK_IO_CTX_SHUTDOWN, memory_order_release);
 	}
 }
 
@@ -358,7 +368,7 @@ static void oe_check_host_power_off(struct vblk_io_ctx_cfg *cfg)
  * Destroy a VF slot's datapath controller for final PF teardown: drain
  * in-flight I/O and release the offload engine, io_ctx, and VQs, then free and
  * clear the slot pointer. Runs on the OE thread (the datapath's PE owner).
- * VFE 1->0 and VF FLR must not call this; they keep vf_ctrl alive.
+ * VFE 1->0 and a function recycle must not call this; they keep vf_ctrl alive.
  */
 static void oe_vf_dp_destroy(struct vblk_sriov_vf_slot *slot, struct doca_pe *pe)
 {
@@ -381,9 +391,8 @@ static void oe_vf_dp_destroy(struct vblk_sriov_vf_slot *slot, struct doca_pe *pe
  * (vf_ctrl: offload engine + io_ctx + VQs) is reached from the VF TLP config
  * callback, so stop the VF TLP device before freeing vf_ctrl. Used both on
  * app shutdown and on PF hotplug-unplug. Runs on the OE thread (the datapath's
- * PE owner). No-op when SR-IOV is disabled or the PF has no VFs. VFE and PF FLR
- * do not use this path; they only disable VF offload and keep VF state alive
- * for restore.
+ * PE owner). No-op when SR-IOV is disabled or the PF has no VFs. VFE and a
+ * function recycle do not use this path; they keep VF state alive for restore.
  */
 static void oe_teardown_vf_dp_for_ep(struct vblk_io_ctx_cfg *cfg, uint32_t ep)
 {
@@ -420,15 +429,16 @@ static void oe_teardown_vf_dp_for_ep(struct vblk_io_ctx_cfg *cfg, uint32_t ep)
 static void oe_check_unplug_complete(struct vblk_io_ctx_cfg *cfg)
 {
 	struct vblk_ep_hotplug_state *hp = cfg->hp_states;
+	const uint16_t expected_ack_mask = (uint16_t)((1U << cfg->num_io_ctx) - 1U);
 
 	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-		if (!hp[ep].need_io_ctx_shutdown)
+		if (atomic_load_explicit(&hp[ep].io_ctx_phase, memory_order_acquire) != VBLK_IO_CTX_SHUTDOWN)
 			continue;
-		if (hp[ep].io_ctx_shutdown_done < cfg->num_io_ctx)
+		if (atomic_load_explicit(&hp[ep].io_ctx_shutdown_ack_mask, memory_order_acquire) != expected_ack_mask)
 			continue;
 
 		DOCA_LOG_INFO("OE: all IO ctx shutdown for EP %u — cleaning up", ep);
-		hp[ep].need_io_ctx_shutdown = false;
+		atomic_store_explicit(&hp[ep].io_ctx_phase, VBLK_IO_CTX_IDLE, memory_order_release);
 
 		/* Tear down this PF's VF datapaths on the OE thread before
 		 * vblk_ctrl_cleanup -> free_pf_state -> close_vf_reps destroys the VF
@@ -437,15 +447,16 @@ static void oe_check_unplug_complete(struct vblk_io_ctx_cfg *cfg)
 		 * running OE datapath. No-op for a non-SR-IOV PF (no VF slots). */
 		oe_teardown_vf_dp_for_ep(cfg, ep);
 
-		/* Defensive ack of host vp_reset before destroying virtio_dev: the
-		 * normal path (host writes device_status=0 -> virtio_ctrl_change_cb
-		 * -> reset_vq_done) already clears it, but vblk_ctrl_shutdown_io_ctx_on_thread
-		 * unbinds VQs directly without going through reset_vq_done, so under
-		 * stress device_status can still hold NEEDS_RESET here. We rely on
-		 * host_power_off to gate this stage (oe_check_host_power_off set
-		 * need_io_ctx_shutdown only after pciehp serialised driver remove +
-		 * vp_reset before powering the slot off), so no grace is needed:
-		 * by this point the host is no longer polling device_status. */
+		/* Defensive ack of host vp_reset before destroying virtio_dev: the normal
+		 * path (host writes device_status=0 -> virtio_ctrl_change_cb ->
+		 * vblk_ctrl_reset_complete) already clears it, but
+		 * vblk_ctrl_shutdown_io_ctx_on_thread unbinds VQs directly without going
+		 * through that path, so under stress device_status can still hold
+		 * NEEDS_RESET here. We rely on host_power_off to gate this stage
+		 * (oe_check_host_power_off enters VBLK_IO_CTX_SHUTDOWN only after pciehp
+		 * serialised driver remove + vp_reset before powering the slot off), so no
+		 * grace is needed: by this point the host is no longer polling
+		 * device_status. */
 		vblk_pci_ack_host_reset(ep);
 
 		doca_error_t err = vblk_ctrl_cleanup(&cfg->ctrls[ep], cfg->pe);
@@ -458,12 +469,11 @@ static void oe_check_unplug_complete(struct vblk_io_ctx_cfg *cfg)
 
 		for (uint8_t i = 0; i < cfg->num_io_ctx; i++)
 			hp[ep].io_ctx_created[i] = false;
-		hp[ep].io_ctx_ready = 0;
 		hp[ep].plug_msi_pending = false;
 		hp[ep].unplug_msi_pending = false;
-		hp[ep].need_post_flr_oe_restart = false;
-		hp[ep].need_post_flr_reenable = false;
-		hp[ep].io_ctx_flr_destroyed = 0;
+		cfg->ctrls[ep].recycle_io_ctx_teardown_ack_mask = 0;
+		cfg->ctrls[ep].recycle_io_ctx_rebuild_ack_mask = 0;
+		cfg->ctrls[ep].recycle_state = VBLK_RECYCLE_IDLE;
 
 		DOCA_LOG_INFO("OE: EP %u unplug complete", ep);
 	}
@@ -472,12 +482,13 @@ static void oe_check_unplug_complete(struct vblk_io_ctx_cfg *cfg)
 /*
  * IO thread (all threads including OE): create IO ctx for EPs that need it.
  */
-static void io_check_need_io_ctx(struct vblk_io_ctx_cfg *cfg, uint8_t ctx_id, struct doca_pe *pe)
+static void io_check_io_ctx_create(struct vblk_io_ctx_cfg *cfg, uint8_t ctx_id, struct doca_pe *pe)
 {
 	struct vblk_ep_hotplug_state *hp = cfg->hp_states;
 
 	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-		if (!hp[ep].need_io_ctx || hp[ep].io_ctx_created[ctx_id])
+		if (atomic_load_explicit(&hp[ep].io_ctx_phase, memory_order_acquire) != VBLK_IO_CTX_CREATE ||
+		    hp[ep].io_ctx_created[ctx_id])
 			continue;
 
 		doca_error_t err = vblk_ctrl_init_io_ctx_on_thread(&cfg->ctrls[ep], ctx_id, pe, cfg->shared_mpool);
@@ -505,39 +516,43 @@ static void io_check_need_io_ctx(struct vblk_io_ctx_cfg *cfg, uint8_t ctx_id, st
 			}
 		}
 		hp[ep].io_ctx_created[ctx_id] = true;
-		hp[ep].io_ctx_ready++;
-		DOCA_LOG_DBG("IO ctx created for EP %u on thread %u (%u/%u ready)",
-			     ep,
-			     ctx_id,
-			     (uint32_t)hp[ep].io_ctx_ready,
-			     cfg->num_io_ctx);
+		DOCA_LOG_DBG("IO ctx created for EP %u on thread %u", ep, ctx_id);
 	}
+}
+
+/*
+ * IO thread: drain this thread's io_ctxs for one EP exactly once. PF io_ctx
+ * teardown does not cover VF io_ctxs, so drain the VF independently.
+ */
+static void io_drain_ep_on_thread(struct vblk_io_ctx_cfg *cfg, uint32_t ep, uint8_t ctx_id)
+{
+	struct vblk_ep_hotplug_state *hp = cfg->hp_states;
+	const uint16_t ack_bit = (uint16_t)(1U << ctx_id);
+
+	if ((atomic_load_explicit(&hp[ep].io_ctx_shutdown_ack_mask, memory_order_acquire) & ack_bit) != 0)
+		return;
+
+	if (cfg->sriov_enabled)
+		io_vf_shutdown_io_ctx_for_ep_on_thread(cfg, ep, ctx_id);
+	if (atomic_load_explicit(&hp[ep].io_ctx_created[ctx_id], memory_order_acquire)) {
+		(void)vblk_ctrl_shutdown_io_ctx_on_thread(&cfg->ctrls[ep], ctx_id);
+		atomic_store_explicit(&hp[ep].io_ctx_created[ctx_id], false, memory_order_release);
+	}
+	atomic_fetch_or_explicit(&hp[ep].io_ctx_shutdown_ack_mask, ack_bit, memory_order_release);
+	DOCA_LOG_DBG("IO ctx drained for EP %u on thread %u", ep, ctx_id);
 }
 
 /*
  * IO thread (all threads including OE): shutdown IO ctx for EPs being unplugged.
  */
-static void io_check_need_io_ctx_shutdown(struct vblk_io_ctx_cfg *cfg, uint8_t ctx_id)
+static void io_check_io_ctx_shutdown(struct vblk_io_ctx_cfg *cfg, uint8_t ctx_id)
 {
 	struct vblk_ep_hotplug_state *hp = cfg->hp_states;
 
 	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-		if (!hp[ep].need_io_ctx_shutdown || !hp[ep].io_ctx_created[ctx_id])
+		if (atomic_load_explicit(&hp[ep].io_ctx_phase, memory_order_acquire) != VBLK_IO_CTX_SHUTDOWN)
 			continue;
-
-		/* SR-IOV: drain+stop this PF's VF io_ctxs on this thread before PF
-		 * shutdown and before the OE destroys the VF datapaths
-		 * (oe_check_unplug_complete -> oe_teardown_vf_dp_for_ep). */
-		if (cfg->sriov_enabled)
-			io_vf_shutdown_io_ctx_for_ep_on_thread(cfg, ep, ctx_id);
-		(void)vblk_ctrl_shutdown_io_ctx_on_thread(&cfg->ctrls[ep], ctx_id);
-		hp[ep].io_ctx_created[ctx_id] = false;
-		hp[ep].io_ctx_shutdown_done++;
-		DOCA_LOG_DBG("IO ctx shutdown for EP %u on thread %u (%u/%u done)",
-			     ep,
-			     ctx_id,
-			     (uint32_t)hp[ep].io_ctx_shutdown_done,
-			     cfg->num_io_ctx);
+		io_drain_ep_on_thread(cfg, ep, ctx_id);
 	}
 }
 
@@ -560,39 +575,19 @@ static void io_progress_all_eps(struct vblk_io_ctx_cfg *cfg, uint8_t ctx_id, boo
 			for (int i = 0; i < VBLK_DMA_PE_PROGRESS_MAX && doca_pe_progress(dma_pe); i++) {}
 
 		struct vblk_poll_state *io_poll = vblk_ctrl_io_ctx_poll(&cfg->ctrls[ep], ctx_id);
+		/* reset_pending only defeats the poll-skip heuristic so a reset drains
+		 * without waiting for the modulo. A recycle does not rely on it: its
+		 * state machine is advanced every iteration by oe_check_recycle() and
+		 * io_check_recycle_ctx(). */
+		bool reset_pending = atomic_load_explicit(&cfg->ctrls[ep].reset_pending, memory_order_acquire);
 
 		if (doca_unlikely(is_oe)) {
 			struct vblk_poll_state *engine_poll = vblk_ctrl_engine_poll(&cfg->ctrls[ep]);
-			if (!vblk_poll_skip(engine_poll))
+			if (reset_pending || !vblk_poll_skip(engine_poll))
 				vblk_ctrl_offload_engine_progress(&cfg->ctrls[ep]);
 		}
-		if (doca_unlikely(!vblk_poll_skip(io_poll)))
+		if (doca_unlikely(reset_pending || !vblk_poll_skip(io_poll)))
 			vblk_ctrl_io_context_progress(&cfg->ctrls[ep], ctx_id);
-	}
-}
-
-/*
- * OE thread: detect the FLR kickoff on each EP and fan out to per-io_ctx
- * flags so each IO thread can shutdown its own ctx_id
- * (vblk_ctrl_shutdown_io_ctx_on_thread must run on the thread that owns
- * the PE).
- */
-static void oe_check_flr_kickoff(struct vblk_io_ctx_cfg *cfg)
-{
-	struct vblk_ep_hotplug_state *hp = cfg->hp_states;
-
-	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-		struct vblk_ctrl *ctrl = &cfg->ctrls[ep];
-		if (ctrl->vblk_pci_dev == NULL || !ctrl->vblk_pci_dev->flr_kickoff)
-			continue;
-
-		DOCA_LOG_INFO("OE: FLR detected on EP %u — signalling IO ctxs to stop", ep);
-		hp[ep].io_ctx_flr_destroyed = 0;
-		hp[ep].need_post_flr_oe_restart = true;
-		for (uint8_t i = 0; i < cfg->num_io_ctx; i++)
-			atomic_store_explicit(&ctrl->io_ctxs[i].need_flr_teardown, true, memory_order_release);
-
-		ctrl->vblk_pci_dev->flr_kickoff = false;
 	}
 }
 
@@ -693,16 +688,10 @@ static doca_error_t io_vf_create_io_ctx_for_ep_on_thread(struct vblk_io_ctx_cfg 
 
 		if (slot->vf_ctrl == NULL)
 			continue;
-		/* Idempotent: a PF FLR tears down and rebuilds only the PF's per-thread
-		 * io_ctxs (oe_check_post_flr_restart re-arms need_io_ctx, which calls us
-		 * via io_check_need_io_ctx), but VF io_ctxs SURVIVE a PF FLR - they stay
-		 * bound to their untouched VF offload engines. Skip a VF whose io_ctx
-		 * already exists on this thread; re-initializing it would overwrite the
-		 * live vq_io_ctx/dma_ctx pointers and orphan the originals (still in the
-		 * engine's virtio_io_list and added to this PE). That leak is what makes
-		 * offload_engine_stop return NOT_PERMITTED and blocks pe/device destroy
-		 * at shutdown after a PF reset. Mirrors the VF-FLR rebuild guard in
-		 * io_check_vf_flr_ctx(). */
+		/* A recycling VF owns its io_ctx lifecycle (io_check_recycle_ctx);
+		 * creating one here would bind it to a stopped VF engine. */
+		if (atomic_load_explicit(&slot->vf_ctrl->recycle_state, memory_order_acquire) != VBLK_RECYCLE_IDLE)
+			continue;
 		if (vblk_ctrl_io_ctx_dma_pe(slot->vf_ctrl, ctx_id) != NULL)
 			continue;
 		err = vblk_ctrl_init_io_ctx_on_thread(slot->vf_ctrl, ctx_id, pe, cfg->shared_mpool);
@@ -747,12 +736,9 @@ static void io_vf_progress(struct vblk_io_ctx_cfg *cfg, uint8_t ctx_id, bool is_
 	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
 		struct vblk_sriov_pf_state *sriov;
 
-		/* Same gate as io_progress_all_eps: skip an EP that is not enabled or
-		 * whose io_ctx for this thread has been shut down. On PF unplug/FLR the
-		 * IO threads clear io_ctx_created[ctx_id] before the OE frees the VF
-		 * datapaths (oe_teardown_vf_dp_for_ep), so once all threads pass the
-		 * shutdown barrier none of them is still touching a VF datapath that is
-		 * about to be freed - without this gate that is a use-after-free. */
+		/* Same gate as io_progress_all_eps: io_ctx_created[ctx_id] clears
+		 * before the OE may free the VF datapaths (oe_teardown_vf_dp_for_ep),
+		 * so no thread touches a VF datapath about to be freed. */
 		if (!hp[ep].enabled || !hp[ep].io_ctx_created[ctx_id])
 			continue;
 
@@ -761,18 +747,25 @@ static void io_vf_progress(struct vblk_io_ctx_cfg *cfg, uint8_t ctx_id, bool is_
 			continue;
 		for (uint16_t i = 0; i < sriov->total_vfs; i++) {
 			struct vblk_sriov_vf_slot *slot = &sriov->vf_slots[i];
+			struct vblk_ctrl *ctrl = slot->vf_ctrl;
 			struct doca_pe *dma_pe;
+			uint8_t dp_state;
+			bool reset_pending;
 
-			if (slot->vf_ctrl == NULL ||
-			    atomic_load_explicit(&slot->dp_state, memory_order_acquire) != VBLK_SRIOV_VF_DP_UP)
+			if (ctrl == NULL)
 				continue;
-			dma_pe = vblk_ctrl_io_ctx_dma_pe(slot->vf_ctrl, ctx_id);
+			reset_pending = atomic_load_explicit(&ctrl->reset_pending, memory_order_acquire);
+			dp_state = atomic_load_explicit(&slot->dp_state, memory_order_acquire);
+			if (dp_state != VBLK_SRIOV_VF_DP_UP &&
+			    atomic_load_explicit(&ctrl->recycle_state, memory_order_acquire) != VBLK_RECYCLE_VQ_DRAIN)
+				continue;
+			dma_pe = vblk_ctrl_io_ctx_dma_pe(ctrl, ctx_id);
 			if (dma_pe != NULL)
 				for (int n = 0; n < VBLK_DMA_PE_PROGRESS_MAX && doca_pe_progress(dma_pe); n++) {}
-			if (is_oe && !vblk_poll_skip(vblk_ctrl_engine_poll(slot->vf_ctrl)))
-				vblk_ctrl_offload_engine_progress(slot->vf_ctrl);
-			if (!vblk_poll_skip(vblk_ctrl_io_ctx_poll(slot->vf_ctrl, ctx_id)))
-				vblk_ctrl_io_context_progress(slot->vf_ctrl, ctx_id);
+			if (is_oe && (reset_pending || !vblk_poll_skip(vblk_ctrl_engine_poll(ctrl))))
+				vblk_ctrl_offload_engine_progress(ctrl);
+			if (reset_pending || !vblk_poll_skip(vblk_ctrl_io_ctx_poll(ctrl, ctx_id)))
+				vblk_ctrl_io_context_progress(ctrl, ctx_id);
 		}
 	}
 }
@@ -810,7 +803,8 @@ static void io_pf_shutdown_created_io_ctx_on_thread(struct vblk_io_ctx_cfg *cfg,
  * OE thread: reconcile each SR-IOV VF slot's datapath against the TLP-thread
  * VFE intent (dp_want_up). VF engines and per-thread io_ctxs are built during
  * startup and progressed by io_vf_progress(); this pass only enables/disables
- * the already-built engine. VF FLR datapath recycle is handled separately.
+ * the already-built engine. A VF function recycle (oe_check_recycle) owns
+ * the engine while it runs; its tail applies the latest dp_want_up.
  */
 static void oe_check_vf_dp(struct vblk_io_ctx_cfg *cfg)
 {
@@ -832,14 +826,14 @@ static void oe_check_vf_dp(struct vblk_io_ctx_cfg *cfg)
 
 			if (slot->vf_ctrl == NULL)
 				continue;
-			if (slot->vf_dev != NULL &&
-			    atomic_load_explicit(&slot->vf_dev->flr_in_progress, memory_order_acquire))
+			/* Leave the engine alone while this VF or its PF is recycling: the
+			 * recycle's own last step applies the latest dp_want_up, so acting
+			 * on it here would enable an engine the recycle is tearing down. */
+			if (vblk_ctrl_reset_active(&cfg->ctrls[ep]) || vblk_ctrl_reset_active(slot->vf_ctrl))
 				continue;
 
 			want_up = atomic_load_explicit(&slot->dp_want_up, memory_order_acquire);
 			state = atomic_load_explicit(&slot->dp_state, memory_order_acquire);
-			if (state != VBLK_SRIOV_VF_DP_DOWN && state != VBLK_SRIOV_VF_DP_UP)
-				continue;
 			if (want_up) {
 				doca_error_t err;
 
@@ -883,398 +877,360 @@ static void vblk_ctrl_destroy_io_ctx_on_thread(struct vblk_ctrl *ctrl, uint16_t 
 	vblk_ctrl_io_ctx_reset(&ctrl->io_ctxs[ctx_id], false);
 }
 
-/*
- * IO thread (all threads including OE): if our own io_ctx was marked
- * need_flr_teardown by the OE, shutdown io_ctx + dma_ctx on this thread and
- * clear the flag.
- */
-static void io_check_flr_teardown(struct vblk_io_ctx_cfg *cfg, uint8_t ctx_id)
+static void io_recycle_ctx_progress(struct vblk_io_ctx_cfg *cfg,
+				    struct vblk_ctrl *ctrl,
+				    uint8_t ctx_id,
+				    struct doca_pe *pe,
+				    _Atomic bool *created,
+				    const char *name,
+				    uint32_t idx)
 {
-	struct vblk_ep_hotplug_state *hp = cfg->hp_states;
-
-	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-		struct vblk_ctrl_io_ctx *io_ctx = &cfg->ctrls[ep].io_ctxs[ctx_id];
-
-		if (!hp[ep].io_ctx_created[ctx_id])
-			continue;
-
-		if (!atomic_load_explicit(&io_ctx->need_flr_teardown, memory_order_acquire))
-			continue;
-		DOCA_LOG_INFO("IO thread %u: handling FLR shutdown for EP %u", ctx_id, ep);
-		(void)vblk_ctrl_shutdown_io_ctx_on_thread(&cfg->ctrls[ep], ctx_id);
-		vblk_ctrl_destroy_io_ctx_on_thread(&cfg->ctrls[ep], ctx_id);
-
-		hp[ep].io_ctx_created[ctx_id] = false;
-		hp[ep].io_ctx_flr_destroyed++;
-	}
-}
-
-/*
- * OE thread: drive VF FLR through the same order as PF FLR: signal per-thread
- * io_ctx teardown, recycle the offload engine, then re-enable after all io_ctxs
- * have been rebuilt.
- */
-static void oe_vf_flr_enter_teardown(struct vblk_sriov_vf_slot *slot, struct vblk_ctrl *ctrl)
-{
-	atomic_store_explicit(&slot->flr_io_ctx_done, 0, memory_order_release);
-	atomic_store_explicit(&slot->dp_state, VBLK_SRIOV_VF_DP_FLR_TEARDOWN, memory_order_release);
-	for (uint8_t ctx_id = 0; ctx_id < ctrl->num_io_ctx; ctx_id++)
-		atomic_store_explicit(&ctrl->io_ctxs[ctx_id].need_flr_teardown, true, memory_order_release);
-}
-
-static void oe_vf_flr_handle_ready_state(struct vblk_sriov_vf_slot *slot,
-					 struct vblk_ctrl *ctrl,
-					 struct vblk_pci_virtio_dev *vf_dev)
-{
-	if (!atomic_exchange_explicit(&vf_dev->flr_kickoff, false, memory_order_acq_rel))
-		return;
-
-	DOCA_LOG_INFO("OE: VF[%u] FLR detected - signalling VF IO ctxs to stop", slot->dynamic_vf_index);
-	oe_vf_flr_enter_teardown(slot, ctrl);
-}
-
-static void oe_vf_flr_handle_teardown_state(struct vblk_sriov_vf_slot *slot,
-					    struct vblk_ctrl *ctrl,
-					    struct vblk_pci_virtio_dev *vf_dev)
-{
-	struct doca_devemu_virtio_offload_engine *virtio_engine;
+	uint16_t ack_bit;
+	uint8_t state;
 	doca_error_t err;
 
-	if (ctrl->vq_engine == NULL)
-		return;
-	if (atomic_load_explicit(&slot->flr_io_ctx_done, memory_order_acquire) < ctrl->num_io_ctx)
+	if (ctrl == NULL || ctx_id >= ctrl->num_io_ctx)
 		return;
 
-	/* A second VF FLR that arrives before the OE recycle is covered by this
-	 * recycle. Keep flr_in_progress set until the rebuild tail releases it. */
-	(void)atomic_exchange_explicit(&vf_dev->flr_kickoff, false, memory_order_acq_rel);
-
-	DOCA_LOG_INFO("OE: all VF[%u] IO ctx destroyed (FLR) - recycle VF offload engine", slot->dynamic_vf_index);
-
-	err = vblk_ctrl_recycle_vq_backends(ctrl);
-	if (err != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("VF[%u]: backend VQ recycle failed: %s - leaving recycle pending",
-			     slot->dynamic_vf_index,
-			     doca_error_get_descr(err));
-		return;
-	}
-
-	virtio_engine = doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
-	if (ctrl->engine_enabled) {
-		err = doca_devemu_virtio_offload_engine_disable(virtio_engine);
-		if (err != DOCA_SUCCESS) {
-			DOCA_LOG_WARN("VF[%u]: offload engine disable failed: %s",
-				      slot->dynamic_vf_index,
-				      doca_error_get_descr(err));
+	ack_bit = (uint16_t)(1U << ctx_id);
+	state = atomic_load_explicit(&ctrl->recycle_state, memory_order_acquire);
+	switch (state) {
+	case VBLK_RECYCLE_IOCTX_TEARDOWN:
+		if ((atomic_load_explicit(&ctrl->recycle_io_ctx_teardown_ack_mask, memory_order_acquire) & ack_bit) !=
+		    0)
 			return;
-		}
-		ctrl->engine_enabled = false;
-	}
-
-	err = doca_devemu_virtio_offload_engine_stop(virtio_engine);
-	if (err != DOCA_SUCCESS && err != DOCA_ERROR_BAD_STATE) {
-		DOCA_LOG_WARN("VF[%u]: offload engine stop failed: %s",
-			      slot->dynamic_vf_index,
-			      doca_error_get_descr(err));
-		return;
-	}
-
-	/* New FW invalidates the VF mkey and suspends the VF GVMI MSI-X on FLR;
-	 * only a TLP-object recycle re-establishes MSI-X delivery. */
-	err = vblk_pci_sriov_vf_tlp_dev_suspend(slot);
-	if (err != DOCA_SUCCESS) {
-		DOCA_LOG_WARN("VF[%u]: TLP suspend failed: %s - leaving recycle pending",
-			      slot->dynamic_vf_index,
-			      doca_error_get_descr(err));
-		return;
-	}
-	err = vblk_pci_sriov_vf_tlp_dev_resume(slot);
-	if (err != DOCA_SUCCESS) {
-		/* Expected while FW invalidation is in flight; retried next iteration. */
-		DOCA_LOG_DBG("VF[%u]: TLP resume pending: %s", slot->dynamic_vf_index, doca_error_get_descr(err));
-		return;
-	}
-
-	err = doca_devemu_virtio_offload_engine_start(virtio_engine);
-	if (err != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("VF[%u]: offload engine start failed: %s - leaving recycle pending",
-			     slot->dynamic_vf_index,
-			     doca_error_get_descr(err));
-		return;
-	}
-
-	atomic_store_explicit(&slot->flr_io_ctx_done, 0, memory_order_release);
-	atomic_store_explicit(&slot->dp_state, VBLK_SRIOV_VF_DP_FLR_REBUILD, memory_order_release);
-}
-
-static bool vblk_flr_complete_device_status(struct vblk_pci_virtio_dev *dev)
-{
-	uint8_t restored_status;
-
-	/* If Linux already restored status bits while FLR was in progress,
-	 * preserve them and only remove a stale NEEDS_RESET bit. If there are no
-	 * restored bits, release reset completion as status 0. */
-	restored_status = dev->pci_cfg.device_status & (uint8_t)~VBLK_PCI_VIRTIO_DEVICE_STATUS_NEEDS_RESET;
-	dev->pci_cfg.device_status = restored_status;
-	atomic_store_explicit(&dev->flr_in_progress, false, memory_order_release);
-
-	return (restored_status & VBLK_PCI_VIRTIO_DEVICE_STATUS_DRIVER_OK) != 0;
-}
-
-static void oe_vf_flr_handle_rebuild_state(struct vblk_sriov_vf_slot *slot,
-					   struct vblk_ctrl *ctrl,
-					   struct vblk_pci_virtio_dev *vf_dev)
-{
-	bool want_up;
-	bool driver_ok;
-
-	if (ctrl->vq_engine == NULL)
-		return;
-	if (atomic_load_explicit(&slot->flr_io_ctx_done, memory_order_acquire) < ctrl->num_io_ctx)
-		return;
-	if (atomic_exchange_explicit(&vf_dev->flr_kickoff, false, memory_order_acq_rel)) {
-		DOCA_LOG_INFO("OE: VF[%u] additional FLR detected during rebuild - restarting teardown",
-			      slot->dynamic_vf_index);
-		oe_vf_flr_enter_teardown(slot, ctrl);
-		return;
-	}
-
-	want_up = atomic_load_explicit(&slot->dp_want_up, memory_order_acquire);
-	if (want_up) {
-		doca_error_t err = vblk_ctrl_enable(ctrl);
-
-		if (err != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("VF[%u]: offload engine enable failed: %s - leaving recycle pending",
-				     slot->dynamic_vf_index,
-				     doca_error_get_descr(err));
-			return;
-		}
-		atomic_store_explicit(&slot->dp_state, VBLK_SRIOV_VF_DP_UP, memory_order_release);
-	} else {
-		ctrl->engine_enabled = false;
-		atomic_store_explicit(&slot->dp_state, VBLK_SRIOV_VF_DP_DOWN, memory_order_release);
-	}
-
-	atomic_store_explicit(&slot->flr_io_ctx_done, 0, memory_order_release);
-	DOCA_LOG_INFO("VF[%u] FLR completed: VF datapath recycled%s",
-		      slot->dynamic_vf_index,
-		      want_up ? " and enabled" : "");
-	ctrl->last_device_status = 0;
-	driver_ok = vblk_flr_complete_device_status(vf_dev);
-	if (want_up && driver_ok)
-		(void)vblk_pci_virtio_cfg_change_notify(vf_dev);
-}
-
-static void oe_check_vf_flr(struct vblk_io_ctx_cfg *cfg)
-{
-	if (!cfg->sriov_enabled)
-		return;
-
-	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-		struct vblk_sriov_pf_state *sriov = oe_pf_sriov(cfg, ep);
-
-		if (!atomic_load_explicit(&cfg->hp_states[ep].enabled, memory_order_acquire))
-			continue;
-		if (sriov == NULL || sriov->vf_slots == NULL)
-			continue;
-		for (uint16_t i = 0; i < sriov->total_vfs; i++) {
-			struct vblk_sriov_vf_slot *slot = &sriov->vf_slots[i];
-			struct vblk_pci_virtio_dev *vf_dev = slot->vf_dev;
-			struct vblk_ctrl *ctrl = slot->vf_ctrl;
-			uint8_t state;
-
-			if (vf_dev == NULL || ctrl == NULL)
-				continue;
-
-			state = atomic_load_explicit(&slot->dp_state, memory_order_acquire);
-			switch (state) {
-			case VBLK_SRIOV_VF_DP_DOWN:
-			case VBLK_SRIOV_VF_DP_UP:
-				oe_vf_flr_handle_ready_state(slot, ctrl, vf_dev);
-				break;
-			case VBLK_SRIOV_VF_DP_FLR_TEARDOWN:
-				oe_vf_flr_handle_teardown_state(slot, ctrl, vf_dev);
-				break;
-			case VBLK_SRIOV_VF_DP_FLR_REBUILD:
-				oe_vf_flr_handle_rebuild_state(slot, ctrl, vf_dev);
-				break;
-			}
-		}
-	}
-}
-
-/*
- * IO thread: handle this thread's VF io_ctx work for VF FLR.
- * During teardown it drains and destroys the ctx; during rebuild it recreates
- * the ctx after the OE has restarted the VF offload engine.
- */
-static void io_check_vf_flr_ctx(struct vblk_io_ctx_cfg *cfg, uint8_t ctx_id, struct doca_pe *pe)
-{
-	if (!cfg->sriov_enabled)
-		return;
-
-	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-		struct vblk_sriov_pf_state *sriov = oe_pf_sriov(cfg, ep);
-
-		/* Hot-unplug sets enabled=false before the OE tears down and frees
-		 * this PF's SR-IOV state. Do not let IO threads walk vf_slots while
-		 * the OE is allowed to free them. PF/VF FLR keeps the PF enabled, so
-		 * recycle handling is unaffected. */
-		if (!atomic_load_explicit(&cfg->hp_states[ep].enabled, memory_order_acquire))
-			continue;
-		if (sriov == NULL || sriov->vf_slots == NULL)
-			continue;
-		for (uint16_t i = 0; i < sriov->total_vfs; i++) {
-			struct vblk_sriov_vf_slot *slot = &sriov->vf_slots[i];
-			struct vblk_ctrl *ctrl = slot->vf_ctrl;
-			struct vblk_ctrl_io_ctx *io_ctx;
-			uint8_t state;
-			doca_error_t err;
-
-			if (ctrl == NULL || ctx_id >= ctrl->num_io_ctx)
-				continue;
-
-			state = atomic_load_explicit(&slot->dp_state, memory_order_acquire);
-			if (state == VBLK_SRIOV_VF_DP_FLR_TEARDOWN) {
-				io_ctx = &ctrl->io_ctxs[ctx_id];
-				if (!atomic_load_explicit(&io_ctx->need_flr_teardown, memory_order_acquire))
-					continue;
-
-				DOCA_LOG_INFO("IO thread %u: handling VF[%u] FLR shutdown",
-					      ctx_id,
-					      slot->dynamic_vf_index);
-				(void)vblk_ctrl_shutdown_io_ctx_on_thread(ctrl, ctx_id);
-				vblk_ctrl_destroy_io_ctx_on_thread(ctrl, ctx_id);
-				atomic_fetch_add_explicit(&slot->flr_io_ctx_done, 1, memory_order_acq_rel);
-				continue;
-			}
-
-			if (state != VBLK_SRIOV_VF_DP_FLR_REBUILD)
-				continue;
-			if (vblk_ctrl_io_ctx_dma_pe(ctrl, ctx_id) != NULL)
-				continue;
-
-			err = vblk_ctrl_init_io_ctx_on_thread(ctrl, ctx_id, pe, cfg->shared_mpool);
+		if (vblk_ctrl_io_ctx_dma_pe(ctrl, ctx_id) != NULL) {
+			DOCA_LOG_INFO("IO thread %u: handling %s[%u] recycle shutdown", ctx_id, name, idx);
+			err = vblk_ctrl_shutdown_io_ctx_on_thread(ctrl, ctx_id);
 			if (err != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("VF[%u] FLR io_ctx[%u] init failed: %s",
-					     slot->dynamic_vf_index,
-					     ctx_id,
-					     doca_error_get_descr(err));
-				vblk_ctrl_destroy_io_ctx_on_thread(ctrl, ctx_id);
-				continue;
+				DOCA_LOG_WARN("%s[%u]: recycle io_ctx[%u] shutdown failed: %s - retrying",
+					      name,
+					      idx,
+					      ctx_id,
+					      doca_error_get_descr(err));
+				return;
 			}
-			atomic_fetch_add_explicit(&slot->flr_io_ctx_done, 1, memory_order_acq_rel);
 		}
+		vblk_ctrl_destroy_io_ctx_on_thread(ctrl, ctx_id);
+		if (created != NULL)
+			atomic_store_explicit(created, false, memory_order_release);
+		atomic_fetch_or_explicit(&ctrl->recycle_io_ctx_teardown_ack_mask, ack_bit, memory_order_release);
+		return;
+
+	case VBLK_RECYCLE_IOCTX_REBUILD:
+		if ((atomic_load_explicit(&ctrl->recycle_io_ctx_rebuild_ack_mask, memory_order_acquire) & ack_bit) != 0)
+			return;
+		vblk_ctrl_destroy_io_ctx_on_thread(ctrl, ctx_id);
+
+		err = vblk_ctrl_init_io_ctx_on_thread(ctrl, ctx_id, pe, cfg->shared_mpool);
+		if (err != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("%s[%u] recycle io_ctx[%u] init failed: %s",
+				     name,
+				     idx,
+				     ctx_id,
+				     doca_error_get_descr(err));
+			(void)vblk_ctrl_destroy_io_ctx_on_thread(ctrl, ctx_id);
+			return;
+		}
+		if (created != NULL)
+			atomic_store_explicit(created, true, memory_order_release);
+		atomic_fetch_or_explicit(&ctrl->recycle_io_ctx_rebuild_ack_mask, ack_bit, memory_order_release);
+		return;
+
+	default:
+		return;
 	}
 }
 
-/*
- * OE thread: when all IO threads have torn down their io_ctxs, recycle the
- * offload engine through disable -> stop -> start and arm io_ctx re-creation.
- *
- * The engine "enable" step is deferred to oe_check_post_flr_reenable() because
- * doca_devemu_vblk_io_create_from_offload_engine() (invoked when IO threads
- * rebuild their io_ctxs) must run while the engine is in STARTED, not
- * ENABLED. The documented init order is: start engine -> bind io_ctxs ->
- * enable engine. vq_engine and vblk_pci_virtio_dev are preserved across FLR;
- * only the per-thread io_ctxs are recycled.
- */
-static void oe_check_post_flr_restart(struct vblk_io_ctx_cfg *cfg)
+static void io_check_recycle_ctx(struct vblk_io_ctx_cfg *cfg, uint8_t ctx_id, struct doca_pe *pe)
 {
 	struct vblk_ep_hotplug_state *hp = cfg->hp_states;
 
 	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-		if (!hp[ep].need_post_flr_oe_restart)
+		struct vblk_sriov_pf_state *sriov;
+
+		if (!atomic_load_explicit(&hp[ep].enabled, memory_order_acquire))
 			continue;
-		if (hp[ep].io_ctx_flr_destroyed < cfg->num_io_ctx)
+		io_recycle_ctx_progress(cfg, &cfg->ctrls[ep], ctx_id, pe, &hp[ep].io_ctx_created[ctx_id], "EP", ep);
+
+		sriov = oe_pf_sriov(cfg, ep);
+		if (sriov == NULL || sriov->vf_slots == NULL)
 			continue;
+		for (uint16_t i = 0; i < sriov->total_vfs; i++) {
+			struct vblk_sriov_vf_slot *slot = &sriov->vf_slots[i];
 
-		struct vblk_ctrl *ctrl = &cfg->ctrls[ep];
+			io_recycle_ctx_progress(cfg, slot->vf_ctrl, ctx_id, pe, NULL, "VF", slot->dynamic_vf_index);
+		}
+	}
+}
 
-		if (ctrl->vq_engine == NULL || ctrl->vblk_pci_dev == NULL)
+static uint32_t oe_recycle_enter_teardown(struct vblk_ctrl *ctrl, struct vblk_pci_virtio_dev *dev)
+{
+	atomic_store_explicit(&dev->status_overlay, VBLK_PCI_VIRTIO_DEVICE_STATUS_NEEDS_RESET, memory_order_release);
+	atomic_store_explicit(&ctrl->recycle_state, VBLK_RECYCLE_VQ_DRAIN, memory_order_release);
+	return atomic_exchange_explicit(&dev->reason_bits, VBLK_RECYCLE_REASON_NONE, memory_order_acq_rel);
+}
+
+static void oe_recycle_vfs_after_pf(struct vblk_io_ctx_cfg *cfg, uint32_t ep)
+{
+	struct vblk_sriov_pf_state *sriov = oe_pf_sriov(cfg, ep);
+
+	if (sriov == NULL || sriov->vf_slots == NULL)
+		return;
+
+	for (uint16_t i = 0; i < sriov->total_vfs; i++) {
+		struct vblk_sriov_vf_slot *slot = &sriov->vf_slots[i];
+
+		if (slot->vf_ctrl == NULL || slot->vf_dev == NULL)
 			continue;
-		struct doca_devemu_virtio_offload_engine *virtio_engine =
-			doca_devemu_vblk_offload_engine_as_virtio_offload(ctrl->vq_engine);
-		doca_error_t err;
+		atomic_store_explicit(&slot->vf_dev->status_overlay,
+				      VBLK_PCI_VIRTIO_DEVICE_STATUS_NEEDS_RESET,
+				      memory_order_release);
+		atomic_store_explicit(&slot->vf_ctrl->reset_pending, true, memory_order_release);
+		atomic_fetch_or_explicit(&slot->vf_dev->reason_bits,
+					 VBLK_RECYCLE_REASON_PF_RECYCLE,
+					 memory_order_release);
+	}
+	DOCA_LOG_INFO("EP[%u]: refreshing %u VF engines after PF recycle", ep, sriov->total_vfs);
+}
 
-		DOCA_LOG_INFO("OE: all IO ctx destroyed for EP %u (FLR) — recycle offload engine", ep);
+/*
+ * OE thread: one reconcile step of the function-recycle machine for one PF
+ * (slot == NULL) or one VF. A failed stage stays put and is retried on the
+ * next OE iteration. Enable runs last because io_ctxs must bind while the
+ * engine is STARTED, not ENABLED.
+ */
+static void oe_recycle_step(struct vblk_io_ctx_cfg *cfg, uint32_t ep, struct vblk_sriov_vf_slot *slot)
+{
+	struct vblk_ctrl *ctrl = (slot != NULL) ? slot->vf_ctrl : &cfg->ctrls[ep];
+	struct vblk_pci_virtio_dev *dev = ctrl->vblk_pci_dev;
+	const char *name = (slot != NULL) ? "VF" : "EP";
+	const uint32_t idx = (slot != NULL) ? slot->dynamic_vf_index : ep;
+	const uint16_t expected_io_ctx_ack_mask = (uint16_t)((1U << ctrl->num_io_ctx) - 1U);
+	const uint8_t rstate = atomic_load_explicit(&ctrl->recycle_state, memory_order_relaxed);
+	doca_error_t err;
+	uint32_t reasons;
+	bool want_up;
 
+	switch (rstate) {
+	case VBLK_RECYCLE_IDLE:
+		vblk_ctrl_reset_complete(ctrl);
+		if (!vblk_pci_recycle_reason_latched(dev))
+			break;
+		reasons = oe_recycle_enter_teardown(ctrl, dev);
+		DOCA_LOG_INFO("%s[%u]: function recycle started (reasons=0x%x)", name, idx, reasons);
+		break;
+
+	case VBLK_RECYCLE_VQ_DRAIN:
+		/* Skips naturally when the trigger found no VQs created. */
+		if (!vblk_ctrl_all_vqs_destroyed(ctrl))
+			break;
+		/* Stop normal VF progress before IO threads destroy its io_ctxs. */
+		if (slot != NULL)
+			atomic_store_explicit(&slot->dp_state, VBLK_SRIOV_VF_DP_DOWN, memory_order_release);
+		atomic_store_explicit(&ctrl->recycle_io_ctx_teardown_ack_mask, 0, memory_order_release);
+		atomic_store_explicit(&ctrl->recycle_state, VBLK_RECYCLE_IOCTX_TEARDOWN, memory_order_release);
+		break;
+
+	case VBLK_RECYCLE_IOCTX_TEARDOWN:
+		if (atomic_load_explicit(&ctrl->recycle_io_ctx_teardown_ack_mask, memory_order_acquire) !=
+		    expected_io_ctx_ack_mask)
+			break;
+		atomic_store_explicit(&ctrl->recycle_state, VBLK_RECYCLE_ENGINE_STOP, memory_order_release);
+		break;
+
+	case VBLK_RECYCLE_ENGINE_STOP:
+		if (slot != NULL) {
+			err = vblk_ctrl_recycle_vq_backends(ctrl);
+			if (err != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("%s[%u]: backend VQ recycle failed: %s - retrying",
+					     name,
+					     idx,
+					     doca_error_get_descr(err));
+				break;
+			}
+		}
 		if (ctrl->engine_enabled) {
 			err = vblk_ctrl_disable(ctrl);
 			if (err != DOCA_SUCCESS) {
-				DOCA_LOG_WARN("EP %u: offload engine disable failed: %s",
-					      ep,
+				DOCA_LOG_WARN("%s[%u]: offload engine disable failed: %s",
+					      name,
+					      idx,
 					      doca_error_get_descr(err));
-				continue;
+				break;
 			}
 		}
-		err = doca_devemu_virtio_offload_engine_stop(virtio_engine);
-		if (err != DOCA_SUCCESS && err != DOCA_ERROR_BAD_STATE) {
-			DOCA_LOG_WARN("EP %u: offload engine stop failed: %s", ep, doca_error_get_descr(err));
-			continue;
+		err = vblk_ctrl_engine_stop(ctrl, cfg->pe);
+		if (err != DOCA_SUCCESS) {
+			DOCA_LOG_WARN("%s[%u]: offload engine stop failed: %s", name, idx, doca_error_get_descr(err));
+			break;
 		}
-
-		err = vblk_pci_pf_tlp_dev_suspend(ctrl->vblk_pci_dev);
+		err = (slot != NULL) ? vblk_pci_sriov_vf_tlp_dev_suspend(slot) : vblk_pci_pf_tlp_dev_suspend(dev);
 		if (err != DOCA_SUCCESS)
-			continue; /* keep need_post_flr_oe_restart; retry next iteration */
-		err = vblk_pci_pf_tlp_dev_resume(ctrl->vblk_pci_dev);
-		if (err != DOCA_SUCCESS) {
-			/* Expected while FW invalidation is in flight. */
-			DOCA_LOG_DBG("EP %u: PF TLP resume pending: %s", ep, doca_error_get_descr(err));
-			continue;
-		}
+			break;
+		atomic_store_explicit(&ctrl->recycle_state, VBLK_RECYCLE_SUSPENDED, memory_order_release);
+		reasons = atomic_exchange_explicit(&dev->reason_bits, VBLK_RECYCLE_REASON_NONE, memory_order_acq_rel);
+		if (reasons != VBLK_RECYCLE_REASON_NONE)
+			DOCA_LOG_INFO("%s[%u]: trigger absorbed at SUSPENDED entry (reasons=0x%x)", name, idx, reasons);
+		break;
 
-		err = doca_devemu_virtio_offload_engine_start(virtio_engine);
+	case VBLK_RECYCLE_SUSPENDED:
+		reasons = atomic_exchange_explicit(&dev->reason_bits, VBLK_RECYCLE_REASON_NONE, memory_order_acq_rel);
+		if (reasons != VBLK_RECYCLE_REASON_NONE)
+			DOCA_LOG_INFO("%s[%u]: trigger absorbed while SUSPENDED (reasons=0x%x)", name, idx, reasons);
+		/* A VF must also wait for its PF to enable VFE before rebuilding. */
+		if (!atomic_load_explicit(&dev->bme_shadow, memory_order_acquire) ||
+		    (slot != NULL && !atomic_load_explicit(&slot->dp_want_up, memory_order_acquire)))
+			break;
+		atomic_store_explicit(&ctrl->recycle_state, VBLK_RECYCLE_TLP_RESUME, memory_order_release);
+		break;
+
+	case VBLK_RECYCLE_TLP_RESUME:
+		/* No live TLP generation yet: a new trigger just re-suspends. */
+		reasons = atomic_exchange_explicit(&dev->reason_bits, VBLK_RECYCLE_REASON_NONE, memory_order_acq_rel);
+		if (reasons != VBLK_RECYCLE_REASON_NONE) {
+			DOCA_LOG_INFO("%s[%u]: trigger absorbed during TLP resume (reasons=0x%x)", name, idx, reasons);
+			atomic_store_explicit(&ctrl->recycle_state, VBLK_RECYCLE_SUSPENDED, memory_order_release);
+			break;
+		}
+		err = (slot != NULL) ? vblk_pci_sriov_vf_tlp_dev_resume(slot) : vblk_pci_pf_tlp_dev_resume(dev);
 		if (err != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("EP %u: offload engine start failed: %s — leaving FLR pending",
-				     ep,
+			/* Expected while FW recycle is in flight. */
+			DOCA_LOG_DBG("%s[%u]: TLP resume pending: %s", name, idx, doca_error_get_descr(err));
+			break;
+		}
+		atomic_store_explicit(&ctrl->recycle_state, VBLK_RECYCLE_OE_START, memory_order_release);
+		break;
+
+	case VBLK_RECYCLE_OE_START:
+		/* A live TLP generation exists: a trigger costs a full second teardown. */
+		if (vblk_pci_recycle_reason_latched(dev)) {
+			reasons = oe_recycle_enter_teardown(ctrl, dev);
+			DOCA_LOG_INFO("%s[%u]: trigger during rebuild restarted recycle (reasons=0x%x)",
+				      name,
+				      idx,
+				      reasons);
+			break;
+		}
+		err = vblk_ctrl_engine_start(ctrl);
+		if (err != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("%s[%u]: offload engine start failed: %s - retrying",
+				     name,
+				     idx,
 				     doca_error_get_descr(err));
-			continue; /* keep need_post_flr_oe_restart set; retry next iteration */
+			break;
 		}
+		atomic_store_explicit(&ctrl->recycle_io_ctx_rebuild_ack_mask, 0, memory_order_release);
+		atomic_store_explicit(&ctrl->recycle_state, VBLK_RECYCLE_IOCTX_REBUILD, memory_order_release);
+		break;
 
-		hp[ep].io_ctx_ready = 0;
-		hp[ep].io_ctx_flr_destroyed = 0;
-		hp[ep].need_post_flr_oe_restart = false;
-		hp[ep].need_io_ctx = true;
-		hp[ep].need_post_flr_reenable = true;
+	case VBLK_RECYCLE_IOCTX_REBUILD:
+		if (vblk_pci_recycle_reason_latched(dev)) {
+			reasons = oe_recycle_enter_teardown(ctrl, dev);
+			DOCA_LOG_INFO("%s[%u]: trigger during rebuild restarted recycle (reasons=0x%x)",
+				      name,
+				      idx,
+				      reasons);
+			break;
+		}
+		if (atomic_load_explicit(&ctrl->recycle_io_ctx_rebuild_ack_mask, memory_order_acquire) !=
+		    expected_io_ctx_ack_mask)
+			break;
+		atomic_store_explicit(&ctrl->recycle_state, VBLK_RECYCLE_REENABLE, memory_order_release);
+		break;
+
+	case VBLK_RECYCLE_REENABLE:
+		if (vblk_pci_recycle_reason_latched(dev)) {
+			reasons = oe_recycle_enter_teardown(ctrl, dev);
+			DOCA_LOG_INFO("%s[%u]: trigger before enable restarted recycle (reasons=0x%x)",
+				      name,
+				      idx,
+				      reasons);
+			break;
+		}
+		/* A PF always re-enables; a VF follows the TLP-thread VFE intent. */
+		want_up = (slot == NULL) || atomic_load_explicit(&slot->dp_want_up, memory_order_acquire);
+		if (want_up) {
+			err = vblk_ctrl_enable(ctrl);
+			if (err != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("%s[%u]: offload engine enable failed: %s - retrying",
+					     name,
+					     idx,
+					     doca_error_get_descr(err));
+				break;
+			}
+			if (slot != NULL)
+				atomic_store_explicit(&slot->dp_state, VBLK_SRIOV_VF_DP_UP, memory_order_release);
+		} else {
+			ctrl->engine_enabled = false;
+			atomic_store_explicit(&slot->dp_state, VBLK_SRIOV_VF_DP_DOWN, memory_order_release);
+		}
+		if (vblk_pci_recycle_reason_latched(dev)) {
+			reasons = oe_recycle_enter_teardown(ctrl, dev);
+			DOCA_LOG_INFO("%s[%u]: trigger during enable restarted recycle (reasons=0x%x)",
+				      name,
+				      idx,
+				      reasons);
+			break;
+		}
+		if (slot == NULL)
+			oe_recycle_vfs_after_pf(cfg, ep);
+		if (vblk_pci_recycle_reason_latched(dev)) {
+			reasons = oe_recycle_enter_teardown(ctrl, dev);
+			DOCA_LOG_INFO("%s[%u]: trigger before completion restarted recycle (reasons=0x%x)",
+				      name,
+				      idx,
+				      reasons);
+			break;
+		}
+		atomic_store_explicit(&ctrl->recycle_state, VBLK_RECYCLE_IDLE, memory_order_release);
+		vblk_ctrl_reset_complete(ctrl);
+		if (vblk_pci_recycle_reason_latched(dev)) {
+			reasons = oe_recycle_enter_teardown(ctrl, dev);
+			DOCA_LOG_INFO("%s[%u]: trigger during completion restarted recycle (reasons=0x%x)",
+				      name,
+				      idx,
+				      reasons);
+			break;
+		}
+		atomic_store_explicit(&dev->status_overlay, 0, memory_order_release);
+		DOCA_LOG_INFO("%s[%u]: function recycle completed%s", name, idx, want_up ? " (OE enabled)" : "");
+		break;
+
+	default:
+		DOCA_LOG_ERR("%s[%u]: invalid recycle state %u", name, idx, rstate);
+		force_quit = true;
+		break;
 	}
 }
 
-/*
- * OE thread: once all IO threads have rebuilt their io_ctxs (io_ctx_ready ==
- * num_io_ctx), the engine has the bindings it needs to accept events. Enable
- * the engine and surface the device back to the host.
- */
-static void oe_check_post_flr_reenable(struct vblk_io_ctx_cfg *cfg)
+/* OE thread: advance each PF, then its VFs, through the recycle machine. */
+static void oe_check_recycle(struct vblk_io_ctx_cfg *cfg)
 {
-	struct vblk_ep_hotplug_state *hp = cfg->hp_states;
-
 	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-		if (!hp[ep].need_post_flr_reenable)
-			continue;
-		if (hp[ep].io_ctx_ready < cfg->num_io_ctx)
-			continue;
+		struct vblk_ctrl *pf_ctrl = &cfg->ctrls[ep];
+		struct vblk_pci_virtio_dev *pf_dev = pf_ctrl->vblk_pci_dev;
+		struct vblk_sriov_pf_state *sriov;
+		bool enabled;
 
-		struct vblk_ctrl *ctrl = &cfg->ctrls[ep];
-		if (ctrl->vq_engine == NULL || ctrl->vblk_pci_dev == NULL)
+		enabled = atomic_load_explicit(&cfg->hp_states[ep].enabled, memory_order_acquire);
+		if (!enabled)
 			continue;
-		doca_error_t err;
+		if (pf_dev != NULL && pf_ctrl->vq_engine != NULL)
+			oe_recycle_step(cfg, ep, NULL);
 
-		err = vblk_ctrl_enable(ctrl);
-		if (err != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("EP %u: offload engine enable failed: %s — leaving FLR pending",
-				     ep,
-				     doca_error_get_descr(err));
-			continue; /* keep need_post_flr_reenable set; retry next iteration */
+		if (!cfg->sriov_enabled)
+			continue;
+		sriov = oe_pf_sriov(cfg, ep);
+		if (sriov == NULL || sriov->vf_slots == NULL)
+			continue;
+		for (uint16_t i = 0; i < sriov->total_vfs; i++) {
+			struct vblk_sriov_vf_slot *slot = &sriov->vf_slots[i];
+
+			if (slot->vf_ctrl == NULL)
+				continue;
+			oe_recycle_step(cfg, ep, slot);
 		}
-
-		ctrl->last_device_status = 0;
-		hp[ep].need_io_ctx = false;
-		hp[ep].need_post_flr_reenable = false;
-
-		if (vblk_flr_complete_device_status(ctrl->vblk_pci_dev))
-			(void)vblk_pci_virtio_cfg_change_notify(ctrl->vblk_pci_dev);
-		DOCA_LOG_INFO("FLR completed for EP %u: OE enabled after io_ctx rebind", ep);
 	}
 }
 
@@ -1419,20 +1375,12 @@ static void *vblk_io_ctx_thread(void *arg)
 				usleep(VBLK_OE_BACKOFF_US);
 		}
 
-		if (doca_unlikely(is_oe)) {
-			oe_check_flr_kickoff(cfg);
-			oe_check_vf_flr(cfg);
-		}
-
-		io_check_need_io_ctx(cfg, ctx_id, pe);
-		io_check_need_io_ctx_shutdown(cfg, ctx_id);
-		io_check_flr_teardown(cfg, ctx_id);
-		io_check_vf_flr_ctx(cfg, ctx_id, pe);
+		io_check_io_ctx_create(cfg, ctx_id, pe);
+		io_check_io_ctx_shutdown(cfg, ctx_id);
+		io_check_recycle_ctx(cfg, ctx_id, pe);
 
 		if (doca_unlikely(is_oe)) {
-			oe_check_post_flr_restart(cfg);
-			oe_check_post_flr_reenable(cfg);
-			oe_check_vf_flr(cfg);
+			oe_check_recycle(cfg);
 			oe_check_vf_dp(cfg);
 		}
 
@@ -1443,16 +1391,10 @@ static void *vblk_io_ctx_thread(void *arg)
 	}
 
 shutdown:
-	/* Shutdown: stop IO ctxs for EPs still active on this thread. Drain+stop
-	 * each PF's VF io_ctxs before its PF io_ctx. Hot-unplug already clears
-	 * io_ctx_created, so those VFs must not be shut down again here. */
-	for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-		if (!cfg->hp_states[ep].io_ctx_created[ctx_id])
-			continue;
-		if (cfg->sriov_enabled)
-			io_vf_shutdown_io_ctx_for_ep_on_thread(cfg, ep, ctx_id);
-		(void)vblk_ctrl_shutdown_io_ctx_on_thread(&cfg->ctrls[ep], ctx_id);
-	}
+	/* Shutdown: drain every EP this thread has not already drained via the
+	 * unplug flow; the acked gate makes it exactly-once per thread. */
+	for (uint32_t ep = 0; ep < cfg->num_ep; ep++)
+		io_drain_ep_on_thread(cfg, ep, ctx_id);
 
 	if (is_oe) {
 		ops->wait_all_io_exited((uint8_t)(cfg->num_io_ctx > 0 ? cfg->num_io_ctx - 1 : 0));
@@ -1461,8 +1403,10 @@ shutdown:
 		 * TLP devices (via free_pf_state) - each datapath references the ep. */
 		oe_teardown_all_vf_dp(cfg);
 		for (uint32_t ep = 0; ep < cfg->num_ep; ep++) {
-			if (cfg->hp_states[ep].enabled)
-				vblk_ctrl_cleanup(&cfg->ctrls[ep], pe);
+			/* 'inited' rather than 'enabled': a hotplugged EP whose MSI
+			 * handoff has not completed yet still owns a built ctrl. */
+			if (cfg->ctrls[ep].inited)
+				(void)vblk_ctrl_cleanup(&cfg->ctrls[ep], pe);
 		}
 	}
 

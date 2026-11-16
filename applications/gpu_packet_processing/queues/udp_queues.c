@@ -27,6 +27,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <doca_eth_rxq_gpu_data_path.h>
+
 #include "common.h"
 
 DOCA_LOG_REGISTER(GPU_PACKET_PROCESSING_UDP);
@@ -36,13 +38,15 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 			       struct doca_gpu *gpu_dev,
 			       struct doca_dev *ddev,
 			       uint32_t queue_num,
-			       uint32_t sem_num)
+			       uint32_t sem_num,
+			       const struct udp_rx_cfg *rx_cfg)
 {
 	doca_error_t result;
 	uint32_t cyclic_buffer_size = 0;
+	void *pkt_addr_cpu;
 
 	if (udp_queues == NULL || df_port == NULL || gpu_dev == NULL || ddev == NULL || queue_num == 0 ||
-	    sem_num == 0) {
+	    sem_num == 0 || rx_cfg == NULL || rx_cfg->pkt_num == 0 || rx_cfg->pkt_size == 0) {
 		DOCA_LOG_ERR("Can't create UDP queues, invalid input");
 		return DOCA_ERROR_INVALID_VALUE;
 	}
@@ -54,11 +58,14 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 	udp_queues->nums = sem_num;
 
 	for (uint32_t idx = 0; idx < queue_num; idx++) {
-		DOCA_LOG_INFO("Creating UDP Eth Rxq %d", idx);
+		DOCA_LOG_INFO("Creating UDP Eth Rxq %d with %u packet buffers of %u bytes",
+			      idx,
+			      rx_cfg->pkt_num,
+			      rx_cfg->pkt_size);
 
 		result = doca_eth_rxq_create(udp_queues->ddev,
-					     MAX_PKT_NUM,
-					     MAX_PKT_SIZE,
+					     rx_cfg->pkt_num,
+					     rx_cfg->pkt_size,
 					     &(udp_queues->eth_rxq_cpu[idx]));
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed doca_eth_rxq_create: %s", doca_error_get_descr(result));
@@ -75,8 +82,8 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 		result = doca_eth_rxq_estimate_packet_buf_size(DOCA_ETH_RXQ_TYPE_CYCLIC,
 							       0,
 							       0,
-							       MAX_PKT_SIZE,
-							       MAX_PKT_NUM,
+							       rx_cfg->pkt_size,
+							       rx_cfg->pkt_num,
 							       0,
 							       0,
 							       0,
@@ -103,31 +110,39 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 
 		ALIGN_SIZE(cyclic_buffer_size, get_host_page_size());
 
+		pkt_addr_cpu = NULL;
 		result = doca_gpu_mem_alloc(udp_queues->gpu_dev,
 					    cyclic_buffer_size,
 					    get_host_page_size(),
-					    DOCA_GPU_MEM_TYPE_GPU,
+					    rx_cfg->pkt_host_mem ? DOCA_GPU_MEM_TYPE_CPU_GPU : DOCA_GPU_MEM_TYPE_GPU,
 					    &udp_queues->gpu_pkt_addr[idx],
-					    NULL);
+					    rx_cfg->pkt_host_mem ? &pkt_addr_cpu : NULL);
 		if (result != DOCA_SUCCESS || udp_queues->gpu_pkt_addr[idx] == NULL) {
 			DOCA_LOG_ERR("Failed to allocate gpu memory %s", doca_error_get_descr(result));
 			destroy_udp_queues(udp_queues);
 			return DOCA_ERROR_NO_MEMORY;
 		}
 
-		/* Map GPU memory buffer used to receive packets with DMABuf */
-		result = doca_gpu_dmabuf_fd(udp_queues->gpu_dev,
-					    udp_queues->gpu_pkt_addr[idx],
-					    cyclic_buffer_size,
-					    &(udp_queues->dmabuf_fd[idx]));
-		if (result != DOCA_SUCCESS) {
-			DOCA_LOG_INFO("Mapping receive queue buffer (%p size %dB) with nvidia-peermem mode",
-				      udp_queues->gpu_pkt_addr[idx],
+		if (rx_cfg->pkt_host_mem) {
+			/*
+			 * The NIC writes packets in host memory registered by CPU address, the CUDA kernel reads them
+			 * through the same address: requires the GPU to use host pointers for registered memory (UVA).
+			 */
+			if (pkt_addr_cpu != udp_queues->gpu_pkt_addr[idx]) {
+				DOCA_LOG_ERR(
+					"Host packet buffer CPU address %p differs from GPU address %p, not supported",
+					pkt_addr_cpu,
+					udp_queues->gpu_pkt_addr[idx]);
+				destroy_udp_queues(udp_queues);
+				return DOCA_ERROR_NOT_SUPPORTED;
+			}
+
+			DOCA_LOG_INFO("Mapping receive queue buffer (%p size %dB) in host memory",
+				      pkt_addr_cpu,
 				      cyclic_buffer_size);
 
-			/* If failed, use nvidia-peermem legacy method */
 			result = doca_mmap_set_memrange(udp_queues->pkt_buff_mmap[idx],
-							udp_queues->gpu_pkt_addr[idx],
+							pkt_addr_cpu,
 							cyclic_buffer_size);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to set memrange for mmap %s", doca_error_get_descr(result));
@@ -135,20 +150,44 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 				return DOCA_ERROR_BAD_STATE;
 			}
 		} else {
-			DOCA_LOG_INFO("Mapping receive queue buffer (%p size %dB dmabuf fd %d) with dmabuf mode",
-				      udp_queues->gpu_pkt_addr[idx],
-				      cyclic_buffer_size,
-				      udp_queues->dmabuf_fd[idx]);
-
-			result = doca_mmap_set_dmabuf_memrange(udp_queues->pkt_buff_mmap[idx],
-							       udp_queues->dmabuf_fd[idx],
-							       udp_queues->gpu_pkt_addr[idx],
-							       0,
-							       cyclic_buffer_size);
+			/* Map GPU memory buffer used to receive packets with DMABuf */
+			result = doca_gpu_dmabuf_fd(udp_queues->gpu_dev,
+						    udp_queues->gpu_pkt_addr[idx],
+						    cyclic_buffer_size,
+						    &(udp_queues->dmabuf_fd[idx]));
 			if (result != DOCA_SUCCESS) {
-				DOCA_LOG_ERR("Failed to set dmabuf memrange for mmap %s", doca_error_get_descr(result));
-				destroy_udp_queues(udp_queues);
-				return DOCA_ERROR_BAD_STATE;
+				DOCA_LOG_INFO("Mapping receive queue buffer (%p size %dB) with nvidia-peermem mode",
+					      udp_queues->gpu_pkt_addr[idx],
+					      cyclic_buffer_size);
+
+				/* If failed, use nvidia-peermem legacy method */
+				result = doca_mmap_set_memrange(udp_queues->pkt_buff_mmap[idx],
+								udp_queues->gpu_pkt_addr[idx],
+								cyclic_buffer_size);
+				if (result != DOCA_SUCCESS) {
+					DOCA_LOG_ERR("Failed to set memrange for mmap %s",
+						     doca_error_get_descr(result));
+					destroy_udp_queues(udp_queues);
+					return DOCA_ERROR_BAD_STATE;
+				}
+			} else {
+				DOCA_LOG_INFO(
+					"Mapping receive queue buffer (%p size %dB dmabuf fd %d) with dmabuf mode",
+					udp_queues->gpu_pkt_addr[idx],
+					cyclic_buffer_size,
+					udp_queues->dmabuf_fd[idx]);
+
+				result = doca_mmap_set_dmabuf_memrange(udp_queues->pkt_buff_mmap[idx],
+								       udp_queues->dmabuf_fd[idx],
+								       udp_queues->gpu_pkt_addr[idx],
+								       0,
+								       cyclic_buffer_size);
+				if (result != DOCA_SUCCESS) {
+					DOCA_LOG_ERR("Failed to set dmabuf memrange for mmap %s",
+						     doca_error_get_descr(result));
+					destroy_udp_queues(udp_queues);
+					return DOCA_ERROR_BAD_STATE;
+				}
 			}
 		}
 
@@ -168,19 +207,19 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 			return DOCA_ERROR_BAD_STATE;
 		}
 
-		result = doca_eth_rxq_set_pkt_buf(udp_queues->eth_rxq_cpu[idx],
-						  udp_queues->pkt_buff_mmap[idx],
-						  0,
-						  cyclic_buffer_size);
+		result = doca_eth_rxq_set_packet_buf(udp_queues->eth_rxq_cpu[idx],
+						     udp_queues->pkt_buff_mmap[idx],
+						     0,
+						     cyclic_buffer_size);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set cyclic buffer  %s", doca_error_get_descr(result));
 			destroy_udp_queues(udp_queues);
 			return DOCA_ERROR_BAD_STATE;
 		}
 
-		udp_queues->eth_rxq_ctx[idx] = doca_eth_rxq_as_doca_ctx(udp_queues->eth_rxq_cpu[idx]);
+		udp_queues->eth_rxq_ctx[idx] = doca_eth_rxq_as_ctx(udp_queues->eth_rxq_cpu[idx]);
 		if (udp_queues->eth_rxq_ctx[idx] == NULL) {
-			DOCA_LOG_ERR("Failed doca_eth_rxq_as_doca_ctx: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed doca_eth_rxq_as_ctx: %s", doca_error_get_descr(result));
 			destroy_udp_queues(udp_queues);
 			return DOCA_ERROR_BAD_STATE;
 		}
@@ -190,6 +229,22 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 			DOCA_LOG_ERR("Failed doca_ctx_set_datapath_on_gpu: %s", doca_error_get_descr(result));
 			destroy_udp_queues(udp_queues);
 			return DOCA_ERROR_BAD_STATE;
+		}
+
+		/*
+		 * With NIC and GPU on different PCIe root ports, keeping the RQ and CQ rings in host memory avoids
+		 * per-packet NIC WQE reads and CQE writes crossing the root complex towards the GPU. The GPU then
+		 * polls the CQ over PCIe.
+		 */
+		if (rx_cfg->rq_host_mem) {
+			result = doca_eth_rxq_gpu_set_rq_mem_type(udp_queues->eth_rxq_cpu[idx],
+								  DOCA_GPU_MEM_TYPE_CPU_GPU);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed doca_eth_rxq_gpu_set_rq_mem_type: %s",
+					     doca_error_get_descr(result));
+				destroy_udp_queues(udp_queues);
+				return DOCA_ERROR_BAD_STATE;
+			}
 		}
 
 		result = doca_ctx_start(udp_queues->eth_rxq_ctx[idx]);
@@ -259,6 +314,29 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 			destroy_udp_queues(udp_queues);
 			return DOCA_ERROR_BAD_STATE;
 		}
+
+		/* A receive call can't return more packets than the receive queue holds */
+		if (rx_cfg->cqe_attr_check) {
+			result = doca_gpu_mem_alloc(udp_queues->gpu_dev,
+						    rx_cfg->pkt_num * RX_ATTR_BYTES,
+						    get_host_page_size(),
+						    DOCA_GPU_MEM_TYPE_GPU,
+						    &udp_queues->rx_attr_gpu[idx],
+						    NULL);
+			if (result != DOCA_SUCCESS || udp_queues->rx_attr_gpu[idx] == NULL) {
+				DOCA_LOG_ERR("Failed to allocate gpu memory %s", doca_error_get_descr(result));
+				destroy_udp_queues(udp_queues);
+				return DOCA_ERROR_NO_MEMORY;
+			}
+
+			/* The CUDA kernel detects attributes not written by the receive function as zero */
+			if (cudaMemset(udp_queues->rx_attr_gpu[idx], 0, rx_cfg->pkt_num * RX_ATTR_BYTES) !=
+			    cudaSuccess) {
+				DOCA_LOG_ERR("Failed to clear CQE attributes memory");
+				destroy_udp_queues(udp_queues);
+				return DOCA_ERROR_DRIVER;
+			}
+		}
 	}
 
 	/* Create UDP based flow pipe */
@@ -325,6 +403,14 @@ doca_error_t destroy_udp_queues(struct rxq_udp_queues *udp_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to free gpu memory: %s", doca_error_get_descr(result));
 			return DOCA_ERROR_BAD_STATE;
+		}
+
+		if (udp_queues->rx_attr_gpu[idx]) {
+			result = doca_gpu_mem_free(udp_queues->gpu_dev, udp_queues->rx_attr_gpu[idx]);
+			if (result != DOCA_SUCCESS) {
+				DOCA_LOG_ERR("Failed to free gpu memory: %s", doca_error_get_descr(result));
+				return DOCA_ERROR_BAD_STATE;
+			}
 		}
 	}
 

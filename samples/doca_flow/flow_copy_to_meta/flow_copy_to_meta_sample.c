@@ -439,7 +439,7 @@ static doca_error_t add_root_pipe_entry(struct doca_flow_pipe *pipe,
 doca_error_t flow_copy_to_meta(int nb_queues)
 {
 	const int nb_ports = 2;
-	struct flow_resources resource = {0};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_port *ports[nb_ports];
 	uint32_t actions_mem_size[nb_ports];
@@ -452,7 +452,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 	doca_error_t result;
 	int port_id;
 
-	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "vnf", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -462,7 +462,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 	result = init_doca_flow_vnf_ports(nb_ports, ports, actions_mem_size, &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -473,7 +473,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -481,7 +481,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -489,7 +489,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -497,7 +497,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -505,7 +505,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create nvgre pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -513,7 +513,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry to nvgre pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -521,7 +521,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -529,7 +529,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create root pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -537,7 +537,7 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry to nvgre pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -545,14 +545,14 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
 		if (status.nb_processed != num_of_entries || status.failure) {
 			DOCA_LOG_ERR("Failed to process entries");
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return DOCA_ERROR_BAD_STATE;
 		}
 	}
@@ -561,6 +561,6 @@ doca_error_t flow_copy_to_meta(int nb_queues)
 	sleep(5);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

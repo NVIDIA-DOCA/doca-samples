@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2025-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -2130,7 +2130,7 @@ static doca_error_t upf_accel_vxlan_rules_add(struct upf_accel_ctx *upf_accel_ct
 doca_error_t upf_accel_pipeline_create(struct upf_accel_ctx *upf_accel_ctx)
 {
 	enum upf_accel_port port_id;
-	doca_error_t result;
+	doca_error_t result = DOCA_SUCCESS;
 
 	for (port_id = 0; port_id < upf_accel_ctx->num_ports; port_id++) {
 		result = upf_accel_pipeline_rx_create(upf_accel_ctx, port_id);

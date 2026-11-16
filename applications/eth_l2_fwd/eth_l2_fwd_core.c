@@ -348,22 +348,22 @@ static doca_error_t destroy_mmap(struct mmap_resources *mmap_res)
 /*
  * ETH RXQ managed receive event batch successful completion callback for device 1
  *
- * @event_batch_managed_recv [in]: The managed receive event batch
+ * @event_batch_managed_mempool_recv [in]: The managed receive event batch
  * @events_number [in]: Number of retrieved events, each representing a single received packet
- * @event_batch_user_data [in]: User provided data, holding a pointer to the ETH TXQ context to forward the packets
- * with
  * @status [in]: Status of retrieved event batch
  * @pkt_array [in]: Array of doca_bufs containing the received packets
+ * @event_batch_user_data [in]: User provided data, holding a pointer to the ETH TXQ context to forward the packets
+ * with
  */
-static void rx_success_cb1(struct doca_eth_rxq_event_batch_managed_recv *event_batch_managed_recv,
+static void rx_success_cb1(struct doca_eth_rxq_event_batch_managed_mempool_recv *event_batch_managed_mempool_recv,
 			   uint16_t events_number,
-			   union doca_data event_batch_user_data,
 			   doca_error_t status,
-			   struct doca_buf **pkt_array)
+			   struct doca_buf **pkt_array,
+			   union doca_data event_batch_user_data)
 {
 	/* Unused parameters */
 	(void)status;
-	(void)event_batch_managed_recv;
+	(void)event_batch_managed_mempool_recv;
 
 	doca_error_t result;
 	struct doca_eth_txq *eth_txq = (struct doca_eth_txq *)(event_batch_user_data.ptr);
@@ -374,15 +374,15 @@ static void rx_success_cb1(struct doca_eth_rxq_event_batch_managed_recv *event_b
 
 	send_task_data.ptr = pkt_array; // This "trick" allows freeing the array when tx_success_cb is called
 
-	result = doca_eth_txq_task_batch_send_allocate(eth_txq,
-						       events_number,
-						       send_task_data,
-						       &batch_pkt_array,
-						       &task_user_data_array,
-						       &task_batch_send);
+	result = doca_eth_txq_task_batch_send_alloc(eth_txq,
+						    events_number,
+						    send_task_data,
+						    &batch_pkt_array,
+						    &task_user_data_array,
+						    &task_batch_send);
 	if (doca_unlikely(result != DOCA_SUCCESS)) {
 		stats[thread_num].dev1_stats.rx_dropped += events_number;
-		doca_eth_rxq_event_batch_managed_recv_pkt_array_free(pkt_array);
+		doca_eth_rxq_event_batch_managed_mempool_recv_free_packet_array(pkt_array);
 		return;
 	}
 
@@ -398,22 +398,22 @@ static void rx_success_cb1(struct doca_eth_rxq_event_batch_managed_recv *event_b
 /*
  * ETH RXQ managed receive event batch successful completion callback for device 2
  *
- * @event_batch_managed_recv [in]: The managed receive event batch
+ * @event_batch_managed_mempool_recv [in]: The managed receive event batch
  * @events_number [in]: Number of retrieved events, each representing a single received packet
- * @event_batch_user_data [in]: User provided data, holding a pointer to the ETH TXQ context to forward the packets
- * with
  * @status [in]: Status of retrieved event batch
  * @pkt_array [in]: Array of doca_bufs containing the received packets
+ * @event_batch_user_data [in]: User provided data, holding a pointer to the ETH TXQ context to forward the packets
+ * with
  */
-static void rx_success_cb2(struct doca_eth_rxq_event_batch_managed_recv *event_batch_managed_recv,
+static void rx_success_cb2(struct doca_eth_rxq_event_batch_managed_mempool_recv *event_batch_managed_mempool_recv,
 			   uint16_t events_number,
-			   union doca_data event_batch_user_data,
 			   doca_error_t status,
-			   struct doca_buf **pkt_array)
+			   struct doca_buf **pkt_array,
+			   union doca_data event_batch_user_data)
 {
 	/* Unused parameters */
 	(void)status;
-	(void)event_batch_managed_recv;
+	(void)event_batch_managed_mempool_recv;
 
 	doca_error_t result;
 	struct doca_eth_txq *eth_txq = (struct doca_eth_txq *)(event_batch_user_data.ptr);
@@ -424,15 +424,15 @@ static void rx_success_cb2(struct doca_eth_rxq_event_batch_managed_recv *event_b
 
 	send_task_data.ptr = pkt_array; // This "trick" allows freeing the array when tx_success_cb is called
 
-	result = doca_eth_txq_task_batch_send_allocate(eth_txq,
-						       events_number,
-						       send_task_data,
-						       &batch_pkt_array,
-						       &task_user_data_array,
-						       &task_batch_send);
+	result = doca_eth_txq_task_batch_send_alloc(eth_txq,
+						    events_number,
+						    send_task_data,
+						    &batch_pkt_array,
+						    &task_user_data_array,
+						    &task_batch_send);
 	if (doca_unlikely(result != DOCA_SUCCESS)) {
 		stats[thread_num].dev1_stats.rx_dropped += events_number;
-		doca_eth_rxq_event_batch_managed_recv_pkt_array_free(pkt_array);
+		doca_eth_rxq_event_batch_managed_mempool_recv_free_packet_array(pkt_array);
 		return;
 	}
 
@@ -477,12 +477,12 @@ static void rx_shared_mempool_success_cb1(
 
 	send_task_data.ptr = data->shared_mempool;
 
-	result = doca_eth_txq_task_batch_send_allocate(eth_txq,
-						       packets_number,
-						       send_task_data,
-						       &batch_pkt_array,
-						       &task_user_data_array,
-						       &task_batch_send);
+	result = doca_eth_txq_task_batch_send_alloc(eth_txq,
+						    packets_number,
+						    send_task_data,
+						    &batch_pkt_array,
+						    &task_user_data_array,
+						    &task_batch_send);
 	if (doca_unlikely(result != DOCA_SUCCESS)) {
 		stats[thread_num].dev1_stats.rx_dropped += packets_number;
 		doca_eth_rxq_shared_mempool_free_buf_bulk(data->shared_mempool, buf_array, packets_number);
@@ -530,12 +530,12 @@ static void rx_shared_mempool_success_cb2(
 
 	send_task_data.ptr = data->shared_mempool;
 
-	result = doca_eth_txq_task_batch_send_allocate(eth_txq,
-						       packets_number,
-						       send_task_data,
-						       &batch_pkt_array,
-						       &task_user_data_array,
-						       &task_batch_send);
+	result = doca_eth_txq_task_batch_send_alloc(eth_txq,
+						    packets_number,
+						    send_task_data,
+						    &batch_pkt_array,
+						    &task_user_data_array,
+						    &task_batch_send);
 	if (doca_unlikely(result != DOCA_SUCCESS)) {
 		stats[thread_num].dev2_stats.rx_dropped += packets_number;
 		doca_eth_rxq_shared_mempool_free_buf_bulk(data->shared_mempool, buf_array, packets_number);
@@ -554,26 +554,26 @@ static void rx_shared_mempool_success_cb2(
 /*
  * A common ETH RXQ managed receive event batch error completion callback
  *
- * @event_batch_managed_recv [in]: The managed receive event batch
+ * @event_batch_managed_mempool_recv [in]: The managed receive event batch
  * @events_number [in]: Number of retrieved events, each representing a single received packet
- * @event_batch_user_data [in]: User provided data, holding a pointer to the ETH TXQ context to forward the packets
- * with
  * @status [in]: Status of retrieved event batch
  * @pkt_array [in]: Array of doca_bufs containing the received packets
+ * @event_batch_user_data [in]: User provided data, holding a pointer to the ETH TXQ context to forward the packets
+ * with
  */
-static void rx_error_cb(struct doca_eth_rxq_event_batch_managed_recv *event_batch_managed_recv,
+static void rx_error_cb(struct doca_eth_rxq_event_batch_managed_mempool_recv *event_batch_managed_mempool_recv,
 			uint16_t events_number,
-			union doca_data event_batch_user_data,
 			doca_error_t status,
-			struct doca_buf **pkt_array)
+			struct doca_buf **pkt_array,
+			union doca_data event_batch_user_data)
 {
 	/* Unused parameters */
 	(void)events_number;
 	(void)pkt_array;
-	(void)event_batch_managed_recv;
+	(void)event_batch_managed_mempool_recv;
 
 	struct doca_eth_txq *eth_txq = (struct doca_eth_txq *)(event_batch_user_data.ptr);
-	struct doca_ctx *eth_txq_ctx = doca_eth_txq_as_doca_ctx(eth_txq);
+	struct doca_ctx *eth_txq_ctx = doca_eth_txq_as_ctx(eth_txq);
 	enum doca_ctx_states ctx_state;
 	(void)doca_ctx_get_state(eth_txq_ctx, &ctx_state);
 
@@ -609,7 +609,7 @@ static void rx_shared_mempool_error_cb(
 	struct rxq_cb_shared_mempool_data *data =
 		(struct rxq_cb_shared_mempool_data *)(event_batch_shared_mempool_user_data.ptr);
 	struct doca_eth_txq *eth_txq = data->eth_txq;
-	struct doca_ctx *eth_txq_ctx = doca_eth_txq_as_doca_ctx(eth_txq);
+	struct doca_ctx *eth_txq_ctx = doca_eth_txq_as_ctx(eth_txq);
 	enum doca_ctx_states ctx_state;
 	(void)doca_ctx_get_state(eth_txq_ctx, &ctx_state);
 
@@ -647,7 +647,7 @@ static void tx_success_cb1(struct doca_task_batch *task_batch,
 	(void)status_array;
 
 	struct doca_buf **pkt_array_handle = (struct doca_buf **)task_batch_user_data.ptr;
-	doca_eth_rxq_event_batch_managed_recv_pkt_array_free(pkt_array_handle);
+	doca_eth_rxq_event_batch_managed_mempool_recv_free_packet_array(pkt_array_handle);
 
 	doca_task_batch_free(task_batch);
 
@@ -681,7 +681,7 @@ static void tx_success_cb2(struct doca_task_batch *task_batch,
 	(void)status_array;
 
 	struct doca_buf **pkt_array_handle = (struct doca_buf **)task_batch_user_data.ptr;
-	doca_eth_rxq_event_batch_managed_recv_pkt_array_free(pkt_array_handle);
+	doca_eth_rxq_event_batch_managed_mempool_recv_free_packet_array(pkt_array_handle);
 
 	doca_task_batch_free(task_batch);
 
@@ -793,7 +793,7 @@ static void tx_error_cb(struct doca_task_batch *task_batch,
 		DOCA_LOG_ERR("Failed to send packets");
 
 	struct doca_buf **pkt_array_handle = (struct doca_buf **)task_batch_user_data.ptr;
-	doca_eth_rxq_event_batch_managed_recv_pkt_array_free(pkt_array_handle);
+	doca_eth_rxq_event_batch_managed_mempool_recv_free_packet_array(pkt_array_handle);
 
 	doca_task_batch_free(task_batch);
 
@@ -890,15 +890,16 @@ static doca_error_t init_eth_rxq_ctx(struct eth_l2_fwd_cfg *cfg,
 {
 	union doca_data user_data;
 	doca_error_t result;
-	uint32_t max_burst_size, max_pkt_size;
+	uint32_t max_inflight_packets, max_pkt_size;
 
-	result = doca_eth_rxq_cap_get_max_burst_size(doca_dev_as_devinfo(dev_resrc->mlxdev), &max_burst_size);
+	result = doca_eth_rxq_cap_get_max_inflight_packets(doca_dev_as_devinfo(dev_resrc->mlxdev),
+							   &max_inflight_packets);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get RXQ max burst size capability: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to get RXQ max inflight packets capability: %s", doca_error_get_descr(result));
 		return result;
 	}
 
-	if (max_burst_size < cfg->rx_depth) {
+	if (max_inflight_packets < cfg->rx_depth) {
 		DOCA_LOG_ERR("Failed to create ETH RXQ context: RX depth to set is to big");
 		return DOCA_ERROR_TOO_BIG;
 	}
@@ -941,10 +942,10 @@ static doca_error_t init_eth_rxq_ctx(struct eth_l2_fwd_cfg *cfg,
 			return result;
 		}
 	} else {
-		result = doca_eth_rxq_set_pkt_buf(dev_resrc->eth_rxq,
-						  dev_resrc->mmap_resrc.mmap,
-						  0,
-						  dev_resrc->mmap_resrc.mmap_size);
+		result = doca_eth_rxq_set_packet_buf(dev_resrc->eth_rxq,
+						     dev_resrc->mmap_resrc.mmap,
+						     0,
+						     dev_resrc->mmap_resrc.mmap_size);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set packet buffer: %s", doca_error_get_descr(result));
 			return result;
@@ -974,12 +975,12 @@ static doca_error_t init_eth_rxq_ctx(struct eth_l2_fwd_cfg *cfg,
 			return result;
 		}
 	} else {
-		result = doca_eth_rxq_event_batch_managed_recv_register(
+		result = doca_eth_rxq_event_batch_managed_mempool_recv_register(
 			dev_resrc->eth_rxq,
 			batch_size,
 			DOCA_EVENT_BATCH_EVENTS_NUMBER_1,
 			user_data,
-			(doca_eth_rxq_event_batch_managed_recv_handler_cb_t)rx_success_cb,
+			(doca_eth_rxq_event_batch_managed_mempool_recv_handler_cb_t)rx_success_cb,
 			rx_error_cb);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to register managed receive event batch: %s",
@@ -988,7 +989,7 @@ static doca_error_t init_eth_rxq_ctx(struct eth_l2_fwd_cfg *cfg,
 		}
 	}
 
-	dev_resrc->eth_rxq_ctx = doca_eth_rxq_as_doca_ctx(dev_resrc->eth_rxq);
+	dev_resrc->eth_rxq_ctx = doca_eth_rxq_as_ctx(dev_resrc->eth_rxq);
 	if (dev_resrc->eth_rxq_ctx == NULL) {
 		DOCA_LOG_ERR("Failed to retrieve DOCA ETH RXQ context as DOCA context: %s",
 			     doca_error_get_descr(result));
@@ -1055,15 +1056,18 @@ static doca_error_t init_eth_txq_ctx(struct eth_l2_fwd_cfg *cfg,
 				     uint16_t queue_id)
 {
 	doca_error_t result;
-	uint32_t max_burst_size;
+	uint32_t max_inflight_packets;
 
-	result = doca_eth_txq_cap_get_max_burst_size(doca_dev_as_devinfo(dev_resrc->mlxdev), 1, 0, &max_burst_size);
+	result = doca_eth_txq_cap_get_max_inflight_packets(doca_dev_as_devinfo(dev_resrc->mlxdev),
+							   1,
+							   0,
+							   &max_inflight_packets);
 	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get TXQ max burst size capability: %s", doca_error_get_descr(result));
+		DOCA_LOG_ERR("Failed to get TXQ max inflight packets capability: %s", doca_error_get_descr(result));
 		return result;
 	}
 
-	if (max_burst_size < cfg->tx_depth) {
+	if (max_inflight_packets < cfg->tx_depth) {
 		DOCA_LOG_ERR("Failed to create ETH TXQ context: TX depth to set is to big");
 		return DOCA_ERROR_TOO_BIG;
 	}
@@ -1133,7 +1137,7 @@ static doca_error_t init_eth_txq_ctx(struct eth_l2_fwd_cfg *cfg,
 		return result;
 	}
 
-	dev_resrc->eth_txq_ctx = doca_eth_txq_as_doca_ctx(dev_resrc->eth_txq);
+	dev_resrc->eth_txq_ctx = doca_eth_txq_as_ctx(dev_resrc->eth_txq);
 	if (dev_resrc->eth_txq_ctx == NULL) {
 		DOCA_LOG_ERR("Failed to retrieve DOCA ETH TXQ context as DOCA context: %s",
 			     doca_error_get_descr(result));

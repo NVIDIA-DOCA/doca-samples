@@ -59,7 +59,7 @@ __device__ __inline__ int raw_to_icmp(const uintptr_t buf_addr, struct eth_ip_ic
 __device__ __inline__ int wipe_packet_32b(uint8_t *payload)
 {
 #pragma unroll
-	for (int idx = 0; idx < 32; idx++)
+	for (int idx = 0; idx < PKT_WIPE_BYTES; idx++)
 		payload[idx] = 0;
 
 	return 0;

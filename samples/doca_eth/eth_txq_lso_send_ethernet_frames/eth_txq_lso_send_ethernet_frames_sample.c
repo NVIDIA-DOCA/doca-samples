@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -42,7 +42,7 @@
 DOCA_LOG_REGISTER(ETH_TXQ_LSO_SEND_ETHERNET_FRAMES);
 
 #define SLEEP_IN_NANOS (10 * 1000)	/* sample the task every 10 microseconds  */
-#define MAX_BURST_SIZE 256		/* Max burst size to set for eth_txq */
+#define MAX_INFLIGHT_PACKETS 256	/* Max inflight packets to set for eth_txq */
 #define MAX_LSO_HEADER_SIZE 64		/* Max header size in LRO packet to set for eth_txq */
 #define MAX_LIST_LENGTH 1		/* Max number of elements in a doca_buf */
 #define MSS 1500			/* Max Segment Size in LSO tasks to set for eth_txq */
@@ -84,14 +84,14 @@ static void task_lso_send_common_cb(struct doca_eth_txq_task_lso_send *task_lso_
 	(*inflight_tasks)--;
 	DOCA_LOG_INFO("LSO send task user data is 0x%lx", task_user_data.u64);
 
-	status = doca_eth_txq_task_lso_send_get_pkt_payload(task_lso_send, &pkt_payload);
+	status = doca_eth_txq_task_lso_send_get_packet_payload(task_lso_send, &pkt_payload);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get packet payload of an LSO send task, err: %s", doca_error_get_name(status));
-		doca_task_free(doca_eth_txq_task_lso_send_as_doca_task(task_lso_send));
+		doca_task_free(doca_eth_txq_task_lso_send_as_task(task_lso_send));
 		return;
 	}
 
-	status_task = doca_task_get_status(doca_eth_txq_task_lso_send_as_doca_task(task_lso_send));
+	status_task = doca_task_get_status(doca_eth_txq_task_lso_send_as_task(task_lso_send));
 
 	status = doca_buf_get_data_len(pkt_payload, &payload_size);
 	if (status != DOCA_SUCCESS) {
@@ -109,7 +109,7 @@ static void task_lso_send_common_cb(struct doca_eth_txq_task_lso_send *task_lso_
 	if (status != DOCA_SUCCESS)
 		DOCA_LOG_ERR("Failed to free packet payload buf, err: %s", doca_error_get_name(status));
 
-	doca_task_free(doca_eth_txq_task_lso_send_as_doca_task(task_lso_send));
+	doca_task_free(doca_eth_txq_task_lso_send_as_task(task_lso_send));
 }
 
 /*
@@ -183,7 +183,7 @@ static doca_error_t destroy_eth_txq_packet_buffers(struct eth_txq_lso_sample_obj
  */
 static void destroy_eth_txq_tasks(struct eth_txq_lso_sample_objects *state)
 {
-	doca_task_free(doca_eth_txq_task_lso_send_as_doca_task(state->lso_send_task));
+	doca_task_free(doca_eth_txq_task_lso_send_as_task(state->lso_send_task));
 }
 
 /*
@@ -214,7 +214,7 @@ static doca_error_t submit_eth_txq_tasks(struct eth_txq_lso_sample_objects *stat
 {
 	doca_error_t status;
 
-	status = doca_task_submit(doca_eth_txq_task_lso_send_as_doca_task(state->lso_send_task));
+	status = doca_task_submit(doca_eth_txq_task_lso_send_as_task(state->lso_send_task));
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to submit LSO send task, err: %s", doca_error_get_name(status));
 		return status;
@@ -237,11 +237,11 @@ static doca_error_t create_eth_txq_tasks(struct eth_txq_lso_sample_objects *stat
 	union doca_data user_data;
 
 	user_data.u64 = LSO_SEND_TASK_USER_DATA;
-	status = doca_eth_txq_task_lso_send_allocate_init(state->eth_txq,
-							  state->lso_eth_payload_buf,
-							  state->lso_pkt_headers,
-							  user_data,
-							  &(state->lso_send_task));
+	status = doca_eth_txq_task_lso_send_alloc_init(state->eth_txq,
+						       state->lso_eth_payload_buf,
+						       state->lso_pkt_headers,
+						       user_data,
+						       &(state->lso_send_task));
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to allocate LSO send task, err: %s", doca_error_get_name(status));
 		return status;
@@ -300,7 +300,7 @@ static doca_error_t create_eth_txq_ctx(struct eth_txq_lso_sample_objects *state)
 	doca_error_t status, clean_status;
 	union doca_data user_data;
 
-	status = doca_eth_txq_create(state->core_resources.core_objs.dev, MAX_BURST_SIZE, &(state->eth_txq));
+	status = doca_eth_txq_create(state->core_resources.core_objs.dev, MAX_INFLIGHT_PACKETS, &(state->eth_txq));
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create ETH TXQ context, err: %s", doca_error_get_name(status));
 		return status;
@@ -333,7 +333,7 @@ static doca_error_t create_eth_txq_ctx(struct eth_txq_lso_sample_objects *state)
 		goto destroy_eth_txq;
 	}
 
-	state->core_resources.core_objs.ctx = doca_eth_txq_as_doca_ctx(state->eth_txq);
+	state->core_resources.core_objs.ctx = doca_eth_txq_as_ctx(state->eth_txq);
 	if (state->core_resources.core_objs.ctx == NULL) {
 		DOCA_LOG_ERR("Failed to retrieve DOCA ETH TXQ context as DOCA context, err: %s",
 			     doca_error_get_name(status));
@@ -423,19 +423,19 @@ static void eth_txq_lso_cleanup(struct eth_txq_lso_sample_objects *state)
 static doca_error_t check_device(struct doca_devinfo *devinfo)
 {
 	doca_error_t status;
-	uint32_t max_supported_burst_size;
+	uint32_t max_supported_inflight_packets;
 	uint16_t max_supported_lso_header_size;
 
-	status = doca_eth_txq_cap_get_max_burst_size(devinfo,
-						     MAX_LIST_LENGTH,
-						     MAX_LSO_HEADER_SIZE,
-						     &max_supported_burst_size);
+	status = doca_eth_txq_cap_get_max_inflight_packets(devinfo,
+							   MAX_LIST_LENGTH,
+							   MAX_LSO_HEADER_SIZE,
+							   &max_supported_inflight_packets);
 	if (status != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get supported max burst size, err: %s", doca_error_get_name(status));
+		DOCA_LOG_ERR("Failed to get supported max inflight packets, err: %s", doca_error_get_name(status));
 		return status;
 	}
 
-	if (max_supported_burst_size < MAX_BURST_SIZE)
+	if (max_supported_inflight_packets < MAX_INFLIGHT_PACKETS)
 		return DOCA_ERROR_NOT_SUPPORTED;
 
 	status = doca_eth_txq_cap_get_max_lso_header_size(devinfo, &max_supported_lso_header_size);

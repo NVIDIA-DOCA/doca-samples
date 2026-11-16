@@ -32,12 +32,27 @@
 
 extern bool force_quit;
 
+/* UDP receive CUDA kernel configuration */
+struct udp_rx_cfg {
+	enum doca_gpu_dev_eth_exec_scope scope; /* Receive function execution scope: thread, warp or block */
+	uint32_t max_rx_pkts;			/* Max packets per receive call, 0 means no limit */
+	uint64_t timeout_ns;			/* Receive call timeout in nanoseconds */
+	bool stage_latency;			/* Measure the latency of each UDP kernel stage */
+	bool cqe_attr_check;			/* Receive with CQE attributes and validate them for every packet */
+	bool process;				/* Process every packet, otherwise receive and count packets only */
+	bool rq_host_mem;			/* Receive queue rings (RQ, CQ) in host memory instead of GPU memory */
+	uint32_t pkt_num;			/* Number of packet buffers per receive queue */
+	uint32_t pkt_size;			/* Size of each packet buffer (stride) in bytes */
+	bool pkt_host_mem;			/* Packet buffers in host memory instead of GPU memory */
+};
+
 /* Application configuration structure */
 struct app_gpu_cfg {
 	char gpu_pcie_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* GPU PCIe address */
 	char nic_pcie_addr[DOCA_DEVINFO_PCI_ADDR_SIZE]; /* Network card PCIe address */
 	uint8_t queue_num;				/* Number of GPU receive queues */
 	bool http_server;				/* Enable GPU HTTP server */
+	struct udp_rx_cfg udp_rx;			/* UDP receive CUDA kernel configuration */
 };
 
 /* Application TCP receive queues objects */
@@ -101,6 +116,8 @@ struct rxq_udp_queues {
 	uint16_t nums;					    /* Number of semaphores items */
 	struct doca_gpu_semaphore *sem_cpu[MAX_QUEUES];	    /* One semaphore per queue, CPU handler*/
 	struct doca_gpu_semaphore_gpu *sem_gpu[MAX_QUEUES]; /* One semaphore per queue, GPU handler*/
+
+	void *rx_attr_gpu[MAX_QUEUES]; /* Per-packet CQE attributes, pkt_num items, for CQE attribute check */
 };
 
 /* Application ICMP receive queues objects */
@@ -164,15 +181,31 @@ struct stats_tcp {
 	uint32_t total;	    /* Total TCP packets */
 };
 
-/* UDP statistics reported by GPU filters */
-struct stats_udp {
-	uint64_t dns;	       /* DNS packet */
-	uint64_t dns_bytes;    /* DNS packet bytes */
-	uint64_t others;       /* Other UDP packets */
-	uint64_t others_bytes; /* Other UDP packet bytes */
-	uint64_t total;	       /* Total UDP packets */
-	uint64_t total_bytes;  /* Total UDP bytes */
+/* Latency samples summary, in nanoseconds. Min and max are meaningful only if num > 0 */
+struct stats_latency {
+	uint64_t num; /* Number of samples */
+	int64_t sum;  /* Sum of samples */
+	int64_t min;  /* Min sample */
+	int64_t max;  /* Max sample */
 };
+
+/* UDP statistics reported by GPU filters, 64 bytes aligned and padded to a multiple of 64 bytes */
+struct stats_udp {
+	uint64_t dns;		      /* DNS packet */
+	uint64_t dns_bytes;	      /* DNS packet bytes */
+	uint64_t others;	      /* Other UDP packets */
+	uint64_t others_bytes;	      /* Other UDP packet bytes */
+	uint64_t total;		      /* Total UDP packets */
+	uint64_t total_bytes;	      /* Total UDP bytes */
+	struct stats_latency recv;    /* Receive function duration, per receive returning packets */
+	struct stats_latency process; /* Packet processing stage duration */
+	struct stats_latency report;  /* Stats reduction and report stage duration */
+	uint64_t recv_pkts;	      /* Packets received by the receive calls counted in recv */
+	uint64_t attr_checked;	      /* Packets with CQE attributes checked */
+	uint64_t attr_bytes_err;      /* CQE attribute bytes not matching the packet length */
+	uint64_t attr_ts_err;	      /* CQE attribute timestamp zero or decreasing */
+	uint64_t padding[2];	      /* Pad the structure to 192 bytes, a multiple of 64 */
+} __attribute__((aligned(64)));
 
 /* HTTP GET packet info used to reply with HTTP response */
 struct info_http {
@@ -381,6 +414,7 @@ doca_error_t destroy_tcp_queues(struct rxq_tcp_queues *tcp_queues,
  * @ddev [in]: DOCA network device
  * @queue_num [in]: Number of queues to create
  * @sem_num [in]: Number of semaphores to create
+ * @rx_cfg [in]: UDP receive configuration: packet buffers number, size and memory type, rings memory type
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
@@ -388,7 +422,8 @@ doca_error_t create_udp_queues(struct rxq_udp_queues *udp_queues,
 			       struct doca_gpu *gpu_dev,
 			       struct doca_dev *ddev,
 			       uint32_t queue_num,
-			       uint32_t sem_num);
+			       uint32_t sem_num,
+			       const struct udp_rx_cfg *rx_cfg);
 
 /*
  * Destroy UDP queues
@@ -505,9 +540,13 @@ doca_error_t kernel_receive_tcp(cudaStream_t stream,
  * @stream [in]: CUDA stream to launch the kernel
  * @exit_cond [in]: exit condition set by the CPU to notify the kernel it has to quit
  * @udp_queues [in]: list of ethernet + flow queues to use to receive TCP traffic
+ * @rx_cfg [in]: UDP receive configuration
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t kernel_receive_udp(cudaStream_t stream, uint32_t *exit_cond, struct rxq_udp_queues *udp_queues);
+doca_error_t kernel_receive_udp(cudaStream_t stream,
+				uint32_t *exit_cond,
+				struct rxq_udp_queues *udp_queues,
+				const struct udp_rx_cfg *rx_cfg);
 
 /*
  * Launch a CUDA kernel to specifically receive ICMP packets.

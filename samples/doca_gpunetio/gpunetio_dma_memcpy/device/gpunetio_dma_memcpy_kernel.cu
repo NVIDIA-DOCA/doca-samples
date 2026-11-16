@@ -33,41 +33,55 @@
 
 DOCA_LOG_REGISTER(GPU_DMA_MEMCPY::KERNEL);
 
-__global__ void cuda_kernel_print_gpu_buffer(uintptr_t gpu_buffer_addr,
-					     struct doca_gpu_dma *dma_gpu,
-					     struct doca_gpu_buf_arr *src_gpu_buf_arr,
-					     struct doca_gpu_buf_arr *dst_gpu_buf_arr)
+/*
+ * Print the GPU buffer filled by the CPU DMA copy, then copy the GPU source buffer to the host destination buffer.
+ * A single CUDA thread runs the kernel.
+ *
+ * @gpu_buffer [in]: GPU buffer filled by the CPU DMA copy
+ * @dma_gpu [in]: DMA GPU exported object
+ * @src_gpu_buf_arr [in]: DOCA GPU src buffer array for DMA copy, in GPU memory
+ * @dst_gpu_buf_arr [in]: DOCA GPU dst buffer array for DMA copy, in host memory
+ */
+__global__ void dma_memcpy_gpu_to_cpu(const char *gpu_buffer,
+				      struct doca_gpu_dma *dma_gpu,
+				      struct doca_gpu_buf_arr *src_gpu_buf_arr,
+				      struct doca_gpu_buf_arr *dst_gpu_buf_arr)
 {
 	doca_error_t result;
 	struct doca_gpu_buf *src_buf;
 	struct doca_gpu_buf *dst_buf;
 
-	printf("CUDA KERNEL INFO: The GPU destination buffer value after the memcpy: %s \n", (char *)gpu_buffer_addr);
+	printf("CUDA KERNEL INFO: The GPU destination buffer value after the memcpy: %s\n", gpu_buffer);
 
-	doca_gpu_dev_buf_get_buf(src_gpu_buf_arr, threadIdx.x, &src_buf);
-	doca_gpu_dev_buf_get_buf(dst_gpu_buf_arr, threadIdx.x, &dst_buf);
-	doca_gpu_dev_dma_memcpy(dma_gpu, src_buf, 0, dst_buf, 0, DMA_MEMCPY_SIZE);
-	/* Not really needed with only 1 CUDA thread */
-	__syncthreads();
+	doca_gpu_dev_buf_get_buf(src_gpu_buf_arr, 0, &src_buf);
+	doca_gpu_dev_buf_get_buf(dst_gpu_buf_arr, 0, &dst_buf);
 
-	if (threadIdx.x == 0) {
-		result = doca_gpu_dev_dma_commit(dma_gpu);
-		if (result != DOCA_SUCCESS) {
-			printf("Error %d doca_gpu_dev_dma_commit\n", result);
-			return;
-		}
+	result = doca_gpu_dev_dma_memcpy(dma_gpu, src_buf, 0, dst_buf, 0, DMA_MEMCPY_SIZE);
+	if (result != DOCA_SUCCESS) {
+		printf("Error %d doca_gpu_dev_dma_memcpy\n", result);
+		return;
 	}
+
+	/* The DMA engine starts the copy once committed. No completion is reported to the GPU */
+	result = doca_gpu_dev_dma_commit(dma_gpu);
+	if (result != DOCA_SUCCESS)
+		printf("Error %d doca_gpu_dev_dma_commit\n", result);
 }
 
 extern "C" {
 
 doca_error_t gpunetio_dma_memcpy_common_launch_kernel(cudaStream_t stream,
-						      uintptr_t gpu_buffer_addr,
+						      const char *gpu_buffer,
 						      struct doca_gpu_dma *dma_gpu,
 						      struct doca_gpu_buf_arr *src_gpu_buf_arr,
 						      struct doca_gpu_buf_arr *dst_gpu_buf_arr)
 {
 	cudaError_t result = cudaSuccess;
+
+	if (gpu_buffer == NULL || dma_gpu == NULL || src_gpu_buf_arr == NULL || dst_gpu_buf_arr == NULL) {
+		DOCA_LOG_ERR("gpunetio_dma_memcpy_common_launch_kernel invalid input values");
+		return DOCA_ERROR_INVALID_VALUE;
+	}
 
 	/* Check no previous CUDA errors */
 	result = cudaGetLastError();
@@ -76,7 +90,7 @@ doca_error_t gpunetio_dma_memcpy_common_launch_kernel(cudaStream_t stream,
 		return DOCA_ERROR_BAD_STATE;
 	}
 
-	cuda_kernel_print_gpu_buffer<<<1, 1, 0, stream>>>(gpu_buffer_addr, dma_gpu, src_gpu_buf_arr, dst_gpu_buf_arr);
+	dma_memcpy_gpu_to_cpu<<<1, 1, 0, stream>>>(gpu_buffer, dma_gpu, src_gpu_buf_arr, dst_gpu_buf_arr);
 
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {

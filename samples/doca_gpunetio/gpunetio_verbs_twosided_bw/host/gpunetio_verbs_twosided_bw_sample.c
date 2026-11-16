@@ -27,6 +27,8 @@
 
 DOCA_LOG_REGISTER(VERBS_TWO_SIDED);
 
+#define SAMPLE_NAME "doca_gpunetio_verbs_twosided_bw"
+
 #define RESULT_LINE "------------------------------------------------------------------------------------\n"
 #define RESULT_FMT_G " #bytes     #iterations    BW average[Gbps]   MsgRate[Mpps]    CUDA Kernel[ms]"
 #define REPORT_FMT_EXT " %-7u    	%-7u           %-7.6lf            %-7.6lf            %-7.6f"
@@ -36,20 +38,31 @@ DOCA_LOG_REGISTER(VERBS_TWO_SIDED);
 cudaStream_t cstream = NULL;
 int message_size[NUM_MSG_SIZE] = {1, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144};
 int message_size_inl32[NUM_MSG_SIZE_INLINE] = {1, 4, 8, 12, 16, 20, 24, 28, 30, 32};
-volatile bool server_force_quit = false;
 
 /*
  * Server validates data from client at the end of the test
+ *
+ * @resources [in]: sample resources
+ * @inline_errors [in]: number of receive CQEs that failed the inline validation in the kernels
+ * @return: DOCA_SUCCESS if the data is correct and DOCA_ERROR otherwise
  */
-static void server_validate_test(struct verbs_resources *resources)
+static doca_error_t server_validate_test(struct verbs_resources *resources, uint32_t inline_errors)
 {
 	uint8_t *buffer;
 	cudaError_t res_cuda;
 	int msg_size;
 	int tot_msg = NUM_MSG_SIZE;
 
-	if (resources->recv_inline)
+	if (resources->recv_inline) {
 		tot_msg = NUM_MSG_SIZE_INLINE;
+
+		/* With receive inline the data is only in the CQEs, which the kernels have validated */
+		if (inline_errors != 0) {
+			DOCA_LOG_ERR("Validation error: %u receive completions without the expected inline data",
+				     inline_errors);
+			return DOCA_ERROR_BAD_STATE;
+		}
+	}
 
 	for (int idx = 0; idx < tot_msg; idx++) {
 		if (resources->recv_inline)
@@ -60,7 +73,7 @@ static void server_validate_test(struct verbs_resources *resources)
 		buffer = (uint8_t *)calloc(resources->cuda_threads * msg_size, sizeof(uint8_t));
 		if (buffer == NULL) {
 			DOCA_LOG_ERR("Error memory");
-			return;
+			return DOCA_ERROR_BAD_STATE;
 		}
 
 		res_cuda = cudaMemcpy(buffer,
@@ -70,7 +83,7 @@ static void server_validate_test(struct verbs_resources *resources)
 		if (res_cuda != cudaSuccess) {
 			DOCA_LOG_ERR("Function CUDA Memcpy failed with %s", cudaGetErrorString(res_cuda));
 			free(buffer);
-			return;
+			return DOCA_ERROR_BAD_STATE;
 		}
 
 		for (int pos = 0; pos < (int)resources->cuda_threads * msg_size; pos++) {
@@ -84,7 +97,7 @@ static void server_validate_test(struct verbs_resources *resources)
 						buffer[pos]);
 
 					free(buffer);
-					return;
+					return DOCA_ERROR_BAD_STATE;
 				}
 			} else {
 				if (buffer[pos] != (idx + 1)) {
@@ -96,7 +109,7 @@ static void server_validate_test(struct verbs_resources *resources)
 						(idx + 1));
 
 					free(buffer);
-					return;
+					return DOCA_ERROR_BAD_STATE;
 				}
 			}
 		}
@@ -104,52 +117,64 @@ static void server_validate_test(struct verbs_resources *resources)
 	}
 
 	DOCA_LOG_WARN("Data validation successful! Data received correctly from client");
+	return DOCA_SUCCESS;
 }
 
 static doca_error_t destroy_local_memory_objects(struct verbs_resources *resources)
 {
+	doca_error_t result = DOCA_SUCCESS;
 	int ret = 0;
 	int tot_msg = NUM_MSG_SIZE;
 
 	if (resources->recv_inline)
 		tot_msg = NUM_MSG_SIZE_INLINE;
 
+	/* Clear each pointer so that the error path of create_local_memory_object() and the caller can both call it */
 	for (int idx = 0; idx < tot_msg; idx++) {
 		if (resources->data_mr[idx]) {
 			ret = ibv_dereg_mr(resources->data_mr[idx]);
 			if (ret != 0) {
 				DOCA_LOG_ERR("ibv_dereg_mr failed with error=%d", ret);
-				return DOCA_ERROR_DRIVER;
+				DOCA_ERROR_PROPAGATE(result, DOCA_ERROR_DRIVER);
 			}
+			resources->data_mr[idx] = NULL;
 		}
 
-		if (resources->data_buf[idx])
+		if (resources->data_buf[idx]) {
 			doca_gpu_mem_free(resources->gpu_dev, (void *)resources->data_buf[idx]);
+			resources->data_buf[idx] = NULL;
+		}
 
 		if (resources->flag_mr[idx]) {
 			ret = ibv_dereg_mr(resources->flag_mr[idx]);
 			if (ret != 0) {
 				DOCA_LOG_ERR("ibv_dereg_mr failed with error=%d", ret);
-				return DOCA_ERROR_DRIVER;
+				DOCA_ERROR_PROPAGATE(result, DOCA_ERROR_DRIVER);
 			}
+			resources->flag_mr[idx] = NULL;
 		}
 
-		if (resources->flag_buf[idx])
+		if (resources->flag_buf[idx]) {
 			doca_gpu_mem_free(resources->gpu_dev, (void *)resources->flag_buf[idx]);
+			resources->flag_buf[idx] = NULL;
+		}
 	}
 
 	if (resources->dump_flag_mr) {
 		ret = ibv_dereg_mr(resources->dump_flag_mr);
 		if (ret != 0) {
 			DOCA_LOG_ERR("ibv_dereg_mr failed with error=%d", ret);
-			return DOCA_ERROR_DRIVER;
+			DOCA_ERROR_PROPAGATE(result, DOCA_ERROR_DRIVER);
 		}
+		resources->dump_flag_mr = NULL;
 	}
 
-	if (resources->dump_flag_buf)
+	if (resources->dump_flag_buf) {
 		doca_gpu_mem_free(resources->gpu_dev, (void *)resources->dump_flag_buf);
+		resources->dump_flag_buf = NULL;
+	}
 
-	return DOCA_SUCCESS;
+	return result;
 }
 
 static doca_error_t create_local_memory_object(struct verbs_resources *resources)
@@ -191,10 +216,13 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 			goto exit_error;
 		}
 
-		if (resources->cfg->is_server)
-			cudaMemset(resources->data_buf[idx], 0, size_data);
-		else
-			cudaMemset(resources->data_buf[idx], idx + 1, size_data);
+		/* The server receives into a zeroed buffer, the client sends a per-size pattern */
+		if (cudaMemset(resources->data_buf[idx], resources->cfg->is_server ? 0 : idx + 1, size_data) !=
+		    cudaSuccess) {
+			status = DOCA_ERROR_DRIVER;
+			DOCA_LOG_ERR("Failed to initialize GPU memory buffer %d", idx);
+			goto exit_error;
+		}
 
 		/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method. */
 		status = doca_gpu_dmabuf_fd(resources->gpu_dev, resources->data_buf[idx], size_data, &dmabuf_fd);
@@ -206,6 +234,8 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 								    dmabuf_fd,
 								    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
 									    IBV_ACCESS_RELAXED_ORDERING);
+			/* The MR holds its own reference to the dmabuf */
+			close(dmabuf_fd);
 		}
 
 		if (resources->data_mr[idx] == NULL) {
@@ -236,7 +266,11 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 			goto exit_error;
 		}
 
-		cudaMemset(resources->flag_buf[idx], 0, size_flag);
+		if (cudaMemset(resources->flag_buf[idx], 0, size_flag) != cudaSuccess) {
+			status = DOCA_ERROR_DRIVER;
+			DOCA_LOG_ERR("Failed to initialize GPU memory buffer %d", idx);
+			goto exit_error;
+		}
 
 		/* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem method. */
 		status = doca_gpu_dmabuf_fd(resources->gpu_dev, resources->flag_buf[idx], size_flag, &dmabuf_fd);
@@ -248,6 +282,8 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 								    dmabuf_fd,
 								    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
 									    IBV_ACCESS_RELAXED_ORDERING);
+			/* The MR holds its own reference to the dmabuf */
+			close(dmabuf_fd);
 		}
 
 		if (resources->flag_mr[idx] == NULL) {
@@ -289,6 +325,8 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
 							    dmabuf_fd,
 							    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
 								    IBV_ACCESS_RELAXED_ORDERING);
+		/* The MR holds its own reference to the dmabuf */
+		close(dmabuf_fd);
 	}
 
 	if (resources->dump_flag_mr == NULL) {
@@ -323,24 +361,29 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 		// Server sends local info
 		for (int idx = 0; idx < tot_msg; idx++) {
 			uint64_t local_addr = (uint64_t)resources->flag_buf[idx];
-			if (send(resources->conn_socket, &local_addr, sizeof(uint64_t), 0) < 0) {
+			if (verbs_oob_send(resources->conn_socket, &local_addr, sizeof(uint64_t)) != 0) {
 				DOCA_LOG_ERR("Failed to send local buffer address");
 				return DOCA_ERROR_CONNECTION_ABORTED;
 			}
 
-			if (send(resources->conn_socket, &resources->flag_mr[idx]->rkey, sizeof(uint32_t), 0) < 0) {
+			if (verbs_oob_send(resources->conn_socket, &resources->flag_mr[idx]->rkey, sizeof(uint32_t)) !=
+			    0) {
 				DOCA_LOG_ERR("Failed to send local MKEY");
 				return DOCA_ERROR_CONNECTION_ABORTED;
 			}
 		}
 
 		for (int idx = 0; idx < tot_msg; idx++) {
-			if (recv(resources->conn_socket, &resources->remote_flag_buf[idx], sizeof(uint64_t), 0) < 0) {
+			if (verbs_oob_recv(resources->conn_socket,
+					   &resources->remote_flag_buf[idx],
+					   sizeof(uint64_t)) != 0) {
 				DOCA_LOG_ERR("Failed to receive remote buffer address ");
 				return DOCA_ERROR_CONNECTION_ABORTED;
 			}
 
-			if (recv(resources->conn_socket, &resources->remote_flag_mkey[idx], sizeof(uint32_t), 0) < 0) {
+			if (verbs_oob_recv(resources->conn_socket,
+					   &resources->remote_flag_mkey[idx],
+					   sizeof(uint32_t)) != 0) {
 				DOCA_LOG_ERR("Failed to receive remote MKEY, err = %d", errno);
 				return DOCA_ERROR_CONNECTION_ABORTED;
 			}
@@ -349,12 +392,16 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 	} else {
 		// Client waits for server info
 		for (int idx = 0; idx < tot_msg; idx++) {
-			if (recv(resources->conn_socket, &resources->remote_flag_buf[idx], sizeof(uint64_t), 0) < 0) {
+			if (verbs_oob_recv(resources->conn_socket,
+					   &resources->remote_flag_buf[idx],
+					   sizeof(uint64_t)) != 0) {
 				DOCA_LOG_ERR("Failed to receive remote buffer address ");
 				return DOCA_ERROR_CONNECTION_ABORTED;
 			}
 
-			if (recv(resources->conn_socket, &resources->remote_flag_mkey[idx], sizeof(uint32_t), 0) < 0) {
+			if (verbs_oob_recv(resources->conn_socket,
+					   &resources->remote_flag_mkey[idx],
+					   sizeof(uint32_t)) != 0) {
 				DOCA_LOG_ERR("Failed to receive remote MKEY, err = %d", errno);
 				return DOCA_ERROR_CONNECTION_ABORTED;
 			}
@@ -362,45 +409,46 @@ static doca_error_t exchange_params_with_remote_peer(struct verbs_resources *res
 
 		for (int idx = 0; idx < tot_msg; idx++) {
 			uint64_t local_addr = (uint64_t)resources->flag_buf[idx];
-			if (send(resources->conn_socket, &local_addr, sizeof(uint64_t), 0) < 0) {
+			if (verbs_oob_send(resources->conn_socket, &local_addr, sizeof(uint64_t)) != 0) {
 				DOCA_LOG_ERR("Failed to send local buffer address");
 				return DOCA_ERROR_CONNECTION_ABORTED;
 			}
 
-			if (send(resources->conn_socket, &resources->flag_mr[idx]->rkey, sizeof(uint32_t), 0) < 0) {
+			if (verbs_oob_send(resources->conn_socket, &resources->flag_mr[idx]->rkey, sizeof(uint32_t)) !=
+			    0) {
 				DOCA_LOG_ERR("Failed to send local MKEY");
 				return DOCA_ERROR_CONNECTION_ABORTED;
 			}
 		}
 	}
 
-	if (send(resources->conn_socket, &resources->local_qp_number, sizeof(uint32_t), 0) < 0) {
+	if (verbs_oob_send(resources->conn_socket, &resources->local_qp_number, sizeof(uint32_t)) != 0) {
 		DOCA_LOG_ERR("Failed to send local QP number");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
-	if (recv(resources->conn_socket, &resources->remote_qp_number, sizeof(uint32_t), 0) < 0) {
+	if (verbs_oob_recv(resources->conn_socket, &resources->remote_qp_number, sizeof(uint32_t)) != 0) {
 		DOCA_LOG_ERR("Failed to receive remote QP number, err = %d", errno);
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
-	if (send(resources->conn_socket, &resources->gid.raw, sizeof(resources->gid.raw), 0) < 0) {
+	if (verbs_oob_send(resources->conn_socket, &resources->gid.raw, sizeof(resources->gid.raw)) != 0) {
 		DOCA_LOG_ERR("Failed to send local GID address");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
-	if (recv(resources->conn_socket, &resources->remote_gid.raw, sizeof(resources->gid.raw), 0) < 0) {
+	if (verbs_oob_recv(resources->conn_socket, &resources->remote_gid.raw, sizeof(resources->gid.raw)) != 0) {
 		DOCA_LOG_ERR("Failed to receive remote GID address, err = %d", errno);
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
-	if (send(resources->conn_socket, &resources->lid, sizeof(uint32_t), 0) < 0) {
-		DOCA_LOG_ERR("Failed to send local GID address");
+	if (verbs_oob_send(resources->conn_socket, &resources->lid, sizeof(uint32_t)) != 0) {
+		DOCA_LOG_ERR("Failed to send local LID");
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
-	if (recv(resources->conn_socket, &resources->dlid, sizeof(uint32_t), 0) < 0) {
-		DOCA_LOG_ERR("Failed to receive remote GID address, err = %d", errno);
+	if (verbs_oob_recv(resources->conn_socket, &resources->dlid, sizeof(uint32_t)) != 0) {
+		DOCA_LOG_ERR("Failed to receive remote LID, err = %d", errno);
 		return DOCA_ERROR_CONNECTION_ABORTED;
 	}
 
@@ -421,6 +469,8 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 	int msg_size;
 	uint8_t data_val;
 	int tot_msg = NUM_MSG_SIZE;
+	uint32_t *inline_errors_gpu = NULL;
+	uint32_t inline_errors = 0;
 
 	resources.conn_socket = -1;
 	resources.num_iters = cfg->num_iters;
@@ -444,11 +494,34 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 		goto server_cleanup;
 	}
 
+	if (resources.recv_inline) {
+		status = doca_gpu_mem_alloc(resources.gpu_dev,
+					    sizeof(uint32_t),
+					    get_page_size(),
+					    DOCA_GPU_MEM_TYPE_GPU,
+					    (void **)&inline_errors_gpu,
+					    NULL);
+		if (status != DOCA_SUCCESS) {
+			DOCA_LOG_ERR("Failed to allocate the inline errors counter: %s", doca_error_get_descr(status));
+			goto server_cleanup;
+		}
+
+		if (cudaMemset(inline_errors_gpu, 0, sizeof(uint32_t)) != cudaSuccess) {
+			DOCA_LOG_ERR("Failed to initialize the inline errors counter");
+			status = DOCA_ERROR_DRIVER;
+			goto server_cleanup;
+		}
+	}
+
 	status = oob_verbs_connection_server_setup(&server_sock_fd, &resources.conn_socket);
 	if (status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to setup OOB connection with remote peer: %s", doca_error_get_descr(status));
 		goto server_cleanup;
 	}
+
+	status = verbs_oob_check_config(resources.conn_socket, SAMPLE_NAME, cfg);
+	if (status != DOCA_SUCCESS)
+		goto close_connection;
 
 	status = exchange_params_with_remote_peer(&resources);
 	if (status != DOCA_SUCCESS) {
@@ -530,13 +603,19 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						     htobe32(resources.dump_flag_mr->lkey),
 						     resources.scope,
 						     false,
-						     data_val);
+						     data_val,
+						     inline_errors_gpu);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function gpunetio_verbs_two_sided_bw failed: %s", doca_error_get_descr(status));
 			goto destroy_events;
 		}
 
-		cudaStreamSynchronize(cstream);
+		cuda_ret = cudaStreamSynchronize(cstream);
+		if (cuda_ret != cudaSuccess) {
+			DOCA_LOG_ERR("Warmup kernel failed: %s", cudaGetErrorString(cuda_ret));
+			status = DOCA_ERROR_DRIVER;
+			goto destroy_events;
+		}
 
 		cu_result = cuEventRecord(e_start, cstream);
 		if (cu_result) {
@@ -562,7 +641,8 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 						     htobe32(resources.dump_flag_mr->lkey),
 						     resources.scope,
 						     false,
-						     data_val);
+						     data_val,
+						     inline_errors_gpu);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function gpunetio_verbs_two_sided_bw failed: %s", doca_error_get_descr(status));
 			goto destroy_events;
@@ -598,7 +678,18 @@ doca_error_t verbs_server(struct verbs_config *cfg)
 		printf("\n");
 	}
 
-	server_validate_test(&resources);
+	if (inline_errors_gpu != NULL) {
+		cuda_ret = cudaMemcpy(&inline_errors, inline_errors_gpu, sizeof(uint32_t), cudaMemcpyDefault);
+		if (cuda_ret != cudaSuccess) {
+			DOCA_LOG_ERR("Failed to read the inline errors counter: %s", cudaGetErrorString(cuda_ret));
+			status = DOCA_ERROR_DRIVER;
+			goto destroy_events;
+		}
+	}
+
+	status = server_validate_test(&resources, inline_errors);
+	if (status != DOCA_SUCCESS)
+		DOCA_LOG_ERR("Server data validation failed");
 
 destroy_events:
 	cudaStreamSynchronize(cstream);
@@ -614,6 +705,9 @@ close_connection:
 	oob_verbs_connection_server_close(server_sock_fd, resources.conn_socket);
 
 server_cleanup:
+	if (inline_errors_gpu != NULL)
+		doca_gpu_mem_free(resources.gpu_dev, inline_errors_gpu);
+
 	tmp_status = destroy_local_memory_objects(&resources);
 	if (tmp_status != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to destroy local resources: %s", doca_error_get_descr(tmp_status));
@@ -669,6 +763,10 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 		DOCA_LOG_ERR("Failed to setup OOB connection with remote peer: %s", doca_error_get_descr(status));
 		goto client_cleanup;
 	}
+
+	status = verbs_oob_check_config(resources.conn_socket, SAMPLE_NAME, cfg);
+	if (status != DOCA_SUCCESS)
+		goto close_connection;
 
 	status = exchange_params_with_remote_peer(&resources);
 	if (status != DOCA_SUCCESS) {
@@ -746,13 +844,19 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						     htobe32(resources.dump_flag_mr->lkey),
 						     resources.scope,
 						     true,
-						     0);
+						     0,
+						     NULL);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function gpunetio_verbs_two_sided_bw failed: %s", doca_error_get_descr(status));
 			goto destroy_events;
 		}
 
-		cudaStreamSynchronize(cstream);
+		cuda_ret = cudaStreamSynchronize(cstream);
+		if (cuda_ret != cudaSuccess) {
+			DOCA_LOG_ERR("Warmup kernel failed: %s", cudaGetErrorString(cuda_ret));
+			status = DOCA_ERROR_DRIVER;
+			goto destroy_events;
+		}
 
 		cu_result = cuEventRecord(e_start, cstream);
 		if (cu_result) {
@@ -778,7 +882,8 @@ doca_error_t verbs_client(struct verbs_config *cfg)
 						     htobe32(resources.dump_flag_mr->lkey),
 						     resources.scope,
 						     true,
-						     0);
+						     0,
+						     NULL);
 		if (status != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Function gpunetio_verbs_two_sided_bw failed: %s", doca_error_get_descr(status));
 			goto destroy_events;

@@ -126,17 +126,26 @@ extern struct doca_dpa_app *dpa_sample_app;
 #define DPA_NVQUAL_MEMORY_BYTES_PER_OP 256
 
 /**
- * Arithmetic kernel inner loop multiplier
- * Increased to reduce operation count and avoid watchdog timeout
+ * Host num_ops divisor for the arithmetic stress kernel (cycles charged per
+ * outer-loop body). Includes ~10x watchdog margin under full HART load
+ * (~400 real cycles/body × 10). Kernel loops exactly num_ops times.
  */
-#define DPA_NVQUAL_ARITHMETIC_OPS_MULTIPLIER 1000
+#define DPA_NVQUAL_ARITHMETIC_CYCLES_PER_OP 4000
 
 /**
- * Average cycles per arithmetic operation (estimated based on complexity)
- * Used to calculate equivalent workload for arithmetic stress kernel
- * Tuned to prevent watchdog timeout
+ * Poll interval when waiting for go-signal file before starting kernels
  */
-#define DPA_NVQUAL_ARITHMETIC_CYCLES_PER_OP 400
+#define DPA_NVQUAL_WAIT_FILE_POLL_USEC (100000)
+
+/**
+ * Default timeout seconds when waiting for go-signal file (-wait_to)
+ */
+#define DPA_NVQUAL_WAIT_TIMEOUT_SEC (60)
+
+/**
+ * Max path length for wait-for-file go signal
+ */
+#define DPA_NVQUAL_WAIT_FILE_PATH_SIZE (512)
 
 /**
  * DPA nvqual flow configuration struct
@@ -148,6 +157,8 @@ struct dpa_nvqual_flow_config {
 	uint64_t test_duration_sec;
 	uint64_t iteration_duration_sec;
 	uint64_t allocated_dpa_heap_size;
+	uint64_t wait_timeout_sec;
+	char wait_for_file[DPA_NVQUAL_WAIT_FILE_PATH_SIZE];
 };
 
 /**
@@ -217,6 +228,8 @@ struct dpa_nvqual_config {
 	uint32_t user_factor; // float
 	bool excluded_eus[DPA_NVQUAL_MAX_EUS];
 	unsigned int excluded_eus_size;
+	uint64_t wait_timeout_sec;
+	char wait_for_file[DPA_NVQUAL_WAIT_FILE_PATH_SIZE];
 };
 
 #ifdef __cplusplus

@@ -178,19 +178,19 @@ doca_error_t create_tcp_queues(struct rxq_tcp_queues *tcp_queues,
 			return DOCA_ERROR_BAD_STATE;
 		}
 
-		result = doca_eth_rxq_set_pkt_buf(tcp_queues->eth_rxq_cpu[idx],
-						  tcp_queues->pkt_buff_mmap[idx],
-						  0,
-						  cyclic_buffer_size);
+		result = doca_eth_rxq_set_packet_buf(tcp_queues->eth_rxq_cpu[idx],
+						     tcp_queues->pkt_buff_mmap[idx],
+						     0,
+						     cyclic_buffer_size);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to set cyclic buffer  %s", doca_error_get_descr(result));
 			destroy_tcp_queues(tcp_queues, http_server, http_queues);
 			return DOCA_ERROR_BAD_STATE;
 		}
 
-		tcp_queues->eth_rxq_ctx[idx] = doca_eth_rxq_as_doca_ctx(tcp_queues->eth_rxq_cpu[idx]);
+		tcp_queues->eth_rxq_ctx[idx] = doca_eth_rxq_as_ctx(tcp_queues->eth_rxq_cpu[idx]);
 		if (tcp_queues->eth_rxq_ctx[idx] == NULL) {
-			DOCA_LOG_ERR("Failed doca_eth_rxq_as_doca_ctx: %s", doca_error_get_descr(result));
+			DOCA_LOG_ERR("Failed doca_eth_rxq_as_ctx: %s", doca_error_get_descr(result));
 			destroy_tcp_queues(tcp_queues, http_server, http_queues);
 			return DOCA_ERROR_BAD_STATE;
 		}
@@ -342,23 +342,23 @@ doca_error_t create_tcp_queues(struct rxq_tcp_queues *tcp_queues,
 				return DOCA_ERROR_BAD_STATE;
 			}
 
-			result = doca_eth_txq_set_l3_chksum_offload(http_queues->eth_txq_cpu[idx], 1);
+			result = doca_eth_txq_set_l3_checksum_offload(http_queues->eth_txq_cpu[idx], 1);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to set eth_txq l3 offloads: %s", doca_error_get_descr(result));
 				destroy_tcp_queues(tcp_queues, http_server, http_queues);
 				return DOCA_ERROR_BAD_STATE;
 			}
 
-			result = doca_eth_txq_set_l4_chksum_offload(http_queues->eth_txq_cpu[idx], 1);
+			result = doca_eth_txq_set_l4_checksum_offload(http_queues->eth_txq_cpu[idx], 1);
 			if (result != DOCA_SUCCESS) {
 				DOCA_LOG_ERR("Failed to set eth_txq l3 offloads: %s", doca_error_get_descr(result));
 				destroy_tcp_queues(tcp_queues, http_server, http_queues);
 				return DOCA_ERROR_BAD_STATE;
 			}
 
-			http_queues->eth_txq_ctx[idx] = doca_eth_txq_as_doca_ctx(http_queues->eth_txq_cpu[idx]);
+			http_queues->eth_txq_ctx[idx] = doca_eth_txq_as_ctx(http_queues->eth_txq_cpu[idx]);
 			if (http_queues->eth_txq_ctx[idx] == NULL) {
-				DOCA_LOG_ERR("Failed doca_eth_txq_as_doca_ctx: %s", doca_error_get_descr(result));
+				DOCA_LOG_ERR("Failed doca_eth_txq_as_ctx: %s", doca_error_get_descr(result));
 				destroy_tcp_queues(tcp_queues, http_server, http_queues);
 				return DOCA_ERROR_BAD_STATE;
 			}

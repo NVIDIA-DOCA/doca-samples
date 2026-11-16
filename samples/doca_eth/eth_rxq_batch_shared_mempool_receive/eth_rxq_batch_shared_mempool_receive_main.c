@@ -46,6 +46,7 @@ struct eth_rxq_cfg {
 	uint16_t headroom_size;				/* headroom size */
 	uint16_t tailroom_size;				/* tailroom size */
 	uint16_t num_queues;				/* number of ETH RXQs sharing the memory pool */
+	uint32_t max_pkt_size;				/* max packet size to receive */
 };
 
 /* Sample's Logic */
@@ -53,7 +54,8 @@ doca_error_t eth_rxq_batch_shared_mempool_receive(const char *ib_dev_name,
 						  bool timestamp_enable,
 						  uint16_t headroom_size,
 						  uint16_t tailroom_size,
-						  uint16_t num_queues);
+						  uint16_t num_queues,
+						  uint32_t max_pkt_size);
 
 /*
  * ARGP Callback - Handle IB device name parameter
@@ -143,6 +145,30 @@ static doca_error_t num_queues_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - max packet size parameter
+ *
+ * @param [in]: Input parameter
+ * @config [out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t max_pkt_size_callback(void *param, void *config)
+{
+	uint32_t max_pkt_size = strtoul((char *)param, NULL, 10);
+	struct eth_rxq_cfg *eth_rxq_cfg = (struct eth_rxq_cfg *)config;
+
+	if (max_pkt_size == 0 || max_pkt_size > MAX_RXQ_PKT_SIZE) {
+		DOCA_LOG_ERR("Invalid max packet size %u, must be in the range [1, %d]",
+			     max_pkt_size,
+			     MAX_RXQ_PKT_SIZE);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
+	eth_rxq_cfg->max_pkt_size = max_pkt_size;
+
+	return DOCA_SUCCESS;
+}
+
+/*
  * Register the command line parameters for the sample.
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -155,6 +181,7 @@ static doca_error_t register_eth_rxq_params(void)
 	struct doca_argp_param *headroom_param;
 	struct doca_argp_param *tailroom_param;
 	struct doca_argp_param *num_queues_param;
+	struct doca_argp_param *max_pkt_size_param;
 
 	result = doca_argp_param_create(&dev_ib_name_param);
 	if (result != DOCA_SUCCESS) {
@@ -241,6 +268,25 @@ static doca_error_t register_eth_rxq_params(void)
 		return result;
 	}
 
+	result = doca_argp_param_create(&max_pkt_size_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	doca_argp_param_set_short_name(max_pkt_size_param, "mps");
+	doca_argp_param_set_long_name(max_pkt_size_param, "max-pkt-size");
+	doca_argp_param_set_description(
+		max_pkt_size_param,
+		"Max packet size to receive, up to 9216 for jumbo frames. Packet headroom and tailroom lower the limit - default: 1600");
+	doca_argp_param_set_callback(max_pkt_size_param, max_pkt_size_callback);
+	doca_argp_param_set_type(max_pkt_size_param, DOCA_ARGP_TYPE_STRING);
+	result = doca_argp_register_param(max_pkt_size_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
 	return DOCA_SUCCESS;
 }
 
@@ -276,6 +322,7 @@ int main(int argc, char **argv)
 	eth_rxq_cfg.headroom_size = 0;
 	eth_rxq_cfg.tailroom_size = 0;
 	eth_rxq_cfg.num_queues = DEFAULT_QUEUES_NUM;
+	eth_rxq_cfg.max_pkt_size = DEFAULT_RXQ_PKT_SIZE;
 
 	result = doca_argp_init(NULL, &eth_rxq_cfg);
 	if (result != DOCA_SUCCESS) {
@@ -299,7 +346,8 @@ int main(int argc, char **argv)
 						      eth_rxq_cfg.timestamp_enable,
 						      eth_rxq_cfg.headroom_size,
 						      eth_rxq_cfg.tailroom_size,
-						      eth_rxq_cfg.num_queues);
+						      eth_rxq_cfg.num_queues,
+						      eth_rxq_cfg.max_pkt_size);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("eth_rxq_batch_shared_mempool_receive() encountered an error: %s",
 			     doca_error_get_descr(result));

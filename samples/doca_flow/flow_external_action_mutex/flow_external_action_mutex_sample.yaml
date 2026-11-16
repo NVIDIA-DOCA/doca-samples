@@ -1,0 +1,75 @@
+#
+# Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+number_of_ports: 2
+min_supported_nic:
+  - ConnectX-10
+mode_args:
+  - vnf
+ports_description:
+  port_0: doca_dev
+  port_1: doca_dev
+description: "This sample demonstrates the DOCA Flow mutex external action in VNF mode.
+              Two source IPs are pinned to distinct scratchpad values by a basic pipe and then run a
+              read-modify-write sequence (STORE/ADD/LOAD) against one shared ASO-memory slot inside an
+              ordered-list pipe. By default the sequence is wrapped in MUTEX LOCK/UNLOCK so the hardware
+              serialises the two flows; --no-mutex drops the fences to demonstrate the interleaving that
+              the mutex prevents. The post-RMW value is copied into meta.pkt_meta and read back on the host
+              via RTE_FLOW_DYNF_METADATA by one RX thread per RSS queue.
+              Correctness is decided by the host-side counters rather than by forwarded packets: the run
+              fails when no packet arrives, when a packet carries no usable metadata, or when mutex mode
+              observes any anomaly.
+              Sample Command Line: ./build/doca_flow_external_action_mutex -- -a aux/2,dv_flow_en=2 -a aux/3,dv_flow_en=2 -l 60 --duration 10"
+use_cases:
+  - name: "Flow external action mutex use case"
+    args: ""
+    stages:
+      - name: "Sending one packet per source IP"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Flow A, scratchpad value 1, post-RMW value 2')
+              - Ether()/IP(src='5.6.7.8', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Flow B, scratchpad value 10, post-RMW value 20')
+        validation:
+          - type: dump
+            expected_text:
+              - "Pipeline built (with-mutex)"
+              - "Summary (use_mutex=true)"
+              - "total_anomalies=0"
+              - "total_no_metadata=0"
+  - name: "Flow external action mutex use case, mutex disabled"
+    args: "--no-mutex"
+    stages:
+      - name: "Sending one packet per source IP"
+        packets_to_send:
+          - receiving_port: 0
+            packets:
+              - Ether()/IP(src='1.2.3.4', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Flow A, scratchpad value 1, post-RMW value 2')
+              - Ether()/IP(src='5.6.7.8', dst='8.8.8.8')/TCP(sport=1234, dport=80)/Raw(load=b'Flow B, scratchpad value 10, post-RMW value 20')
+        validation:
+          - type: dump
+            expected_text:
+              - "Pipeline built (no-mutex)"
+              - "Summary (use_mutex=false)"
+              - "total_no_metadata=0"

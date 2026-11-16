@@ -23,6 +23,10 @@
  *
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <signal.h>
 #include <string.h>
 #include <unistd.h>
@@ -65,6 +69,23 @@ static volatile sig_atomic_t vnet_lu_handover_completed = 0;
 static int vnet_lu_listen_fd = -1;
 static int vnet_lu_standby_conn_fd = -1;
 static int vnet_lu_lock_fd = -1;
+
+struct vnet_lu_active_thread {
+	pthread_cond_t cond;
+	pthread_mutex_t mutex;
+	pthread_t thread;
+	doca_error_t result;
+	bool thread_created;
+	bool pe_release_requested;
+	bool pe_released;
+	bool finished;
+};
+
+static struct vnet_lu_active_thread vnet_lu_active_thread = {
+	.cond = PTHREAD_COND_INITIALIZER,
+	.mutex = PTHREAD_MUTEX_INITIALIZER,
+	.result = DOCA_SUCCESS,
+};
 
 static struct vnet_lu_shm *vnet_lu_saved_shm = NULL;
 static size_t vnet_lu_saved_shm_size = 0;
@@ -122,6 +143,16 @@ bool vnet_lu_handover_was_triggered(void)
 bool vnet_lu_handover_was_completed(void)
 {
 	return vnet_lu_handover_completed != 0;
+}
+
+static void vnet_lu_active_wait_for_pe_release(void)
+{
+	pthread_mutex_lock(&vnet_lu_active_thread.mutex);
+	vnet_lu_active_thread.pe_release_requested = true;
+	pthread_cond_broadcast(&vnet_lu_active_thread.cond);
+	while (!vnet_lu_active_thread.pe_released)
+		pthread_cond_wait(&vnet_lu_active_thread.cond, &vnet_lu_active_thread.mutex);
+	pthread_mutex_unlock(&vnet_lu_active_thread.mutex);
 }
 
 static doca_error_t vnet_lu_wait_readable(int fd, int timeout_sec)
@@ -303,21 +334,6 @@ doca_error_t vnet_lu_get_cmd_fd(struct doca_dev *dev, int *cmd_fd_out)
 	*cmd_fd_out = pd->context->cmd_fd;
 	DOCA_LOG_DBG("Extracted cmd_fd=%d from doca_dev", *cmd_fd_out);
 	return DOCA_SUCCESS;
-}
-
-doca_error_t vnet_lu_get_sf_vhca_id(struct doca_devemu_vnet_offload_engine *engine, uint16_t *vhca_id_out)
-{
-	struct doca_dev_rep *sf_rep = NULL;
-	struct doca_devinfo_rep *sf_devinfo;
-
-	if (doca_devemu_vnet_offload_engine_get_rep(engine, &sf_rep) != DOCA_SUCCESS)
-		return DOCA_ERROR_NOT_FOUND;
-
-	sf_devinfo = doca_dev_rep_as_devinfo(sf_rep);
-	if (!sf_devinfo)
-		return DOCA_ERROR_NOT_FOUND;
-
-	return doca_devinfo_rep_get_vhca_id(sf_devinfo, vhca_id_out);
 }
 
 /*********************************************************************************************************************
@@ -535,6 +551,14 @@ static doca_error_t vnet_lu_sriov_export_blobs(struct tlp_context *tlp_ctx,
 						     blobs[blob_idx].blob_len);
 					return result;
 				}
+			} else {
+				/* Same handover as a blob-less PF: the standby
+				 * presents the VF post-reset and the guest
+				 * re-runs its handshake. */
+				DOCA_LOG_WARN(
+					"SR-IOV LU: VF[vf_index=%u] has no started engine (recycle phase %s) - handing it over without datapath state",
+					slot->vf_index,
+					vnet_recycle_phase_name(atomic_load(&slot->recycle.phase)));
 			}
 			blob_idx++;
 		}
@@ -1198,6 +1222,18 @@ static doca_error_t vnet_lu_sriov_restore_context_config(struct tlp_context *tlp
 	if (result != DOCA_SUCCESS)
 		return result;
 
+	/* The sidecar carries the counts the active side provisioned its VFs with,
+	 * not the list itself, so a standby with its own list has to fit inside them
+	 * or it would resize VFs the guest is already using. */
+	if (tlp_ctx->vf_qp_list_len != 0 && VNET_SRIOV_VF_NUM_MSIX(vnet_sriov_vf_qp_max(tlp_ctx)) > vf_msix) {
+		DOCA_LOG_ERR("SR-IOV LU: vf-queue-pairs widest %u queue pairs need %u MSI-X, above restored "
+			     "vf_msix=%u",
+			     vnet_sriov_vf_qp_max(tlp_ctx),
+			     VNET_SRIOV_VF_NUM_MSIX(vnet_sriov_vf_qp_max(tlp_ctx)),
+			     vf_msix);
+		return DOCA_ERROR_INVALID_VALUE;
+	}
+
 	tlp_ctx->sriov_enabled = true;
 	tlp_ctx->sriov_total_vfs = total_vf;
 	tlp_ctx->sriov_num_vf_msix = vf_msix;
@@ -1224,17 +1260,58 @@ doca_error_t vnet_lu_sriov_quiesce_active_pf(struct tlp_context *tlp_ctx, uint32
 	if (pf->sriov == NULL || pf->sriov->vf_slots == NULL)
 		return DOCA_SUCCESS;
 
+	/* Close VF datapath mutation admission under the lifetime lock, then
+	 * release it so config/MMIO reads can use the retained VF responder. */
 	pthread_rwlock_wrlock(&pf->endpoint_lock);
 	for (i = 0; i < pf->sriov->total_vf; i++) {
 		slot = &pf->sriov->vf_slots[i];
 		if (!vnet_lu_sriov_slot_is_active(slot))
 			continue;
-
-		result = vnet_pci_dev_vf_lu_quiesce(slot);
-		DOCA_ERROR_PROPAGATE(first_error, result);
+		atomic_store(&slot->admin_stop_requested, true);
 	}
 	pthread_rwlock_unlock(&pf->endpoint_lock);
 
+	for (i = 0; i < pf->sriov->total_vf; i++) {
+		slot = &pf->sriov->vf_slots[i];
+		if (!vnet_lu_sriov_slot_is_active(slot))
+			continue;
+		result = vnet_pci_dev_vf_lu_quiesce(slot);
+		DOCA_ERROR_PROPAGATE(first_error, result);
+	}
+
+	return first_error;
+}
+
+static doca_error_t vnet_lu_sriov_release_active_responders(struct tlp_context *tlp_ctx)
+{
+	struct pci_device_config *pf;
+	struct vnet_vf_slot *slot;
+	doca_error_t first_error = DOCA_SUCCESS;
+	doca_error_t result;
+	uint32_t pf_idx;
+	uint16_t vf_idx;
+
+	for (pf_idx = 0; pf_idx < tlp_ctx->num_ep; pf_idx++) {
+		pf = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + pf_idx];
+		if (pf->sriov == NULL || pf->sriov->vf_slots == NULL)
+			continue;
+
+		pthread_rwlock_wrlock(&pf->endpoint_lock);
+		for (vf_idx = 0; vf_idx < pf->sriov->total_vf; vf_idx++) {
+			slot = &pf->sriov->vf_slots[vf_idx];
+			if (slot->tlp_dev == NULL)
+				continue;
+
+			result = vnet_sriov_stop_vf_slot(slot);
+			if (result != DOCA_SUCCESS && result != DOCA_ERROR_NOT_FOUND) {
+				DOCA_LOG_WARN("SR-IOV LU: failed to release active VF[vf_index=%u] responder: %s",
+					      slot->vf_index,
+					      doca_error_get_descr(result));
+				DOCA_ERROR_PROPAGATE(first_error, result);
+			}
+		}
+		pthread_rwlock_unlock(&pf->endpoint_lock);
+	}
 	return first_error;
 }
 
@@ -1302,14 +1379,6 @@ static void vnet_lu_fill_device_state(struct vnet_lu_device_state *ds,
 
 	ds->magic = VNET_LU_MAGIC;
 	ds->ep_vhca_id = (uint16_t)ep->vhca_id;
-
-	/* SF vhca_id logged for diagnostics only. */
-	if (ctrl->offload_engine) {
-		uint16_t sf_vhca_id = 0;
-
-		if (vnet_lu_get_sf_vhca_id(ctrl->offload_engine, &sf_vhca_id) == DOCA_SUCCESS)
-			DOCA_LOG_INFO("Device %u: SF vhca_id=0x%x (pre-handover)", idx, sf_vhca_id);
-	}
 
 	net_cfg = vnet_pci_device_get_vnet_dev_cfg(vdev);
 	if (net_cfg) {
@@ -1425,8 +1494,14 @@ doca_error_t vnet_lu_save_state(struct tlp_context *tlp_ctx)
 
 		num_present_devices++;
 
+		/* A recycle destroys the engine on suspend, so this is where a
+		 * function that was mid-reset when the handover started ends up.
+		 * Named so an absent blob is not read as a never-used device. */
 		if (!ctrl->offload_engine) {
-			DOCA_LOG_WARN("Device %u: no offload engine, skipping blob export", i);
+			DOCA_LOG_WARN("Device %u: no offload engine (recycle phase %s) - exporting without datapath "
+				      "state; the standby will present it post-reset",
+				      i,
+				      vnet_recycle_phase_name(atomic_load(&ctrl->recycle.phase)));
 			continue;
 		}
 		result = doca_devemu_vnet_offload_engine_export(ctrl->offload_engine, &blobs[i], &blob_lens[i]);
@@ -1533,6 +1608,13 @@ doca_error_t vnet_lu_active_init(void)
 
 	vnet_lu_handover_requested = 0;
 	vnet_lu_handover_completed = 0;
+	pthread_mutex_lock(&vnet_lu_active_thread.mutex);
+	vnet_lu_active_thread.result = DOCA_SUCCESS;
+	vnet_lu_active_thread.thread_created = false;
+	vnet_lu_active_thread.pe_release_requested = false;
+	vnet_lu_active_thread.pe_released = false;
+	vnet_lu_active_thread.finished = false;
+	pthread_mutex_unlock(&vnet_lu_active_thread.mutex);
 	(void)shm_unlink(VNET_LU_SHM_NAME);
 
 	sa.sa_handler = vnet_lu_sigusr1_handler;
@@ -1577,9 +1659,12 @@ static doca_error_t vnet_lu_handover(struct vnet_pci_dev_resources *resources)
 {
 	struct tlp_context *tlp_ctx = resources->tlp_ctx;
 	enum vnet_lu_msg msg = VNET_LU_MSG_INVALID;
+	doca_error_t release_result;
+	doca_error_t ch_result;
 	doca_error_t result;
 	int conn_fd = -1;
 	int cmd_fd = -1;
+	uint32_t i;
 
 	/* Pre-copy phase: export state, send cmd_fd, let App_B init. */
 
@@ -1635,10 +1720,12 @@ static doca_error_t vnet_lu_handover(struct vnet_pci_dev_resources *resources)
 
 	/* Switchover: per-device disable + DEV_GO, then wait for DEV_ACK. */
 
+	for (i = 0; i < tlp_ctx->num_ep; i++)
+		vnet_admin_queue_quiesce(&tlp_ctx->vnet_controller[i].admin_queue);
 	pci_cfg_workqueue_shutdown();
 
 	/* Pipelined: disable + send DEV_GO per present slot for parallel enable. */
-	for (uint32_t i = 0; i < tlp_ctx->num_ep; i++) {
+	for (i = 0; i < tlp_ctx->num_ep; i++) {
 		if (vnet_lu_active_shm != NULL && i < vnet_lu_active_shm->num_devices &&
 		    vnet_lu_active_shm->hotplug.slot_present[i] == 0)
 			continue;
@@ -1692,11 +1779,18 @@ static doca_error_t vnet_lu_handover(struct vnet_pci_dev_resources *resources)
 	 * Device traffic is already restored; channel LU transfers PCI config
 	 * handling.  Failure here is non-fatal for device traffic. */
 	if (result == DOCA_SUCCESS) {
-		doca_error_t ch_result = vnet_lu_channel_handover(conn_fd, tlp_ctx);
+		ch_result = vnet_lu_channel_handover(conn_fd, tlp_ctx);
 
 		if (ch_result != DOCA_SUCCESS)
 			DOCA_LOG_WARN("Channel LU handover failed: %s (device LU succeeded)",
 				      doca_error_get_descr(ch_result));
+		else {
+			release_result = vnet_lu_sriov_release_active_responders(tlp_ctx);
+			if (release_result != DOCA_SUCCESS)
+				DOCA_LOG_WARN("Channel LU succeeded but active VF responder release will be retried "
+					      "during final cleanup: %s",
+					      doca_error_get_descr(release_result));
+		}
 	}
 
 out:
@@ -1719,13 +1813,102 @@ out:
 	return result;
 }
 
+static void *vnet_lu_active_handover_thread_fn(void *arg)
+{
+	struct vnet_pci_dev_resources *resources = arg;
+	doca_error_t result;
+
+	result = vnet_lu_handover(resources);
+
+	pthread_mutex_lock(&vnet_lu_active_thread.mutex);
+	vnet_lu_active_thread.result = result;
+	vnet_lu_active_thread.finished = true;
+	pthread_cond_broadcast(&vnet_lu_active_thread.cond);
+	pthread_mutex_unlock(&vnet_lu_active_thread.mutex);
+	return NULL;
+}
+
+doca_error_t vnet_lu_active_progress(struct vnet_pci_dev_resources *resources, bool *keep_pe_running)
+{
+	doca_error_t result = DOCA_SUCCESS;
+	bool thread_started = false;
+	int pthread_result;
+
+	if (resources == NULL || keep_pe_running == NULL)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	*keep_pe_running = true;
+	pthread_mutex_lock(&vnet_lu_active_thread.mutex);
+	if (!vnet_lu_active_thread.thread_created && !vnet_lu_active_thread.finished) {
+		pthread_result = pthread_create(&vnet_lu_active_thread.thread,
+						NULL,
+						vnet_lu_active_handover_thread_fn,
+						resources);
+		if (pthread_result != 0) {
+			DOCA_LOG_ERR("LU active: failed to create handover thread: %s", strerror(pthread_result));
+			vnet_lu_active_thread.result = DOCA_ERROR_OPERATING_SYSTEM;
+			vnet_lu_active_thread.finished = true;
+			result = DOCA_ERROR_OPERATING_SYSTEM;
+			*keep_pe_running = false;
+		} else {
+			vnet_lu_active_thread.thread_created = true;
+			thread_started = true;
+		}
+	}
+
+	if (vnet_lu_active_thread.pe_release_requested) {
+		vnet_lu_active_thread.pe_released = true;
+		pthread_cond_broadcast(&vnet_lu_active_thread.cond);
+		*keep_pe_running = false;
+	} else if (vnet_lu_active_thread.finished) {
+		*keep_pe_running = false;
+	}
+	pthread_mutex_unlock(&vnet_lu_active_thread.mutex);
+
+	if (thread_started) {
+		(void)pthread_setname_np(vnet_lu_active_thread.thread, "vnet_lu_coord");
+		DOCA_LOG_INFO("LU active: coordinator started; PE1 continues serving TLP requests");
+	}
+	return result;
+}
+
 bool vnet_lu_active_post_loop(struct vnet_pci_dev_resources *resources)
 {
 	struct sigaction sa_dfl = {0};
+	doca_error_t result = DOCA_SUCCESS;
 	bool did_handover = false;
+	bool join_thread = false;
+	bool run_inline = false;
+	pthread_t thread;
+	int pthread_result;
 
 	if (vnet_lu_handover_requested) {
-		doca_error_t result = vnet_lu_handover(resources);
+		pthread_mutex_lock(&vnet_lu_active_thread.mutex);
+		vnet_lu_active_thread.pe_released = true;
+		pthread_cond_broadcast(&vnet_lu_active_thread.cond);
+		join_thread = vnet_lu_active_thread.thread_created;
+		run_inline = !join_thread && !vnet_lu_active_thread.finished;
+		thread = vnet_lu_active_thread.thread;
+		pthread_mutex_unlock(&vnet_lu_active_thread.mutex);
+
+		if (join_thread) {
+			pthread_result = pthread_join(thread, NULL);
+			if (pthread_result != 0) {
+				DOCA_LOG_ERR("LU active: failed to join handover thread: %s", strerror(pthread_result));
+				result = DOCA_ERROR_OPERATING_SYSTEM;
+			} else {
+				pthread_mutex_lock(&vnet_lu_active_thread.mutex);
+				result = vnet_lu_active_thread.result;
+				vnet_lu_active_thread.thread_created = false;
+				pthread_mutex_unlock(&vnet_lu_active_thread.mutex);
+			}
+		} else if (run_inline) {
+			result = vnet_lu_handover(resources);
+		} else {
+			pthread_mutex_lock(&vnet_lu_active_thread.mutex);
+			result = vnet_lu_active_thread.result;
+			pthread_mutex_unlock(&vnet_lu_active_thread.mutex);
+		}
 
 		did_handover = (result == DOCA_SUCCESS);
 		vnet_lu_handover_completed = did_handover ? 1 : 0;
@@ -1965,6 +2148,9 @@ static doca_error_t vnet_lu_channel_handover(int conn_fd, struct tlp_context *tl
 		DOCA_LOG_ERR("Channel LU: expected CH_BEGIN, got %u", (unsigned)msg);
 		return (result == DOCA_SUCCESS) ? DOCA_ERROR_IO_FAILED : result;
 	}
+
+	/* Transfer PE1 ownership only when the active channel is ready to yield. */
+	vnet_lu_active_wait_for_pe_release();
 	DOCA_LOG_INFO("Channel LU active: received CH_BEGIN, yielding primary");
 
 	/* Yield primary role first, then stop context -- matches SDK sample ordering.
@@ -2462,7 +2648,7 @@ doca_error_t vnet_lu_sriov_get_pf_state(uint16_t ep_vhca_id,
 	*vqs_out = NULL;
 
 	if (vnet_lu_saved_sriov_shm == NULL || vnet_lu_saved_sriov_tail_base == NULL) {
-		DOCA_LOG_ERR("SR-IOV LU: sidecar state is not available");
+		DOCA_LOG_WARN("SR-IOV LU: sidecar state is not available");
 		return DOCA_ERROR_NOT_FOUND;
 	}
 
@@ -2554,6 +2740,17 @@ doca_error_t vnet_lu_hotplug_get_restore_slot(uint32_t idx, bool *is_present_out
 		return DOCA_SUCCESS;
 
 	return vnet_lu_get_ep_vhca_id(idx, vhca_id_out);
+}
+
+/* True when the active side handed this device over without datapath state, so
+ * replay left it post-reset and there is nothing to enable yet. Phase 2 treats an
+ * enable failure as fatal, so enabling it anyway would abort a sound handover. */
+static bool vnet_lu_device_awaits_handshake(uint32_t idx)
+{
+	if (vnet_lu_saved_shm == NULL || idx >= vnet_lu_saved_shm->num_devices)
+		return false;
+
+	return vnet_lu_saved_shm->devices[idx].blob_len == 0;
 }
 
 doca_error_t vnet_lu_get_import_desc(uint32_t idx, const void **export_desc, size_t *export_desc_len)
@@ -2825,6 +3022,21 @@ static doca_error_t vnet_lu_replay_one_device(struct vnet_pci_dev_controller *ct
 	if (result != DOCA_SUCCESS)
 		return result;
 
+	/* No blob means the active side had no datapath state to give. Replaying the
+	 * saved virtio state anyway would publish DRIVER_OK, so the guest believes a
+	 * device with no engine is live and never re-runs its handshake. */
+	if (ds->blob_len == 0) {
+		common_cfg->device_status = 0;
+		vdev->prev_status = 0;
+		if (ds->net.speed)
+			vdev->vnet_cfg.speed = ds->net.speed;
+		DOCA_LOG_WARN("LU replay: device %u has no datapath state - presenting it post-reset and awaiting the "
+			      "guest handshake instead of restoring %u queue pair(s)",
+			      idx,
+			      ds->virtio.num_active_qps);
+		return DOCA_SUCCESS;
+	}
+
 	ctrl->mq_feature_negotiated = ds->virtio.mq_feature_negotiated;
 	ctrl->admin_queue_num = 0;
 	ctrl->admin_queue_index = 0;
@@ -2917,10 +3129,11 @@ static doca_error_t vnet_lu_sriov_restore_vf_config(struct vnet_vf_slot *slot,
 	if (slot == NULL || slot->vf_dev == NULL || vf_state == NULL)
 		return DOCA_ERROR_INVALID_VALUE;
 
+	/* Geometry, not datapath state: both come from the sidecar and are restored
+	 * either way, so a VF the active side gave a geometry of its own keeps it
+	 * without resizing an endpoint the guest is using. */
 	slot->max_queue_pairs = vf_state->virtio.max_queue_pairs;
-	slot->mq_feature_negotiated = vf_state->virtio.mq_feature_negotiated;
-	atomic_store(&slot->num_active_qps, vf_state->virtio.num_active_qps);
-	slot->vf_dev->driver_features = vf_state->virtio.device_features;
+	slot->vf_queue_pairs = vf_state->virtio.max_queue_pairs;
 
 	/* Restore the full VF config/TLP shadow for host continuity. */
 	memcpy(&slot->vf_dev->pcie_dev, &vf_state->vf_cfg_shadow, sizeof(slot->vf_dev->pcie_dev));
@@ -2933,6 +3146,25 @@ static doca_error_t vnet_lu_sriov_restore_vf_config(struct vnet_vf_slot *slot,
 		DOCA_LOG_ERR("SR-IOV LU: VF[vf_index=%u] has no common config", vf_state->vf_index);
 		return DOCA_ERROR_BAD_STATE;
 	}
+
+	/* Same rule as the PF in vnet_lu_replay_one_device(): with no blob there is
+	 * no datapath to claim, and publishing DRIVER_OK would leave the guest
+	 * believing a VF with no engine is live. */
+	if (vf_state->blob_len == 0) {
+		slot->mq_feature_negotiated = false;
+		atomic_store(&slot->num_active_qps, 0);
+		slot->vf_dev->driver_features = 0;
+		common_cfg->device_status = 0;
+		slot->vf_dev->prev_status = 0;
+		DOCA_LOG_WARN("SR-IOV LU: VF[vf_index=%u] has no datapath state - presenting it post-reset and "
+			      "awaiting the guest handshake",
+			      vf_state->vf_index);
+		return DOCA_SUCCESS;
+	}
+
+	slot->mq_feature_negotiated = vf_state->virtio.mq_feature_negotiated;
+	atomic_store(&slot->num_active_qps, vf_state->virtio.num_active_qps);
+	slot->vf_dev->driver_features = vf_state->virtio.device_features;
 
 	common_cfg->device_status = VNET_VIRTIO_DEVICE_STATUS_ACK | VNET_VIRTIO_DEVICE_STATUS_DRIVER |
 				    VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK | VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK;
@@ -2977,9 +3209,15 @@ static doca_error_t vnet_lu_sriov_replay_vf(struct vnet_pci_dev_resources *resou
 	idx = vf_state->vf_index - entry->sriov.first_vf_idx;
 	slot = &pf->sriov->vf_slots[idx];
 
-	/* Early restore only reopens the VF rep and cfg object. Start the live
-	 * tlp_dev here so replay can roll it back with the imported datapath. */
-	result = vnet_sriov_start_vf_slot(resources->tlp_ctx, slot);
+	/* Early restore only reopens the VF rep and cfg object; start the live
+	 * tlp_dev here so replay can roll it back with the imported datapath. Pass 0
+	 * to keep the sizing the active side gave a VF the host can already see. */
+	result = vnet_sriov_provision_vf_slot(resources->tlp_ctx, slot, 0);
+	if (result != DOCA_SUCCESS)
+		return result;
+
+	/* Adopting a function the host already sees, so it serves immediately. */
+	result = vnet_sriov_expose_vf_slot(slot);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -3111,17 +3349,6 @@ doca_error_t vnet_pci_dev_lu_replay(struct vnet_pci_dev_resources *resources,
 				     num_devices);
 			return result;
 		}
-	}
-
-	for (uint32_t i = 0; i < num_devices; i++) {
-		struct vnet_pci_dev_controller *ctrl = &resources->tlp_ctx->vnet_controller[i];
-		uint16_t sf_vhca_id = 0;
-
-		if (hotplug_mode && !vnet_lu_hotplug_is_present_slot(i))
-			continue;
-
-		if (ctrl->offload_engine && vnet_lu_get_sf_vhca_id(ctrl->offload_engine, &sf_vhca_id) == DOCA_SUCCESS)
-			DOCA_LOG_DBG("LU replay: device %u SF vhca_id=0x%x (post-restore)", i, sf_vhca_id);
 	}
 
 	DOCA_LOG_INFO("LU replay complete: %u devices restored", num_devices);
@@ -3264,6 +3491,16 @@ doca_error_t vnet_lu_phase2_enable_engines(struct vnet_pci_dev_resources *resour
 			result = DOCA_ERROR_IO_FAILED;
 			goto join;
 		}
+		/* DEV_GO is consumed above before the skip: the protocol is one
+		 * message per present device and dropping one would desynchronise
+		 * every device after it. */
+		if (vnet_lu_device_awaits_handshake(i)) {
+			DOCA_LOG_INFO(
+				"LU phase2: device %u has no datapath state - leaving it post-reset for the guest to bring up",
+				i);
+			continue;
+		}
+
 		args[spawned].ctrl = &resources->tlp_ctx->vnet_controller[i];
 		args[spawned].idx = i;
 		args[spawned].result = DOCA_SUCCESS;

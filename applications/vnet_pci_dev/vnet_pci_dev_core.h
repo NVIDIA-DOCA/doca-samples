@@ -39,6 +39,8 @@
 
 #include "vnet_pci_device.h"
 #include "vnet_pci_dev_lu.h"
+#include "vnet_recycle.h"
+#include "vnet_admin_queue.h"
 #include "vnet_virtio_types.h"
 
 /* Opaque SDK virtqueue handle; full definition comes from the devemu headers
@@ -236,6 +238,7 @@ struct vnet_pci_dev_controller {
 	bool admin_vq_negotiated;   /* True if VIRTIO_F_ADMIN_VQ negotiated */
 	uint16_t admin_queue_index;
 	uint16_t admin_queue_num;
+	struct vnet_admin_queue_state admin_queue;
 
 	/* IO context for CVQ command handling */
 	struct doca_devemu_vnet_io *io_ctx; /* IO context for ctrl_req forwarding */
@@ -261,6 +264,19 @@ struct vnet_pci_dev_controller {
 	atomic_bool deferred_init_pending;	/* True when FEATURES_OK was skipped, init needed after cleanup */
 	struct vnet_fatal_state fatal_error;	/* Worker-reported error published by PE1 and latched until reset */
 	atomic_uint reset_status_state;		/* enum vnet_reset_status_state */
+
+	/* Drives the FLR / BME / PERST recovery sequence for this PF: all three
+	 * invalidate the crossed mkey and suspend MSI-X, so the engine and TLP
+	 * device must be cycled, not just the virtio shadow. See vnet_recycle.h. */
+	struct vnet_recycle_state recycle;
+
+	/* Set when any VF of this PF starts a recycle, cleared by the sweep once
+	 * none is left. Purely a gate: taking the endpoint lock to walk the slot
+	 * array on every progress-loop pass would cost more than it saves. */
+	atomic_bool vf_recycle_active;
+	/* A PF reset cleared VF Enable but the hide could not be queued. The host
+	 * has been told there are no VFs, so it must not keep seeing them. */
+	atomic_bool vf_hide_pending;
 
 	/* Config change MSI-X handle for raising config-change interrupts towards the host.
 	 * Created on-demand when first config change needs it (e.g., speed change).
@@ -323,8 +339,8 @@ doca_error_t vnet_pci_dev_vf_engine_destroy(struct vnet_vf_slot *slot);
  * @brief LU-safe VF datapath quiesce without destroying the offload engine object.
  *
  * Mirrors PF vnet_controller_cleanup(..., false): disable/stop datapath
- * resources before handover while keeping the stopped OE handle for final
- * active-side cleanup.
+ * resources before handover while retaining the stopped OE and TLP responder
+ * until the active TLP channel has yielded ownership.
  *
  * @param[in,out] slot VF slot to quiesce.
  * @return DOCA_SUCCESS or an SDK error.
@@ -376,6 +392,8 @@ doca_error_t vnet_pci_dev_vf_set_conf_data_vq(struct vnet_vf_slot *slot,
  * @return DOCA_SUCCESS or the first SDK error encountered.
  */
 doca_error_t vnet_pci_dev_vf_vqs_destroy(struct vnet_vf_slot *slot);
+void vnet_pci_dev_vf_disable_vqs(struct vnet_vf_slot *slot);
+doca_error_t vnet_pci_dev_vf_stop_vqs_checked(struct vnet_vf_slot *slot);
 
 /**
  * @brief Configure and start active VF VQs without enabling the VF engine.
@@ -455,10 +473,12 @@ struct vnet_pci_dev_config {
 	uint64_t opt_features;			       /* Optional Virtio feature bits (filtered at init) */
 
 	/* SR-IOV (up to 255 VFs per PF via ARI). sriov_enabled is derived from
-	 * --total-vfs > 0; per-VF MSI-X/doorbells are derived from the queue
-	 * count, not configured. */
+	 * --total-vfs > 0; a VF inherits the PF queue geometry unless
+	 * --vf-queue-pairs gives it a queue count of its own. */
 	bool sriov_enabled;	  /* derived: sriov_total_vfs > 0 */
 	uint16_t sriov_total_vfs; /* --total-vfs: TotalVFs (0 = off; 1..64 enables, per VNET_SRIOV_MAX_VFS_PER_PF) */
+	uint16_t vf_qp_list[VNET_VF_QP_LIST_MAX]; /* --vf-queue-pairs: queue pairs per VF slot */
+	uint8_t vf_qp_list_len;			  /* entries in use (0 = VFs inherit the PF geometry) */
 };
 
 /* SR-IOV limits and defaults. With ARI advertised the PF places VFs as ARI
@@ -474,25 +494,22 @@ struct vnet_pci_dev_config {
  * ceiling so the device-wide VF datapath footprint fits the firmware
  * VQ/MSI-X/doorbell pool; see VNET_SRIOV_MAX_TOTAL_VF_VQS. */
 #define VNET_SRIOV_MAX_VFS_PER_PF 64
+/* What one VF needs for a given queue count: a doorbell per virtqueue, and a
+ * vector per virtqueue plus one for config changes. */
 #define VNET_SRIOV_VF_NUM_MSIX(max_qp) (VNET_TOTAL_VQS(max_qp) + 1)
-#define VNET_SRIOV_VF_NUM_DB(max_qp) (VNET_TOTAL_VQS(max_qp) + 1)
-/* Device-wide VF datapath VQ budget = the supported reference envelope
- * 4 PF x 64 VF x 8 QP (= 4 * 64 * VNET_TOTAL_VQS(8) VQs), a conservative
- * fraction of the firmware emulated-VQ pool for ample headroom. validate_caps()
- * rejects any num_ep/total_vfs/qp whose footprint
- * (num_ep * total_vfs * VNET_TOTAL_VQS(max_qp)) exceeds it. Device-wide ceiling,
- * not per-function: lighter geometries may trade PFs for QPs within the same
- * budget (e.g. 2 PF x 64 VF x 16 QP also fits). */
-#define VNET_SRIOV_REF_MAX_PF 4
-#define VNET_SRIOV_REF_MAX_QP 8
+#define VNET_SRIOV_VF_NUM_DB(max_qp) VNET_TOTAL_VQS(max_qp)
+/* Device-wide VF VQ budget = reference envelope 16 PF x 64 VF x 2 QP (5120 VQs).
+ * validate_caps() rejects any num_ep/total_vfs/qp whose VQ footprint exceeds it,
+ * so fewer VFs may spend the same budget on more queue pairs. */
+#define VNET_SRIOV_REF_MAX_PF 16
+#define VNET_SRIOV_REF_MAX_QP 2
 #define VNET_SRIOV_MAX_TOTAL_VF_VQS \
 	(VNET_SRIOV_REF_MAX_PF * VNET_SRIOV_MAX_VFS_PER_PF * VNET_TOTAL_VQS(VNET_SRIOV_REF_MAX_QP))
 
-/* Device-wide cap on the aggregate VF count (num_ep * total_vfs). The controller
- * backend reserves 256 of its per-function engine slots for VFs (see
- * VNET_CTRL_MAX_NUM_ENGINES), so at most 256 VFs run device-wide -- a limit the
- * VQ budget above misses when many PFs use few QPs. */
-#define VNET_SRIOV_MAX_TOTAL_VFS_ALL_PF 256
+/* Device-wide cap on aggregate VF count (num_ep * total_vfs), catching configs the
+ * VQ budget misses when many PFs use few QPs. Equals VNET_SRIOV_REF_MAX_PF (16) x
+ * VNET_SRIOV_MAX_VFS_PER_PF (64) = 1024. */
+#define VNET_SRIOV_MAX_TOTAL_VFS_ALL_PF 1024
 
 /**
  * @brief Initialize VQs according to library's embedded design
@@ -606,6 +623,84 @@ void vnet_pci_device_vq_config(struct vnet_pci_device *dev, uint16_t vq_index);
 doca_error_t vnet_controller_cleanup(struct vnet_pci_dev_controller *ctrl, bool destroy_engine);
 
 /**
+ * @brief Endpoint a controller drives, or NULL if it has no device attached.
+ *
+ * Takes no locks and reads only the endpoint array, whose slots are allocated at
+ * init, so it is safe from any thread and with other locks held. The endpoint's
+ * own contents still require its endpoint_lock.
+ *
+ * @param[in] ctrl Controller to resolve
+ * @return The endpoint, or NULL if @ctrl has no device or is out of range
+ */
+struct pci_device_config *vnet_controller_endpoint(struct vnet_pci_dev_controller *ctrl);
+
+/**
+ * @brief Describe a PF to the unified recycle machinery.
+ *
+ * Fills @ops with the callbacks that suspend, cycle and rebuild this PF. The
+ * result borrows from @tlp_ctx and stays valid as long as the endpoint does.
+ *
+ * @param[in] tlp_ctx TLP context owning the endpoint
+ * @param[in] pf_index Endpoint index
+ * @param[out] ops Description to fill
+ * @return DOCA_SUCCESS, or DOCA_ERROR_INVALID_VALUE if @pf_index is out of range
+ */
+doca_error_t vnet_recycle_ops_for_pf(struct tlp_context *tlp_ctx, uint32_t pf_index, struct vnet_recycle_ops *ops);
+
+/**
+ * @brief Describe an SR-IOV VF to the unified recycle machinery.
+ *
+ * A VF differs from a PF in three ways, all expressed here: its offload engine is
+ * built by the guest's FEATURES_OK rather than at create, so there is nothing to
+ * rebuild; its TLP device is the slot's; and it has no SR-IOV capability to reset.
+ *
+ * @note The caller must hold @pf_endpoint's endpoint_lock for the lifetime of
+ *       @ops: the VF slot array it points into is freed on SR-IOV disable.
+ *
+ * @param[in] pf_endpoint Endpoint of the PF owning the VF
+ * @param[in] slot_idx PF-relative VF slot index
+ * @param[out] ops Description to fill
+ * @return DOCA_SUCCESS, or DOCA_ERROR_NOT_FOUND if the slot no longer exists
+ */
+doca_error_t vnet_recycle_ops_for_vf(struct pci_device_config *pf_endpoint,
+				     uint16_t slot_idx,
+				     struct vnet_recycle_ops *ops);
+
+/**
+ * @brief Drive every in-flight recycle forward by one progress-loop pass.
+ *
+ * Runs on the TLP thread and does two jobs: it is the only place worker steps are
+ * queued, and it publishes the host-visible outcome of finished steps - lifting
+ * reset holds, reporting failures - without waiting for the host's next access.
+ *
+ * @param[in] tlp_ctx TLP context to sweep
+ */
+void vnet_pci_dev_process_recycles(struct tlp_context *tlp_ctx);
+
+/**
+ * @brief Recycle every plugged endpoint after a host reset.
+ *
+ * Used by the PERST handler. Empty hotplug slots are skipped.
+ *
+ * @param[in] tlp_ctx TLP context to sweep
+ * @param[in] reason Why the functions are being recycled
+ */
+void vnet_pci_dev_recycle_all_endpoints(struct tlp_context *tlp_ctx, enum vnet_recycle_reason reason);
+
+/**
+ * @brief Mark every function's link as down or back up. Used by the PERST
+ *        handler, on the TLP thread.
+ *
+ * Applied to VFs as well as PFs: PERST takes the whole link with it, and a VF
+ * left thinking its link was up would spend its retry budget trying to restart
+ * an endpoint underneath a link reset.
+ *
+ * @param[in] tlp_ctx TLP context to sweep
+ * @param[in] down True on PERST assert, false on deassert
+ */
+void vnet_pci_dev_set_link_down(struct tlp_context *tlp_ctx, bool down);
+
+/**
  * @brief Initialize IO context for CVQ command handling
  *
  * Called during FEATURES_OK phase after VQs are initialized.
@@ -645,11 +740,10 @@ doca_error_t vnet_pci_dev_run(struct vnet_pci_dev_config *config, volatile bool 
 doca_error_t vnet_pci_dev_destroy_device(struct tlp_context *tlp_ctx, struct pci_device_config *endpoint);
 
 /**
- * @brief Dump backing-SF representor info (vhca_id/ifindex/sf_index) for one PF and its VFs
+ * @brief Dump the netdev name/ifindex and MSI-X/doorbell sizing for one PF and its VFs
  *
- * Serves the interactive 'sfinfo' command. Resolves each engine's SF representor
- * on demand; must run on the config worker (not the PE thread) since it performs
- * blocking control-plane queries.
+ * Serves the 'sfinfo' command; a debug log level adds the vhca_id and sf_index.
+ * Must run on the config worker, not the PE thread.
  *
  * @param[in] tlp_ctx TLP context
  * @param[in] ep_index PF/endpoint index (0 .. num_ep-1)

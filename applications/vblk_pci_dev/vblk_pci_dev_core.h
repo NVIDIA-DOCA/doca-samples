@@ -68,23 +68,24 @@ struct vblk_pci_dev_pe_context {
 
 struct vblk_mpool_set;
 
+enum vblk_io_ctx_phase {
+	VBLK_IO_CTX_IDLE,
+	VBLK_IO_CTX_CREATE,
+	VBLK_IO_CTX_SHUTDOWN,
+};
+
 /*
  * Per-EP hotplug state for cross-thread coordination.
  * TLP thread sets plug/unplug_requested.
  * OE thread detects and executes ctrl lifecycle.
- * IO threads detect need_io_ctx and create IO ctx on their own thread.
+ * IO threads execute io_ctx_phase on their own thread.
  */
 struct vblk_ep_hotplug_state {
 	_Atomic bool plug_requested;
 	_Atomic bool unplug_requested;
 	_Atomic bool unplug_queued;
-	_Atomic bool need_io_ctx;
-	_Atomic bool need_io_ctx_shutdown;
-	_Atomic uint8_t io_ctx_ready;
-	_Atomic uint8_t io_ctx_shutdown_done;
-	_Atomic uint8_t io_ctx_flr_destroyed;  /* IO: count of io_ctxs destroyed during FLR teardown */
-	_Atomic bool need_post_flr_oe_restart; /* OE: restart OE (disable->stop->start) after FLR teardown */
-	_Atomic bool need_post_flr_reenable;   /* OE: post-FLR re-enable deferred until io_ctxs rebind */
+	_Atomic uint8_t io_ctx_phase;
+	_Atomic uint16_t io_ctx_shutdown_ack_mask;
 	_Atomic bool enabled;
 	_Atomic bool plug_msi_pending;	 /* Plug MSI send failed, retry on next OE cycle */
 	_Atomic bool unplug_msi_pending; /* Unplug MSI send failed, retry on next OE cycle */

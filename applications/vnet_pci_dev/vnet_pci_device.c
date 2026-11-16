@@ -55,6 +55,8 @@
 #include <doca_devemu_virtio_tlp.h>
 #include <doca_bitfield.h>
 
+#include "vnet_admin_dev_parts.h"
+#include "vnet_admin_vf.h"
 #include "vnet_pci_device.h"
 #include "vnet_pci_dev_core.h"
 #include "pci_spec_tlp.h"
@@ -68,7 +70,9 @@ DOCA_LOG_REGISTER(VNET_PCI_DEVICE);
  ************************************************************************/
 
 #define VNET_TLP_REQ_USER_DATA_SIZE 128 /* Per-request opaque storage for TLP handler callbacks */
-#define PCI_CFG_WORK_POOL_SIZE 1024	/* Pre-allocated work items - avoids malloc in hot path */
+#define PCI_CFG_WORK_POOL_SIZE \
+	4096 /* Pre-allocated work items - avoids malloc in hot path. Sized for a \
+	      * full fan-out of VNET_SRIOV_MAX_TOTAL_VFS_ALL_PF VFs, several items each. */
 #define RESET_WORKER_WAIT_USEC \
 	20000 /* Bound reset callback wait for same-device worker to 20ms. \
 	       * Must stay below the host PCIe Completion Timeout (~50ms). */
@@ -80,6 +84,8 @@ DOCA_LOG_REGISTER(VNET_PCI_DEVICE);
 	   * Keep low to balance throughput vs. stability. */
 
 static struct pcie_virtio_dev vnet_pci_device_create_virtio_template(void);
+static void pci_cfg_worker_run_recycle_step(struct vnet_pci_dev_controller *controller);
+static void pci_cfg_worker_run_vf_recycle_step(struct pci_device_config *pf, uint16_t slot_idx);
 
 /* Work item types */
 enum pci_cfg_work_type {
@@ -100,8 +106,10 @@ enum pci_cfg_work_type {
 	PCI_CFG_WORK_VF_VQ_CONFIG,
 	PCI_CFG_WORK_VF_ENGINE_ENABLE,
 	PCI_CFG_WORK_VF_DATAPATH_RESET,
-	PCI_CFG_WORK_VF_FLR_RESET,
 	PCI_CFG_WORK_DUMP_SF_INFO,
+	PCI_CFG_WORK_RECYCLE_STEP,
+	PCI_CFG_WORK_VF_RECYCLE_STEP,
+	PCI_CFG_WORK_ADMIN_CMD,
 };
 
 /* Work item for PCI config operations */
@@ -152,7 +160,6 @@ struct pci_cfg_work_item {
 			uint32_t new_speed;
 		} speed_change;
 		struct {
-			struct tlp_context *tlp_ctx;
 			struct pci_device_config *pf_endpoint;
 		} vfe_fan_out; /* shared by VFE_FAN_OUT_START and _STOP */
 		struct {
@@ -175,13 +182,19 @@ struct pci_cfg_work_item {
 			uint16_t slot_idx;
 		} vf_datapath_reset;
 		struct {
-			struct pci_device_config *pf_endpoint;
-			uint16_t slot_idx;
-		} vf_flr_reset;
-		struct {
 			struct tlp_context *tlp_ctx;
 			uint32_t ep_index;
 		} dump_sf_info;
+		struct {
+			struct vnet_pci_dev_controller *controller;
+		} recycle_step;
+		struct {
+			struct pci_device_config *pf_endpoint;
+			uint16_t slot_idx;
+		} vf_recycle_step;
+		struct {
+			struct vnet_admin_async_cmd *cmd;
+		} admin_cmd;
 	} data;
 	struct pci_cfg_work_item *next;
 	uint32_t reset_generation;
@@ -191,8 +204,12 @@ struct pci_cfg_work_item {
 /* Pre-allocated work item pool */
 struct pci_cfg_work_pool {
 	struct pci_cfg_work_item items[PCI_CFG_WORK_POOL_SIZE];
+	/* Free slots, linked through their otherwise unused next pointer, so
+	 * allocation cost stays flat as the pool grows. */
+	struct pci_cfg_work_item *free_list;
 	pthread_spinlock_t lock;
 	uint32_t free_count;
+	uint32_t min_free_count; /* Low-water mark, for sizing the pool */
 };
 
 struct mq_start_thread_node {
@@ -568,20 +585,28 @@ static void vnet_pci_device_mmio_write32(struct vnet_pci_device *dev,
 					 const uint32_t wr_mask);
 static void vnet_pci_device_reset(struct vnet_pci_device *dev);
 static void vnet_pci_device_handle_flr(struct vnet_pci_device *dev);
+static void vnet_pci_device_handle_bme(struct vnet_pci_device *dev, bool bme_set);
 static void sriov_vf_apply_vq_config(struct vnet_vf_slot *slot, uint16_t vq_index);
-static void vnet_pci_device_handle_vf_flr(struct pci_device_config *pf_endpoint, uint16_t slot_idx);
+static void vnet_pci_device_handle_vf_flr(struct tlp_context *tlp_ctx,
+					  struct pci_device_config *pf_endpoint,
+					  uint16_t slot_idx);
+static void vnet_pci_device_handle_vf_bme(struct tlp_context *tlp_ctx,
+					  struct pci_device_config *pf_endpoint,
+					  uint16_t slot_idx,
+					  bool bme_set);
 
 /************************************************************************
  ******              Workqueue Implementation Functions            ******
  ************************************************************************/
 
 /*
- * Allocate work item from pre-allocated pool (lock-free fast path)
+ * Allocate work item from pre-allocated pool
  */
 static struct pci_cfg_work_item *work_pool_alloc(void)
 {
-	uint32_t i;
+	struct pci_cfg_work_item *work;
 	uint32_t free_before;
+	uint32_t slot;
 
 	if (pci_cfg_wq == NULL) {
 		DOCA_LOG_ERR("work_pool_alloc: workqueue not initialized!");
@@ -591,8 +616,9 @@ static struct pci_cfg_work_item *work_pool_alloc(void)
 	DOCA_LOG_DBG("work_pool_alloc: acquiring spinlock...");
 	pthread_spin_lock(&pci_cfg_wq->pool.lock);
 	free_before = pci_cfg_wq->pool.free_count;
+	work = pci_cfg_wq->pool.free_list;
 
-	if (pci_cfg_wq->pool.free_count == 0) {
+	if (work == NULL) {
 		pthread_spin_unlock(&pci_cfg_wq->pool.lock);
 		DOCA_LOG_WARN("Work pool exhausted (size=%d, pending=%u) - work item dropped",
 			      PCI_CFG_WORK_POOL_SIZE,
@@ -600,24 +626,18 @@ static struct pci_cfg_work_item *work_pool_alloc(void)
 		return NULL;
 	}
 
-	/* Find first free slot */
-	for (i = 0; i < PCI_CFG_WORK_POOL_SIZE; i++) {
-		if (!pci_cfg_wq->pool.items[i].in_use) {
-			memset(&pci_cfg_wq->pool.items[i], 0, sizeof(pci_cfg_wq->pool.items[i]));
-			pci_cfg_wq->pool.items[i].in_use = true;
-			pci_cfg_wq->pool.free_count--;
-			DOCA_LOG_DBG("work_pool_alloc: allocated slot %u (free: %u -> %u)",
-				     i,
-				     free_before,
-				     pci_cfg_wq->pool.free_count);
-			pthread_spin_unlock(&pci_cfg_wq->pool.lock);
-			return &pci_cfg_wq->pool.items[i];
-		}
-	}
-
+	/* Unlink before clearing, which overwrites the link. */
+	pci_cfg_wq->pool.free_list = work->next;
+	memset(work, 0, sizeof(*work));
+	work->in_use = true;
+	pci_cfg_wq->pool.free_count--;
+	if (pci_cfg_wq->pool.free_count < pci_cfg_wq->pool.min_free_count)
+		pci_cfg_wq->pool.min_free_count = pci_cfg_wq->pool.free_count;
+	slot = (uint32_t)(work - pci_cfg_wq->pool.items);
 	pthread_spin_unlock(&pci_cfg_wq->pool.lock);
-	DOCA_LOG_ERR("Work pool inconsistency - free_count=%u but no free slot found", free_before);
-	return NULL;
+
+	DOCA_LOG_DBG("work_pool_alloc: allocated slot %u (free: %u -> %u)", slot, free_before, free_before - 1);
+	return work;
 }
 
 /*
@@ -635,7 +655,16 @@ static void work_pool_free(struct pci_cfg_work_item *work)
 	}
 
 	pthread_spin_lock(&pci_cfg_wq->pool.lock);
+	/* Freeing twice would hand the same slot to two allocations. */
+	if (!work->in_use) {
+		pthread_spin_unlock(&pci_cfg_wq->pool.lock);
+		DOCA_LOG_ERR("Work item slot %u already free - double free ignored",
+			     (uint32_t)(work - pci_cfg_wq->pool.items));
+		return;
+	}
 	work->in_use = false;
+	work->next = pci_cfg_wq->pool.free_list;
+	pci_cfg_wq->pool.free_list = work;
 	pci_cfg_wq->pool.free_count++;
 	pthread_spin_unlock(&pci_cfg_wq->pool.lock);
 }
@@ -766,34 +795,41 @@ static doca_error_t vnet_pci_dev_start_offload_engine(struct vnet_pci_dev_contro
 }
 
 /*
- * Apply a host VFE transition across all VF slots of a PF. Shared by the
- * VFE_FAN_OUT_START and _STOP worker cases (start selects direction):
- *   start=true  : VFE 0->1 - create + start a tlp_dev for every discovered slot.
- *   start=false : VFE 1->0 - stop + destroy each slot's tlp_dev (the rep stays
- *                 open so the next 0->1 can reattach).
+ * Apply a host VFE transition across the VF slots of a PF: start=true (0->1)
+ * shows the slots the host asked for, start=false (1->0) hides them all and
+ * drops their datapath. Slot devices are built at PF bring-up and outlive both,
+ * unless a PF restart marked them for a restart on 0->1.
  *
- * Object lifetime only: the cfg-space reset that pairs with the 1->0 case has to
- * be ordered against the host's re-probe, so it runs on the TLP thread instead -
- * see vnet_pci_device_reset_vf_shadows().
- *
- * Heavy SDK work runs here on the worker so the TLP decoder returns to PE
- * progress immediately. endpoint_lock pairs with the writer in
- * vnet_pci_dev_destroy_device() that nulls endpoint->sriov before freeing it.
+ * The cfg-space reset pairing with 1->0 has to beat the host's re-probe, so it
+ * runs on the TLP thread instead - see vnet_pci_device_reset_vf_shadows().
+ * endpoint_lock pairs with the writer that nulls endpoint->sriov before freeing.
  */
-static void vnet_pci_device_vfe_fan_out(struct tlp_context *ctx, struct pci_device_config *pf, bool start)
+static void vnet_pci_device_vfe_fan_out(struct pci_device_config *pf, bool start)
 {
-	uint16_t total = 0, ok = 0, failed = 0;
+	uint16_t count = 0, ok = 0, failed = 0, not_restarted = 0;
 
 	pthread_rwlock_rdlock(&pf->endpoint_lock);
 	if (pf->sriov != NULL && pf->sriov->vf_slots != NULL) {
 		uint16_t i;
 
-		total = pf->sriov->total_vf;
-		for (i = 0; i < total; i++) {
+		/* Enable shows only the NumVFs the host requested; disable sweeps all
+		 * total_vf slots so a slot left visible by an earlier, larger NumVFs is
+		 * still hidden (hiding an already-hidden slot is a no-op). */
+		count = start ? pf->sriov->num_vfs_shadow : pf->sriov->total_vf;
+		if (count > pf->sriov->total_vf)
+			count = pf->sriov->total_vf;
+		for (i = 0; i < count; i++) {
 			struct vnet_vf_slot *vf_slot = &pf->sriov->vf_slots[i];
 			doca_error_t res;
 
-			res = start ? vnet_sriov_start_vf_slot(ctx, vf_slot) : vnet_sriov_stop_vf_slot(vf_slot);
+			if (start) {
+				/* Expose even on a failed restart; a hidden slot stalls host enumeration */
+				if (vnet_sriov_refresh_vf_slot(vf_slot) != DOCA_SUCCESS)
+					not_restarted++;
+				res = vnet_sriov_expose_vf_slot(vf_slot);
+			} else {
+				res = vnet_sriov_unexpose_vf_slot(vf_slot);
+			}
 			if (res != DOCA_SUCCESS) {
 				failed++;
 				continue;
@@ -803,10 +839,14 @@ static void vnet_pci_device_vfe_fan_out(struct tlp_context *ctx, struct pci_devi
 	}
 	pthread_rwlock_unlock(&pf->endpoint_lock);
 
-	if (start)
-		DOCA_LOG_INFO("SR-IOV VFE 0->1 fan-out: %u/%u slots started (%u failed)", ok, total, failed);
-	else
-		DOCA_LOG_INFO("SR-IOV VFE 1->0 teardown: %u/%u slots stopped (%u failed)", ok, total, failed);
+	if (start) {
+		DOCA_LOG_INFO("SR-IOV VFE 0->1 fan-out: %u/%u slots exposed (%u unavailable)", ok, count, failed);
+		if (not_restarted != 0)
+			DOCA_LOG_WARN("SR-IOV VFE 0->1 fan-out: %u slot(s) exposed without their tlp_dev restart",
+				      not_restarted);
+	} else {
+		DOCA_LOG_INFO("SR-IOV VFE 1->0 teardown: %u/%u slots hidden (%u failed)", ok, count, failed);
+	}
 }
 
 /* PF a queued item acts on, or NULL when the item is not tied to a single PF. */
@@ -824,8 +864,13 @@ static struct pci_device_config *pci_cfg_work_owner_pf(const struct pci_cfg_work
 		return work->data.vf_engine_enable.pf_endpoint;
 	case PCI_CFG_WORK_VF_DATAPATH_RESET:
 		return work->data.vf_datapath_reset.pf_endpoint;
-	case PCI_CFG_WORK_VF_FLR_RESET:
-		return work->data.vf_flr_reset.pf_endpoint;
+	case PCI_CFG_WORK_VF_RECYCLE_STEP:
+		return work->data.vf_recycle_step.pf_endpoint;
+	case PCI_CFG_WORK_RECYCLE_STEP:
+		/* A PF recycle is attributed rather than left to the default: it is
+		 * the item most likely to be queued when a bring-up arrives, and it
+		 * must hold that bring-up, since it restarts the VFs' parent device. */
+		return vnet_controller_endpoint(work->data.recycle_step.controller);
 	default:
 		return NULL;
 	}
@@ -1008,6 +1053,8 @@ static void *pci_cfg_worker_thread(void *arg)
 			}
 			if (wq->shutdown) {
 				pthread_mutex_unlock(&wq->mutex);
+				if (work->type == PCI_CFG_WORK_ADMIN_CMD)
+					vnet_admin_queue_async_cancel(work->data.admin_cmd.cmd);
 				work_pool_free(work);
 				continue;
 			}
@@ -1031,9 +1078,15 @@ static void *pci_cfg_worker_thread(void *arg)
 				wq->vq_config_count++;
 				break;
 
+			case PCI_CFG_WORK_RECYCLE_STEP:
+				pci_cfg_worker_run_recycle_step(work->data.recycle_step.controller);
+				pthread_mutex_lock(&wq->mutex);
+				break;
 			case PCI_CFG_WORK_CONTROLLER_CLEANUP:
 				DOCA_LOG_INFO("Executing controller cleanup (destroy_engine=%d)",
 					      work->data.controller_cleanup.destroy_engine);
+				/* Admission stop and mutation submit share state_lock, so retained
+				 * admin commands are FIFO-before cleanup and quiesce cannot self-deadlock. */
 				result = vnet_controller_cleanup(work->data.controller_cleanup.controller,
 								 work->data.controller_cleanup.destroy_engine);
 				if (result != DOCA_SUCCESS)
@@ -1303,19 +1356,17 @@ stats_list_done:
 				break;
 
 			case PCI_CFG_WORK_DUMP_SF_INFO:
-				/* On-demand 'sfinfo' dump: resolves SF representors (blocking
-				 * control-plane calls), so it runs here, off the PE thread. */
+				/* 'sfinfo' may block, so it runs here instead of on the PE thread. */
 				vnet_dump_sf_info(work->data.dump_sf_info.tlp_ctx, work->data.dump_sf_info.ep_index);
 				pthread_mutex_lock(&wq->mutex);
 				break;
 
 			case PCI_CFG_WORK_VFE_FAN_OUT_START:
 			case PCI_CFG_WORK_VFE_FAN_OUT_STOP:
-				/* Host VFE toggle: 0->1 brings up a tlp_dev for every discovered
-				 * VF slot, 1->0 stops + destroys them; direction comes from the
-				 * work type. See vnet_pci_device_vfe_fan_out(). */
-				vnet_pci_device_vfe_fan_out(work->data.vfe_fan_out.tlp_ctx,
-							    work->data.vfe_fan_out.pf_endpoint,
+				/* Host VFE toggle: 0->1 exposes the slots the host asked for,
+				 * 1->0 hides them all; direction comes from the work type.
+				 * See vnet_pci_device_vfe_fan_out(). */
+				vnet_pci_device_vfe_fan_out(work->data.vfe_fan_out.pf_endpoint,
 							    work->type == PCI_CFG_WORK_VFE_FAN_OUT_START);
 				pthread_mutex_lock(&wq->mutex);
 				break;
@@ -1349,6 +1400,7 @@ stats_list_done:
 					    slot_idx < pf->sriov->total_vf)
 						slot = &pf->sriov->vf_slots[slot_idx];
 					if (slot == NULL || !atomic_load(&slot->active) ||
+					    atomic_load(&slot->admin_stop_requested) ||
 					    atomic_load(&slot->engine_started))
 						goto vf_engine_setup_unlock;
 
@@ -1449,7 +1501,8 @@ vf_engine_setup_unlock:
 					if (pf->sriov != NULL && pf->sriov->vf_slots != NULL &&
 					    slot_idx < pf->sriov->total_vf)
 						slot = &pf->sriov->vf_slots[slot_idx];
-					if (slot != NULL && atomic_load(&slot->active))
+					if (slot != NULL && atomic_load(&slot->active) &&
+					    !atomic_load(&slot->admin_stop_requested))
 						sriov_vf_apply_vq_config(slot, vq_index);
 					pthread_rwlock_unlock(&pf->endpoint_lock);
 				}
@@ -1472,7 +1525,8 @@ vf_engine_setup_unlock:
 					if (pf->sriov != NULL && pf->sriov->vf_slots != NULL &&
 					    slot_idx < pf->sriov->total_vf)
 						slot = &pf->sriov->vf_slots[slot_idx];
-					if (slot != NULL && atomic_load(&slot->active))
+					if (slot != NULL && atomic_load(&slot->active) &&
+					    !atomic_load(&slot->admin_stop_requested))
 						(void)vnet_pci_dev_vf_start_and_enable(slot);
 					pthread_rwlock_unlock(&pf->endpoint_lock);
 				}
@@ -1486,62 +1540,45 @@ vf_engine_setup_unlock:
 				 * is not accompanied by a VFE change. The shadow has already
 				 * been reset inline on the TLP thread; this only does the
 				 * heavy engine teardown so the next FEATURES_OK rebuilds a
-				 * fresh engine. FIFO ordering guarantees this runs before the
-				 * re-probe's engine-setup item.
+				 * fresh engine. The host stays held until this has run.
 				 */
 				{
 					struct pci_device_config *pf = work->data.vf_datapath_reset.pf_endpoint;
 					uint16_t slot_idx = work->data.vf_datapath_reset.slot_idx;
 					struct vnet_vf_slot *slot = NULL;
+					doca_error_t destroy_result = DOCA_SUCCESS;
+					unsigned int expected = VNET_VF_TEARDOWN_QUEUED;
 
 					pthread_rwlock_rdlock(&pf->endpoint_lock);
 					if (pf->sriov != NULL && pf->sriov->vf_slots != NULL &&
 					    slot_idx < pf->sriov->total_vf)
 						slot = &pf->sriov->vf_slots[slot_idx];
 					if (slot != NULL && atomic_load(&slot->active))
-						(void)vnet_pci_dev_vf_engine_destroy(slot);
+						destroy_result = vnet_pci_dev_vf_engine_destroy(slot);
+					/* A slot that went away counts as done; one whose engine
+					 * survived does not, and the sweep reports it. Committed
+					 * against QUEUED so a slot freed under this step stays idle. */
+					if (slot != NULL)
+						atomic_compare_exchange_strong(&slot->teardown_state,
+									       &expected,
+									       destroy_result == DOCA_SUCCESS ?
+										       VNET_VF_TEARDOWN_IDLE :
+										       VNET_VF_TEARDOWN_FAILED);
 					pthread_rwlock_unlock(&pf->endpoint_lock);
 				}
 				pthread_mutex_lock(&wq->mutex);
 				break;
 
-			case PCI_CFG_WORK_VF_FLR_RESET:
-				/*
-				 * Datapath only. The host may use the function again 100 ms
-				 * after its FLR write, sooner than this item is guaranteed to
-				 * run, so the VF has to keep answering while it is pending.
-				 */
-				{
-					struct pci_device_config *pf = work->data.vf_flr_reset.pf_endpoint;
-					uint16_t slot_idx = work->data.vf_flr_reset.slot_idx;
-					struct vnet_vf_slot *slot = NULL;
+			case PCI_CFG_WORK_VF_RECYCLE_STEP:
+				pci_cfg_worker_run_vf_recycle_step(work->data.vf_recycle_step.pf_endpoint,
+								   work->data.vf_recycle_step.slot_idx);
+				pthread_mutex_lock(&wq->mutex);
+				break;
 
-					pthread_rwlock_rdlock(&pf->endpoint_lock);
-					if (pf->sriov != NULL && pf->sriov->vf_slots != NULL &&
-					    slot_idx < pf->sriov->total_vf)
-						slot = &pf->sriov->vf_slots[slot_idx];
-					if (slot != NULL) {
-						doca_error_t r = DOCA_SUCCESS;
-
-						if (atomic_load(&slot->active))
-							r = vnet_pci_dev_vf_engine_destroy(slot);
-						if (r != DOCA_SUCCESS)
-							DOCA_LOG_WARN(
-								"SR-IOV: VF[slot=%u, vf_index=%u] FLR datapath reset failed: %s",
-								slot_idx,
-								slot->vf_index,
-								doca_error_get_descr(r));
-						else
-							DOCA_LOG_INFO(
-								"SR-IOV: VF[slot=%u, vf_index=%u] FLR datapath reset complete",
-								slot_idx,
-								slot->vf_index);
-						/* Always clear the in-flight guard so the next host FLR
-						 * write isn't coalesced indefinitely on error. */
-						atomic_store(&slot->flr_in_progress, false);
-					}
-					pthread_rwlock_unlock(&pf->endpoint_lock);
-				}
+			case PCI_CFG_WORK_ADMIN_CMD:
+				result = vnet_admin_queue_async_execute(work->data.admin_cmd.cmd);
+				if (result != DOCA_SUCCESS)
+					vnet_admin_queue_async_cancel(work->data.admin_cmd.cmd);
 				pthread_mutex_lock(&wq->mutex);
 				break;
 
@@ -1688,9 +1725,15 @@ static doca_error_t pci_cfg_workqueue_init(void)
 		return DOCA_ERROR_INITIALIZATION;
 	}
 
-	for (i = 0; i < PCI_CFG_WORK_POOL_SIZE; i++)
-		pci_cfg_wq->pool.items[i].in_use = false;
+	/* Built back to front so allocation starts at the front of the array. */
+	pci_cfg_wq->pool.free_list = NULL;
+	for (i = PCI_CFG_WORK_POOL_SIZE; i > 0; i--) {
+		pci_cfg_wq->pool.items[i - 1].in_use = false;
+		pci_cfg_wq->pool.items[i - 1].next = pci_cfg_wq->pool.free_list;
+		pci_cfg_wq->pool.free_list = &pci_cfg_wq->pool.items[i - 1];
+	}
 	pci_cfg_wq->pool.free_count = PCI_CFG_WORK_POOL_SIZE;
+	pci_cfg_wq->pool.min_free_count = PCI_CFG_WORK_POOL_SIZE;
 
 	/* Initialize MQ start concurrency limiter semaphore.
 	 * Each start_additional_queue_pairs for 127 QPs is very memory-intensive.
@@ -1882,6 +1925,8 @@ static void pci_cfg_workqueue_destroy(void)
 	while (work != NULL) {
 		next = work->next;
 		DOCA_LOG_WARN("Dropping unprocessed work item (type: %d)", work->type);
+		if (work->type == PCI_CFG_WORK_ADMIN_CMD)
+			vnet_admin_queue_async_cancel(work->data.admin_cmd.cmd);
 		work_pool_free(work);
 		dropped++;
 		work = next;
@@ -1911,13 +1956,10 @@ static void pci_cfg_workqueue_destroy(void)
 	DOCA_LOG_INFO("PCI config workqueue destroyed");
 }
 
-/*
- * Helper function to enqueue work item (fire and forget)
- */
-static void pci_cfg_workqueue_enqueue(struct pci_cfg_work_item *work)
+static bool pci_cfg_workqueue_try_enqueue(struct pci_cfg_work_item *work)
 {
 	if (work == NULL)
-		return;
+		return false;
 
 	DOCA_LOG_DBG("workqueue_enqueue: acquiring mutex for work type %d...", work->type);
 	pthread_mutex_lock(&pci_cfg_wq->mutex);
@@ -1929,7 +1971,7 @@ static void pci_cfg_workqueue_enqueue(struct pci_cfg_work_item *work)
 		DOCA_LOG_DBG("workqueue_enqueue: dropping work due to shutdown");
 		pthread_mutex_unlock(&pci_cfg_wq->mutex);
 		work_pool_free(work);
-		return;
+		return false;
 	}
 
 	/* Enqueue work item */
@@ -1949,6 +1991,15 @@ static void pci_cfg_workqueue_enqueue(struct pci_cfg_work_item *work)
 		     pci_cfg_wq->pool.free_count);
 	pthread_cond_signal(&pci_cfg_wq->cond);
 	pthread_mutex_unlock(&pci_cfg_wq->mutex);
+	return true;
+}
+
+/*
+ * Helper function to enqueue work item (fire and forget)
+ */
+static void pci_cfg_workqueue_enqueue(struct pci_cfg_work_item *work)
+{
+	(void)pci_cfg_workqueue_try_enqueue(work);
 }
 
 void pci_cfg_workqueue_submit_controller_cleanup(struct vnet_pci_dev_controller *controller, bool destroy_engine)
@@ -1958,6 +2009,7 @@ void pci_cfg_workqueue_submit_controller_cleanup(struct vnet_pci_dev_controller 
 
 	if (!vnet_controller_get_valid_reset_generation(controller, "Controller cleanup", &reset_generation))
 		return;
+	vnet_admin_queue_prepare_cleanup(controller);
 
 	work = work_pool_alloc();
 	if (work == NULL)
@@ -1973,6 +2025,107 @@ void pci_cfg_workqueue_submit_controller_cleanup(struct vnet_pci_dev_controller 
 
 	DOCA_LOG_DBG("Controller cleanup queued (destroy_engine=%d)", destroy_engine);
 	pci_cfg_workqueue_enqueue(work);
+}
+
+bool pci_cfg_workqueue_submit_recycle_step(struct vnet_pci_dev_controller *controller)
+{
+	struct pci_cfg_work_item *work;
+
+	if (controller == NULL)
+		return false;
+
+	work = work_pool_alloc();
+	if (work == NULL) {
+		/* Not fatal, and not worth an error: the caller hands the step
+		 * slot back and the next pass of the progress loop, a few
+		 * microseconds later, tries again. */
+		DOCA_LOG_DBG("Recycle step not queued - work pool exhausted; the sweep will retry");
+		return false;
+	}
+
+	work->type = PCI_CFG_WORK_RECYCLE_STEP;
+	work->dev = NULL;
+	work->data.recycle_step.controller = controller;
+	/* Deliberately generation-zero, which the staleness check reads as
+	 * never-stale: a recycle reacts to a reset, so stamping it with that
+	 * generation would have the next reset drop the recovery for it. */
+	work->reset_generation = 0;
+
+	pci_cfg_workqueue_enqueue(work);
+	return true;
+}
+
+/*
+ * Worker-side driver for one function recycle step. Does the work and goes home:
+ * it does not decide whether to come back, and it does not wait out the firmware
+ * settling window on the single worker thread every function shares.
+ */
+static void pci_cfg_worker_run_recycle_step(struct vnet_pci_dev_controller *controller)
+{
+	struct vnet_pci_device *dev;
+	struct vnet_recycle_ops ops;
+	doca_error_t result = DOCA_ERROR_BAD_STATE;
+
+	if (controller == NULL)
+		return;
+
+	dev = controller->tlp_ctx != NULL ? atomic_load(&controller->virtio_device) : NULL;
+	if (dev != NULL && dev->pf_index >= 0 &&
+	    vnet_recycle_ops_for_pf(controller->tlp_ctx, (uint32_t)dev->pf_index, &ops) == DOCA_SUCCESS)
+		result = vnet_recycle_step(&ops);
+
+	vnet_recycle_finish_step(&controller->recycle, result);
+}
+
+bool pci_cfg_workqueue_submit_vf_recycle_step(struct pci_device_config *pf_endpoint, uint16_t slot_idx)
+{
+	struct pci_cfg_work_item *work;
+
+	if (pf_endpoint == NULL)
+		return false;
+
+	work = work_pool_alloc();
+	if (work == NULL) {
+		DOCA_LOG_DBG("SR-IOV: VF[slot=%u] recycle step not queued - work pool exhausted; the sweep "
+			     "will retry",
+			     slot_idx);
+		return false;
+	}
+
+	work->type = PCI_CFG_WORK_VF_RECYCLE_STEP;
+	work->dev = NULL;
+	work->data.vf_recycle_step.pf_endpoint = pf_endpoint;
+	work->data.vf_recycle_step.slot_idx = slot_idx;
+	/* Generation-zero for the same reason as the PF step: the recycle exists
+	 * because the function was reset, so stamping it with that reset's
+	 * generation would have the next reset discard the recovery for it. */
+	work->reset_generation = 0;
+
+	pci_cfg_workqueue_enqueue(work);
+	return true;
+}
+
+/*
+ * Worker-side driver for one VF recycle step. The slot is re-resolved under the
+ * PF's read lock each step, since SR-IOV can be disabled between steps and free
+ * the array; holding it also lets the VF callbacks skip locking of their own.
+ */
+static void pci_cfg_worker_run_vf_recycle_step(struct pci_device_config *pf, uint16_t slot_idx)
+{
+	struct vnet_recycle_ops ops;
+	doca_error_t result;
+
+	if (pf == NULL)
+		return;
+
+	pthread_rwlock_rdlock(&pf->endpoint_lock);
+	/* A slot that no longer resolves went away with the array holding its
+	 * step slot, so there is nothing left to hand back. */
+	if (vnet_recycle_ops_for_vf(pf, slot_idx, &ops) == DOCA_SUCCESS) {
+		result = vnet_recycle_step(&ops);
+		vnet_recycle_finish_step(ops.state, result);
+	}
+	pthread_rwlock_unlock(&pf->endpoint_lock);
 }
 
 void pci_cfg_workqueue_submit_engine_start(struct vnet_pci_dev_controller *controller)
@@ -2095,6 +2248,7 @@ void pci_cfg_workqueue_log_status(void)
 
 	pthread_spin_lock(&pci_cfg_wq->pool.lock);
 	uint32_t pool_free = pci_cfg_wq->pool.free_count;
+	uint32_t pool_min_free = pci_cfg_wq->pool.min_free_count;
 	pthread_spin_unlock(&pci_cfg_wq->pool.lock);
 
 	pthread_mutex_lock(&pci_cfg_wq->mutex);
@@ -2104,13 +2258,15 @@ void pci_cfg_workqueue_log_status(void)
 	bool shutdown = pci_cfg_wq->shutdown;
 	pthread_mutex_unlock(&pci_cfg_wq->mutex);
 
-	DOCA_LOG_INFO("Workqueue status: pool_free=%u/%d, pending=%u, processed=%lu, dropped=%lu, shutdown=%d",
-		      pool_free,
-		      PCI_CFG_WORK_POOL_SIZE,
-		      pending,
-		      total_processed,
-		      dropped,
-		      shutdown);
+	DOCA_LOG_INFO(
+		"Workqueue status: pool_free=%u/%d (min_free=%u), pending=%u, processed=%lu, dropped=%lu, shutdown=%d",
+		pool_free,
+		PCI_CFG_WORK_POOL_SIZE,
+		pool_min_free,
+		pending,
+		total_processed,
+		dropped,
+		shutdown);
 }
 
 void pci_cfg_workqueue_set_worker_pes(struct doca_pe **pes, uint32_t count)
@@ -2275,44 +2431,42 @@ void pci_cfg_workqueue_submit_dump_sf_info(struct tlp_context *tlp_ctx, uint32_t
 
 /* Queue a VFE fan-out work item (start selects direction): true enqueues
  * VFE_FAN_OUT_START (host VFE 0->1), false enqueues VFE_FAN_OUT_STOP (1->0). */
-static void pci_cfg_workqueue_submit_vfe_fan_out(struct tlp_context *tlp_ctx,
-						 struct pci_device_config *pf_endpoint,
-						 bool start)
+static bool pci_cfg_workqueue_submit_vfe_fan_out(struct pci_device_config *pf_endpoint, bool start)
 {
 	struct pci_cfg_work_item *work;
 	const char *what = start ? "0->1 fan-out" : "1->0 teardown";
 
-	if (tlp_ctx == NULL || pf_endpoint == NULL)
-		return;
+	if (pf_endpoint == NULL)
+		return false;
 
 	work = work_pool_alloc();
 	if (work == NULL) {
 		DOCA_LOG_ERR("Failed to alloc work item for SR-IOV VFE %s", what);
-		return;
+		return false;
 	}
 
 	work->type = start ? PCI_CFG_WORK_VFE_FAN_OUT_START : PCI_CFG_WORK_VFE_FAN_OUT_STOP;
 	work->dev = NULL; /* Not associated with a specific vnet_pci_device */
-	work->data.vfe_fan_out.tlp_ctx = tlp_ctx;
 	work->data.vfe_fan_out.pf_endpoint = pf_endpoint;
 
 	DOCA_LOG_DBG("SR-IOV VFE %s queued (async)", what);
 	pci_cfg_workqueue_enqueue(work);
+	return true;
 }
 
-void pci_cfg_workqueue_submit_vf_engine_setup(struct tlp_context *tlp_ctx,
+bool pci_cfg_workqueue_submit_vf_engine_setup(struct tlp_context *tlp_ctx,
 					      struct pci_device_config *pf_endpoint,
 					      uint16_t slot_idx)
 {
 	struct pci_cfg_work_item *work;
 
 	if (tlp_ctx == NULL || pf_endpoint == NULL)
-		return;
+		return false;
 
 	work = work_pool_alloc();
 	if (work == NULL) {
 		DOCA_LOG_ERR("Failed to alloc work item for SR-IOV VF engine setup");
-		return;
+		return false;
 	}
 
 	work->type = PCI_CFG_WORK_VF_ENGINE_SETUP;
@@ -2323,6 +2477,7 @@ void pci_cfg_workqueue_submit_vf_engine_setup(struct tlp_context *tlp_ctx,
 
 	DOCA_LOG_DBG("SR-IOV VF engine setup queued (slot=%u, async)", slot_idx);
 	pci_cfg_workqueue_enqueue(work);
+	return true;
 }
 
 void pci_cfg_workqueue_submit_vf_vq_config(struct tlp_context *tlp_ctx,
@@ -2352,17 +2507,17 @@ void pci_cfg_workqueue_submit_vf_vq_config(struct tlp_context *tlp_ctx,
 	pci_cfg_workqueue_enqueue(work);
 }
 
-void pci_cfg_workqueue_submit_vf_engine_enable(struct pci_device_config *pf_endpoint, uint16_t slot_idx)
+bool pci_cfg_workqueue_submit_vf_engine_enable(struct pci_device_config *pf_endpoint, uint16_t slot_idx)
 {
 	struct pci_cfg_work_item *work;
 
 	if (pf_endpoint == NULL)
-		return;
+		return false;
 
 	work = work_pool_alloc();
 	if (work == NULL) {
 		DOCA_LOG_ERR("Failed to alloc work item for SR-IOV VF engine enable");
-		return;
+		return false;
 	}
 
 	work->type = PCI_CFG_WORK_VF_ENGINE_ENABLE;
@@ -2372,19 +2527,20 @@ void pci_cfg_workqueue_submit_vf_engine_enable(struct pci_device_config *pf_endp
 
 	DOCA_LOG_DBG("SR-IOV VF engine enable queued (slot=%u, async)", slot_idx);
 	pci_cfg_workqueue_enqueue(work);
+	return true;
 }
 
-void pci_cfg_workqueue_submit_vf_datapath_reset(struct pci_device_config *pf_endpoint, uint16_t slot_idx)
+bool pci_cfg_workqueue_submit_vf_datapath_reset(struct pci_device_config *pf_endpoint, uint16_t slot_idx)
 {
 	struct pci_cfg_work_item *work;
 
 	if (pf_endpoint == NULL)
-		return;
+		return false;
 
 	work = work_pool_alloc();
 	if (work == NULL) {
 		DOCA_LOG_ERR("Failed to alloc work item for SR-IOV VF datapath reset");
-		return;
+		return false;
 	}
 
 	work->type = PCI_CFG_WORK_VF_DATAPATH_RESET;
@@ -2394,29 +2550,31 @@ void pci_cfg_workqueue_submit_vf_datapath_reset(struct pci_device_config *pf_end
 
 	DOCA_LOG_DBG("SR-IOV VF datapath reset queued (slot=%u, async)", slot_idx);
 	pci_cfg_workqueue_enqueue(work);
+	return true;
 }
 
-bool pci_cfg_workqueue_submit_vf_flr_reset(struct pci_device_config *pf_endpoint, uint16_t slot_idx)
+bool pci_cfg_workqueue_submit_admin_cmd(struct vnet_admin_async_cmd *cmd)
 {
 	struct pci_cfg_work_item *work;
 
-	if (pf_endpoint == NULL)
+	if (cmd == NULL || pci_cfg_wq == NULL)
 		return false;
-
 	work = work_pool_alloc();
 	if (work == NULL) {
-		DOCA_LOG_ERR("Failed to alloc work item for SR-IOV per-VF FLR reset");
+		DOCA_LOG_ERR("Failed to alloc work item for retained admin command");
 		return false;
 	}
 
-	work->type = PCI_CFG_WORK_VF_FLR_RESET;
-	work->dev = NULL; /* Not associated with a specific vnet_pci_device */
-	work->data.vf_flr_reset.pf_endpoint = pf_endpoint;
-	work->data.vf_flr_reset.slot_idx = slot_idx;
+	work->type = PCI_CFG_WORK_ADMIN_CMD;
+	work->dev = NULL;
+	work->data.admin_cmd.cmd = cmd;
+	work->reset_generation = 0;
+	return pci_cfg_workqueue_try_enqueue(work);
+}
 
-	DOCA_LOG_DBG("SR-IOV per-VF FLR reset queued (slot=%u, async)", slot_idx);
-	pci_cfg_workqueue_enqueue(work);
-	return true;
+bool pci_cfg_workqueue_is_worker_thread(void)
+{
+	return pci_cfg_wq != NULL && pthread_equal(pthread_self(), pci_cfg_wq->worker_thread);
 }
 
 /* Thread argument for joinable MQ resize thread */
@@ -2618,47 +2776,167 @@ static bool vnet_pci_device_data_vq_is_deferred(struct vnet_pci_device *dev, uin
 	       qp_idx >= atomic_load(&controller->num_active_qps);
 }
 
-static bool vnet_pci_device_reset_status_is_pending(struct vnet_pci_device *dev)
+/* DW1 of the standard header: Command in the low half, Status in the high half. */
+#define VNET_PCI_CFG_REG_NUM_CMD_STS 1u
+
+void vnet_pci_device_publish_command(struct vnet_pci_device *dev, struct pci_device_config *ep, uint16_t command)
+{
+	uint32_t cmd_sts;
+
+	if (dev == NULL)
+		return;
+
+	cmd_sts = VIRTIO_DEV_CONFIG_READ(dev, VNET_PCI_CFG_REG_NUM_CMD_STS);
+	cmd_sts = (cmd_sts & 0xFFFF0000u) | command;
+	VIRTIO_DEV_CONFIG_WRITE(dev, VNET_PCI_CFG_REG_NUM_CMD_STS, cmd_sts);
+
+	/* A virtio endpoint answers config reads out of dw_regs[], so the header
+	 * shadow is not what the host sees; it is kept in step anyway because the
+	 * bridge-side helpers read it. */
+	if (ep != NULL)
+		ep->cfg_space_hdr.type0.command = command;
+}
+
+uint16_t vnet_pci_device_command_get(struct vnet_pci_device *dev)
+{
+	if (dev == NULL)
+		return 0;
+
+	return (uint16_t)(VIRTIO_DEV_CONFIG_READ(dev, VNET_PCI_CFG_REG_NUM_CMD_STS) & 0xFFFFu);
+}
+
+bool vnet_pci_device_bus_master_is_set(struct vnet_pci_device *dev)
+{
+	return (vnet_pci_device_command_get(dev) & COMMAND_RW_BUS_MASTER_ENABLE) != 0;
+}
+
+bool vnet_pci_device_publish_power_on_cfg(struct vnet_pci_device *dev, struct pci_device_config *ep)
+{
+	uint32_t msix_ctrl;
+	bool vfe_cleared;
+
+	if (dev == NULL)
+		return false;
+
+	/* Command clears entirely: the host re-enables memory space, bus
+	 * mastering and interrupts as part of re-probing the function. */
+	vnet_pci_device_publish_command(dev, ep, 0);
+
+	/* MSI-X Enable and Function Mask are both zero out of reset. Leaving
+	 * Enable set would have the host believe vectors it has not programmed
+	 * are live. */
+	msix_ctrl = VIRTIO_DEV_CONFIG_READ(dev, VIRTIO_NET_MSI_X_REGISTER_NUM);
+	VIRTIO_DEV_CONFIG_WRITE(dev, VIRTIO_NET_MSI_X_REGISTER_NUM, msix_ctrl & ~0xC0000000u);
+
+	if (ep == NULL || ep->sriov == NULL)
+		return false;
+
+	vfe_cleared = !!(ep->sriov->control_shadow & PCIE_SRIOV_CTRL_VFE);
+
+	/* The SR-IOV capability resets with the rest of the function, across every
+	 * writable bit rather than only the two acted on. Publishing is what lets
+	 * the host notice: it will not re-drive SR-IOV it believes is already up. */
+	ep->sriov->control_shadow &= (uint16_t)~PCIE_SRIOV_CTRL_RW_MASK;
+	ep->sriov->status_shadow = 0;
+	ep->sriov->num_vfs_shadow = 0;
+	ep->sriov->system_pg_size = PCIE_SRIOV_DEFAULT_PAGE_SIZE;
+
+	/* VF BARs are host-writable registers inside the capability, so they reset
+	 * with it. Keeping the host-assigned bases would republish addresses the
+	 * host no longer believes it granted. */
+	memset(ep->sriov->vf_bar, 0, sizeof(ep->sriov->vf_bar));
+	ep->sriov->vf_bar[0] = BAR_ENCODING_MEM_SPACE | BAR_MEM_TYPE_64_BIT | BAR_MEM_PREFETCHABLE;
+
+	vnet_pci_device_sriov_populate_cfg(dev, ep->sriov);
+	return vfe_cleared;
+}
+
+/*
+ * Cut short any long-running worker operation on this function and invalidate the
+ * work already queued against it, so nothing acts on state a reset is about to
+ * change. Must precede any mutation of the shadow that queued work reads.
+ */
+static void vnet_pci_device_cancel_inflight(struct vnet_pci_device *dev)
+{
+	atomic_store(&dev->cancel_in_progress, true);
+	atomic_fetch_add(&dev->reset_generation, 1);
+}
+
+void vnet_pci_device_release_reset_hold(struct vnet_pci_device *dev)
+{
+	if (dev == NULL)
+		return;
+
+	if (dev->pci_cfg.device_status == VNET_VIRTIO_DEVICE_STATUS_NEEDS_RESET) {
+		dev->pci_cfg.device_status = 0;
+		dev->prev_status = 0;
+		if (dev->pf_index < 0)
+			DOCA_LOG_INFO("VF[%u]: host-visible reset hold released", dev->vf_index);
+		else
+			DOCA_LOG_INFO("EP[%d]: host-visible reset hold released", dev->pf_index);
+	}
+	atomic_store(&dev->cancel_in_progress, false);
+}
+
+void vnet_pci_device_publish_needs_reset(struct vnet_pci_device *dev)
+{
+	if (dev == NULL)
+		return;
+
+	dev->pci_cfg.device_status = VNET_VIRTIO_DEVICE_STATUS_NEEDS_RESET;
+	dev->prev_status = VNET_VIRTIO_DEVICE_STATUS_NEEDS_RESET;
+}
+
+static struct vnet_pci_dev_controller *vnet_pci_device_controller(struct vnet_pci_device *dev)
 {
 	struct vnet_pci_dev_resources *resources;
-	struct vnet_pci_dev_controller *controller;
 
 	if (dev == NULL || dev->pf_index < 0)
-		return false;
+		return NULL;
 
 	resources = dev->cb_arg;
 	if (resources == NULL || resources->tlp_ctx == NULL || (uint32_t)dev->pf_index >= resources->tlp_ctx->num_ep)
+		return NULL;
+
+	return &resources->tlp_ctx->vnet_controller[dev->pf_index];
+}
+
+static struct pci_device_config *vnet_pci_device_endpoint(struct vnet_pci_device *dev)
+{
+	struct vnet_pci_dev_resources *resources;
+
+	if (dev == NULL || dev->pf_index < 0)
+		return NULL;
+
+	resources = dev->cb_arg;
+	if (resources == NULL || resources->tlp_ctx == NULL || (uint32_t)dev->pf_index >= resources->tlp_ctx->num_ep)
+		return NULL;
+
+	return &resources->tlp_ctx->devs_config[FIRST_PF_IDX(resources->tlp_ctx) + dev->pf_index];
+}
+
+static bool vnet_pci_device_reset_status_is_pending(struct vnet_pci_device *dev)
+{
+	struct vnet_pci_dev_controller *controller = vnet_pci_device_controller(dev);
+
+	if (controller == NULL)
 		return false;
 
-	controller = &resources->tlp_ctx->vnet_controller[dev->pf_index];
 	return atomic_load(&controller->reset_status_state) != VNET_RESET_STATUS_IDLE;
 }
 
 static void vnet_pci_device_apply_reset_status_release(struct vnet_pci_device *dev)
 {
-	struct vnet_pci_dev_resources *resources;
-	struct vnet_pci_dev_controller *controller;
-	struct vnet_virtio_common_config *pci_cfg;
+	struct vnet_pci_dev_controller *controller = vnet_pci_device_controller(dev);
 	uint32_t expected_state = VNET_RESET_STATUS_RELEASE_PENDING;
 
-	if (dev == NULL || dev->pf_index < 0)
+	if (controller == NULL)
 		return;
 
-	resources = dev->cb_arg;
-	if (resources == NULL || resources->tlp_ctx == NULL || (uint32_t)dev->pf_index >= resources->tlp_ctx->num_ep)
-		return;
-
-	controller = &resources->tlp_ctx->vnet_controller[dev->pf_index];
 	if (!atomic_compare_exchange_strong(&controller->reset_status_state, &expected_state, VNET_RESET_STATUS_IDLE))
 		return;
 
-	pci_cfg = &dev->pci_cfg;
-	if (pci_cfg->device_status == VNET_VIRTIO_DEVICE_STATUS_NEEDS_RESET) {
-		pci_cfg->device_status = 0;
-		dev->prev_status = 0;
-		DOCA_LOG_INFO("RESET: TLP thread released host-visible reset hold");
-	}
-	atomic_store(&dev->cancel_in_progress, false);
+	vnet_pci_device_release_reset_hold(dev);
 }
 
 static void pci_cfg_workqueue_submit_vq_config(struct vnet_pci_device *dev, uint16_t vq_index)
@@ -2940,10 +3218,17 @@ static void vnet_pci_device_reset_vf_pci_template(const struct pci_device_config
 		return;
 
 	vf = slot->vf_dev;
+	pthread_rwlock_wrlock(&slot->admin_config_lock);
+	vnet_admin_vf_reset_config(slot);
 	vf->pcie_dev = vnet_pci_device_create_virtio_template();
 	vf->pcie_dev.cfg.regs.device_id = pf->sriov->vf_device_id;
 	vf->pcie_dev.cfg.regs.subsystem_id = VNET_VIRTIO_NETWORK_DEVICE;
+	/* The template carries the type-wide table, so put this VF's own back:
+	 * a vector per virtqueue plus one for config changes, less one. */
+	if (vf->pci_cfg.num_queues > 0)
+		vf->pcie_dev.cfg.msix_cap.msgctl = vf->pci_cfg.num_queues;
 	vnet_pci_device_reset_vf_shadow(vf);
+	pthread_rwlock_unlock(&slot->admin_config_lock);
 }
 
 /*
@@ -3559,15 +3844,30 @@ static void vnet_pci_dev_handle_cfg_write0(struct doca_devemu_pci_tlp_channel_re
 		fire_flr = true;
 	}
 
+	/* Bus Master Enable is latched here rather than acted on, because both
+	 * edges can queue worker steps that take this endpoint's write lock. */
+	bool cmd_reg_written = (ext_reg_num == VNET_PCI_CFG_REG_NUM_CMD_STS);
+	bool bme_set = cmd_reg_written && (new_value & COMMAND_RW_BUS_MASTER_ENABLE) != 0;
+
 	if (new_value != cur_value)
 		VIRTIO_DEV_CONFIG_WRITE(virtio_dev, ext_reg_num, new_value);
 
-	if (fire_flr)
-		vnet_pci_device_handle_flr(virtio_dev);
+	/* The host reads Command out of dw_regs[], but the header shadow carries a
+	 * second copy that the power-on publish also writes. Moving both together
+	 * is what keeps them comparable for the self-check. */
+	if (cmd_reg_written)
+		ep->cfg_space_hdr.type0.command = (uint16_t)(new_value & 0xFFFFu);
 
 	vnet_pci_dev_tlp_cfg_cpl_prep(tlp_req, TLP_FMT_3DW_NODATA, TLP_CPL_STATUS_SC, 0, 4);
 	doca_devemu_pci_tlp_channel_req_complete_tlp(tlp_req, 1, ep->tlp_dev);
 	pthread_rwlock_unlock(&ep->endpoint_lock);
+
+	/* Past the completion and the unlock: the host's write has already been
+	 * acknowledged, and the worker is free to take the write lock. */
+	if (cmd_reg_written)
+		vnet_pci_device_handle_bme(virtio_dev, bme_set);
+	if (fire_flr)
+		vnet_pci_device_handle_flr(virtio_dev);
 	return;
 
 fatal_error:
@@ -5217,7 +5517,7 @@ static inline uint32_t sriov_cap_read(unsigned cap_offset, const struct vnet_sri
 		 * Preserved so the host can place VFs as ARI functions (Device=0,
 		 * 8-bit Function) and enable more than 7 VFs on one bus. No VF
 		 * migration / extended-tag / interrupt-message-number support. */
-		return SRIOV_CAP_ARI_HIERARCHY_PRESERVED;
+		return PCIE_SRIOV_CAP_ARI_HIERARCHY_PRESERVED;
 	case 2:
 		/* DW2: Control[15:0] | Status[31:16] */
 		return ((uint32_t)s->control_shadow) | ((uint32_t)s->status_shadow << 16);
@@ -5371,23 +5671,23 @@ static uint32_t sriov_cap_decode_write(struct tlp_context *tlp_ctx,
 		 * 1->0 stops them. merged_ctrl is committed below so the host sees
 		 * the new state immediately; the per-VF tlp_dev create/start/stop
 		 * (50-200ms each) run on the worker so they never block the TLP thread. */
-		if ((old_ctrl ^ merged_ctrl) & SRIOV_CTRL_VFE) {
-			bool enabling = !!(merged_ctrl & SRIOV_CTRL_VFE);
+		if ((old_ctrl ^ merged_ctrl) & PCIE_SRIOV_CTRL_VFE) {
+			bool enabling = !!(merged_ctrl & PCIE_SRIOV_CTRL_VFE);
 
 			DOCA_LOG_INFO("SR-IOV VFE: %u -> %u (NumVFs=%u, TotalVFs=%u)",
-				      !!(old_ctrl & SRIOV_CTRL_VFE),
+				      !!(old_ctrl & PCIE_SRIOV_CTRL_VFE),
 				      enabling,
 				      sriov->num_vfs_shadow,
 				      sriov->total_vf);
 			/* Inline, ahead of the host's re-probe; see vnet_pci_device_reset_vf_shadows(). */
 			if (!enabling)
 				vnet_pci_device_reset_vf_shadows(pf_endpoint);
-			pci_cfg_workqueue_submit_vfe_fan_out(tlp_ctx, pf_endpoint, enabling);
+			(void)pci_cfg_workqueue_submit_vfe_fan_out(pf_endpoint, enabling);
 		}
-		if ((old_ctrl ^ merged_ctrl) & SRIOV_CTRL_VF_MSE) {
+		if ((old_ctrl ^ merged_ctrl) & PCIE_SRIOV_CTRL_VF_MSE) {
 			DOCA_LOG_INFO("SR-IOV VF MSE: %u -> %u",
-				      !!(old_ctrl & SRIOV_CTRL_VF_MSE),
-				      !!(merged_ctrl & SRIOV_CTRL_VF_MSE));
+				      !!(old_ctrl & PCIE_SRIOV_CTRL_VF_MSE),
+				      !!(merged_ctrl & PCIE_SRIOV_CTRL_VF_MSE));
 		}
 		sriov->control_shadow = merged_ctrl;
 
@@ -5410,7 +5710,7 @@ static uint32_t sriov_cap_decode_write(struct tlp_context *tlp_ctx,
 				      clamped,
 				      sriov->total_vf);
 		}
-		if (sriov->control_shadow & SRIOV_CTRL_VFE) {
+		if (sriov->control_shadow & PCIE_SRIOV_CTRL_VFE) {
 			DOCA_LOG_WARN(
 				"SR-IOV NumVFs written (%u -> %u) while VFE=1; spec disallows this. Accepting anyway.",
 				sriov->num_vfs_shadow,
@@ -5524,6 +5824,53 @@ void vnet_pci_device_sriov_populate_cfg(struct vnet_pci_device *virtio_dev, cons
 		VIRTIO_DEV_CONFIG_WRITE(virtio_dev, PCIE_EXT_CAP_REG_NUM_ACS_EP + i, acs_cap_read(i, 0));
 }
 
+bool vnet_pci_device_cfg_image_check(struct vnet_pci_device *dev, struct pci_device_config *ep)
+{
+	bool ok = true;
+	unsigned i;
+
+	if (dev == NULL || ep == NULL)
+		return true;
+
+	/* Command is the standard header's one register with two copies, and
+	 * unlike the SR-IOV block it exists on every function - which is what
+	 * gives this check something to say about a non-SR-IOV PF. */
+	uint16_t published_cmd = vnet_pci_device_command_get(dev);
+
+	if (ep->cfg_space_hdr.type0.command != published_cmd) {
+		DOCA_LOG_ERR("EP[%d]: host-visible Command register diverged - shadow holds 0x%04x, host reads "
+			     "0x%04x. Some mutation of the command word skipped the publish path",
+			     dev->pf_index,
+			     ep->cfg_space_hdr.type0.command,
+			     published_cmd);
+		ok = false;
+	}
+
+	if (ep->sriov == NULL)
+		return ok;
+
+	/* The SR-IOV capability has two writers: the semantic shadow in ep->sriov
+	 * and the materialised dw_regs[] image the host reads. Compared through the
+	 * same renderer the publish path uses, not a hand-written expectation. */
+	for (i = 0; i < PCIE_EXT_CAP_LEN_SRIOV_DW; i++) {
+		uint32_t published = VIRTIO_DEV_CONFIG_READ(dev, PCIE_EXT_CAP_REG_NUM_SRIOV + i);
+		uint32_t expected = sriov_cap_read(i, ep->sriov);
+
+		if (published == expected)
+			continue;
+
+		DOCA_LOG_ERR("EP[%d]: host-visible SR-IOV capability diverged at DW%u - shadow renders 0x%08x, "
+			     "host reads 0x%08x. Some mutation of ep->sriov skipped the publish path",
+			     dev->pf_index,
+			     i,
+			     expected,
+			     published);
+		ok = false;
+	}
+
+	return ok;
+}
+
 doca_error_t vnet_pci_device_init_vf(struct tlp_context *tlp_ctx,
 				     const struct pci_device_config *pf_endpoint,
 				     uint32_t vf_index,
@@ -5531,6 +5878,7 @@ doca_error_t vnet_pci_device_init_vf(struct tlp_context *tlp_ctx,
 {
 	struct vnet_pci_device *vf;
 	uint16_t vf_num_queues;
+	uint16_t vf_qp;
 	doca_error_t result;
 	uint32_t pf_index;
 	int rc;
@@ -5555,6 +5903,7 @@ doca_error_t vnet_pci_device_init_vf(struct tlp_context *tlp_ctx,
 	 * Downstream code checks pf_index >= 0 before doing PF-array lookups, so
 	 * -1 keeps a VF-typed device out of the PF dispatch paths. */
 	vf->pf_index = -1;
+	vf->vf_index = vf_index;
 
 	/* Build the same PCIe + VirtIO cfg-space template the PF uses, then stamp
 	 * the VF Device ID from the SR-IOV shadow (class_code / subclass are already
@@ -5563,9 +5912,14 @@ doca_error_t vnet_pci_device_init_vf(struct tlp_context *tlp_ctx,
 	vf->pcie_dev.cfg.regs.device_id = pf_endpoint->sriov->vf_device_id;
 	vf->pcie_dev.cfg.regs.subsystem_id = VNET_VIRTIO_NETWORK_DEVICE;
 
-	/* A VF mirrors the PF queue geometry: up to max_queue_pairs data pairs
-	 * plus a control VQ. */
-	vf_num_queues = VNET_TOTAL_VQS(tlp_ctx->max_queue_pairs);
+	/* Queue geometry of this VF: its own count with --vf-queue-pairs, else the
+	 * PF's. Data pairs plus a control VQ. */
+	vf_qp = vnet_sriov_vf_qp(tlp_ctx, (uint16_t)(vf_index - pf_endpoint->sriov->first_vf_idx));
+	vf_num_queues = VNET_TOTAL_VQS(vf_qp);
+
+	/* Advertise the table this VF is provisioned with rather than the type-wide
+	 * maximum, so the host cannot program a vector it has no room for. */
+	vf->pcie_dev.cfg.msix_cap.msgctl = (uint16_t)(VNET_SRIOV_VF_NUM_MSIX(vf_qp) - 1);
 
 	/* VirtIO common config. */
 	memset(&vf->pci_cfg, 0, sizeof(vf->pci_cfg));
@@ -5581,14 +5935,14 @@ doca_error_t vnet_pci_device_init_vf(struct tlp_context *tlp_ctx,
 
 	/* Network config inherits MTU / link from the PF base; MAC differentiates
 	 * per-VF via the shared derivation (same value the VF offload engine uses,
-	 * so host-visible and engine MACs match). For the supported ceiling
-	 * (<=256 VFs total + num_ep PFs) the low-16 offset is a few hundred, so it
-	 * only wraps if the base MAC's low 16 bits are >= ~0xFEF0 -- use a base MAC
-	 * with headroom in the low bytes. */
+	 * so host-visible and engine MACs match). At the supported ceiling
+	 * (1024 VFs + num_ep PFs) the low-16 offset stays below 0x420, so it only
+	 * wraps if the base MAC's low 16 bits are >= ~0xFBE0 -- use a base MAC with
+	 * headroom in the low bytes. */
 	memset(&vf->vnet_cfg, 0, sizeof(vf->vnet_cfg));
 	vnet_sriov_derive_vf_mac(tlp_ctx->mac_bytes_base, tlp_ctx->num_ep, vf_index, vf->vnet_cfg.mac);
 	vf->vnet_cfg.status = VIRTIO_NET_S_LINK_UP;
-	vf->vnet_cfg.max_virtqueue_pairs = tlp_ctx->max_queue_pairs;
+	vf->vnet_cfg.max_virtqueue_pairs = vf_qp;
 	vf->vnet_cfg.mtu = tlp_ctx->mtu;
 	/* Sourced from the PF's live config rather than the CLI value so a VF
 	 * created after a runtime speed change matches its PF. */
@@ -5626,7 +5980,6 @@ doca_error_t vnet_pci_device_init_vf(struct tlp_context *tlp_ctx,
 	vf->prev_status = 0xFF;
 	atomic_init(&vf->reset_generation, 1);
 	atomic_init(&vf->cancel_in_progress, false);
-	atomic_init(&vf->flr_in_progress, false);
 
 	*out_vf_dev = vf;
 	DOCA_LOG_DBG("VF[vf_index=%u] template initialized: DID=0x%04x, queues=%u, queue_size=%u, "
@@ -7029,8 +7382,14 @@ static inline void handle_vf_cfg_write_type_0(struct tlp_context *tlp_ctx,
 				   (uint32_t)(COMMAND_RW_MEM_SPACE_ENABLE | COMMAND_RW_BUS_MASTER_ENABLE |
 					      COMMAND_RW_PERR_ENABLE | COMMAND_RW_SERR_ENABLE | COMMAND_RW_INT_DISABLE);
 		uint32_t cur = VIRTIO_DEV_CONFIG_READ(vf, 1);
+		uint32_t merged = (cur & ~rw_mask) | (write_data & rw_mask);
 
-		VIRTIO_DEV_CONFIG_WRITE(vf, 1, (cur & ~rw_mask) | (write_data & rw_mask));
+		VIRTIO_DEV_CONFIG_WRITE(vf, 1, merged);
+
+		/* The merged value is passed unconditionally rather than only on a
+		 * write that covers the Bus Master byte: it is the post-write
+		 * truth either way, and the recycle owns the edge detection. */
+		vnet_pci_device_handle_vf_bme(tlp_ctx, vf_pf, slot_idx, (merged & COMMAND_RW_BUS_MASTER_ENABLE) != 0);
 		break;
 	}
 	case VIRTIO_NET_MSI_X_REGISTER_NUM: { /* MSI-X msgctl: only Enable (bit 31) + Function Mask (bit 30) RW */
@@ -7045,7 +7404,7 @@ static inline void handle_vf_cfg_write_type_0(struct tlp_context *tlp_ctx,
 	}
 	case VIRTIO_NET_PCIE_DEV_CTRL_REG_NUM: /* PCIe Device Control: Initiate FLR bit drives per-VF reset */
 		if (write_data & be_mask & PCI_EXP_DEVCTL_BCR_FLR)
-			vnet_pci_device_handle_vf_flr(vf_pf, slot_idx);
+			vnet_pci_device_handle_vf_flr(tlp_ctx, vf_pf, slot_idx);
 		break;
 	default:
 		break;
@@ -7222,6 +7581,8 @@ static void sriov_vf_apply_vq_config(struct vnet_vf_slot *slot, uint16_t vq_inde
 
 	if (slot == NULL || !atomic_load(&slot->vqs_created))
 		return;
+	if (atomic_load(&slot->admin_stop_requested))
+		return;
 	/* Once the engine is enabled the VQs are configured and started; a late
 	 * queue_enable re-trigger must not re-apply set_conf to a running VQ. */
 	if (atomic_load(&slot->engine_enabled))
@@ -7377,33 +7738,137 @@ void vnet_pci_device_reset_vf_shadow(struct vnet_pci_device *vf)
 }
 
 /*
- * Host-initiated per-VF Function Level Reset.
- *
- * The shadow is reset here rather than in the deferred teardown because the
- * post-FLR re-probe arrives on this same thread; a later wipe would erase that
- * handshake and leave the VF with a half-configured datapath.
+ * Open the progress-loop sweep's eyes to this PF's slot array; it closes them
+ * again once no slot is left in flight.
  */
-static void vnet_pci_device_handle_vf_flr(struct pci_device_config *pf_endpoint, uint16_t slot_idx)
+static void vnet_pci_device_vf_sweep_arm(struct tlp_context *tlp_ctx, struct pci_device_config *pf_endpoint)
 {
-	/* The caller (handle_vf_cfg_write_type_0 via find_vf_slot_by_bdf) has
-	 * already validated sriov / vf_slots / slot_idx under endpoint_lock. */
-	struct vnet_vf_slot *slot = &pf_endpoint->sriov->vf_slots[slot_idx];
-	bool expected = false;
+	uint32_t pf_index;
 
-	if (!atomic_compare_exchange_strong(&slot->flr_in_progress, &expected, true)) {
-		DOCA_LOG_WARN("SR-IOV: VF[slot=%u, vf_index=%u] FLR coalesced (prior FLR still in progress)",
-			      slot_idx,
-			      slot->vf_index);
-		return;
+	if (tlp_ctx != NULL && get_pf_index_for_device(tlp_ctx, pf_endpoint, &pf_index) == DOCA_SUCCESS)
+		atomic_store(&tlp_ctx->vnet_controller[pf_index].vf_recycle_active, true);
+}
+
+/*
+ * Hold the host off a VF for the duration of its recycle. VF counterpart of the
+ * first half of vnet_pci_device_start_recycle(): reset the virtio shadow
+ * synchronously and pin device_status at NEEDS_RESET until the rebuild lands.
+ *
+ * Callers hold pf_endpoint->endpoint_lock in read mode.
+ */
+static void vnet_pci_device_vf_hold_host(struct tlp_context *tlp_ctx,
+					 struct pci_device_config *pf_endpoint,
+					 struct vnet_vf_slot *slot,
+					 enum vnet_recycle_reason reason)
+{
+	if (slot->vf_dev != NULL) {
+		vnet_pci_device_cancel_inflight(slot->vf_dev);
+		pthread_rwlock_wrlock(&slot->admin_config_lock);
+		vnet_admin_vf_reset_config(slot);
+		vnet_pci_device_reset_vf_shadow(slot->vf_dev);
+		pthread_rwlock_unlock(&slot->admin_config_lock);
+
+		/* Same reason as the PF's: the shadow reset above took the guest's
+		 * negotiated features with it, so a bring-up deferred by an earlier
+		 * recycle has nothing left to replay. */
+		atomic_store(&slot->deferred_setup_pending, false);
+
+		if (reason & VNET_RECYCLE_REASONS_RESET_CFG) {
+			/* No endpoint passed: the SR-IOV capability belongs to the
+			 * PF and a VF's config BARs are read-only zero, so a VF's
+			 * power-on image is just the plain header. */
+			vnet_pci_device_publish_power_on_cfg(slot->vf_dev, NULL);
+			vnet_recycle_reset_bme_shadow(&slot->recycle);
+		}
+
+		vnet_pci_device_publish_needs_reset(slot->vf_dev);
+		atomic_store(&slot->reset_hold_release_owed, true);
 	}
 
-	DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] FLR initiated by host", slot_idx, slot->vf_index);
+	vnet_pci_device_vf_sweep_arm(tlp_ctx, pf_endpoint);
+}
 
-	vnet_pci_device_reset_vf_shadow(slot->vf_dev);
+/*
+ * Start the recycle of one VF. Callers hold pf_endpoint->endpoint_lock in read
+ * mode. As on the PF side nothing is queued here - the sweep does that.
+ */
+static void vnet_pci_device_start_vf_recycle(struct tlp_context *tlp_ctx,
+					     struct pci_device_config *pf_endpoint,
+					     uint16_t slot_idx,
+					     enum vnet_recycle_reason reason)
+{
+	struct vnet_recycle_ops ops;
 
-	/* Without this a failed submit would coalesce every later FLR forever. */
-	if (!pci_cfg_workqueue_submit_vf_flr_reset(pf_endpoint, slot_idx))
-		atomic_store(&slot->flr_in_progress, false);
+	if (vnet_recycle_ops_for_vf(pf_endpoint, slot_idx, &ops) != DOCA_SUCCESS)
+		return;
+
+	vnet_pci_device_vf_hold_host(tlp_ctx, pf_endpoint, &pf_endpoint->sriov->vf_slots[slot_idx], reason);
+	vnet_recycle_request(&ops, reason);
+}
+
+/*
+ * Cascade a PF reset onto its VFs. A VF exists only while VF Enable is set, which
+ * the reset just cleared, so this is the host's own VFE 1->0 path by another route.
+ * Driven from that edge, on the TLP thread, under the PF's endpoint read lock.
+ */
+bool vnet_pci_device_hide_pf_vfs(struct pci_device_config *ep)
+{
+	uint16_t exposed = 0;
+	uint16_t s;
+
+	if (ep->sriov == NULL || ep->sriov->vf_slots == NULL)
+		return true;
+
+	/* Counted for the log, not to decide with: the fan-out sweeps every slot so
+	 * one left visible by an earlier, larger NumVFs is hidden too. */
+	for (s = 0; s < ep->sriov->total_vf; s++) {
+		if (atomic_load(&ep->sriov->vf_slots[s].active))
+			exposed++;
+	}
+
+	DOCA_LOG_INFO("SR-IOV: PF reset cleared VF Enable - hiding %u exposed VF(s)", exposed);
+	vnet_pci_device_reset_vf_shadows(ep);
+	return pci_cfg_workqueue_submit_vfe_fan_out(ep, false);
+}
+
+/* Host-initiated per-VF Function Level Reset. */
+static void vnet_pci_device_handle_vf_flr(struct tlp_context *tlp_ctx,
+					  struct pci_device_config *pf_endpoint,
+					  uint16_t slot_idx)
+{
+	if (pf_endpoint->sriov == NULL || pf_endpoint->sriov->vf_slots == NULL ||
+	    slot_idx >= pf_endpoint->sriov->total_vf)
+		return;
+
+	DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] FLR initiated by host",
+		      slot_idx,
+		      pf_endpoint->sriov->vf_slots[slot_idx].vf_index);
+
+	vnet_pci_device_start_vf_recycle(tlp_ctx, pf_endpoint, slot_idx, VNET_RECYCLE_FLR);
+}
+
+/*
+ * Bus Master Enable write to a VF, on the TLP thread. Same edges as the PF: a
+ * 1->0 drop is the guest driver detaching and invalidates the crossed mkey, and
+ * the 0->1 restore that releases the parked recycle is noticed by the sweep.
+ */
+static void vnet_pci_device_handle_vf_bme(struct tlp_context *tlp_ctx,
+					  struct pci_device_config *pf_endpoint,
+					  uint16_t slot_idx,
+					  bool bme_set)
+{
+	struct vnet_recycle_ops ops;
+
+	if (vnet_recycle_ops_for_vf(pf_endpoint, slot_idx, &ops) != DOCA_SUCCESS)
+		return;
+
+	if (!vnet_recycle_note_bme(&ops, bme_set))
+		return;
+
+	vnet_pci_device_vf_hold_host(tlp_ctx,
+				     pf_endpoint,
+				     &pf_endpoint->sriov->vf_slots[slot_idx],
+				     VNET_RECYCLE_BME_DISABLE);
 }
 
 /* Serve a host MMIO read to a VF BAR from the VF's emulated register image. */
@@ -7461,14 +7926,18 @@ static inline void handle_vf_mmio_write(struct tlp_context *tlp_ctx,
 {
 	const void *req_header = doca_devemu_pci_tlp_channel_req_get_tlp_header(tlp_req);
 	const uint8_t length = GET_TLP_REQ_LENGTH(req_header);
-	const uint8_t fmt = GET_TLP_REQ_FMT(req_header);
 	const uint32_t *dwh = (const uint32_t *)req_header;
+	const uint8_t fmt = GET_TLP_REQ_FMT(req_header);
 	struct vnet_pci_device *vf = vf_slot->vf_dev;
-	uint8_t prev_status = vf->pci_cfg.device_status;
-	uint16_t prev_qsel = vf->pci_cfg.queue_select;
+	bool allow_reset = false;
+	uint8_t prev_status;
+	uint16_t prev_qsel;
 	uint8_t new_status;
 	uint8_t data_off;
 	uint64_t addr;
+
+	prev_status = vf->pci_cfg.device_status;
+	prev_qsel = vf->pci_cfg.queue_select;
 
 	if (fmt == TLP_FMT_4DW_W_DATA) {
 		addr = ((uint64_t)be32toh(dwh[2]) << 32) | (be32toh(dwh[3]) & ~0x3ULL);
@@ -7476,6 +7945,20 @@ static inline void handle_vf_mmio_write(struct tlp_context *tlp_ctx,
 	} else {
 		addr = be32toh(dwh[2]) & ~0x3ULL;
 		data_off = 3;
+	}
+
+	if (length == 1) {
+		uint32_t wr_mask = map_dw_be_to_mask(GET_TLP_REQ_FIRST_DW_BE(req_header));
+		uint64_t status_off = offsetof(struct vnet_virtio_common_config, device_status);
+		uint32_t status_mask = 0xffU << ((status_off & 3U) * 8U);
+		uint64_t off = vnet_pci_dev_bar_offset(vf, addr);
+
+		allow_reset = off == (status_off & ~3ULL) && (wr_mask & status_mask) != 0 &&
+			      (wr_mask & ~status_mask) == 0 && (dwh[data_off] & status_mask) == 0;
+	}
+	if (!vnet_admin_vf_config_write_begin(vf_slot, allow_reset)) {
+		doca_devemu_pci_tlp_channel_req_complete_tlp(tlp_req, 0, vf_slot->tlp_dev);
+		return;
 	}
 
 	if (length >= 1 && length <= 2) {
@@ -7487,27 +7970,55 @@ static inline void handle_vf_mmio_write(struct tlp_context *tlp_ctx,
 					  map_dw_be_to_mask(GET_TLP_REQ_LAST_DW_BE(req_header)));
 	}
 
+	vnet_admin_dev_parts_invalidate(vf_slot);
+
 	/* Latch the per-queue shadow and, on queue_enable, queue the VQ config to
 	 * the worker (mirrors the PF common-config write path). */
 	sriov_vf_queue_cfg_window(tlp_ctx, vf_pf, slot_idx, vf, prev_qsel);
 
 	new_status = vf->pci_cfg.device_status;
 
+	/* The hold lives in the shadow the host reads, so a status write would
+	 * lift it. Reasserting also keeps a repeated reset from queueing a second
+	 * teardown behind the first. */
+	if (vnet_vf_teardown_in_flight(vf_slot)) {
+		vnet_pci_device_publish_needs_reset(vf);
+		goto vf_status_done;
+	}
+
 	/* On a guest device reset (status -> 0), e.g. a driver unbind, tear down
 	 * this VF's datapath so the next probe rebuilds it cleanly. The shadow is
 	 * reset inline here (race-free on the TLP thread) so the re-probe's
 	 * queue_enable 0->1 transitions re-fire; the heavy engine teardown is
-	 * deferred to the worker, where FIFO ordering places it before the
-	 * re-probe's engine-setup item. */
+	 * deferred to the worker.
+	 *
+	 * device_status is pinned at NEEDS_RESET until that teardown has run, as
+	 * the PF pins its own: virtio has the driver poll it back to 0 and free
+	 * the rings, which the engine must not still be able to reach. */
 	if (vf_pf != NULL && prev_status != 0 && new_status == 0) {
 		bool engine_up = atomic_load(&vf_slot->engine_started) || atomic_load(&vf_slot->engine_enabled);
 
+		vnet_admin_vf_reset_config(vf_slot);
 		vnet_pci_device_reset_vf_shadow(vf);
 		if (engine_up) {
 			DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] device reset - queueing datapath teardown",
 				      slot_idx,
 				      vf_slot->vf_index);
-			pci_cfg_workqueue_submit_vf_datapath_reset(vf_pf, slot_idx);
+			/* The hold goes on either way: releasing the host is what
+			 * lets it free rings the engine can still reach. A teardown
+			 * that could not be queued is left owed to the sweep. */
+			if (!pci_cfg_workqueue_submit_vf_datapath_reset(vf_pf, slot_idx)) {
+				atomic_store(&vf_slot->teardown_state, VNET_VF_TEARDOWN_OWED);
+				DOCA_LOG_WARN(
+					"SR-IOV: VF[slot=%u, vf_index=%u] datapath teardown not queued - host held until it is",
+					slot_idx,
+					vf_slot->vf_index);
+			} else {
+				atomic_store(&vf_slot->teardown_state, VNET_VF_TEARDOWN_QUEUED);
+			}
+			atomic_store(&vf_slot->reset_hold_release_owed, true);
+			vnet_pci_device_publish_needs_reset(vf);
+			vnet_pci_device_vf_sweep_arm(tlp_ctx, vf_pf);
 		}
 	}
 
@@ -7517,6 +8028,20 @@ static inline void handle_vf_mmio_write(struct tlp_context *tlp_ctx,
 	if (tlp_ctx != NULL && vf_pf != NULL && !(prev_status & VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK) &&
 	    (new_status & VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK)) {
 		bool features_accepted;
+
+		/* Same reasoning as the PF's FEATURES_OK gate: while the VF is
+		 * being recycled its TLP device is stopped and its engine is
+		 * gone, so a bring-up queued now would build on nothing. */
+		if (vnet_recycle_in_progress(&vf_slot->recycle)) {
+			DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] FEATURES_OK deferred - recycle in progress",
+				      slot_idx,
+				      vf_slot->vf_index);
+			/* Latched at the write: the rebuild clears the status shadow the
+			 * sweep would otherwise recover this from. */
+			vf_slot->deferred_setup_status |= VNET_VIRTIO_DEVICE_STATUS_FEATURES_OK;
+			atomic_store(&vf_slot->deferred_setup_pending, true);
+			goto vf_status_done;
+		}
 
 		vnet_pci_dev_validate_features(vf, &features_accepted);
 		if (!features_accepted) {
@@ -7537,7 +8062,7 @@ static inline void handle_vf_mmio_write(struct tlp_context *tlp_ctx,
 				      slot_idx,
 				      vf_slot->vf_index,
 				      vf_slot->mq_feature_negotiated);
-			pci_cfg_workqueue_submit_vf_engine_setup(tlp_ctx, vf_pf, slot_idx);
+			(void)pci_cfg_workqueue_submit_vf_engine_setup(tlp_ctx, vf_pf, slot_idx);
 		}
 	}
 
@@ -7546,12 +8071,23 @@ static inline void handle_vf_mmio_write(struct tlp_context *tlp_ctx,
 	 * on an already-enabled engine, so repeated status writes are harmless. */
 	if (vf_pf != NULL && !(prev_status & VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK) &&
 	    (new_status & VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK)) {
+		if (vnet_recycle_in_progress(&vf_slot->recycle)) {
+			DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] DRIVER_OK deferred - recycle in progress",
+				      slot_idx,
+				      vf_slot->vf_index);
+			vf_slot->deferred_setup_status |= VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK;
+			atomic_store(&vf_slot->deferred_setup_pending, true);
+			goto vf_status_done;
+		}
+
 		DOCA_LOG_INFO("SR-IOV: VF[slot=%u, vf_index=%u] DRIVER_OK - queueing engine enable",
 			      slot_idx,
 			      vf_slot->vf_index);
-		pci_cfg_workqueue_submit_vf_engine_enable(vf_pf, slot_idx);
+		(void)pci_cfg_workqueue_submit_vf_engine_enable(vf_pf, slot_idx);
 	}
 
+vf_status_done:
+	vnet_admin_vf_config_write_end(vf_slot);
 	doca_devemu_pci_tlp_channel_req_complete_tlp(tlp_req, 0, vf_slot->tlp_dev);
 }
 
@@ -7606,7 +8142,7 @@ static inline void handle_tlp_req(struct doca_devemu_pci_tlp_channel_req *tlp_re
 			bool vf_slot_found = (vf_slot != NULL);
 			/* CRS is gated on VFE=1; capture the PF's VFE state under the lock. */
 			bool vf_sriov_enabled = (vf_slot != NULL && vf_pf->sriov != NULL &&
-						 (vf_pf->sriov->control_shadow & SRIOV_CTRL_VFE));
+						 (vf_pf->sriov->control_shadow & PCIE_SRIOV_CTRL_VFE));
 
 			/* vf_pf->endpoint_lock is held (vf_lock_held) on a match; keep the
 			 * slot/vf_dev alive while we serve, then release before returning. */
@@ -7801,8 +8337,26 @@ static void vnet_pci_dev_event_cb(struct doca_devemu_pci_tlp_channel *channel,
 
 	/* Handle PCI_EVENT opcode (PERST assert/deassert) */
 	if (opcode == DOCA_DEVEMU_PCI_TLP_CHANNEL_REQ_OPCODE_PCI_EVENT) {
-		DOCA_LOG_DBG("Received PCI_EVENT request");
-		/* Complete the PCI_EVENT request directly */
+		enum doca_devemu_pci_tlp_channel_req_pci_event_opmode opmode =
+			doca_devemu_pci_tlp_channel_req_get_pci_event_opmode(tlp_req);
+
+		if (opmode == DOCA_DEVEMU_PCI_TLP_CHANNEL_REQ_PCI_EVENT_OPMODE_PERST_ASSERT) {
+			/* A host reboot or power cycle: every plugged function needs
+			 * recycling before the host re-enumerates. The teardown runs
+			 * now, the rebuild once the link is back up. */
+			DOCA_LOG_INFO("PERST asserted - recycling all plugged endpoints");
+			vnet_pci_dev_set_link_down(tlp_ctx, true);
+			vnet_pci_dev_recycle_all_endpoints(tlp_ctx, VNET_RECYCLE_PERST_ASSERTED);
+		} else if (opmode == DOCA_DEVEMU_PCI_TLP_CHANNEL_REQ_PCI_EVENT_OPMODE_PERST_DEASSERT) {
+			/* Releasing the park is all this has to do: the sweep sees it
+			 * on its next pass and restarts the endpoints, before the host
+			 * has finished training the link and enumerating. */
+			DOCA_LOG_INFO("PERST deasserted - releasing parked endpoint rebuilds");
+			vnet_pci_dev_set_link_down(tlp_ctx, false);
+		} else {
+			DOCA_LOG_WARN("Received PCI_EVENT with unexpected opmode %d", (int)opmode);
+		}
+
 		doca_devemu_pci_tlp_channel_req_complete_pci_event(tlp_req);
 		return;
 	}
@@ -7941,6 +8495,12 @@ static doca_error_t vnet_pci_device_init_internal(struct vnet_pci_device *dev,
 		}
 	}
 
+	/* Advertise the table this device is sized for rather than the type-wide
+	 * maximum, so the host cannot program a vector it has no room for: one vector
+	 * per virtqueue plus one for config changes, and the field holds size - 1. */
+	if (total_vq_slots > 0)
+		dev->pcie_dev.cfg.msix_cap.msgctl = total_vq_slots;
+
 	/* Initialize VirtIO structures with proper defaults */
 	/* Initialize PCI Common Configuration */
 	struct vnet_virtio_common_config *pci_cfg = &dev->pci_cfg;
@@ -8021,7 +8581,6 @@ static doca_error_t vnet_pci_device_init_internal(struct vnet_pci_device *dev,
 	dev->prev_status = 0xFF;
 	atomic_init(&dev->reset_generation, 1);
 	atomic_init(&dev->cancel_in_progress, false);
-	atomic_init(&dev->flr_in_progress, false);
 
 	DOCA_LOG_DBG("VNet device initialized with:");
 	DOCA_LOG_DBG("  - num_queues=%d, features=0x%lx", attr->num_queues, dev->device_features);
@@ -8889,73 +9448,147 @@ static void vnet_pci_device_reset(struct vnet_pci_device *dev)
 }
 
 /*
- * Sync portion of host-initiated PCIe Function Level Reset (FLR).
- *
- * Runs on the TLP thread inside the PCIe Device Control register cfg-write
- * path. The TLP request is completed (SC) immediately after this returns;
- * heavy cleanup (engine disable/stop, VQ teardown) runs asynchronously on
- * the existing controller-cleanup workqueue.
- *
- * Design: rather than introducing a parallel post-FLR finalization path,
- * we force-trigger the standard virtio reset state machine by setting
- * device_status=0 and invoking pci_cfg_change_cb. The existing path then:
- *   1. detects the reset, queues async controller cleanup
- *   2. holds device_status at NEEDS_RESET until cleanup completes
- *      (reset_status_state HELD)
- *   3. flips reset_status_state HELD -> RELEASE_PENDING when cleanup is
- *      done (vnet_controller_cleanup) and clears flr_in_progress there
- *   4. apply_reset_status_release on the next TLP cfg-write transitions
- *      the host-visible device_status NEEDS_RESET -> 0
- *   5. host driver does the standard ACK -> DRIVER -> FEATURES_OK -> DRIVER_OK
- *      sequence; FEATURES_OK rebinds the engine through the usual path
- *
- * Invariants:
- *  - flr_in_progress is the single-shot guard. Back-to-back FLR within
- *    the same window coalesce into the in-flight one.
- *  - MMIO writes that arrive during the cleanup window are handled
- *    safely by the existing reset_status_state HELD machinery (see
- *    virtio_net_ctrl_change_cb's HELD re-assert and
- *    apply_reset_status_release); no extra gating here is needed.
+ * Pin a function at NEEDS_RESET for its whole recycle, on the TLP thread, so a
+ * guest cannot drive FEATURES_OK into a stopped endpoint. The sweep lifts the
+ * hold once the rebuild lands, without waiting for the host's next access.
  */
-static void vnet_pci_device_handle_flr(struct vnet_pci_device *dev)
+static void vnet_pci_device_hold_host(struct vnet_pci_dev_controller *ctrl, struct vnet_pci_device *dev)
 {
-	bool expected = false;
+	atomic_store(&ctrl->reset_status_state, VNET_RESET_STATUS_HELD);
+	vnet_pci_device_publish_needs_reset(dev);
+}
 
-	if (!atomic_compare_exchange_strong(&dev->flr_in_progress, &expected, true)) {
-		DOCA_LOG_WARN("EP[%d]: FLR coalesced (prior FLR still in progress)", dev->pf_index);
+/*
+ * Start a function recycle from the TLP thread: settle everything host-visible here,
+ * before the worker is told anything, so worker-published state cannot erase what
+ * the host has already re-established. Queueing the step is left to the sweep.
+ */
+static void vnet_pci_device_start_recycle(struct vnet_pci_device *dev, enum vnet_recycle_reason reason)
+{
+	struct vnet_pci_dev_controller *ctrl = vnet_pci_device_controller(dev);
+	struct vnet_recycle_ops ops;
+
+	if (ctrl == NULL) {
+		DOCA_LOG_ERR("EP[%d]: cannot recycle - no controller for this device", dev ? dev->pf_index : -1);
 		return;
 	}
 
-	DOCA_LOG_INFO("EP[%d]: FLR initiated by host PCIe Device Control register", dev->pf_index);
+	if (vnet_recycle_ops_for_pf(ctrl->tlp_ctx, (uint32_t)dev->pf_index, &ops) != DOCA_SUCCESS)
+		return;
 
-	/* Cancel any long-running worker operation on this device and invalidate
-	 * pending workqueue items so they bail out instead of acting on stale state. */
-	atomic_store(&dev->cancel_in_progress, true);
-	atomic_fetch_add(&dev->reset_generation, 1);
+	vnet_pci_device_cancel_inflight(dev);
 
-	/* Sentinel: virtio_net_ctrl_change_cb's reset-detection branch
-	 * (vnet_pci_dev_core.c:3034) requires prev_status != 0 && prev_status != 0xFF
-	 * to fire. This fails for back-to-back FLR (prev_status was zeroed at the
-	 * end of the previous FLR's reset branch) and for FLR before the host
-	 * driver has ever reached a non-zero device_status. Force a non-zero
-	 * sentinel so the cleanup path always runs for FLR. */
-	if (dev->prev_status == 0 || dev->prev_status == 0xFF)
-		dev->prev_status = VNET_VIRTIO_DEVICE_STATUS_DRIVER_OK;
-
-	/* Force the existing virtio reset path: set device_status=0 so the
-	 * downstream pci_cfg_change_cb treats this as a host-initiated reset
-	 * and submits the controller cleanup to the workqueue. */
 	dev->pci_cfg.device_status = 0;
-
-	/* Reset PCI cfg shadow state (driver_features, vqs, etc.) synchronously,
-	 * before the host can read back any stale values. */
 	vnet_pci_device_reset(dev);
 
-	/* Notify controller layer to begin async cleanup. The callback returns
-	 * immediately; cleanup runs on workqueue. The callback will set
-	 * device_status to NEEDS_RESET as part of its HELD-state handling. */
-	if (dev->pci_cfg_change_cb)
-		dev->pci_cfg_change_cb(dev, dev->cb_arg);
+	/* A bring-up the guest asked for during an earlier recycle dies with this
+	 * reset: the shadow reset above zeroed the negotiated features, so replaying
+	 * it would rebuild the controller from nothing. The guest asks again. */
+	atomic_store(&ctrl->deferred_init_pending, false);
+
+	if (reason & VNET_RECYCLE_REASONS_RESET_CFG) {
+		struct pci_device_config *ep = vnet_pci_device_endpoint(dev);
+
+		if (ep != NULL) {
+			/* Read lock for both: the SR-IOV shadow and the VF slot array
+			 * hanging off it are freed by the worker under the write lock,
+			 * so the reset below could otherwise walk freed memory. */
+			pthread_rwlock_rdlock(&ep->endpoint_lock);
+			if (vnet_pci_device_publish_power_on_cfg(dev, ep) && !vnet_pci_device_hide_pf_vfs(ep))
+				atomic_store(&ctrl->vf_hide_pending, true);
+			pthread_rwlock_unlock(&ep->endpoint_lock);
+		}
+
+		/* The Command register just went to zero, so bus mastering is off as
+		 * far as the host is concerned. A shadow left reading 1 would make
+		 * the driver's re-probe write look like no change. */
+		vnet_recycle_reset_bme_shadow(&ctrl->recycle);
+	}
+
+	vnet_pci_device_hold_host(ctrl, dev);
+	vnet_recycle_request(&ops, reason);
+}
+
+/*
+ * Host-initiated PCIe Function Level Reset. Runs on the TLP thread from the Device
+ * Control cfg-write path after the request has completed, so the host's write
+ * returns promptly and the teardown happens on the worker.
+ */
+static void vnet_pci_device_handle_flr(struct vnet_pci_device *dev)
+{
+	DOCA_LOG_INFO("EP[%d]: FLR initiated by host PCIe Device Control register", dev->pf_index);
+	vnet_pci_device_start_recycle(dev, VNET_RECYCLE_FLR);
+}
+
+void vnet_pci_dev_set_link_down(struct tlp_context *tlp_ctx, bool down)
+{
+	uint32_t i;
+
+	if (tlp_ctx == NULL)
+		return;
+
+	for (i = 0; i < tlp_ctx->num_ep; i++) {
+		struct pci_device_config *ep = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + i];
+
+		vnet_recycle_note_link_down(&tlp_ctx->vnet_controller[i].recycle, down);
+
+		pthread_rwlock_rdlock(&ep->endpoint_lock);
+		if (ep->sriov != NULL && ep->sriov->vf_slots != NULL) {
+			for (uint16_t s = 0; s < ep->sriov->total_vf; s++)
+				vnet_recycle_note_link_down(&ep->sriov->vf_slots[s].recycle, down);
+		}
+		pthread_rwlock_unlock(&ep->endpoint_lock);
+	}
+}
+
+void vnet_pci_dev_recycle_all_endpoints(struct tlp_context *tlp_ctx, enum vnet_recycle_reason reason)
+{
+	uint32_t i;
+
+	if (tlp_ctx == NULL)
+		return;
+
+	for (i = 0; i < tlp_ctx->num_ep; i++) {
+		struct pci_device_config *ep = &tlp_ctx->devs_config[FIRST_PF_IDX(tlp_ctx) + i];
+		struct vnet_pci_device *dev = atomic_load(&tlp_ctx->vnet_controller[i].virtio_device);
+		bool plugged;
+
+		pthread_rwlock_rdlock(&ep->endpoint_lock);
+		plugged = atomic_load(&ep->device_present) && ep->tlp_dev != NULL;
+		pthread_rwlock_unlock(&ep->endpoint_lock);
+
+		/* Hotplug slots that were never plugged have no function to
+		 * recycle; a host reboot must skip them rather than fail on them. */
+		if (dev == NULL || !plugged)
+			continue;
+
+		vnet_pci_device_start_recycle(dev, reason);
+	}
+}
+
+/*
+ * Bus Master Enable write, on the TLP thread. A 1->0 edge is the driver detaching,
+ * and the firmware invalidates the crossed mkey on it exactly as on an FLR. The
+ * 0->1 that follows is noticed by the sweep, so a restore cannot be lost.
+ */
+static void vnet_pci_device_handle_bme(struct vnet_pci_device *dev, bool bme_set)
+{
+	struct vnet_pci_dev_controller *ctrl = vnet_pci_device_controller(dev);
+	struct vnet_recycle_ops ops;
+
+	if (ctrl == NULL)
+		return;
+
+	if (vnet_recycle_ops_for_pf(ctrl->tlp_ctx, (uint32_t)dev->pf_index, &ops) != DOCA_SUCCESS)
+		return;
+
+	if (!vnet_recycle_note_bme(&ops, bme_set))
+		return;
+
+	/* A BME drop resets nothing in config space, so the hold is all the
+	 * host-visible state this trigger changes. */
+	vnet_pci_device_cancel_inflight(dev);
+	vnet_pci_device_hold_host(ctrl, dev);
 }
 
 /*

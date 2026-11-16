@@ -42,17 +42,23 @@ __global__ void get_bw(struct doca_gpu_dev_verbs_qp *qp,
 		       uint32_t src_buf_mkey,
 		       uint8_t *dst_buf,
 		       uint32_t dst_buf_mkey,
-				uint64_t *dump_flag,
-				uint32_t dump_flag_mkey)
+		       uint64_t *dump_flag,
+		       uint32_t dump_flag_mkey)
 {
 	doca_gpu_dev_verbs_ticket_t out_ticket;
 	uint32_t tidx = threadIdx.x + (blockIdx.x * blockDim.x);
 
 	for (uint32_t idx = tidx; idx < num_iters; idx += (blockDim.x * gridDim.x)) {
-		doca_gpu_dev_verbs_get<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO, scope, DOCA_GPUNETIO_VERBS_MCST_DISABLED, DOCA_GPUNETIO_VERBS_BLOCKING_MODE_DISABLED>(
+		doca_gpu_dev_verbs_get<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+				       DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
+				       scope,
+				       DOCA_GPUNETIO_VERBS_MCST_DISABLED,
+				       DOCA_GPUNETIO_VERBS_BLOCKING_MODE_DISABLED>(
 			qp,
-			doca_gpu_dev_verbs_addr{.addr = (uint64_t)(dst_buf + (data_size * tidx)), .key = (uint32_t)dst_buf_mkey},
-			doca_gpu_dev_verbs_addr{.addr = (uint64_t)(src_buf + (data_size * tidx)), .key = (uint32_t)src_buf_mkey},
+			doca_gpu_dev_verbs_addr{.addr = (uint64_t)(dst_buf + (data_size * tidx)),
+						.key = (uint32_t)dst_buf_mkey},
+			doca_gpu_dev_verbs_addr{.addr = (uint64_t)(src_buf + (data_size * tidx)),
+						.key = (uint32_t)src_buf_mkey},
 			data_size,
 			doca_gpu_dev_verbs_addr{.addr = 0, .key = 0},
 			&out_ticket);
@@ -68,11 +74,15 @@ __global__ void get_bw(struct doca_gpu_dev_verbs_qp *qp,
 		 */
 		if (threadIdx.x == 0) {
 #if __CUDA_ARCH__ < 900
-			doca_gpu_dev_verbs_get_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO, DOCA_GPUNETIO_VERBS_MCST_ENABLED>(
+			doca_gpu_dev_verbs_get_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+						    DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
+						    DOCA_GPUNETIO_VERBS_MCST_ENABLED>(
 				qp,
 				doca_gpu_dev_verbs_addr{.addr = (uint64_t)dump_flag, .key = (uint32_t)dump_flag_mkey});
 #else
-			doca_gpu_dev_verbs_get_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO, DOCA_GPUNETIO_VERBS_MCST_DISABLED>(
+			doca_gpu_dev_verbs_get_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+						    DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
+						    DOCA_GPUNETIO_VERBS_MCST_DISABLED>(
 				qp,
 				doca_gpu_dev_verbs_addr{.addr = 0, .key = 0});
 #endif
@@ -94,7 +104,7 @@ doca_error_t gpunetio_verbs_get_bw(cudaStream_t stream,
 				   uint8_t *dst_buf,
 				   uint32_t dst_buf_mkey,
 				   uint64_t *dump_flag,
-					uint32_t dump_flag_mkey,
+				   uint32_t dump_flag_mkey,
 				   enum doca_gpu_dev_verbs_exec_scope scope)
 {
 	cudaError_t result = cudaSuccess;
@@ -107,27 +117,25 @@ doca_error_t gpunetio_verbs_get_bw(cudaStream_t stream,
 	}
 
 	if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD)
-		get_bw<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>
-			<<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
-									num_iters,
-									data_size,
-									src_buf,
-									src_buf_mkey,
-									dst_buf,
-									dst_buf_mkey,
-									dump_flag,
-									dump_flag_mkey);
+		get_bw<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD><<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
+													num_iters,
+													data_size,
+													src_buf,
+													src_buf_mkey,
+													dst_buf,
+													dst_buf_mkey,
+													dump_flag,
+													dump_flag_mkey);
 	else if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP)
-		get_bw<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP>
-			<<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
-									num_iters,
-									data_size,
-									src_buf,
-									src_buf_mkey,
-									dst_buf,
-									dst_buf_mkey,
-									dump_flag,
-									dump_flag_mkey);
+		get_bw<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP><<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
+												      num_iters,
+												      data_size,
+												      src_buf,
+												      src_buf_mkey,
+												      dst_buf,
+												      dst_buf_mkey,
+												      dump_flag,
+												      dump_flag_mkey);
 	else {
 		DOCA_LOG_ERR("Invalid exec scope %d, must be thread or warp", scope);
 		return DOCA_ERROR_INVALID_VALUE;

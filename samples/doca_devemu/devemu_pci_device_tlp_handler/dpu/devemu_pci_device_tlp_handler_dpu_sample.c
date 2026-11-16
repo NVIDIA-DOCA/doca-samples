@@ -50,6 +50,8 @@
 #include <doca_log.h>
 #include <doca_rdma_bridge.h>
 
+#include "common.h"
+
 #include <devemu_pci_common.h>
 
 DOCA_LOG_REGISTER(DEVEMU_PCI_DEVICE_TLP_HANDLER_DPU::SAMPLE);
@@ -936,27 +938,7 @@ static doca_error_t lu_oob_send(int socket_fd, const void *buffer, size_t length
  */
 static doca_error_t lu_oob_recv(int socket_fd, void *buffer, size_t length)
 {
-	uint8_t *data = (uint8_t *)buffer;
-	size_t recv_total = 0;
-
-	while (recv_total < length) {
-		ssize_t recv_len = recv(socket_fd, data + recv_total, length - recv_total, 0);
-		if (recv_len < 0) {
-			if (errno == EINTR)
-				continue;
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
-				return DOCA_ERROR_TIME_OUT;
-			DOCA_LOG_ERR("OOB socket: failed to recv: %s", strerror(errno));
-			return DOCA_ERROR_IO_FAILED;
-		}
-		if (recv_len == 0) {
-			DOCA_LOG_ERR("OOB socket: connection closed");
-			return DOCA_ERROR_NOT_CONNECTED;
-		}
-		recv_total += (size_t)recv_len;
-	}
-
-	return DOCA_SUCCESS;
+	return socket_recv(socket_fd, buffer, length, 0, NULL);
 }
 
 /**

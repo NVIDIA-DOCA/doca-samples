@@ -400,7 +400,7 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
-	result = init_doca_flow(nb_queues, "switch,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "switch", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -415,7 +415,7 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 					     &resource);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -425,7 +425,7 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get shared counter id from port");
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -437,7 +437,7 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to configure shared counter to port: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -445,7 +445,7 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create hash pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -455,7 +455,7 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to add entries to hash pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -463,7 +463,7 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create root pipe with entries: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -471,14 +471,14 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
 	if (status.nb_processed != nb_entries || status.failure) {
 		DOCA_LOG_ERR("Failed to process entries");
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return DOCA_ERROR_BAD_STATE;
 	}
 
@@ -490,6 +490,6 @@ doca_error_t flow_ecmp(int nb_queues, int nb_ports, struct flow_switch_ctx *ctx)
 	flow_wait_for_packets(WAITING_TIME, print_ecmp_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

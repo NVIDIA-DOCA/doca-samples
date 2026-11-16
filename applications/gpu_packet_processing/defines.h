@@ -68,8 +68,15 @@
 #define QUEUE_ID_ICMP_0 (MAX_QUEUES * 4)
 #define MAX_PKT_NUM 65536
 #define MAX_PKT_SIZE 8192
+#define UDP_RX_MIN_PKT_NUM 512 /* GPU striding RQ: 512 strides per WQE */
+#define UDP_RX_MIN_PKT_SIZE 64
+#define PKT_WIPE_BYTES 32 /* Bytes cleared by wipe_packet_32b() */
 #define MAX_RX_NUM_PKTS 4096
 #define MAX_RX_TIMEOUT_NS 1000000 /* 1ms */
+#define UDP_RX_MAX_PKTS_DEFAULT 512
+#define UDP_RX_TIMEOUT_NS_DEFAULT 500000 /* 500us */
+#define RX_ATTR_BYTES 16		 /* sizeof(struct doca_gpu_dev_eth_rxq_attr) */
+#define ETHER_MIN_FRAME_LEN 60		 /* Minimum Ethernet frame length, FCS excluded */
 #define MAX_PKT_NUM_ICMP 16384
 #define MAX_PKT_SIZE_ICMP 512
 #define MAX_RX_NUM_PKTS_ICMP 64

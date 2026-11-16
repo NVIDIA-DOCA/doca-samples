@@ -453,6 +453,7 @@ static doca_error_t process_packets(struct doca_flow_port *port,
 					      0,
 					      NULL,
 					      NULL,
+					      NULL /* tcp_window_validation */,
 					      NULL,
 					      NULL,
 					      0,
@@ -512,7 +513,7 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues,
 					  .match_inner = {false, true},
 					  .zone_match_mask = {&o_zone_mask, &r_zone_mask},
 					  .modify_mask = {&o_modify_mask, &r_modify_mask}};
-	uint32_t nb_arm_queues = 1, nb_ctrl_queues = 1, nb_ipv4_sessions = NB_ENTRIES, nb_ipv6_sessions = NB_ENTRIES;
+	uint32_t nb_ct_queues = 1, nb_ctrl_queues = 1, nb_ipv4_sessions = NB_ENTRIES, nb_ipv6_sessions = NB_ENTRIES;
 	uint16_t ct_queue = nb_queues;
 	const struct doca_flow_port_capabilities *caps = NULL;
 	bool is_supported;
@@ -527,8 +528,8 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues,
 	resource.nr_ct_counters = nb_ipv4_sessions + nb_ipv6_sessions;
 	resource.nr_rss = 1;
 
-	struct ct_init_cfg ct_cfg = {.ct_queues = nb_arm_queues, .ct_ctrl_queues = nb_ctrl_queues};
-	result = init_doca_flow_with_ct(nb_queues, "switch,hws", &resource, nr_shared_resources, &ct_cfg);
+	struct ct_init_cfg ct_cfg = {.ct_queues = nb_ct_queues, .ct_ctrl_queues = nb_ctrl_queues};
+	result = init_doca_flow_with_ct(nb_queues, "switch", &resource, nr_shared_resources, &ct_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -537,7 +538,7 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues,
 	result = doca_flow_port_capabilities_create(devs_manager[0].doca_dev, &caps);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create port capabilities: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -545,7 +546,7 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues,
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to get CT IPv6 support: %s", doca_error_get_descr(result));
 		doca_flow_port_capabilities_destroy(caps);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -553,7 +554,7 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues,
 
 	if (!is_supported) {
 		DOCA_LOG_ERR("CT IPv6 is not supported");
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return DOCA_ERROR_BAD_STATE;
 	}
 
@@ -573,7 +574,7 @@ doca_error_t flow_ct_tcp_ipv4_ipv6(uint16_t nb_queues,
 						     &ct_port_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 

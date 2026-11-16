@@ -35,8 +35,9 @@
 #include <doca_bitfield.h>
 #include <doca_flow.h>
 #include <doca_flow_crypto.h>
-#include <doca_flow_tune_server.h>
 #include <doca_log.h>
+
+#include <flow_tune_common.h>
 
 #include "psp_gw_config.h"
 #include "psp_gw_flows.h"
@@ -263,7 +264,7 @@ PSP_GatewayFlows::~PSP_GatewayFlows()
 	if (pf_dev->port_obj)
 		doca_flow_port_stop(pf_dev->port_obj);
 
-	doca_flow_tune_server_destroy();
+	flow_tune_server_stop();
 	doca_flow_destroy();
 }
 
@@ -274,7 +275,7 @@ doca_error_t PSP_GatewayFlows::init(void)
 	IF_SUCCESS(result, init_doca_flow(app_config));
 	IF_SUCCESS(result, start_port(pf_dev->port_id, pf_dev->dev, app_config, nullptr, &pf_dev->port_obj));
 	IF_SUCCESS(result, start_port(vf_port_id, nullptr, nullptr, vf_dev_rep, &vf_port));
-	IF_SUCCESS(result, bind_shared_resources());
+	IF_SUCCESS(result, get_shared_resource_ids());
 	init_status(app_config);
 	IF_SUCCESS(result, create_pipes());
 
@@ -401,41 +402,6 @@ doca_error_t PSP_GatewayFlows::start_port(uint16_t port_id,
 	return result;
 }
 
-static doca_error_t configure_tune_server(struct doca_flow_cfg *flow_cfg, enum doca_flow_tune_profile profile)
-{
-	doca_error_t result = DOCA_SUCCESS;
-	struct doca_flow_tune_cfg *tune_cfg;
-
-	result = doca_flow_tune_cfg_create(&tune_cfg);
-	if (result != DOCA_SUCCESS) {
-		if (result == DOCA_ERROR_NOT_SUPPORTED) {
-			DOCA_LOG_INFO("DOCA Flow Tune Server isn't supported in this runtime version");
-			DOCA_LOG_INFO("Program will continue execution without activating the DOCA Flow Tune Server");
-			return DOCA_SUCCESS;
-		}
-
-		DOCA_LOG_ERR("Failed to create doca_flow_tune_cfg: %s", doca_error_get_descr(result));
-		goto out;
-	}
-
-	result = doca_flow_tune_cfg_set_profile(tune_cfg, profile);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_tune_cfg profile: %s", doca_error_get_descr(result));
-		goto cfg_destroy;
-	}
-
-	result = doca_flow_cfg_set_tune_cfg(flow_cfg, tune_cfg);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set doca_flow_cfg tune_cfg: %s", doca_error_get_descr(result));
-		goto cfg_destroy;
-	}
-
-cfg_destroy:
-	doca_flow_tune_cfg_destroy(tune_cfg);
-out:
-	return result;
-}
-
 static doca_error_t resolve_ip6_vip_id(struct rte_hash *ip6_table, const uint32_t *ipv6_addr, int *out_id)
 {
 	int id = rte_hash_lookup(ip6_table, ipv6_addr);
@@ -452,7 +418,6 @@ static doca_error_t resolve_ip6_vip_id(struct rte_hash *ip6_table, const uint32_
 
 doca_error_t PSP_GatewayFlows::init_doca_flow(const psp_gw_app_config *app_cfg)
 {
-	struct doca_flow_tune_server_cfg *server_cfg;
 	doca_error_t result = DOCA_SUCCESS;
 
 	uint16_t nb_queues = app_cfg->dpdk_config.port_config.nb_queues;
@@ -461,10 +426,12 @@ doca_error_t PSP_GatewayFlows::init_doca_flow(const psp_gw_app_config *app_cfg)
 	doca_flow_cfg *flow_cfg;
 	IF_SUCCESS(result, doca_flow_cfg_create(&flow_cfg));
 	IF_SUCCESS(result, doca_flow_cfg_set_pipe_queues(flow_cfg, nb_queues));
-	IF_SUCCESS(result, doca_flow_cfg_set_mode_args(flow_cfg, "switch,hws,expert"));
+	IF_SUCCESS(result, doca_flow_cfg_set_mode_args(flow_cfg, "switch,expert"));
 	IF_SUCCESS(result, doca_flow_cfg_set_cb_entry_process(flow_cfg, PSP_GatewayFlows::check_for_valid_entry));
 	IF_SUCCESS(result, doca_flow_cfg_set_resource_mode(flow_cfg, DOCA_FLOW_RESOURCE_MODE_PORT));
-	IF_SUCCESS(result, configure_tune_server(flow_cfg, DOCA_FLOW_TUNE_PROFILE_FULL));
+	if (app_cfg->enable_tune) {
+		IF_SUCCESS(result, flow_tune_configure(flow_cfg, DOCA_FLOW_TUNE_PROFILE_FULL));
+	}
 	IF_SUCCESS(result, doca_flow_init(flow_cfg));
 	if (result != DOCA_SUCCESS) {
 		doca_flow_cfg_destroy(flow_cfg);
@@ -473,23 +440,10 @@ doca_error_t PSP_GatewayFlows::init_doca_flow(const psp_gw_app_config *app_cfg)
 	DOCA_LOG_INFO("Initialized DOCA Flow for a max of %d tunnels", app_cfg->max_tunnels);
 	doca_flow_cfg_destroy(flow_cfg);
 
-	/* Init DOCA Flow Tune Server */
-	result = doca_flow_tune_server_cfg_create(&server_cfg);
-	if (result != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to create flow tune server configuration");
-		return result;
+	if (app_cfg->enable_tune) {
+		/* Init DOCA Flow Tune Server */
+		result = flow_tune_server_start(DOCA_FLOW_TUNE_PROFILE_FULL);
 	}
-	result = doca_flow_tune_server_init(server_cfg);
-	if (result != DOCA_SUCCESS) {
-		if (result == DOCA_ERROR_NOT_SUPPORTED) {
-			DOCA_LOG_DBG("DOCA Flow Tune Server isn't supported in this runtime version");
-			result = DOCA_SUCCESS;
-		} else {
-			DOCA_LOG_ERR("Failed to initialize the DOCA Flow Tune Server");
-		}
-	}
-
-	doca_flow_tune_server_cfg_destroy(server_cfg);
 	return result;
 }
 
@@ -499,18 +453,24 @@ void PSP_GatewayFlows::init_status(psp_gw_app_config *app_config)
 		std::vector<entries_status>(app_config->dpdk_config.port_config.nb_queues, entries_status());
 }
 
-doca_error_t PSP_GatewayFlows::bind_shared_resources(void)
+doca_error_t PSP_GatewayFlows::get_shared_resource_ids(void)
 {
 	doca_error_t result = DOCA_SUCCESS;
+	std::vector<uint32_t> psp_ids;
 
-	std::vector<uint32_t> psp_ids(app_config->max_tunnels);
+	psp_ids.reserve(app_config->max_tunnels);
 	for (uint32_t i = 0; i < app_config->max_tunnels; i++) {
-		IF_SUCCESS(result,
-			   doca_flow_port_shared_resource_get(pf_dev->port_obj,
-							      DOCA_FLOW_SHARED_RESOURCE_PSP,
-							      &psp_ids[i]));
+		uint32_t psp_id;
+
+		IF_SUCCESS(
+			result,
+			doca_flow_port_shared_resource_get(pf_dev->port_obj, DOCA_FLOW_SHARED_RESOURCE_PSP, &psp_id));
+		if (result != DOCA_SUCCESS)
+			break;
+		psp_ids.push_back(psp_id);
 	}
-	pf_dev->crypto_ids = psp_ids;
+	if (result == DOCA_SUCCESS)
+		pf_dev->crypto_ids = std::move(psp_ids);
 
 	return result;
 }

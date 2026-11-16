@@ -1328,7 +1328,7 @@ static doca_error_t init_upf_accel(struct upf_accel_ctx *upf_accel_ctx, struct u
 	doca_error_t result, tmp_result;
 	enum upf_accel_port port_id;
 
-	result = upf_accel_doca_flow_init(upf_accel_ctx->num_queues, "vnf,hws", upf_accel_check_for_valid_entry_aging);
+	result = upf_accel_doca_flow_init(upf_accel_ctx->num_queues, "vnf", upf_accel_check_for_valid_entry_aging);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -1749,8 +1749,8 @@ static doca_error_t upf_accel_dpdk_config_num_ports(struct application_dpdk_conf
 {
 	uint16_t nb_ports = rte_eth_dev_count_avail();
 
-	if (nb_ports > UPF_ACCEL_PORTS_MAX) {
-		DOCA_LOG_ERR("Invalid number (%u) of ports, max %u", nb_ports, UPF_ACCEL_PORTS_MAX);
+	if (nb_ports == 0 || nb_ports > UPF_ACCEL_PORTS_MAX) {
+		DOCA_LOG_ERR("Invalid number (%u) of ports, expected 1 to %u", nb_ports, UPF_ACCEL_PORTS_MAX);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 	dpdk_config->port_config.nb_ports = nb_ports;

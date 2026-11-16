@@ -22,6 +22,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
+#include <string.h>
+
 #include <rte_ethdev.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
@@ -35,6 +37,7 @@
 DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::FLOW_DECRYPT);
 
 #define DECAP_MAC_TYPE_IDX 12	   /* index in decap raw data for inner l3 type */
+#define DECAP_IDX_DST_MAC 0	   /* index in decap raw data for destination mac */
 #define DECAP_IDX_SRC_MAC 6	   /* index in decap raw data for source mac */
 #define DECAP_MARKER_HEADER_SIZE 8 /* non-ESP marker header size */
 #define UDP_DST_PORT_FOR_ESP 4500  /* the udp dest port will be 4500 when next header is ESP */
@@ -1068,10 +1071,10 @@ destroy_pipe_cfg:
  * Update the crypto config for decrypt tunnel mode
  *
  * @crypto_cfg [in]: shared object config
- * @eth_header [in]: contains the src mac address
+ * @eth_header [in]: resolved L2 header (src + dst MAC) to set in the decap data
  * @inner_l3_type [in]: DOCA_FLOW_L3_TYPE_IP4 / DOCA_FLOW_L3_TYPE_IP6
  */
-static void create_tunnel_decap_tunnel(struct doca_flow_header_eth *eth_header,
+static void create_tunnel_decap_tunnel(const struct doca_flow_header_eth *eth_header,
 				       enum doca_flow_l3_type inner_l3_type,
 				       uint8_t *reformat_data,
 				       uint16_t *reformat_data_sz)
@@ -1093,12 +1096,9 @@ static void create_tunnel_decap_tunnel(struct doca_flow_header_eth *eth_header,
 		0x00 /* mac_type */
 	};
 
-	reformat_decap_data[DECAP_IDX_SRC_MAC] = eth_header->src_mac[0];
-	reformat_decap_data[DECAP_IDX_SRC_MAC + 1] = eth_header->src_mac[1];
-	reformat_decap_data[DECAP_IDX_SRC_MAC + 2] = eth_header->src_mac[2];
-	reformat_decap_data[DECAP_IDX_SRC_MAC + 3] = eth_header->src_mac[3];
-	reformat_decap_data[DECAP_IDX_SRC_MAC + 4] = eth_header->src_mac[4];
-	reformat_decap_data[DECAP_IDX_SRC_MAC + 5] = eth_header->src_mac[5];
+	/* Set L2 addresses from the resolved tunnel eth header */
+	memcpy(&reformat_decap_data[DECAP_IDX_DST_MAC], eth_header->dst_mac, RTE_ETHER_ADDR_LEN);
+	memcpy(&reformat_decap_data[DECAP_IDX_SRC_MAC], eth_header->src_mac, RTE_ETHER_ADDR_LEN);
 
 	if (inner_l3_type == DOCA_FLOW_L3_TYPE_IP4) {
 		reformat_decap_data[DECAP_MAC_TYPE_IDX] = 0x08;
@@ -1117,7 +1117,6 @@ static void create_tunnel_decap_tunnel(struct doca_flow_header_eth *eth_header,
  *
  * @app_cfg [in]: application configuration struct
  * @port [in]: port of the pipe
- * @eth_header [in]: contains the src mac address
  * @match_pipe [in]: match pipe to add entries to
  * @ordered_list_pipe [in]: ordered list pipe to add entries to
  *
@@ -1125,7 +1124,6 @@ static void create_tunnel_decap_tunnel(struct doca_flow_header_eth *eth_header,
  */
 static doca_error_t add_decap_pipe_entries(struct ipsec_security_gw_config *app_cfg,
 					   struct ipsec_security_gw_ports_map *port,
-					   struct doca_flow_header_eth *eth_header,
 					   struct security_gateway_pipe_info *match_pipe,
 					   struct security_gateway_pipe_info *ordered_list_pipe)
 {
@@ -1149,7 +1147,7 @@ static doca_error_t add_decap_pipe_entries(struct ipsec_security_gw_config *app_
 
 	/* Add default entry to ordered list pipe */
 	if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL)
-		create_tunnel_decap_tunnel(eth_header,
+		create_tunnel_decap_tunnel(&app_cfg->decap_eth,
 					   DOCA_FLOW_L3_TYPE_IP4,
 					   crypto_actions.crypto_encap.encap_data,
 					   &crypto_actions.crypto_encap.data_size);
@@ -1180,7 +1178,7 @@ static doca_error_t add_decap_pipe_entries(struct ipsec_security_gw_config *app_
 	/* Add default entry to ordered list pipe for IPv6 */
 	memset(&crypto_actions, 0, sizeof(crypto_actions));
 	if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL)
-		create_tunnel_decap_tunnel(eth_header,
+		create_tunnel_decap_tunnel(&app_cfg->decap_eth,
 					   DOCA_FLOW_L3_TYPE_IP6,
 					   crypto_actions.crypto_encap.encap_data,
 					   &crypto_actions.crypto_encap.data_size);
@@ -1272,12 +1270,14 @@ static doca_error_t add_decap_pipe_entries(struct ipsec_security_gw_config *app_
  * @port [in]: port of the pipe
  * @is_root [in]: true in vnf mode
  * @debug_mode [in]: true if running in debug mode
+ * @arp_handled [in]: true if an ARP control entry will be added (reserves an extra debug slot)
  * @pipe_info [out]: pipe info struct
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t create_control_pipe(struct doca_flow_port *port,
 					bool is_root,
 					bool debug_mode,
+					bool arp_handled,
 					struct security_gateway_pipe_info *pipe_info)
 {
 	struct doca_flow_pipe_cfg *pipe_cfg;
@@ -1316,8 +1316,12 @@ static doca_error_t create_control_pipe(struct doca_flow_port *port,
 	}
 
 	if (debug_mode) {
+		/* 2 forwarding entries (IPv4/IPv6), plus one more when ARP is handled */
+		int nb_entries = 2 + (arp_handled ? 1 : 0);
+
 		pipe_info->entries_info =
-			(struct security_gateway_entry_info *)calloc(2, sizeof(struct security_gateway_entry_info));
+			(struct security_gateway_entry_info *)calloc(nb_entries,
+								     sizeof(struct security_gateway_entry_info));
 		if (pipe_info->entries_info == NULL) {
 			DOCA_LOG_ERR("Failed to allocate entries array");
 			result = DOCA_ERROR_NO_MEMORY;
@@ -1334,11 +1338,13 @@ destroy_pipe_cfg:
  * and one entry that forwards IPv6 traffic to decrypt IPv6 pipe
  *
  * @control_pipe [in]: control pipe pointer
+ * @ports [in]: application ports map
  * @app_cfg [in]: application configuration struct
  * @is_root [in]: true in vnf mode
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *control_pipe,
+					     struct ipsec_security_gw_ports_map *ports[],
 					     struct ipsec_security_gw_config *app_cfg,
 					     bool is_root)
 {
@@ -1361,6 +1367,17 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 	if (app_cfg->debug_mode && !is_root) {
 		monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 		monitor_ptr = &monitor;
+	}
+
+	if (app_cfg->arp_mode != IPSEC_SECURITY_GW_ARP_MODE_DEFAULT_MISS) {
+		result = add_arp_control_entry(control_pipe,
+					       UNSECURED_PORT_ID(ports),
+					       app_cfg->arp_mode,
+					       app_cfg->debug_mode,
+					       monitor_ptr,
+					       "arp_decrypt");
+		if (result != DOCA_SUCCESS)
+			return result;
 	}
 
 	if (app_cfg->marker_encap && app_cfg->vxlan_encap) {
@@ -1503,11 +1520,12 @@ static enum doca_flow_crypto_replay_win_size convert_window_size_to_enum(uint32_
 }
 
 /*
- * Config and bind shared IPSEC object for decryption
+ * Config the shared IPSEC object for decryption
  *
+ * @secured_port [in]: secured port
  * @app_sa_attrs [in]: SA attributes
  * @app_cfg [in]: application configuration struct
- * @ipsec_id [in]: index of shared object
+ * @ipsec_id [in]: shared object ID
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t create_ipsec_decrypt_shared_object(struct doca_flow_port *secured_port,
@@ -1892,7 +1910,7 @@ doca_error_t ipsec_security_gw_insert_decrypt_rules(struct ipsec_security_gw_por
 			return result;
 	}
 
-	create_hairpin_pipe_fwd(app_cfg, ports[SECURED_IDX]->port_id, false, NULL, 0, &fwd);
+	create_hairpin_pipe_fwd(app_cfg, SECURED_PORT_ID(ports), false, NULL, 0, &fwd);
 
 	DOCA_LOG_DBG("Creating decap pipe");
 	snprintf(app_cfg->decrypt_pipes.decap_pipe.name, MAX_NAME_LEN, "decap");
@@ -1911,7 +1929,6 @@ doca_error_t ipsec_security_gw_insert_decrypt_rules(struct ipsec_security_gw_por
 
 	result = add_decap_pipe_entries(app_cfg,
 					ports[SECURED_IDX],
-					&ports[UNSECURED_IDX]->eth_header,
 					&app_cfg->decrypt_pipes.match_decap_pipe,
 					&app_cfg->decrypt_pipes.decap_pipe);
 	if (result != DOCA_SUCCESS) {
@@ -1983,12 +2000,16 @@ doca_error_t ipsec_security_gw_insert_decrypt_rules(struct ipsec_security_gw_por
 
 	DOCA_LOG_DBG("Creating control pipe");
 	snprintf(app_cfg->decrypt_pipes.decrypt_root.name, MAX_NAME_LEN, "decrypt_root");
-	result = create_control_pipe(secured_port, is_root, app_cfg->debug_mode, &app_cfg->decrypt_pipes.decrypt_root);
+	result = create_control_pipe(secured_port,
+				     is_root,
+				     app_cfg->debug_mode,
+				     app_cfg->arp_mode != IPSEC_SECURITY_GW_ARP_MODE_DEFAULT_MISS,
+				     &app_cfg->decrypt_pipes.decrypt_root);
 	if (result != DOCA_SUCCESS)
 		return result;
 
 	DOCA_LOG_DBG("Adding control pipe entries");
-	result = add_control_pipe_entries(&app_cfg->decrypt_pipes.decrypt_root, app_cfg, is_root);
+	result = add_control_pipe_entries(&app_cfg->decrypt_pipes.decrypt_root, ports, app_cfg, is_root);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -2115,10 +2136,7 @@ static doca_error_t decap_packet_tunnel(struct rte_mbuf **m, struct ipsec_securi
 	} else {
 		inner_l3_type = DOCA_FLOW_L3_TYPE_IP4;
 	}
-	create_tunnel_decap_tunnel(&ctx->ports[UNSECURED_IDX]->eth_header,
-				   inner_l3_type,
-				   (uint8_t *)np,
-				   &reformat_decap_data_len);
+	create_tunnel_decap_tunnel(&ctx->config->decap_eth, inner_l3_type, (uint8_t *)np, &reformat_decap_data_len);
 
 	return DOCA_SUCCESS;
 }

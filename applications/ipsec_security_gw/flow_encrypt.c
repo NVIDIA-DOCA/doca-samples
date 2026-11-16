@@ -22,7 +22,10 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
+#include <string.h>
+
 #include <rte_ethdev.h>
+#include <rte_ether.h>
 
 #include <doca_log.h>
 #include <doca_bitfield.h>
@@ -38,6 +41,7 @@ DOCA_LOG_REGISTER(IPSEC_SECURITY_GW::FLOW_ENCRYPT);
 #define ENCAP_DST_IP_IDX_IP4 30		  /* index in encap raw data for destination IPv4 */
 #define ENCAP_DST_IP_IDX_IP6 38		  /* index in encap raw data for destination IPv4 */
 #define ENCAP_IP_ID_IDX_IP4 18		  /* index in encap raw data for IPv4 ID */
+#define ENCAP_IDX_DST_MAC 0		  /* index in encap raw data for destination mac */
 #define ENCAP_IDX_SRC_MAC 6		  /* index in encap raw data for source mac */
 #define ENCAP_DST_UDP_PORT_IDX 2	  /* index in encap raw data for UDP destination port */
 #define ENCAP_ESP_SPI_IDX_TUNNEL_IP4 34	  /* index in encap raw data for esp SPI in IPv4 tunnel */
@@ -170,13 +174,13 @@ static void create_udp_transport_encap(struct encrypt_rule *rule,
  *
  * @rule [in]: current rule for encapsulation
  * @sw_sn_inc [in]: if true, sequence number will be incremented in software
- * @eth_header [in]: contains the src mac address
+ * @eth_header [in]: resolved L2 header (src + dst MAC) to set in the encap data
  * @reformat_data [out]: pointer to created data
  * @reformat_data_sz [out]: data size
  */
 static void create_ipv4_tunnel_encap(struct encrypt_rule *rule,
 				     bool sw_sn_inc,
-				     struct doca_flow_header_eth *eth_header,
+				     const struct doca_flow_header_eth *eth_header,
 				     uint8_t *reformat_data,
 				     uint16_t *reformat_data_sz)
 {
@@ -194,12 +198,9 @@ static void create_ipv4_tunnel_encap(struct encrypt_rule *rule,
 		0x00, 0x00, 0x00, 0x00,
 	};
 
-	reformat_encap_data[ENCAP_IDX_SRC_MAC] = eth_header->src_mac[0];
-	reformat_encap_data[ENCAP_IDX_SRC_MAC + 1] = eth_header->src_mac[1];
-	reformat_encap_data[ENCAP_IDX_SRC_MAC + 2] = eth_header->src_mac[2];
-	reformat_encap_data[ENCAP_IDX_SRC_MAC + 3] = eth_header->src_mac[3];
-	reformat_encap_data[ENCAP_IDX_SRC_MAC + 4] = eth_header->src_mac[4];
-	reformat_encap_data[ENCAP_IDX_SRC_MAC + 5] = eth_header->src_mac[5];
+	/* Set L2 addresses from the resolved tunnel eth header */
+	memcpy(&reformat_encap_data[ENCAP_IDX_DST_MAC], eth_header->dst_mac, RTE_ETHER_ADDR_LEN);
+	memcpy(&reformat_encap_data[ENCAP_IDX_SRC_MAC], eth_header->src_mac, RTE_ETHER_ADDR_LEN);
 
 	/* dst IP was already converted to big endian */
 	reformat_encap_data[ENCAP_DST_IP_IDX_IP4] = GET_BYTE(rule->encap_dst_ip4, 0);
@@ -232,13 +233,13 @@ static void create_ipv4_tunnel_encap(struct encrypt_rule *rule,
  *
  * @rule [in]: current rule for encapsulation
  * @sw_sn_inc [in]: if true, sequence number will be incremented in software
- * @eth_header [in]: contains the src mac address
+ * @eth_header [in]: resolved L2 header (src + dst MAC) to set in the encap data
  * @reformat_data [out]: pointer to created data
  * @reformat_data_sz [out]: data size
  */
 static void create_ipv6_tunnel_encap(struct encrypt_rule *rule,
 				     bool sw_sn_inc,
-				     struct doca_flow_header_eth *eth_header,
+				     const struct doca_flow_header_eth *eth_header,
 				     uint8_t *reformat_data,
 				     uint16_t *reformat_data_sz)
 {
@@ -262,12 +263,9 @@ static void create_ipv6_tunnel_encap(struct encrypt_rule *rule,
 		0x00, 0x00, 0x00, 0x00,
 	};
 
-	reformat_encap_data[ENCAP_IDX_SRC_MAC] = eth_header->src_mac[0];
-	reformat_encap_data[ENCAP_IDX_SRC_MAC + 1] = eth_header->src_mac[1];
-	reformat_encap_data[ENCAP_IDX_SRC_MAC + 2] = eth_header->src_mac[2];
-	reformat_encap_data[ENCAP_IDX_SRC_MAC + 3] = eth_header->src_mac[3];
-	reformat_encap_data[ENCAP_IDX_SRC_MAC + 4] = eth_header->src_mac[4];
-	reformat_encap_data[ENCAP_IDX_SRC_MAC + 5] = eth_header->src_mac[5];
+	/* Set L2 addresses from the resolved tunnel eth header */
+	memcpy(&reformat_encap_data[ENCAP_IDX_DST_MAC], eth_header->dst_mac, RTE_ETHER_ADDR_LEN);
+	memcpy(&reformat_encap_data[ENCAP_IDX_SRC_MAC], eth_header->src_mac, RTE_ETHER_ADDR_LEN);
 
 	/* dst IP was already converted to big endian */
 	reformat_encap_data[ENCAP_DST_IP_IDX_IP6] = GET_BYTE(rule->encap_dst_ip6[0], 0);
@@ -1117,28 +1115,35 @@ destroy_pipe_cfg:
  * Create pipe with 5 tuple match, changeable set meta, and fwd to the second port
  *
  * @port [in]: port of the pipe
- * @debug_mode [in]: true if running in debug mode
  * @expected_entries [in]: expected number of entries
  * @protocol_type [in]: DOCA_FLOW_L4_TYPE_EXT_TCP / DOCA_FLOW_L4_TYPE_EXT_UDP
  * @l3_type [in]: DOCA_FLOW_L3_TYPE_IP4 / DOCA_FLOW_L3_TYPE_IP6
  * @fwd [in]: pointer to forward struct
- * @pipe_info [out]: pipe info struct
+ * @app_cfg [in/out]: application configuration (selects pipe_info from encrypt_pipes)
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t create_ipsec_hairpin_pipe(struct doca_flow_port *port,
-					      bool debug_mode,
 					      int expected_entries,
 					      enum doca_flow_l4_type_ext protocol_type,
 					      enum doca_flow_l3_type l3_type,
 					      struct doca_flow_fwd *fwd,
-					      struct security_gateway_pipe_info *pipe_info)
+					      struct ipsec_security_gw_config *app_cfg)
 {
 	int nb_actions = 1;
 	struct doca_flow_match match;
 	struct doca_flow_monitor monitor;
 	struct doca_flow_actions actions, *actions_arr[nb_actions];
 	struct doca_flow_pipe_cfg *pipe_cfg;
+	struct security_gateway_pipe_info *pipe_info;
 	doca_error_t result;
+
+	if (l3_type == DOCA_FLOW_L3_TYPE_IP4) {
+		pipe_info = (protocol_type == DOCA_FLOW_L4_TYPE_EXT_TCP) ? &app_cfg->encrypt_pipes.ipv4_tcp_pipe :
+									   &app_cfg->encrypt_pipes.ipv4_udp_pipe;
+	} else {
+		pipe_info = (protocol_type == DOCA_FLOW_L4_TYPE_EXT_TCP) ? &app_cfg->encrypt_pipes.ipv6_tcp_pipe :
+									   &app_cfg->encrypt_pipes.ipv6_udp_pipe;
+	}
 
 	memset(&match, 0, sizeof(match));
 	memset(&monitor, 0, sizeof(monitor));
@@ -1154,7 +1159,7 @@ static doca_error_t create_ipsec_hairpin_pipe(struct doca_flow_port *port,
 		SET_IP6_ADDR(match.outer.ip6.dst_ip, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff);
 	}
 
-	SET_L4_PORT(outer, src_port, 0xffff);
+	SET_L4_PORT(outer, src_port, app_cfg->match_src_port ? 0xffff : 0x0);
 	SET_L4_PORT(outer, dst_port, 0xffff);
 
 	actions.meta.pkt_meta = 0xffffffff;
@@ -1196,7 +1201,7 @@ static doca_error_t create_ipsec_hairpin_pipe(struct doca_flow_port *port,
 		DOCA_LOG_ERR("Failed to set doca_flow_pipe_cfg actions: %s", doca_error_get_descr(result));
 		goto destroy_pipe_cfg;
 	}
-	if (debug_mode) {
+	if (app_cfg->debug_mode) {
 		monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 		result = doca_flow_pipe_cfg_set_monitor(pipe_cfg, &monitor);
 		if (result != DOCA_SUCCESS) {
@@ -1211,7 +1216,7 @@ static doca_error_t create_ipsec_hairpin_pipe(struct doca_flow_port *port,
 		goto destroy_pipe_cfg;
 	}
 
-	if (debug_mode) {
+	if (app_cfg->debug_mode) {
 		pipe_info->entries_info =
 			(struct security_gateway_entry_info *)calloc(expected_entries,
 								     sizeof(struct security_gateway_entry_info));
@@ -1232,12 +1237,14 @@ destroy_pipe_cfg:
  * @port [in]: port of the pipe
  * @is_root [in]: true in vnf mode
  * @debug_mode [in]: true if running in debug mode
+ * @arp_handled [in]: true if an ARP control entry will be added (reserves an extra debug slot)
  * @pipe_info [out]: pipe info struct
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
 static doca_error_t create_control_pipe(struct doca_flow_port *port,
 					bool is_root,
 					bool debug_mode,
+					bool arp_handled,
 					struct security_gateway_pipe_info *pipe_info)
 {
 	struct doca_flow_pipe_cfg *pipe_cfg;
@@ -1272,8 +1279,12 @@ static doca_error_t create_control_pipe(struct doca_flow_port *port,
 	}
 
 	if (debug_mode) {
+		/* 4 forwarding entries (IPv4/IPv6 x TCP/UDP), plus one more when ARP is handled */
+		int nb_entries = 4 + (arp_handled ? 1 : 0);
+
 		pipe_info->entries_info =
-			(struct security_gateway_entry_info *)calloc(4, sizeof(struct security_gateway_entry_info));
+			(struct security_gateway_entry_info *)calloc(nb_entries,
+								     sizeof(struct security_gateway_entry_info));
 		if (pipe_info->entries_info == NULL) {
 			DOCA_LOG_ERR("Failed to allocate entries array");
 			result = DOCA_ERROR_NO_MEMORY;
@@ -1307,6 +1318,7 @@ static inline bool is_perf_bw(struct ipsec_security_gw_config *app_cfg)
  *
  * @control_pipe [in]: control pipe pointer
  * @pipes [in]: all the pipes to forward the packets to
+ * @ports [in]: application ports map
  * @perf_bw [in]: true if perf mode includes bandwidth
  * @debug_mode [in]: true if running in debug mode
  * @is_root [in]: true in vnf mode
@@ -1314,9 +1326,11 @@ static inline bool is_perf_bw(struct ipsec_security_gw_config *app_cfg)
  */
 static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *control_pipe,
 					     struct encrypt_pipes *pipes,
+					     struct ipsec_security_gw_ports_map *ports[],
 					     bool perf_bw,
 					     bool debug_mode,
-					     bool is_root)
+					     bool is_root,
+					     struct ipsec_security_gw_config *app_cfg)
 {
 	struct doca_flow_pipe_entry **entry = NULL;
 	struct doca_flow_monitor monitor;
@@ -1333,6 +1347,17 @@ static doca_error_t add_control_pipe_entries(struct security_gateway_pipe_info *
 	if (debug_mode && !is_root) {
 		monitor.counter_type = DOCA_FLOW_RESOURCE_TYPE_NON_SHARED;
 		monitor_ptr = &monitor;
+	}
+
+	if (app_cfg->arp_mode != IPSEC_SECURITY_GW_ARP_MODE_DEFAULT_MISS) {
+		result = add_arp_control_entry(control_pipe,
+					       SECURED_PORT_ID(ports),
+					       app_cfg->arp_mode,
+					       debug_mode,
+					       monitor_ptr,
+					       "arp_encrypt");
+		if (result != DOCA_SUCCESS)
+			return result;
 	}
 
 	if (is_root) {
@@ -1507,11 +1532,11 @@ static void create_ipsec_encrypt_shared_object_transport_over_udp(struct doca_fl
  *
  * @crypto_cfg [in]: shared object config
  * @rule [in]: encrypt rule
- * @eth_header [in]: contains the src mac address
+ * @eth_header [in]: resolved L2 header (src + dst MAC) for the tunnel encap
  */
 static void create_ipsec_encrypt_shared_object_tunnel(struct doca_flow_crypto_encap_action *crypto_cfg,
 						      struct encrypt_rule *rule,
-						      struct doca_flow_header_eth *eth_header)
+						      const struct doca_flow_header_eth *eth_header)
 {
 	if (rule->encap_l3_type == DOCA_FLOW_L3_TYPE_IP4)
 		create_ipv4_tunnel_encap(rule, false, eth_header, crypto_cfg->encap_data, &crypto_cfg->data_size);
@@ -1520,8 +1545,9 @@ static void create_ipsec_encrypt_shared_object_tunnel(struct doca_flow_crypto_en
 }
 
 /*
- * Config and bind shared IPSEC object for encryption
+ * Config the shared IPSEC object for encryption
  *
+ * @secured_port [in]: secured port
  * @app_sa_attrs [in]: SA attributes
  * @app_cfg [in]: application configuration struct
  * @ipsec_id [in]: shared object ID
@@ -1718,7 +1744,9 @@ static doca_error_t add_five_tuple_match_entry(struct doca_flow_port *port,
 	get_pipe_for_rule(rule, &app_cfg->encrypt_pipes, false, &pipe);
 
 	match.outer.l4_type_ext = rule->protocol;
-	SET_L4_PORT(outer, src_port, rte_cpu_to_be_16(rule->src_port));
+	/* Skip the source port value when it is wildcarded in the pipe mask (match_src_port). */
+	if (app_cfg->match_src_port)
+		SET_L4_PORT(outer, src_port, rte_cpu_to_be_16(rule->src_port));
 	SET_L4_PORT(outer, dst_port, rte_cpu_to_be_16(rule->dst_port));
 
 	if (rule->l3_type == DOCA_FLOW_L3_TYPE_IP4) {
@@ -1838,9 +1866,7 @@ doca_error_t add_encrypt_entry(struct encrypt_rule *rule,
 	}
 
 	if (app_cfg->mode == IPSEC_SECURITY_GW_TUNNEL) {
-		create_ipsec_encrypt_shared_object_tunnel(&crypto_actions.crypto_encap,
-							  rule,
-							  &ports[SECURED_IDX]->eth_header);
+		create_ipsec_encrypt_shared_object_tunnel(&crypto_actions.crypto_encap, rule, &app_cfg->encap_eth);
 		sequence_id = rule->encap_l3_type == DOCA_FLOW_L3_TYPE_IP4 ? ENCRYPT_IPV4_SEQ_IDX :
 									     ENCRYPT_IPV6_SEQ_IDX;
 	} else if (app_cfg->mode == IPSEC_SECURITY_GW_TRANSPORT) {
@@ -2016,7 +2042,7 @@ doca_error_t add_encrypt_entries(struct ipsec_security_gw_config *app_cfg,
 											      ENCRYPT_IPV6_SEQ_IDX;
 			create_ipsec_encrypt_shared_object_tunnel(&crypto_actions.crypto_encap,
 								  &rules[rule_id],
-								  &ports[SECURED_IDX]->eth_header);
+								  &app_cfg->encap_eth);
 		} else if (app_cfg->mode == IPSEC_SECURITY_GW_TRANSPORT) {
 			sequence_id = rules[rule_id].l3_type == DOCA_FLOW_L3_TYPE_IP4 ? ENCRYPT_IPV4_SEQ_IDX :
 											ENCRYPT_IPV6_SEQ_IDX;
@@ -2142,11 +2168,11 @@ doca_error_t ipsec_security_gw_create_encrypt_egress(struct ipsec_security_gw_po
 		}
 
 		snprintf(app_cfg->encrypt_pipes.vxlan_encap_pipe.name, MAX_NAME_LEN, "vxlan_encap");
-		result = create_vxlan_encap_pipe(secured_port, ports[SECURED_IDX]->port_id, app_cfg);
+		result = create_vxlan_encap_pipe(secured_port, SECURED_PORT_ID(ports), app_cfg);
 		if (result != DOCA_SUCCESS)
 			return result;
 	} else if (app_cfg->marker_encap) {
-		result = create_marker_encap_pipe(secured_port, ports[SECURED_IDX]->port_id, app_cfg);
+		result = create_marker_encap_pipe(secured_port, SECURED_PORT_ID(ports), app_cfg);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create non-ESP marker egress pipe: %s", doca_error_get_descr(result));
 			return result;
@@ -2155,7 +2181,7 @@ doca_error_t ipsec_security_gw_create_encrypt_egress(struct ipsec_security_gw_po
 
 	snprintf(app_cfg->encrypt_pipes.encrypt_pipe.name, MAX_NAME_LEN, "encrypt");
 	result = create_ipsec_encrypt_pipe(secured_port,
-					   ports[SECURED_IDX]->port_id,
+					   SECURED_PORT_ID(ports),
 					   expected_entries,
 					   app_cfg,
 					   &app_cfg->encrypt_pipes.encrypt_pipe);
@@ -2223,17 +2249,16 @@ doca_error_t ipsec_security_gw_insert_encrypt_rules(struct ipsec_security_gw_por
 	}
 
 	rss_flags = DOCA_FLOW_RSS_IPV4 | DOCA_FLOW_RSS_TCP;
-	create_hairpin_pipe_fwd(app_cfg, ports[UNSECURED_IDX]->port_id, true, rss_queues, rss_flags, &fwd);
+	create_hairpin_pipe_fwd(app_cfg, UNSECURED_PORT_ID(ports), true, rss_queues, rss_flags, &fwd);
 
 	DOCA_LOG_DBG("Creating IPv4 TCP hairpin pipe");
 	snprintf(app_cfg->encrypt_pipes.ipv4_tcp_pipe.name, MAX_NAME_LEN, "IPv4_tcp_hairpin");
 	result = create_ipsec_hairpin_pipe(unsecured_port,
-					   app_cfg->debug_mode,
 					   expected_entries,
 					   DOCA_FLOW_L4_TYPE_EXT_TCP,
 					   DOCA_FLOW_L3_TYPE_IP4,
 					   &fwd,
-					   &app_cfg->encrypt_pipes.ipv4_tcp_pipe);
+					   app_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed create IPv4 TCP hairpin pipe");
 		return result;
@@ -2242,15 +2267,14 @@ doca_error_t ipsec_security_gw_insert_encrypt_rules(struct ipsec_security_gw_por
 	DOCA_LOG_DBG("Creating IPv4 UDP hairpin pipe");
 	snprintf(app_cfg->encrypt_pipes.ipv4_udp_pipe.name, MAX_NAME_LEN, "IPv4_udp_hairpin");
 	rss_flags = DOCA_FLOW_RSS_IPV4 | DOCA_FLOW_RSS_UDP;
-	create_hairpin_pipe_fwd(app_cfg, ports[UNSECURED_IDX]->port_id, true, rss_queues, rss_flags, &fwd);
+	create_hairpin_pipe_fwd(app_cfg, UNSECURED_PORT_ID(ports), true, rss_queues, rss_flags, &fwd);
 
 	result = create_ipsec_hairpin_pipe(unsecured_port,
-					   app_cfg->debug_mode,
 					   expected_entries,
 					   DOCA_FLOW_L4_TYPE_EXT_UDP,
 					   DOCA_FLOW_L3_TYPE_IP4,
 					   &fwd,
-					   &app_cfg->encrypt_pipes.ipv4_udp_pipe);
+					   app_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed create IPv4 UDP hairpin pipe");
 		return result;
@@ -2259,15 +2283,14 @@ doca_error_t ipsec_security_gw_insert_encrypt_rules(struct ipsec_security_gw_por
 	DOCA_LOG_DBG("Creating IPv6 TCP hairpin pipe");
 	snprintf(app_cfg->encrypt_pipes.ipv6_tcp_pipe.name, MAX_NAME_LEN, "IPv6_tcp_hairpin");
 	rss_flags = DOCA_FLOW_RSS_IPV6 | DOCA_FLOW_RSS_TCP;
-	create_hairpin_pipe_fwd(app_cfg, ports[UNSECURED_IDX]->port_id, true, rss_queues, rss_flags, &fwd);
+	create_hairpin_pipe_fwd(app_cfg, UNSECURED_PORT_ID(ports), true, rss_queues, rss_flags, &fwd);
 
 	result = create_ipsec_hairpin_pipe(unsecured_port,
-					   app_cfg->debug_mode,
 					   expected_entries,
 					   DOCA_FLOW_L4_TYPE_EXT_TCP,
 					   DOCA_FLOW_L3_TYPE_IP6,
 					   &fwd,
-					   &app_cfg->encrypt_pipes.ipv6_tcp_pipe);
+					   app_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed create IPv6 TCP hairpin pipe");
 		return result;
@@ -2276,15 +2299,14 @@ doca_error_t ipsec_security_gw_insert_encrypt_rules(struct ipsec_security_gw_por
 	DOCA_LOG_DBG("Creating IPv6 UDP hairpin pipe");
 	snprintf(app_cfg->encrypt_pipes.ipv6_udp_pipe.name, MAX_NAME_LEN, "IPv6_udp_hairpin");
 	rss_flags = DOCA_FLOW_RSS_IPV6 | DOCA_FLOW_RSS_UDP;
-	create_hairpin_pipe_fwd(app_cfg, ports[UNSECURED_IDX]->port_id, true, rss_queues, rss_flags, &fwd);
+	create_hairpin_pipe_fwd(app_cfg, UNSECURED_PORT_ID(ports), true, rss_queues, rss_flags, &fwd);
 
 	result = create_ipsec_hairpin_pipe(unsecured_port,
-					   app_cfg->debug_mode,
 					   expected_entries,
 					   DOCA_FLOW_L4_TYPE_EXT_UDP,
 					   DOCA_FLOW_L3_TYPE_IP6,
 					   &fwd,
-					   &app_cfg->encrypt_pipes.ipv6_udp_pipe);
+					   app_cfg);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed create IPv6 UDP hairpin pipe");
 		return result;
@@ -2320,17 +2342,22 @@ doca_error_t ipsec_security_gw_insert_encrypt_rules(struct ipsec_security_gw_por
 	}
 	DOCA_LOG_DBG("Creating control pipe");
 	snprintf(app_cfg->encrypt_pipes.encrypt_root.name, MAX_NAME_LEN, "encrypt_root");
-	result =
-		create_control_pipe(unsecured_port, is_root, app_cfg->debug_mode, &app_cfg->encrypt_pipes.encrypt_root);
+	result = create_control_pipe(unsecured_port,
+				     is_root,
+				     app_cfg->debug_mode,
+				     app_cfg->arp_mode != IPSEC_SECURITY_GW_ARP_MODE_DEFAULT_MISS,
+				     &app_cfg->encrypt_pipes.encrypt_root);
 	if (result != DOCA_SUCCESS)
 		return result;
 
 	DOCA_LOG_DBG("Adding control entries");
 	result = add_control_pipe_entries(&app_cfg->encrypt_pipes.encrypt_root,
 					  &app_cfg->encrypt_pipes,
+					  ports,
 					  perf_bw,
 					  app_cfg->debug_mode,
-					  is_root);
+					  is_root,
+					  app_cfg);
 	if (result != DOCA_SUCCESS)
 		return result;
 
@@ -2397,21 +2424,13 @@ static doca_error_t prepare_packet_tunnel(struct rte_mbuf **m,
 
 	/* add the new IP and ESP headers */
 	if (rule->encap_l3_type == DOCA_FLOW_L3_TYPE_IP4) {
-		create_ipv4_tunnel_encap(rule,
-					 sw_sn_inc,
-					 &ctx->ports[SECURED_IDX]->eth_header,
-					 (void *)nh,
-					 &reformat_encap_data_len);
+		create_ipv4_tunnel_encap(rule, sw_sn_inc, &ctx->config->encap_eth, (void *)nh, &reformat_encap_data_len);
 		ipv4 = (void *)(nh + 1);
 		ipv4->total_length = rte_cpu_to_be_16((*m)->pkt_len - sizeof(struct rte_ether_hdr));
 		ipv4->hdr_checksum = 0;
 		ipv4->hdr_checksum = rte_ipv4_cksum(ipv4);
 	} else {
-		create_ipv6_tunnel_encap(rule,
-					 sw_sn_inc,
-					 &ctx->ports[SECURED_IDX]->eth_header,
-					 (void *)nh,
-					 &reformat_encap_data_len);
+		create_ipv6_tunnel_encap(rule, sw_sn_inc, &ctx->config->encap_eth, (void *)nh, &reformat_encap_data_len);
 		ipv6 = (void *)(nh + 1);
 		ipv6->payload_len = rte_cpu_to_be_16((*m)->pkt_len - sizeof(struct rte_ether_hdr) - sizeof(*ipv6));
 	}

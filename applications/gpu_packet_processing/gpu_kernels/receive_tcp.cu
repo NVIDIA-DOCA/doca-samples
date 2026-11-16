@@ -152,24 +152,23 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 		stats_thread.others = 0;
 
 		ret = doca_gpu_dev_eth_rxq_recv<DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK,
-									DOCA_GPUNETIO_ETH_MCST_AUTO,
-									DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO>(
-								rxq,
-								MAX_RX_NUM_PKTS,
-								MAX_RX_TIMEOUT_NS,
-								&out_first_pkt_idx,
-								&out_pkt_num,
-								NULL);
+						DOCA_GPUNETIO_ETH_MCST_AUTO,
+						DOCA_GPUNETIO_ETH_NIC_HANDLER_AUTO>(rxq,
+										    MAX_RX_NUM_PKTS,
+										    MAX_RX_TIMEOUT_NS,
+										    &out_first_pkt_idx,
+										    &out_pkt_num,
+										    NULL);
 		/* If any thread returns receive error, the whole execution stops */
 		if (ret != DOCA_SUCCESS) {
 			if (threadIdx.x == 0) {
-				#if ENABLE_KERNEL_DEBUG_PRINTS == 1
+#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 				printf("Receive TCP kernel error %d Block %d rxpkts %d error %d\n",
 				       ret,
 				       blockIdx.x,
 				       out_pkt_num,
 				       ret);
-				#endif
+#endif
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 			}
 			break;
@@ -193,12 +192,12 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 											  idx_tmp,
 											  (void **)&http_global);
 					if (ret != DOCA_SUCCESS) {
-						#if ENABLE_KERNEL_DEBUG_PRINTS == 1
+#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 						printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n",
 						       ret,
 						       blockIdx.x,
 						       threadIdx.x);
-						#endif
+#endif
 						DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 						break;
 					}
@@ -263,12 +262,12 @@ __global__ void cuda_kernel_receive_tcp(uint32_t *exit_cond,
 									  sem_stats_idx,
 									  (void **)&stats_global);
 			if (ret != DOCA_SUCCESS) {
-				#if ENABLE_KERNEL_DEBUG_PRINTS == 1
+#if ENABLE_KERNEL_DEBUG_PRINTS == 1
 				printf("TCP Error %d doca_gpu_dev_semaphore_get_custom_info_addr block %d thread %d\n",
 				       ret,
 				       blockIdx.x,
 				       threadIdx.x);
-				#endif
+#endif
 				DOCA_GPUNETIO_VOLATILE(*exit_cond) = 1;
 				break;
 			}

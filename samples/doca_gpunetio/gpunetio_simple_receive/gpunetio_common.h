@@ -47,11 +47,9 @@
 
 #include "common.h"
 
-/* Set alignment to 64kB to work on all platforms */
 #define MAX_PCI_ADDRESS_LEN 32U
 #define CUDA_BLOCK_THREADS 32
-#define PACKET_SIZE 1024
-#define MAX_RQ_DESCR_NUM 8192
+#define DEFAULT_EXEC_SCOPE 2 /* DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK, numeric to be printed in the help */
 #define MAX_PKT_NUM 16384
 #define MAX_PKT_SIZE 2048
 #define MAX_RX_TIMEOUT_NS 500000 // 500us
@@ -76,8 +74,8 @@ struct rxq_queue {
 	struct doca_gpu_eth_rxq *eth_rxq_gpu;	     /* DOCA Ethernet receive queue GPU handler */
 	struct doca_mmap *pkt_buff_mmap;	     /* DOCA mmap to receive packet with DOCA Ethernet queue */
 	void *gpu_pkt_addr;			     /* DOCA mmap GPU memory address */
-	int dmabuf_fd;				     /* GPU memory dmabuf descriptor */
-	struct doca_flow_port *port;		     /* DOCA Flow port */
+	int dmabuf_fd;				     /* GPU memory dmabuf descriptor, -1 if not used */
+	bool ctx_started;			     /* DOCA Ethernet receive queue context started */
 	struct doca_flow_pipe *rxq_pipe;	     /* DOCA Flow receive pipe */
 	struct doca_flow_pipe *root_pipe;	     /* DOCA Flow root pipe */
 	struct doca_flow_pipe_entry *root_udp_entry; /* DOCA Flow root entry */

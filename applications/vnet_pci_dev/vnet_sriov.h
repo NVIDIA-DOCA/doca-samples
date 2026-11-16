@@ -72,6 +72,19 @@ struct vnet_sriov_caps {
 };
 
 /**
+ * Query the device-wide MSI-X vectors and doorbells not yet assigned to any
+ * emulated function, which is the reserve every PF and VF of this device draws
+ * on. A PF's own pool is the separate, narrower question of what one PF may
+ * still hand to its VFs, so sizing a VF needs room in both.
+ *
+ * @param[in] devinfo Device info to query (from doca_dev_as_devinfo()).
+ * @param[out] num_msix Unassigned MSI-X vectors.
+ * @param[out] num_db Unassigned doorbells.
+ * @return DOCA_SUCCESS, DOCA_ERROR_INVALID_VALUE, or a driver error.
+ */
+doca_error_t vnet_sriov_device_free_resources(const struct doca_devinfo *devinfo, uint32_t *num_msix, uint32_t *num_db);
+
+/**
  * Probe SDK dynamic-SR-IOV capabilities for a device.
  *
  * Returns DOCA_ERROR_NOT_SUPPORTED (with *caps zeroed) when the device does not
@@ -158,22 +171,49 @@ doca_error_t vnet_sriov_discover_vf_reps(struct tlp_context *tlp_ctx, struct pci
 void vnet_sriov_close_vf_reps(struct vnet_sriov_pf_state *sriov);
 
 /**
- * Bring up the SDK tlp_dev backing one VF slot (host VFE 0->1 fan-out).
+ * Bring up the SDK tlp_dev backing one VF slot, still hidden from the host (see
+ * vnet_sriov_expose_vf_slot()). A slot only takes its MSI-X and doorbell counts
+ * while hidden, so this has to run before the host can enable SR-IOV.
  *
- * Creates and starts a tlp_dev on the slot's opened rep and flips slot->active.
- * Idempotent: returns DOCA_SUCCESS if already active, and DOCA_ERROR_NOT_FOUND
- * for a slot with no opened rep so the fan-out worker can iterate uniformly.
- * Heavy SDK call (~50-200ms); runs on the workqueue worker, not the TLP thread.
+ * vf_qp is the slot's own queue pair count, or 0 to leave its sizing alone: no
+ * --vf-queue-pairs, or a standby inheriting VFs the active side sized. A count
+ * draws from the PF pool, so vnet_sriov_reset_vf_resources() has to run first.
  */
-doca_error_t vnet_sriov_start_vf_slot(struct tlp_context *tlp_ctx, struct vnet_vf_slot *slot);
+doca_error_t vnet_sriov_provision_vf_slot(struct tlp_context *tlp_ctx, struct vnet_vf_slot *slot, uint16_t vf_qp);
+
+/**
+ * Provision every discovered VF slot of a PF, each with its own queue pairs.
+ * Call at PF bring-up, after vnet_sriov_reset_vf_resources() and while SR-IOV
+ * is off. Fails on the first slot that cannot come up, for the caller to unwind
+ * the PF: a partly claimed pool cannot be pooled again.
+ */
+doca_error_t vnet_sriov_provision_vf_slots(struct tlp_context *tlp_ctx, struct pci_device_config *pf_endpoint);
+
+/**
+ * Show a provisioned slot to the host and hide it again (host VFE 0->1, 1->0).
+ * Hiding also drops the slot's datapath. Neither touches its tlp_dev, so the
+ * counts it claimed at bring-up survive any number of enable cycles.
+ */
+doca_error_t vnet_sriov_expose_vf_slot(struct vnet_vf_slot *slot);
+doca_error_t vnet_sriov_unexpose_vf_slot(struct vnet_vf_slot *slot);
+
+/**
+ * Mark every provisioned VF slot of a PF for a tlp_dev restart, after the PF's own
+ * tlp_dev restarted. Caller holds pf_endpoint->endpoint_lock.
+ */
+void vnet_sriov_note_pf_tlp_restart(struct pci_device_config *pf_endpoint);
+
+/**
+ * Restart a marked VF slot's tlp_dev before VFE 0->1 exposes it. Returns
+ * DOCA_SUCCESS if restarted or none was needed; on failure the mark stays.
+ */
+doca_error_t vnet_sriov_refresh_vf_slot(struct vnet_vf_slot *slot);
 
 /**
  * Stop and destroy the SDK tlp_dev backing one VF slot (reverse of
- * vnet_sriov_start_vf_slot()).
- *
- * Tears down the per-VF datapath engine, then stops + destroys slot->tlp_dev
- * and clears slot->active. Idempotent (DOCA_SUCCESS on an already-inactive
- * slot) and returns DOCA_ERROR_NOT_FOUND for a slot with no opened rep.
+ * vnet_sriov_provision_vf_slot()), for PF teardown and LU handover. Tears down
+ * the slot's datapath first. Idempotent, and DOCA_ERROR_NOT_FOUND for a slot
+ * with no opened rep.
  */
 doca_error_t vnet_sriov_stop_vf_slot(struct vnet_vf_slot *slot);
 
@@ -183,6 +223,28 @@ doca_error_t vnet_sriov_stop_vf_slot(struct vnet_vf_slot *slot);
  * template and the VF offload engine so both present the identical MAC.
  */
 void vnet_sriov_derive_vf_mac(const uint8_t *base_mac, uint16_t num_ep, uint32_t vf_index, uint8_t *out_mac);
+
+/**
+ * Queue pairs of one VF slot, and the largest such count. With --vf-queue-pairs
+ * the count comes from that list, indexed by the slot within its own PF and
+ * repeated once exhausted; without it every VF inherits the PF's queue pairs.
+ */
+uint16_t vnet_sriov_vf_qp(const struct tlp_context *tlp_ctx, uint16_t vf_slot);
+uint16_t vnet_sriov_vf_qp_max(const struct tlp_context *tlp_ctx);
+
+/**
+ * MSI-X vectors and doorbells one VF slot holds: both follow its own queue pairs
+ * under --vf-queue-pairs, else the per-VF counts the representor provisioned.
+ */
+void vnet_sriov_vf_res(const struct tlp_context *tlp_ctx, uint16_t vf_slot, uint16_t *num_msix, uint16_t *num_db);
+
+/**
+ * Hand the PF's VF MSI-X vectors and doorbells to its pool, so each VF can then
+ * claim its own counts (see vnet_sriov_provision_vf_slot()). No-op without
+ * --vf-queue-pairs or once pooled, and skipped while any slot holds a device,
+ * which leaves it running once per PF, at bring-up.
+ */
+doca_error_t vnet_sriov_reset_vf_resources(struct tlp_context *tlp_ctx, struct pci_device_config *pf_endpoint);
 
 #ifdef __cplusplus
 }

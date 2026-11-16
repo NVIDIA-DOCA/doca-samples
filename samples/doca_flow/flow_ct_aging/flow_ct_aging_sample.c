@@ -406,7 +406,7 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 	struct aging_user_data *user_data[nb_aged_entries];
 	uint32_t actions_mem_size[nb_ports];
 	struct entries_status ct_status;
-	uint32_t nb_arm_queues = 1, nb_ctrl_queues = 1, nb_ipv6_sessions = 0; /* On BF2 should always be 0 */
+	uint32_t nb_ct_queues = 1, nb_ctrl_queues = 1, nb_ipv6_sessions = 0; /* On BF2 should always be 0 */
 	struct ct_port_cfg ct_port_cfg = {.zone_match_mask = {&o_zone_mask, &r_zone_mask},
 					  .modify_mask = {&o_modify_mask, &r_modify_mask}};
 	uint16_t ct_queue = nb_queues;
@@ -420,9 +420,9 @@ doca_error_t flow_ct_aging(uint16_t nb_queues, struct flow_switch_ctx *ctx)
 	resource.nr_counters = 1;
 	resource.nr_ct_counters = (nb_aged_entries + nb_ipv6_sessions) * 2;
 
-	struct ct_init_cfg ct_cfg = {.ct_queues = nb_arm_queues, .ct_ctrl_queues = nb_ctrl_queues};
+	struct ct_init_cfg ct_cfg = {.ct_queues = nb_ct_queues, .ct_ctrl_queues = nb_ctrl_queues};
 	result = init_doca_flow_cb(nb_queues,
-				   "switch,hws",
+				   "switch",
 				   &resource,
 				   nr_shared_resources,
 				   check_for_valid_entry_aging,

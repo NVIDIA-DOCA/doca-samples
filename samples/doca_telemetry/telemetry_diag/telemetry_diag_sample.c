@@ -494,13 +494,13 @@ static doca_error_t telemetry_diag_sample_context_init(struct telemetry_diag_sam
 	free(data_ids);
 	return DOCA_SUCCESS;
 
-free_data_ids:
-	free(data_ids);
 teardown_init:
 	teardown_result = telemetry_diag_sample_cleanup(sample_objects);
 	if (teardown_result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Teardown failed with error=%s", doca_error_get_name(teardown_result));
 	}
+free_data_ids:
+	free(data_ids);
 	return result;
 }
 
@@ -979,6 +979,7 @@ doca_error_t telemetry_diag_sample_run(const struct telemetry_diag_sample_cfg *c
 	result = open_doca_device_with_pci(cfg->pci_addr, &sample_objects.dev);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to open device with error=%s", doca_error_get_name(result));
+		goto teardown;
 	}
 
 	result = telemetry_diag_sample_context_init(&sample_objects,

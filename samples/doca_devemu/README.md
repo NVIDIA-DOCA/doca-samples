@@ -110,7 +110,9 @@ This sample illustrates how the host driver can write to a stateful region, and 
 
 ## PCI Device DB
 
-This sample illustrates how the host driver can ring the doorbell and how the BlueField can retrieve the doorbell value. The sample also demonstrates how to handle FLR.
+This sample illustrates how the host driver can ring the doorbell and how the BlueField can retrieve the doorbell value, either from the DPA or the DPU. The sample also demonstrates how to handle FLR.
+
+The DPU path requires every consecutive write to a given doorbell to carry a different value, so ringing the doorbell twice with the same value is reported only once. Pass a different `--db-value` to the host sample on every run.
 
 ### Sample Logic
 
@@ -119,28 +121,35 @@ This sample illustrates how the host driver can ring the doorbell and how the Bl
 ##### Host (BlueField Arm) Logic
 
 - Initializing the generic PCIe type based on `devemu_pci_type_config.h`.
-- Initializing DPA resources:
-  - Creating DPA instance and associating it with the DPA application.
-  - Creating DPA thread and associating it with the DPA DB handler.
-  - Creating DB completion context and associating it with the DPA thread.
+- According to the selected DB datapath:
+  - **DPA path (default)**:
+    - Initializing DPA resources:
+      - Creating DPA instance and associating it with the DPA application.
+      - Creating DPA thread and associating it with the DPA DB handler.
+      - Creating DB completion context and associating it with the DPA thread.
+  - **DPU path**:
+    - Creating a DPU DB completion context, registering the DB handler with it, and connecting it to the progress engine (PE). No DPA resources are created by the sample, the completion context owns the DB arming thread internally.
 - Acquiring the emulated device representor that matches the provided VUID.
-- Creating a PCIe device context to manage the emulated device and connecting it to progress engine (PE).
+- Creating a PCIe device context to manage the emulated device and connecting it to progress engine (PE). On the DPA path the context datapath is also set on DPA.
 - Registering to the context state changes event.
 - Registering to the PCIe device FLR event.
 - Using the PE to poll for any of the following:
   - Every time the PCIe device context state transitions to running, the handler performs the following:
     - Creates a DB object.
-    - Makes RPC to DPA, to initialize the DB object.
+    - On the DPA path only, makes RPC to DPA, to initialize the DB object. A DPU DB is associated with its completion context on creation and needs no such binding.
   - Every time the PCIe device context state transitions to stopping, the handler performs the following:
-    - Makes RPC to DPA, to un-initialize the DB object.
+    - On the DPA path only, makes RPC to DPA, to un-initialize the DB object.
     - Destroys the DB object.
   - Every time the host driver initializes or destroys the VFIO device, an FLR event is triggered. The FLR handler performs the following:
     - Destroys DB object.
     - Stops the PCIe device context.
     - Starts the PCIe device context again.
+  - On the DPU path, every DB value the host writes, which is reported to the registered DB handler and printed to the screen.
 - The sample polls indefinitely until the user presses `[Ctrl+c]` to close the sample.
 
 ##### Device (BlueField DPA) Logic
+
+Applies to the DPA path only. On the DPU path, no device code of the sample runs.
 
 - Initializing application RPC:
   - Setting the global context to point to the DB completion context DPA handle.
@@ -151,9 +160,9 @@ This sample illustrates how the host driver can ring the doorbell and how the Bl
   - Getting DB completion element from completion context.
   - Getting DB handle from the DB completion element.
   - Acknowledging the DB completion element.
-  - Requesting notification from DB completion context.
   - Requesting notification from DB.
   - Getting DB value from DB.
+  - Requesting notification from DB completion context.
 
 #### The host sample logic includes
 

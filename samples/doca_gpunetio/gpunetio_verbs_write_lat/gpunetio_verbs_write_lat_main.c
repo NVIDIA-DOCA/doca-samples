@@ -46,6 +46,7 @@ static doca_error_t register_verbs_params(void)
 	struct doca_argp_param *gid_index_param;
 	struct doca_argp_param *gpu_device_param;
 	struct doca_argp_param *iters_param;
+	struct doca_argp_param *data_direct_param;
 
 	status = doca_argp_param_create(&client_param);
 	if (status != DOCA_SUCCESS) {
@@ -71,7 +72,7 @@ static doca_error_t register_verbs_params(void)
 	}
 
 	doca_argp_param_set_short_name(nic_handler_param, "n");
-	doca_argp_param_set_long_name(nic_handler_param, "nic handler");
+	doca_argp_param_set_long_name(nic_handler_param, "nic-handler");
 	doca_argp_param_set_arguments(
 		nic_handler_param,
 		"<NIC handler type (0: AUTO, 1: CPU Proxy 2: GPU DB 3: BlueFlame 4: GPU DB no DBR 5: CPU Proxy no DBR)>");
@@ -152,6 +153,22 @@ static doca_error_t register_verbs_params(void)
 		return status;
 	}
 
+	status = doca_argp_param_create(&data_direct_param);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(status));
+		return status;
+	}
+	doca_argp_param_set_short_name(data_direct_param, "z");
+	doca_argp_param_set_long_name(data_direct_param, "data-direct");
+	doca_argp_param_set_description(data_direct_param, "Enable (1) or disable (0) Data Direct (optional)");
+	doca_argp_param_set_callback(data_direct_param, data_direct_callback);
+	doca_argp_param_set_type(data_direct_param, DOCA_ARGP_TYPE_INT);
+	status = doca_argp_register_param(data_direct_param);
+	if (status != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(status));
+		return status;
+	}
+
 	return DOCA_SUCCESS;
 }
 
@@ -175,6 +192,7 @@ int main(int argc, char **argv)
 	cfg.num_iters = NUM_ITERS;
 	cfg.cuda_threads = CUDA_THREADS_LAT;
 	cfg.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
+	cfg.enable_data_direct = false;
 
 	status = doca_log_backend_create_standard();
 	if (status != DOCA_SUCCESS)
@@ -206,6 +224,10 @@ int main(int argc, char **argv)
 		DOCA_LOG_ERR("Failed to parse sample input: %s", doca_error_get_descr(status));
 		goto argp_cleanup;
 	}
+
+	status = verbs_validate_config(&cfg, 1, 0);
+	if (status != DOCA_SUCCESS)
+		goto argp_cleanup;
 
 	if (cfg.is_server) {
 		status = verbs_server(&cfg);

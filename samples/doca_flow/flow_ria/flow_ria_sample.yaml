@@ -1,0 +1,95 @@
+#
+# Copyright (c) 2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted
+# provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of
+#       conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
+#       to endorse or promote products derived from this software without specific prior written
+#       permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+
+number_of_ports: 2
+min_supported_nic:
+  - ConnectX-10
+mode_args:
+  - switch
+ports_description:
+  port_0: doca_dev
+  port_1: doca_rep_dev
+description: "This sample illustrates how to use the RIA external action on RoCEv2 traffic.
+              A BTH RDMA WRITE ONLY with AckReq set allocates a RIA index for its PSN, and the
+              ACKNOWLEDGE echoing that PSN releases it. All RoCEv2 traffic is forwarded between
+              the two ports through an RSS queue. This sample runs over DOCA-ETH and is dpdk-free.
+              Sample Command Line: ./build/doca_flow_ria -a pci/08:00.0 -r pci/08:00.0,pf0vf0"
+use_cases:
+  - name: "Flow RIA use case #1"
+    args: ""
+    stages:
+      - name: "Allocate and release a RIA index for a single PSN"
+        packets_to_send:
+          # ALLOC: new index for PSN 0x000064.
+          - receiving_port: 0
+            packets:
+              - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x0a, dqpn=0x102030, ackreq=1, psn=0x000064)/ Raw(load=b'RDMA WRITE ONLY, allocates a RIA index')
+          # ALLOC on an existing tag is idempotent and reports HIT with the same index.
+          - receiving_port: 0
+            packets:
+              - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x0a, dqpn=0x102030, ackreq=1, psn=0x000064)/ Raw(load=b'Same PSN again, RIA reports HIT')
+          # DEALLOC: the acknowledgement comes back from the other side. Note the different
+          # dqpn - a real ACK carries the requester QP - which is why the tag is the PSN only.
+          - receiving_port: 1
+            packets:
+              - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x11, dqpn=0x405060, ackreq=0, psn=0x000064)/ Raw(load=b'ACKNOWLEDGE, releases the RIA index')
+          # The tag is gone now, so a repeated ACKNOWLEDGE reports MISS.
+          - receiving_port: 1
+            packets:
+              - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x11, dqpn=0x405060, ackreq=0, psn=0x000064)/ Raw(load=b'ACKNOWLEDGE again, RIA reports MISS')
+          # Neither of these triggers a RIA operation, both are still forwarded.
+          - receiving_port: 0
+            packets:
+              - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x0a, dqpn=0x102030, ackreq=0, psn=0x000064)/ Raw(load=b'RDMA WRITE ONLY without AckReq, no RIA')
+              - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x64, dqpn=0x102030, ackreq=1, psn=0x000064)/ Raw(load=b'UD SEND, no RIA')
+        validation:
+          - type: packet
+            expected_packets:
+              - forwarding_port: 1
+                packets:
+                  - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x0a, dqpn=0x102030, ackreq=1, psn=0x000064)/ Raw(load=b'RDMA WRITE ONLY, allocates a RIA index')
+                  - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x0a, dqpn=0x102030, ackreq=1, psn=0x000064)/ Raw(load=b'Same PSN again, RIA reports HIT')
+                  - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x0a, dqpn=0x102030, ackreq=0, psn=0x000064)/ Raw(load=b'RDMA WRITE ONLY without AckReq, no RIA')
+                  - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x64, dqpn=0x102030, ackreq=1, psn=0x000064)/ Raw(load=b'UD SEND, no RIA')
+              - forwarding_port: 0
+                packets:
+                  - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x11, dqpn=0x405060, ackreq=0, psn=0x000064)/ Raw(load=b'ACKNOWLEDGE, releases the RIA index')
+                  - Ether()/IP()/ UDP(sport=4789, dport=4791)/ BTH(opcode=0x11, dqpn=0x405060, ackreq=0, psn=0x000064)/ Raw(load=b'ACKNOWLEDGE again, RIA reports MISS')
+          # Forwarding alone does not prove the RIA operations ran, so assert the per packet log
+          # line of each one. The lines are truncated before "ria_idx" because the index the
+          # hardware hands out is not part of the contract this sample validates.
+          - type: dump
+            expected_text:
+              # ALLOC on a new tag, then the same tag again, which hits the index just allocated.
+              - "Port 0: opcode=0x0a qpn=0x102030 psn=0x000064 ackreq=1, ALLOC status=ALLOC_NEW_POINTER"
+              - "Port 0: opcode=0x0a qpn=0x102030 psn=0x000064 ackreq=1, ALLOC status=HIT"
+              # DEALLOC releases that index, so the repeated acknowledgement finds nothing.
+              - "Port 1: opcode=0x11 qpn=0x405060 psn=0x000064 ackreq=0, DEALLOC status=HIT"
+              - "Port 1: opcode=0x11 qpn=0x405060 psn=0x000064 ackreq=0, DEALLOC status=MISS"
+              # Neither of these reaches the RIA pipe: the first clears AckReq, the second is not
+              # an opcode the root pipe classifies. Asserting them keeps the root pipe from
+              # silently over matching.
+              - "Port 0: opcode=0x0a qpn=0x102030 psn=0x000064 ackreq=0, no RIA"
+              - "Port 0: opcode=0x64 qpn=0x102030 psn=0x000064 ackreq=1, no RIA"

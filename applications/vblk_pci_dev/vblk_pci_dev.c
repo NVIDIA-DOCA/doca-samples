@@ -623,6 +623,13 @@ int main(int argc, char **argv)
 	/* Setup signal handlers for graceful termination */
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
+	/* Survive a reader that goes away first. Ctrl-C reaches every process in the
+	 * foreground group, so a 'vblk | tee log' pipeline loses tee immediately;
+	 * the default SIGPIPE would then kill this process on its next log line,
+	 * before vblk_pci_reset() returns the PCI representors to firmware. They
+	 * would stay allocated until the DPU is reset and the next run would fail
+	 * with NO_RESOURCES. */
+	signal(SIGPIPE, SIG_IGN);
 
 	DOCA_LOG_INFO("Configuration:");
 	DOCA_LOG_INFO("  Device: %s", config.device_name);

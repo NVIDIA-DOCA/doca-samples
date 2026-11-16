@@ -53,6 +53,7 @@ struct devemu_resources {
 	struct doca_dpa_thread *dpa_thread;			/**< DPA thread for receiving completions */
 	struct doca_devemu_pci_db_completion *db_comp;		/**< The DPA DB completion context */
 	doca_dpa_dev_devemu_pci_db_completion_t db_comp_handle; /**< The DPA DB completion context handle */
+	struct doca_devemu_pci_dpu_db_completion *dpu_db_comp;	/**< The DPU DB completion context */
 	uint16_t db_region_idx;					/**< The DB region index */
 	uint32_t db_id;						/**< The DB ID */
 	struct {

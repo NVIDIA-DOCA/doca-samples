@@ -55,17 +55,19 @@ __global__ void put_bw(struct doca_gpu_dev_verbs_qp *qp,
 #endif
 
 	for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < num_iters; idx += (blockDim.x * gridDim.x)) {
-
 #if KERNEL_DEBUG_TIMES == 1
 		step1 = doca_gpu_dev_verbs_query_globaltimer();
 #endif
 
-		doca_gpu_dev_verbs_put<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO, scope>(
-			qp,
-			doca_gpu_dev_verbs_addr{.addr = (uint64_t)(dst_buf + (data_size * tidx)), .key = (uint32_t)dst_buf_mkey},
-			doca_gpu_dev_verbs_addr{.addr = (uint64_t)(src_buf + (data_size * tidx)), .key = (uint32_t)src_buf_mkey},
-			data_size,
-			&out_ticket);
+		doca_gpu_dev_verbs_put<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+				       DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
+				       scope>(qp,
+					      doca_gpu_dev_verbs_addr{.addr = (uint64_t)(dst_buf + (data_size * tidx)),
+								      .key = (uint32_t)dst_buf_mkey},
+					      doca_gpu_dev_verbs_addr{.addr = (uint64_t)(src_buf + (data_size * tidx)),
+								      .key = (uint32_t)src_buf_mkey},
+					      data_size,
+					      &out_ticket);
 
 #if KERNEL_DEBUG_TIMES == 1
 		step2 = doca_gpu_dev_verbs_query_globaltimer();
@@ -85,7 +87,6 @@ __global__ void put_bw(struct doca_gpu_dev_verbs_qp *qp,
 	}
 
 	doca_gpu_dev_verbs_wait<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp);
-
 }
 
 extern "C" {
@@ -112,23 +113,21 @@ doca_error_t gpunetio_verbs_put_bw(cudaStream_t stream,
 	}
 
 	if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD)
-		put_bw<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>
-			<<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
-									num_iters,
-									data_size,
-									src_buf,
-									src_buf_mkey,
-									dst_buf,
-									dst_buf_mkey);
+		put_bw<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD><<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
+													num_iters,
+													data_size,
+													src_buf,
+													src_buf_mkey,
+													dst_buf,
+													dst_buf_mkey);
 	else if (scope == DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP)
-		put_bw<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP>
-			<<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
-									num_iters,
-									data_size,
-									src_buf,
-									src_buf_mkey,
-									dst_buf,
-									dst_buf_mkey);
+		put_bw<DOCA_GPUNETIO_VERBS_EXEC_SCOPE_WARP><<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
+												      num_iters,
+												      data_size,
+												      src_buf,
+												      src_buf_mkey,
+												      dst_buf,
+												      dst_buf_mkey);
 	else {
 		DOCA_LOG_ERR("Invalid exec scope %d, must be thread or warp", scope);
 		return DOCA_ERROR_INVALID_VALUE;

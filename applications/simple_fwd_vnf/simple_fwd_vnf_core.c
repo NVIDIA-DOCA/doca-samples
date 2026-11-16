@@ -271,6 +271,21 @@ static doca_error_t age_thread_callback(void *param, void *config)
 }
 
 /*
+ * Callback function for setting the DOCA Flow Tune data collection
+ *
+ * @param [in]: parameter indicates whether or not to collect DOCA Flow Tune data
+ * @config [out]: application configuration to set the DOCA Flow Tune data collection
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t enable_tune_callback(void *param, void *config)
+{
+	struct simple_fwd_config *app_config = (struct simple_fwd_config *)config;
+
+	app_config->enable_tune = *(bool *)param;
+	return DOCA_SUCCESS;
+}
+
+/*
  * Convert the user context to the flow_dev_ctx struct
  *
  * @user_ctx [in]: User context
@@ -290,7 +305,7 @@ doca_error_t register_simple_fwd_params(void)
 {
 	doca_error_t result;
 	struct doca_argp_param *stats_param, *nr_queues_param, *rx_only_param, *hw_offload_param;
-	struct doca_argp_param *hairpinq_param, *age_thread_param;
+	struct doca_argp_param *hairpinq_param, *age_thread_param, *enable_tune_param;
 
 	/* Register flow device params */
 	result = register_flow_device_params(flow_dev_ctx_from_user_ctx);
@@ -398,6 +413,22 @@ doca_error_t register_simple_fwd_params(void)
 	doca_argp_param_set_callback(age_thread_param, age_thread_callback);
 	doca_argp_param_set_type(age_thread_param, DOCA_ARGP_TYPE_BOOLEAN);
 	result = doca_argp_register_param(age_thread_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	/* Create and register DOCA Flow Tune param */
+	result = doca_argp_param_create(&enable_tune_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_descr(result));
+		return result;
+	}
+	doca_argp_param_set_long_name(enable_tune_param, "enable-tune");
+	doca_argp_param_set_description(enable_tune_param, "Enable DOCA Flow Tune data collection and tune server");
+	doca_argp_param_set_callback(enable_tune_param, enable_tune_callback);
+	doca_argp_param_set_type(enable_tune_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(enable_tune_param);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
 		return result;

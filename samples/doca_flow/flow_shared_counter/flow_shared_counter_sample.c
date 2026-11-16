@@ -347,7 +347,7 @@ static void print_shared_counter_stats(int nb_ports,
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to query shared counter resource: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return;
 		}
 	}
@@ -370,7 +370,7 @@ static void print_shared_counter_stats(int nb_ports,
 					     port_id,
 					     doca_error_get_descr(result));
 				stop_doca_flow_ports(nb_ports, ports);
-				doca_flow_destroy();
+				destroy_doca_flow();
 				return;
 			}
 			DOCA_LOG_INFO(" %s entry:", i == TCP_ENTRY ? "TCP" : "UDP");
@@ -420,7 +420,7 @@ doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 	resource.mode = DOCA_FLOW_RESOURCE_MODE_PORT;
 	resource.nr_counters = 2;
 	resource.nr_ct_counters = 1024;
-	result = init_doca_flow(nb_queues, "vnf,hws", &resource, nr_shared_resources);
+	result = init_doca_flow(nb_queues, "vnf", &resource, nr_shared_resources);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA Flow: %s", doca_error_get_descr(result));
 		return result;
@@ -432,7 +432,7 @@ doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 		result = doca_dpdk_port_as_dev(i, &dev_arr[i]);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to get device for port %d: %s", i, doca_error_get_descr(result));
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 	}
@@ -451,7 +451,7 @@ doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 							 NULL /* no CT */);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -463,7 +463,7 @@ doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to get shared counter id from port %d", port_id);
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		/* config and bind shared counter to port */
@@ -474,7 +474,7 @@ doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to configure shared counter to port %d", port_id);
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -482,7 +482,7 @@ doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -494,7 +494,7 @@ doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -502,7 +502,7 @@ doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -514,21 +514,21 @@ doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to add entry: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 		result = create_control_pipe(ports[port_id], &pipe);
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to create control pipe: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
 		result = add_control_pipe_entries(pipe, tcp_pipe, udp_pipe, &status);
 		if (result != DOCA_SUCCESS) {
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
@@ -536,14 +536,14 @@ doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 		if (result != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return result;
 		}
 
 		if (status.nb_processed != num_of_entries || status.failure) {
 			DOCA_LOG_ERR("Failed to process entries");
 			stop_doca_flow_ports(nb_ports, ports);
-			doca_flow_destroy();
+			destroy_doca_flow();
 			return DOCA_ERROR_BAD_STATE;
 		}
 	}
@@ -558,6 +558,6 @@ doca_error_t flow_shared_counter(int nb_queues, uint32_t refresh_interval_ms)
 	flow_wait_for_packets(5, print_shared_counter_stats_wrapper, &stats_ctx);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

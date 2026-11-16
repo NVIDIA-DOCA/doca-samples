@@ -55,7 +55,6 @@ use_cases:
               - forwarding_port: 2
                 packets:
                   - Ether()/IP(dst="8.8.8.7", src="1.2.3.4")/ICMP(id=1234, seq=1)/Raw(load=b'Sent to port 0, forwarded from port 2')
-use_cases:
   - name: "Switch to no wire use case #2"
     args: "-nw"
     stages:

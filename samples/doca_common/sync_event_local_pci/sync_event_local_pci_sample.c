@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2023-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -27,6 +27,7 @@
 
 #include <doca_log.h>
 #include <doca_comch.h>
+#include <doca_config.h>
 #include <doca_sync_event.h>
 
 #include <common.h>

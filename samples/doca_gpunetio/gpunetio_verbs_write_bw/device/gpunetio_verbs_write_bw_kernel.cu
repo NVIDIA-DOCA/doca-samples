@@ -49,7 +49,9 @@ __global__ void write_bw(struct doca_gpu_dev_verbs_qp *qp,
 	uint64_t wqe_idx = 0;
 	struct doca_gpu_dev_verbs_wqe *wqe_ptr;
 
-	wqe_idx = (doca_gpu_dev_verbs_atomic_read<uint64_t, DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(&qp->sq_wqe_pi) + threadIdx.x);
+	wqe_idx = (doca_gpu_dev_verbs_atomic_read<uint64_t, DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+			   &qp->sq_wqe_pi) +
+		   threadIdx.x);
 
 	for (uint32_t idx = threadIdx.x; idx < num_iters; idx += blockDim.x) {
 		wqe_ptr = doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
@@ -59,26 +61,27 @@ __global__ void write_bw(struct doca_gpu_dev_verbs_qp *qp,
 		 * To test event-based CQ comp channel feature,
 		 * cause a CQE error on purpose for last WQE message size 64B.
 		 */
-        if (wqe_idx == (num_iters * 4) - 1)
+		if (wqe_idx == (num_iters * 4) - 1)
 			dst_buf_mkey = 0;
 #endif
 
 		doca_gpu_dev_verbs_wqe_prepare_write(qp,
-							  wqe_ptr,
-							  wqe_idx,
-							  MLX5_OPCODE_RDMA_WRITE,
-							  DOCA_GPUNETIO_MLX5_WQE_CTRL_CQ_UPDATE,
-							  0,
-							  (uint64_t)(dst_buf + (size * threadIdx.x)),
-							  dst_buf_mkey,
-							  (uint64_t)(src_buf + (size * threadIdx.x)),
-							  src_buf_mkey,
-							  size);
+						     wqe_ptr,
+						     wqe_idx,
+						     MLX5_OPCODE_RDMA_WRITE,
+						     DOCA_GPUNETIO_MLX5_WQE_CTRL_CQ_UPDATE,
+						     0,
+						     (uint64_t)(dst_buf + (size * threadIdx.x)),
+						     dst_buf_mkey,
+						     (uint64_t)(src_buf + (size * threadIdx.x)),
+						     src_buf_mkey,
+						     size);
 
 		__syncthreads();
 
 		if (threadIdx.x == (blockDim.x - 1))
-			doca_gpu_dev_verbs_submit<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(qp, (wqe_idx + 1));
+			doca_gpu_dev_verbs_submit<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(qp,
+												       (wqe_idx + 1));
 
 		__syncthreads();
 
@@ -89,9 +92,9 @@ __global__ void write_bw(struct doca_gpu_dev_verbs_qp *qp,
 	// Application needs to poll only the last CQE corresponding to the last posted WQE.
 	if (threadIdx.x == (blockDim.x - 1)) {
 		if (doca_gpu_dev_verbs_poll_cq_at(qp, (wqe_idx - blockDim.x)) != 0) {
-			#if ENABLE_DEBUG == 1
-				printf("Error CQE at wqe %ld\n", wqe_idx - blockDim.x);
-			#endif
+#if ENABLE_DEBUG == 1
+			printf("Error CQE at wqe %ld\n", wqe_idx - blockDim.x);
+#endif
 		}
 	}
 	__syncthreads();
@@ -100,15 +103,15 @@ __global__ void write_bw(struct doca_gpu_dev_verbs_qp *qp,
 extern "C" {
 
 doca_error_t gpunetio_verbs_write_bw(cudaStream_t stream,
-					  struct doca_gpu_dev_verbs_qp *qp,
-					  uint32_t cuda_threads_iters,
-					  uint32_t cuda_blocks,
-					  uint32_t cuda_threads,
-					  uint32_t size,
-					  uint8_t *src_buf,
-					  uint32_t src_buf_mkey,
-					  uint8_t *dst_buf,
-					  uint32_t dst_buf_mkey)
+				     struct doca_gpu_dev_verbs_qp *qp,
+				     uint32_t cuda_threads_iters,
+				     uint32_t cuda_blocks,
+				     uint32_t cuda_threads,
+				     uint32_t size,
+				     uint8_t *src_buf,
+				     uint32_t src_buf_mkey,
+				     uint8_t *dst_buf,
+				     uint32_t dst_buf_mkey)
 {
 	cudaError_t result = cudaSuccess;
 
@@ -125,12 +128,12 @@ doca_error_t gpunetio_verbs_write_bw(cudaStream_t stream,
 	}
 
 	write_bw<<<cuda_blocks, cuda_threads, 0, stream>>>(qp,
-								cuda_threads_iters,
-								size,
-								src_buf,
-								src_buf_mkey,
-								dst_buf,
-								dst_buf_mkey);
+							   cuda_threads_iters,
+							   size,
+							   src_buf,
+							   src_buf_mkey,
+							   dst_buf,
+							   dst_buf_mkey);
 
 	result = cudaGetLastError();
 	if (cudaSuccess != result) {

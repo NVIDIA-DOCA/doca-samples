@@ -28,6 +28,10 @@
 
 DOCA_LOG_REGISTER(GPUNETIO_SIMPLE_RECEIVE::MAIN);
 
+/* Expand a macro value into a string literal */
+#define STRINGIFY_VALUE(x) #x
+#define STRINGIFY(x) STRINGIFY_VALUE(x)
+
 /*
  * ARGP Callback - Set receive kernel execution scope (THREAD, WARP or BLOCK)
  *
@@ -35,14 +39,16 @@ DOCA_LOG_REGISTER(GPUNETIO_SIMPLE_RECEIVE::MAIN);
  * @config [in/out]: Program configuration context
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
  */
-doca_error_t exec_scope_callback(void *param, void *config)
+static doca_error_t exec_scope_callback(void *param, void *config)
 {
 	struct sample_simple_recv_cfg *sample_cfg = (struct sample_simple_recv_cfg *)config;
-	const uint32_t exec_scope = *(uint32_t *)param;
+	const int exec_scope = *(int *)param;
 
 	if (exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD && exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_WARP &&
 	    exec_scope != DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK) {
-		DOCA_LOG_ERR("Exec scope must be included between 0 and 2");
+		DOCA_LOG_ERR("Invalid exec scope %d, must be 0 (thread), 1 (warp) or 2 (block) (default %d)",
+			     exec_scope,
+			     DEFAULT_EXEC_SCOPE);
 		return DOCA_ERROR_INVALID_VALUE;
 	}
 
@@ -116,8 +122,10 @@ static doca_error_t register_sample_params(void)
 	}
 	doca_argp_param_set_short_name(exec_param, "e");
 	doca_argp_param_set_long_name(exec_param, "exec-scope");
-	doca_argp_param_set_description(exec_param,
-					"Receive kernel execution scope: per-thread (0) per-warp (1) per-block (2).");
+	doca_argp_param_set_description(
+		exec_param,
+		"Receive kernel execution scope: per-thread (0) per-warp (1) per-block (2), default " STRINGIFY(
+			DEFAULT_EXEC_SCOPE));
 	doca_argp_param_set_callback(exec_param, exec_scope_callback);
 	doca_argp_param_set_type(exec_param, DOCA_ARGP_TYPE_INT);
 	result = doca_argp_register_param(exec_param);
@@ -182,6 +190,8 @@ int main(int argc, char **argv)
 	int exit_status = EXIT_FAILURE;
 	cudaError_t cuda_ret;
 
+	memset(&sample_cfg, 0, sizeof(sample_cfg));
+
 	/* Register a logger backend */
 	result = doca_log_backend_create_standard();
 	if (result != DOCA_SUCCESS)
@@ -198,7 +208,7 @@ int main(int argc, char **argv)
 	DOCA_LOG_INFO("Starting the sample");
 
 	/* Default mode if not set from command line */
-	sample_cfg.exec_scope = DOCA_GPUNETIO_ETH_EXEC_SCOPE_BLOCK;
+	sample_cfg.exec_scope = DEFAULT_EXEC_SCOPE;
 
 	result = doca_argp_init(NULL, &sample_cfg);
 	if (result != DOCA_SUCCESS) {
@@ -235,9 +245,13 @@ int main(int argc, char **argv)
 		goto argp_cleanup;
 	}
 
-	cudaSetDevice(sample_cfg.cuda_id);
+	cuda_ret = cudaSetDevice(sample_cfg.cuda_id);
+	if (cuda_ret != cudaSuccess) {
+		DOCA_LOG_ERR("Failed to set CUDA device %d: %s", sample_cfg.cuda_id, cudaGetErrorString(cuda_ret));
+		goto argp_cleanup;
+	}
 
-	DOCA_LOG_INFO("Sample configuration:\n\tGPU %s\n\tNIC %s\n\tReceive exec scope %s\n\t",
+	DOCA_LOG_INFO("Sample configuration:\n\tGPU %s\n\tNIC %s\n\tReceive exec scope %s",
 		      sample_cfg.gpu_pcie_addr,
 		      sample_cfg.nic_pcie_addr,
 		      ((sample_cfg.exec_scope == DOCA_GPUNETIO_ETH_EXEC_SCOPE_THREAD) ?

@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2021-2025 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+# Copyright (c) 2021-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -31,6 +31,7 @@ app_srcs += [
 	'simple_fwd_vnf_core.c',
 	samples_dir_path + '/common.c',
 	samples_dir_path + '/doca_flow/flow_common.c',
+	samples_dir_path + '/doca_flow/flow_tune_common.c',
 	common_dir_path + '/dpdk_utils.c',
 	common_dir_path + '/utils.c',
 ]

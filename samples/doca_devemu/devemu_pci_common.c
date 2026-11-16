@@ -28,6 +28,8 @@
 
 #include <doca_dev.h>
 
+#include <common.h>
+
 DOCA_LOG_REGISTER(DEVEMU_PCI_COMMON);
 
 doca_error_t parse_pci_address(const char *addr, char *parsed_addr)
@@ -474,6 +476,20 @@ void devemu_resources_cleanup(struct devemu_resources *resources, bool destroy_r
 		resources->data_path.db = NULL;
 	}
 
+	if (resources->dpu_db_comp != NULL) {
+		/* Stopping is asynchronous, the context drains its channel to the arming thread while progressed */
+		res = request_stop_ctx(resources->pe, doca_devemu_pci_dpu_db_completion_as_ctx(resources->dpu_db_comp));
+		if (res != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to stop DOCA Device Emulation DPU DB completion context: %s",
+				     doca_error_get_descr(res));
+		res = doca_devemu_pci_dpu_db_completion_destroy(resources->dpu_db_comp);
+		if (res != DOCA_SUCCESS)
+			DOCA_LOG_ERR("Failed to destroy DOCA Device Emulation DPU DB completion context: %s",
+				     doca_error_get_descr(res));
+
+		resources->dpu_db_comp = NULL;
+	}
+
 	if (resources->db_comp != NULL) {
 		res = doca_devemu_pci_db_completion_stop(resources->db_comp);
 		if (res != DOCA_SUCCESS)
@@ -532,12 +548,16 @@ void devemu_resources_cleanup(struct devemu_resources *resources, bool destroy_r
 	}
 
 	if (resources->pci_type != NULL) {
-		res = doca_devemu_pci_type_stop(resources->pci_type);
+		uint8_t is_started;
+		res = doca_devemu_pci_type_is_started(resources->pci_type, &is_started);
 		if (res != DOCA_SUCCESS)
-			DOCA_LOG_ERR("Failed to stop DOCA Emulated PCI Type: %s", doca_error_get_descr(res));
-	}
-
-	if (resources->pci_type != NULL) {
+			DOCA_LOG_ERR("Failed to check if DOCA Emulated PCI Type is started: %s",
+				     doca_error_get_descr(res));
+		if (res != DOCA_SUCCESS || is_started) {
+			res = doca_devemu_pci_type_stop(resources->pci_type);
+			if (res != DOCA_SUCCESS)
+				DOCA_LOG_ERR("Failed to stop DOCA Emulated PCI Type: %s", doca_error_get_descr(res));
+		}
 		res = doca_devemu_pci_type_destroy(resources->pci_type);
 		if (res != DOCA_SUCCESS)
 			DOCA_LOG_ERR("Failed to destroy DOCA Emulated PCI Type: %s", doca_error_get_descr(res));

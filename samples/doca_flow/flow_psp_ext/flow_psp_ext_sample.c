@@ -87,7 +87,7 @@ static_assert(
  */
 static doca_error_t init_doca_flow_with_psp_ext(int nb_queues)
 {
-	struct flow_resources resource = {0};
+	struct flow_resources resource = {.mode = DOCA_FLOW_RESOURCE_MODE_PORT};
 	uint32_t nr_shared_resources[SHARED_RESOURCE_NUM_VALUES] = {0};
 	struct doca_flow_definitions_cfg *defs_cfg;
 	struct doca_flow_definitions *definitions;
@@ -203,7 +203,7 @@ static doca_error_t init_doca_flow_with_psp_ext(int nb_queues)
 	doca_flow_definitions_destroy(definitions);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to destroy definitions object: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -414,7 +414,7 @@ doca_error_t flow_psp_ext(int nb_queues, int nb_ports, struct flow_switch_ctx *c
 					     NULL);
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to init DOCA ports: %s", doca_error_get_descr(result));
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -423,7 +423,7 @@ doca_error_t flow_psp_ext(int nb_queues, int nb_ports, struct flow_switch_ctx *c
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to create PSP pipe: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -431,7 +431,7 @@ doca_error_t flow_psp_ext(int nb_queues, int nb_ports, struct flow_switch_ctx *c
 	if (result != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("Failed to process entries: %s", doca_error_get_descr(result));
 		stop_doca_flow_ports(nb_ports, ports);
-		doca_flow_destroy();
+		destroy_doca_flow();
 		return result;
 	}
 
@@ -439,6 +439,6 @@ doca_error_t flow_psp_ext(int nb_queues, int nb_ports, struct flow_switch_ctx *c
 	sleep(15);
 
 	result = stop_doca_flow_ports(nb_ports, ports);
-	doca_flow_destroy();
+	destroy_doca_flow();
 	return result;
 }

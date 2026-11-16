@@ -34,7 +34,6 @@
 #include <doca_dev.h>
 #include <doca_error.h>
 #include <doca_log.h>
-#include <doca_telemetry_phy.h>
 #include "telemetry_phy_sample.h"
 
 DOCA_LOG_REGISTER(TELEMETRY_PHY::MAIN);
@@ -225,6 +224,154 @@ static doca_error_t system_temp_and_pwr_info_callback(void *param, void *config)
 }
 
 /*
+ * ARGP Callback - Handle system temperature info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t system_temp_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_system_temp_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_system_temp_info = !!get_system_temp_info;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle system power info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t system_pwr_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_system_pwr_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_system_pwr_info = !!get_system_pwr_info;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle SNR samples info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t snr_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_snr_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_snr_info = !!get_snr_info;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle laser monitors info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t laser_monitors_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_laser_monitors_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_laser_monitors_info = !!get_laser_monitors_info;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle PAM4 level transition info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t pam4_level_transition_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_pam4_level_transition_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_pam4_level_transition_info = !!get_pam4_level_transition_info;
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle pre-FEC BER info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t pre_fec_ber_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_pre_fec_ber_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_pre_fec_ber_info = !!get_pre_fec_ber_info;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle FERC info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t ferc_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_ferc_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_ferc_info = !!get_ferc_info;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle SEW MAX info parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t sew_max_info_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool get_sew_max_info = *(bool *)param;
+
+	telemetry_phy_sample_cfg->get_sew_max_info = !!get_sew_max_info;
+
+	return DOCA_SUCCESS;
+}
+
+/*
+ * ARGP Callback - Handle VDM read and clear parameter
+ *
+ * @param [in]: Input parameter
+ * @config [in/out]: Program configuration context
+ * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
+ */
+static doca_error_t vdm_read_and_clear_callback(void *param, void *config)
+{
+	struct telemetry_phy_sample_cfg *telemetry_phy_sample_cfg = (struct telemetry_phy_sample_cfg *)config;
+	bool vdm_read_and_clear = *(bool *)param;
+
+	telemetry_phy_sample_cfg->vdm_read_and_clear = !!vdm_read_and_clear;
+
+	return DOCA_SUCCESS;
+}
+
+/*
  * Register the command line parameters for the sample.
  *
  * @return: DOCA_SUCCESS on success and DOCA_ERROR otherwise
@@ -235,7 +382,9 @@ static doca_error_t register_telemetry_phy_params(void)
 	struct doca_argp_param *pci_param, *operation_info_param, *supported_info_param, *troubleshooting_info_param,
 		*module_info_param, *counter_and_ber_info_param, *fec_histogram_info_param,
 		*management_cable_single_page_info_param, *management_cable_dump_info_param,
-		*management_cable_ddm_info_param, *system_temp_and_pwr_info_param;
+		*management_cable_ddm_info_param, *system_temp_and_pwr_info_param, *system_temp_info_param,
+		*system_pwr_info_param, *snr_info_param, *laser_monitors_info_param, *pam4_level_transition_info_param,
+		*pre_fec_ber_info_param, *ferc_info_param, *sew_max_info_param, *vdm_read_and_clear_param;
 
 	result = doca_argp_param_create(&pci_param);
 	if (result != DOCA_SUCCESS) {
@@ -415,6 +564,152 @@ static doca_error_t register_telemetry_phy_params(void)
 		return result;
 	}
 
+	result = doca_argp_param_create(&system_temp_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(system_temp_info_param, "sti");
+	doca_argp_param_set_long_name(system_temp_info_param, "get-system-temp-info");
+	doca_argp_param_set_description(system_temp_info_param, "Retrieve system temperature info");
+	doca_argp_param_set_callback(system_temp_info_param, system_temp_info_callback);
+	doca_argp_param_set_type(system_temp_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(system_temp_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&system_pwr_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(system_pwr_info_param, "spi");
+	doca_argp_param_set_long_name(system_pwr_info_param, "get-system-pwr-info");
+	doca_argp_param_set_description(system_pwr_info_param, "Retrieve system power info");
+	doca_argp_param_set_callback(system_pwr_info_param, system_pwr_info_callback);
+	doca_argp_param_set_type(system_pwr_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(system_pwr_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&snr_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(snr_info_param, "snsi");
+	doca_argp_param_set_long_name(snr_info_param, "get-snr-info");
+	doca_argp_param_set_description(snr_info_param, "Retrieve SNR samples info");
+	doca_argp_param_set_callback(snr_info_param, snr_info_callback);
+	doca_argp_param_set_type(snr_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(snr_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&laser_monitors_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(laser_monitors_info_param, "lmsi");
+	doca_argp_param_set_long_name(laser_monitors_info_param, "get-laser-info");
+	doca_argp_param_set_description(laser_monitors_info_param, "Retrieve laser monitors samples info");
+	doca_argp_param_set_callback(laser_monitors_info_param, laser_monitors_info_callback);
+	doca_argp_param_set_type(laser_monitors_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(laser_monitors_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&pam4_level_transition_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(pam4_level_transition_info_param, "ptsi");
+	doca_argp_param_set_long_name(pam4_level_transition_info_param, "get-pam4-info");
+	doca_argp_param_set_description(pam4_level_transition_info_param,
+					"Retrieve PAM4 level transition samples info");
+	doca_argp_param_set_callback(pam4_level_transition_info_param, pam4_level_transition_info_callback);
+	doca_argp_param_set_type(pam4_level_transition_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(pam4_level_transition_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&pre_fec_ber_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(pre_fec_ber_info_param, "fbsi");
+	doca_argp_param_set_long_name(pre_fec_ber_info_param, "get-pre-fec-ber-info");
+	doca_argp_param_set_description(pre_fec_ber_info_param, "Retrieve pre-FEC BER samples info");
+	doca_argp_param_set_callback(pre_fec_ber_info_param, pre_fec_ber_info_callback);
+	doca_argp_param_set_type(pre_fec_ber_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(pre_fec_ber_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&ferc_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(ferc_info_param, "fesi");
+	doca_argp_param_set_long_name(ferc_info_param, "get-ferc-info");
+	doca_argp_param_set_description(ferc_info_param, "Retrieve FERC samples info");
+	doca_argp_param_set_callback(ferc_info_param, ferc_info_callback);
+	doca_argp_param_set_type(ferc_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(ferc_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&sew_max_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(sew_max_info_param, "smsi");
+	doca_argp_param_set_long_name(sew_max_info_param, "get-sew-max-info");
+	doca_argp_param_set_description(sew_max_info_param, "Retrieve SEW_max samples info");
+	doca_argp_param_set_callback(sew_max_info_param, sew_max_info_callback);
+	doca_argp_param_set_type(sew_max_info_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(sew_max_info_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
+	result = doca_argp_param_create(&vdm_read_and_clear_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to create ARGP param: %s", doca_error_get_name(result));
+		return result;
+	}
+	doca_argp_param_set_short_name(vdm_read_and_clear_param, "vrc");
+	doca_argp_param_set_long_name(vdm_read_and_clear_param, "set-vdm-read-clear");
+	doca_argp_param_set_description(vdm_read_and_clear_param,
+					"Reset pre-FEC BER, FERC, SEW_max samples info after read");
+	doca_argp_param_set_callback(vdm_read_and_clear_param, vdm_read_and_clear_callback);
+	doca_argp_param_set_type(vdm_read_and_clear_param, DOCA_ARGP_TYPE_BOOLEAN);
+	result = doca_argp_register_param(vdm_read_and_clear_param);
+	if (result != DOCA_SUCCESS) {
+		DOCA_LOG_ERR("Failed to register program param: %s", doca_error_get_descr(result));
+		return result;
+	}
+
 	return DOCA_SUCCESS;
 }
 
@@ -436,6 +731,15 @@ static void set_default_params(struct telemetry_phy_sample_cfg *cfg)
 	cfg->get_management_cable_dump_info = false;
 	cfg->get_management_cable_ddm_info = false;
 	cfg->get_system_temp_and_pwr_info = false;
+	cfg->get_system_temp_info = false;
+	cfg->get_system_pwr_info = false;
+	cfg->get_snr_info = false;
+	cfg->get_laser_monitors_info = false;
+	cfg->get_pam4_level_transition_info = false;
+	cfg->get_pre_fec_ber_info = false;
+	cfg->get_ferc_info = false;
+	cfg->get_sew_max_info = false;
+	cfg->vdm_read_and_clear = false;
 }
 
 /*

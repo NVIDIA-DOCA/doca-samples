@@ -27,7 +27,11 @@ app_srcs += files([
 	APP_NAME + '_core.c',
 	APP_NAME + 'ice.c',
 	APP_NAME + '_lu.c',
+	'vnet_admin_dev_parts.c',
+	'vnet_admin_queue.c',
+	'vnet_admin_vf.c',
 	'vnet_sriov.c',
+	'vnet_recycle.c',
 	common_dir_path + '/utils.c',
 	samples_dir_path + '/common.c',
 ])

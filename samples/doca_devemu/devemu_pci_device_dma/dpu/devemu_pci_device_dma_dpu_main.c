@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
+ * Copyright (c) 2024-2026 NVIDIA CORPORATION AND AFFILIATES.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted
  * provided that the following conditions are met:
@@ -28,6 +28,7 @@
 #include <ctype.h>
 
 #include <doca_argp.h>
+#include <doca_config.h>
 #include <doca_error.h>
 #include <doca_dev.h>
 #include <doca_log.h>

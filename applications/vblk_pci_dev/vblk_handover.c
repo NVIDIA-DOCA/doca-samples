@@ -262,16 +262,17 @@ doca_error_t vblk_ho_dst_begin_switchover(struct vblk_ho_ctx *ho)
 
 	struct vblk_vq_cfg *cfg = &ho->initial_cfg->vq_cfg;
 	for (uint16_t q = 0; q < cfg->num_queues && q < ctrl->num_queues; q++) {
-		if (!cfg->vqs[q].queue_enable)
-			continue;
-		vblk_ctrl_ipc_queue_start(ctrl, q, &cfg->vqs[q]);
+		if (cfg->vqs[q].queue_enable)
+			ctrl->vqs[q].cfg = cfg->vqs[q];
 	}
+	ctrl->pending_queue_start = true;
+	ctrl->engine_poll.pending += 1;
 
 	/* Wait for OE thread to create all VQs (STARTING → CONFIGURED) */
-	for (uint16_t q = 0; q < ctrl->num_queues; q++) {
-		if (ctrl->vqs[q].state == VBLK_VQ_DESTROYED)
+	for (uint16_t q = 0; q < cfg->num_queues && q < ctrl->num_queues; q++) {
+		if (!cfg->vqs[q].queue_enable)
 			continue;
-		while (atomic_load(&ctrl->vqs[q].state) != VBLK_VQ_CONFIGURED)
+		while (ctrl->vqs[q].state != VBLK_VQ_CONFIGURED)
 			usleep(1000);
 	}
 
